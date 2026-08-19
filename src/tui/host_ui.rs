@@ -17,6 +17,11 @@
 
 use tokio::sync::{mpsc, oneshot};
 
+/// Marker phrase shared by the transcript line the App writes and the
+/// `enable_extension` result note, so the client and the agent describe the
+/// same situation and cannot drift apart.
+pub(crate) const EXTENSION_INSTALLED_MID_SESSION: &str = "installed after this session started";
+
 /// A server→host `ui/ask`: prompt the user and deliver their answer via
 /// `reply`. Carried on its own channel rather than as a [`UiCommand`] variant
 /// because the oneshot sender can't derive `Clone`/`Eq`.

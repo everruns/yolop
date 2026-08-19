@@ -601,11 +601,41 @@ fn tool_started_label(data: &ToolStartedData) -> String {
         .unwrap_or_else(|| data.tool_call.name.clone())
 }
 
+/// Restate an argument-validation rejection in the user's terms.
+///
+/// The engine reports every pre-tool-use block as "blocked by pre_tool_use
+/// hook: <reason>" followed by the raw diagnostic JSON. For yolop's own
+/// argument validation that reads as if a user-configured hook misfired, when
+/// what happened is that the model sent arguments the tool's schema does not
+/// accept and will retry. Only the wording changes; the block itself is
+/// unaffected.
+fn readable_tool_block(error: &str) -> Option<String> {
+    let reason = error.strip_prefix("blocked by pre_tool_use hook: ")?;
+    let diagnostic: Value = serde_json::from_str(reason.trim()).ok()?;
+    if diagnostic.get("error").and_then(Value::as_str)? != "invalid_tool_arguments" {
+        return None;
+    }
+    let tool = diagnostic
+        .get("tool")
+        .and_then(Value::as_str)
+        .unwrap_or("the tool");
+    let message = diagnostic
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or("the arguments do not match the tool schema");
+    Some(format!(
+        "invalid arguments for `{tool}`: {message} — rejected before running; retrying"
+    ))
+}
+
 /// One-line summary of a tool result, used in the transcript and `--print` output.
 pub fn summarize_tool_result(data: &ToolCompletedData) -> String {
     if !data.success
         && let Some(err) = &data.error
     {
+        if let Some(readable) = readable_tool_block(err) {
+            return readable;
+        }
         return format!("error: {}", first_line(err, 120));
     }
     let Some(v) = result_value(data) else {
@@ -740,6 +770,12 @@ fn shell_success_lines(value: &Value) -> Vec<ChatLine> {
             }
         }
     }
+    if let Some(notice) = value.get("detached_control").and_then(Value::as_str) {
+        out.push(ChatLine {
+            author: Author::System,
+            text: notice.to_string(),
+        });
+    }
     if value.get("sandbox_denial").and_then(Value::as_str) == Some("likely") {
         out.push(ChatLine {
             author: Author::Sandbox,
@@ -778,6 +814,80 @@ fn shell_success_lines(value: &Value) -> Vec<ChatLine> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// "blocked by pre_tool_use hook" is engine wording for every pre-tool
+    /// block; for yolop's own argument validation it reads as a user hook
+    /// misfiring, which sent a user hunting through `list_hooks`.
+    #[test]
+    fn argument_validation_block_reads_as_an_argument_problem() {
+        let data = ToolCompletedData {
+            success: false,
+            error: Some(
+                "blocked by pre_tool_use hook: {\"error\":\"invalid_tool_arguments\",\
+                 \"tool\":\"bash\",\"path\":\"/\",\"message\":\"the object contains an \
+                 unsupported argument\",\"retryable\":true}"
+                    .into(),
+            ),
+            tool_call_id: "call-1".into(),
+            tool_name: "bash".into(),
+            tool_call_fingerprint: None,
+            tool_result_fingerprint: None,
+            display_name: Some("Bash".into()),
+            status: "error".into(),
+            result: None,
+            duration_ms: None,
+            capability_id: None,
+            capability_name: None,
+            narration: None,
+        };
+        let summary = summarize_tool_result(&data);
+        assert!(
+            summary.contains("invalid arguments for `bash`"),
+            "{summary}"
+        );
+        assert!(summary.contains("unsupported argument"), "{summary}");
+        assert!(!summary.contains("pre_tool_use"), "{summary}");
+    }
+
+    /// An actual user hook block keeps the engine's wording: it really was a hook.
+    #[test]
+    fn user_hook_block_keeps_its_wording() {
+        let data = ToolCompletedData {
+            success: false,
+            error: Some("blocked by pre_tool_use hook: git is blocked".into()),
+            tool_call_id: "call-1".into(),
+            tool_name: "bash".into(),
+            tool_call_fingerprint: None,
+            tool_result_fingerprint: None,
+            display_name: Some("Bash".into()),
+            status: "error".into(),
+            result: None,
+            duration_ms: None,
+            capability_id: None,
+            capability_name: None,
+            narration: None,
+        };
+        assert!(summarize_tool_result(&data).contains("pre_tool_use hook"));
+    }
+
+    /// The client half of the detached-administration warning: the user reading
+    /// the transcript must see it too, not only the agent in its tool result.
+    #[test]
+    fn shell_lines_render_the_detached_control_notice() {
+        let lines = shell_success_lines(&serde_json::json!({
+            "exit_code": 0,
+            "success": true,
+            "stdout": "NAME  STATE  VERSION",
+            "detached_control": "`yolop extensions` ran as an ordinary shell command.",
+        }));
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.text.contains("ran as an ordinary shell command")),
+            "expected the notice in the transcript: {lines:?}"
+        );
+    }
+
     use everruns_core::events::ToolStartedData;
     use everruns_provider::tool_types::ToolCall;
     use serde_json::json;

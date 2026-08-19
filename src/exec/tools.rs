@@ -129,6 +129,15 @@ impl BashTool {
         self
     }
 
+    /// Notice for an administration command that lost its session attachment to
+    /// shell composition. Surfaced on the result so both the agent and the
+    /// client transcript can say so; `None` without a control service, where
+    /// there are no routes to be wrong about.
+    fn detached_control_notice(&self, command: &str) -> Option<String> {
+        let control = self.control.as_ref()?;
+        crate::control::detached_control_notice(command, control.as_ref())
+    }
+
     fn timeout_secs(&self, background: bool) -> u64 {
         if background {
             self.background_timeout_secs
@@ -548,6 +557,9 @@ impl Tool for BashTool {
         if let Some(hint) = command_failure_hint(exit_code, &output.stderr_text) {
             result["hint"] = json!(hint);
         }
+        if let Some(notice) = self.detached_control_notice(&command) {
+            result["detached_control"] = json!(notice);
+        }
 
         ToolExecutionResult::success_with_raw_output(result, raw_output)
     }
@@ -610,7 +622,7 @@ impl BackgroundExecutableTool for BashTool {
                 label: Some("runtime".to_string()),
             })
             .await;
-        let result = json!({
+        let mut result = json!({
             "command": command,
             "exit_code": exit_code,
             "success": success,
@@ -621,6 +633,11 @@ impl BackgroundExecutableTool for BashTool {
             "output_limited": output_limited,
             "sandbox": output.sandbox_mode.as_str(),
         });
+        // A backgrounded administration command is detached twice over: the
+        // recognizer is foreground-only, so say so here as well.
+        if let Some(notice) = self.detached_control_notice(&command) {
+            result["detached_control"] = json!(notice);
+        }
 
         if success {
             Ok(BackgroundOutcome {
@@ -655,6 +672,47 @@ mod tests {
     /// was hardcoded to `yolop extensions`, which named one of the session's
     /// routes and advertised administration even where none is registered.
     /// Discovery belongs to the shared control-plane prompt block.
+    /// The agent half: a composed administration command must carry the notice
+    /// on its result, where the model reads it.
+    #[tokio::test]
+    async fn composed_administration_result_carries_the_detached_notice() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut control = crate::control::ControlRegistry::default();
+        control
+            .register(std::sync::Arc::new(
+                crate::extensions::ExtensionsCapability::new(
+                    dir.path().join("extensions"),
+                    dir.path().to_path_buf(),
+                    std::sync::Arc::new(crate::config::SettingsStore::open(
+                        dir.path().join("settings.toml"),
+                    )),
+                    crate::extensions::LiveProcessRegistry::default(),
+                    None,
+                ),
+            ))
+            .expect("register extensions control route");
+        let tool = BashTool::new(Workspace::from_path(dir.path().to_path_buf()))
+            .with_control(Some(std::sync::Arc::new(control)));
+
+        let result = tool
+            .execute(serde_json::json!({
+                "command": "echo skipped | grep -q . && true # yolop extensions list | cat",
+                "output": "normal",
+            }))
+            .await;
+        let value = match result {
+            ToolExecutionResult::Success(value) => value,
+            other => panic!("expected success, got {other:?}"),
+        };
+        assert!(
+            value
+                .get("detached_control")
+                .and_then(Value::as_str)
+                .is_some_and(|notice| notice.contains("`yolop extensions`")),
+            "expected a detached-control notice on the result: {value}"
+        );
+    }
+
     #[test]
     fn bash_description_does_not_name_control_resources() {
         let tool = BashTool::new(Workspace::from_path(std::env::current_dir().unwrap()));

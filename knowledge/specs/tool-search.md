@@ -42,18 +42,22 @@ vendor was deleted and yolop now consumes upstream directly:
 
 2. **Static host-shaped eager profile.** Yolop passes first-turn repository
    discovery (`read_file`, `list_directory`, `grep_files`), bookkeeping
-   (`write_todos`, `write_session_title`), and the mandatory progress-guard
-   transition (`progress_checkpoint`) to
-   `ToolSearchCapability::new().with_never_defer([...])`. Mutation, shell,
-   background, release/control, skills, session history, web, and other
+   (`write_todos`, `write_session_title`), the shell (`bash`), and the mandatory
+   progress-guard transition (`progress_checkpoint`) to
+   `ToolSearchCapability::new().with_never_defer([...])`. Mutation,
+   background, release/control, skills, session history, web, LSP, and other
    specialized tools keep their names and descriptions visible but reveal their
    authoritative schemas through `tool_search` when the task calls for them.
    This is host/task shaped without a volatile classifier: the allowlist is
-   stable for the session and provider-cache prefix. Opt-in LSP tools stay eager
-   because enabling the host profile is itself an explicit task signal and the
-   LSP adoption eval showed that stubbing those schemas drives adoption toward
-   zero. Extension tools explicitly marked `never_defer` retain their manifest
-   contract. Yolop does not own the built-in definitions, so it sets this policy
+   stable for the session and provider-cache prefix. `bash` is eager because the
+   deferred stub names no parameters while allowing extras, so a model fills the
+   gap from other harnesses' shell schemas and yolop's
+   `additionalProperties: false` schema then rejects the call: the most-used
+   tool in the harness spent a round trip on a correction. LSP tools defer with
+   every other opt-in surface; this reverses an earlier eager profile justified
+   by an LSP adoption eval that measured lower adoption with stubbed schemas, so
+   re-measure before treating the current profile as settled. Extension tools
+   explicitly marked `never_defer` retain their manifest contract. Yolop does not own the built-in definitions, so it sets this policy
    by name rather than changing each tool's `DeferrablePolicy`.
 
    **MCP server tools defer on the same footing**: with many configured servers

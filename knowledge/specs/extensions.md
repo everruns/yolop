@@ -262,6 +262,29 @@ redirection, quoting, substitutions, and background execution receive no
 attachment and run as ordinary shell commands. Attached failure never falls
 back to detached global mutation.
 
+Enablement applies to the running session only for packages present when it
+started. The runtime composes its capability registry once, at startup, and
+`everruns-host` exposes no way to register a capability afterwards
+(`CapabilityRegistry` is owned by value behind an `Arc<InProcessRuntime>` and
+mutated only through `&mut` at composition), so an extension installed mid-session
+has nothing to activate. That case is reported as what it is, a restart, in both
+the transcript and the `enable_extension` result, rather than as an internal
+"unknown capability" or a misleading "next session". Making it genuinely live
+requires a dynamic-registration API upstream; until that exists the honest
+message is the contract.
+
+Two consequences of that boundary are handled rather than left implicit. A child
+that answers as an ordinary CLI, `--help`, `--version`, or a usage error, never
+sends a control frame because clap prints and exits inside it; the parent relays
+its stdout, stderr, and exit code verbatim instead of failing to parse help text
+as a frame, so the documented `yolop <subcommand> --help` discovery path works
+inside a session. And a composed administration command, which differs from the
+attached form only by punctuation while its output looks identical, carries a
+notice on the tool result saying it ran detached and left the session untouched;
+the notice reaches the agent in the result and the user in the transcript, so
+neither has to infer which of the two forms ran. Help and version administer
+nothing and draw no notice.
+
 Discovery is one shared system-prompt block owned by the control plane, not the
 Bash tool description and not a per-capability contribution: `ControlPlaneCapability`
 renders every route registered in the session from its `ControlRoute::summary`,

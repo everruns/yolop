@@ -2940,6 +2940,19 @@ impl App {
                 "extension `{name}` will be disabled on the next session."
             )),
             Ok(_) => {}
+            // `activate_capability` reports an unregistered id this way, and the
+            // only way an installed extension is unregistered is that it was not
+            // on disk when this session composed its capability registry. Saying
+            // "unknown capability" to a user who just installed it explains
+            // nothing; name the actual cause and the actual remedy.
+            Err(err) if err.to_string().contains("unknown capability") => {
+                self.push_system(format!(
+                    "extension `{name}` is enabled for future sessions, but it was \
+                 {}, so this session has no server for it. Restart \
+                 yolop to use it now.",
+                    crate::tui::host_ui::EXTENSION_INSTALLED_MID_SESSION
+                ))
+            }
             Err(err) => self.push_system(format!(
                 "extension `{name}` saved, but applying it to this session failed: {err}. \
                  It will load on the next session."
