@@ -2358,6 +2358,21 @@ impl App {
     /// how a pasted credential ended up sitting in the input once an extension
     /// prompt closed.
     fn handle_paste(&mut self, pasted: String) {
+        // Normalization and the size cap apply to every target: a single-line
+        // overlay field has no placeholder machinery to fall back on, so an
+        // oversized paste is refused before any surface stores or renders it.
+        let pasted = crate::tui::input::paste_attachment::normalize_pasted_text(&pasted);
+        if pasted.is_empty() {
+            return;
+        }
+        if pasted.len() > crate::tui::input::paste_attachment::MAX_PASTE_ATTACHMENT_BYTES {
+            self.push_system(format!(
+                "paste too large (max {} KiB)",
+                crate::tui::input::paste_attachment::MAX_PASTE_ATTACHMENT_BYTES / 1024
+            ));
+            return;
+        }
+
         if self.history_search.is_some() {
             self.handle_search_paste(&pasted);
             return;
@@ -2370,19 +2385,6 @@ impl App {
             return;
         }
         self.esc_pending_cancel = false;
-
-        let pasted = crate::tui::input::paste_attachment::normalize_pasted_text(&pasted);
-        if pasted.is_empty() {
-            return;
-        }
-
-        if pasted.len() > crate::tui::input::paste_attachment::MAX_PASTE_ATTACHMENT_BYTES {
-            self.push_system(format!(
-                "paste too large (max {} KiB)",
-                crate::tui::input::paste_attachment::MAX_PASTE_ATTACHMENT_BYTES / 1024
-            ));
-            return;
-        }
 
         if crate::tui::input::paste_attachment::is_large_paste(&pasted) {
             let char_count = pasted.chars().count();
@@ -2459,8 +2461,7 @@ impl App {
         let Some(search) = self.history_search.as_mut() else {
             return;
         };
-        let text = crate::tui::input::paste_attachment::normalize_pasted_text(pasted);
-        search.query.push_str(&text.replace('\n', " "));
+        search.query.push_str(&pasted.replace('\n', " "));
         self.history_search_refresh();
     }
 
@@ -7897,6 +7898,81 @@ mod tests {
         assert_eq!(
             answer_rx.try_recv().expect("answer delivered").answer,
             "abd"
+        );
+    }
+
+    #[test]
+    fn ask_overlay_masks_a_pasted_secret_and_tracks_the_caret() {
+        let (reply, _answer_rx) = oneshot::channel();
+        let mut ask = PendingAsk {
+            prompt: "Logfire write token".to_string(),
+            placeholder: Some("stored securely, not shown to the agent".to_string()),
+            value: SingleLineInputState::new(),
+            secret: true,
+            options: Vec::new(),
+            selected: 0,
+            reply: Some(reply),
+        };
+        let _ = ask
+            .value
+            .handle(&tuika::Event::Paste("pylf_v1".to_string()));
+
+        let (lines, cursor) = crate::tui::render::ask_overlay_content(&ask);
+        let field = line_text(&lines[4]);
+        assert_eq!(
+            field, "> •••••••",
+            "a secret answer is masked, never echoed"
+        );
+        assert_eq!(
+            cursor,
+            (4, "> ".len() + 7),
+            "caret sits after the pasted text"
+        );
+
+        // The caret follows the input state rather than the text length, so
+        // arrow keys move the cell the terminal draws the cursor in.
+        let _ = ask.value.handle(&tuika::Event::Key(tuika::event::Key::new(
+            tuika::event::KeyCode::Left,
+        )));
+        let (_, cursor) = crate::tui::render::ask_overlay_content(&ask);
+        assert_eq!(cursor, (4, "> ".len() + 6));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn oversized_paste_is_refused_before_it_reaches_an_overlay() {
+        use crate::tui::input::paste_attachment::MAX_PASTE_ATTACHMENT_BYTES;
+
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+        app.lines.clear();
+        let (reply, _answer_rx) = oneshot::channel();
+        app.pending_ask = Some(PendingAsk {
+            prompt: "token".to_string(),
+            placeholder: None,
+            value: SingleLineInputState::new(),
+            secret: true,
+            options: Vec::new(),
+            selected: 0,
+            reply: Some(reply),
+        });
+
+        app.handle_paste("x".repeat(MAX_PASTE_ATTACHMENT_BYTES + 1));
+
+        assert!(
+            app.pending_ask
+                .as_ref()
+                .expect("prompt open")
+                .value
+                .is_empty(),
+            "the single-line field must not store an oversized paste"
+        );
+        assert!(
+            app.lines
+                .iter()
+                .any(|line| line.text.contains("paste too large")),
+            "the refusal is reported: {:?}",
+            app.lines
         );
     }
 
