@@ -698,6 +698,113 @@ fn into_paseo_command_writes_acp_provider() {
     );
 }
 
+/// `--config-dir` / `--data-dir` move yolop's whole global footprint, which is
+/// what makes an isolated run (or a second identity) possible without moving
+/// `HOME`. Drives the real binary and asserts on where files actually land.
+#[test]
+fn config_and_data_dir_flags_move_the_global_footprint() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let config_dir = tmp.path().join("agent-a/config");
+    let data_dir = tmp.path().join("agent-a/data");
+    // A HOME the run must not touch, so a leak into the platform default is a
+    // visible failure rather than a silent pass.
+    let home = tmp.path().join("home");
+    std::fs::create_dir_all(&home).expect("create home");
+
+    let output = Command::new(yolop_binary())
+        .args([
+            "--provider",
+            "llmsim",
+            "--config-dir",
+            config_dir.to_str().unwrap(),
+            "--data-dir",
+            data_dir.to_str().unwrap(),
+            "-p",
+            "hi",
+        ])
+        .env("HOME", &home)
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("XDG_DATA_HOME")
+        .env_remove("YOLOP_CONFIG_DIR")
+        .env_remove("YOLOP_DATA_DIR")
+        .env_remove("OPENAI_API_KEY")
+        .env_remove("ANTHROPIC_API_KEY")
+        .env_remove("OPENROUTER_API_KEY")
+        .env_remove("OLLAMA_BASE_URL")
+        .env_remove("OLLAMA_API_KEY")
+        .output()
+        .expect("spawn yolop with overridden global directories");
+    assert!(
+        output.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // Sessions are the one global write every run makes, and the override
+    // names yolop's own directory, so no second `yolop` folder appears.
+    assert!(
+        data_dir.join("sessions").is_dir(),
+        "sessions should live under --data-dir, found: {:?}",
+        std::fs::read_dir(&data_dir).map(|entries| entries.count())
+    );
+    assert!(
+        !data_dir.join("yolop").exists(),
+        "an override names the directory itself, not a prefix"
+    );
+    assert!(
+        !home.join(".config/yolop").exists(),
+        "nothing may fall back to the platform config directory"
+    );
+    // Nothing at all, including the crash directory and the coordination store,
+    // both of which are resolved before the command line finishes parsing.
+    assert!(
+        !home.join(".local/share/yolop").exists(),
+        "nothing may fall back to the platform data directory"
+    );
+}
+
+/// The environment variables are the same seam, for hosts (editors, CI) that
+/// spawn yolop without control over its arguments.
+#[test]
+fn config_and_data_dir_environment_overrides_move_the_global_footprint() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let config_dir = tmp.path().join("agent-b/config");
+    let data_dir = tmp.path().join("agent-b/data");
+    let home = tmp.path().join("home");
+    std::fs::create_dir_all(&home).expect("create home");
+
+    let output = Command::new(yolop_binary())
+        .args(["--provider", "llmsim", "-p", "hi"])
+        .env("HOME", &home)
+        .env("YOLOP_CONFIG_DIR", &config_dir)
+        .env("YOLOP_DATA_DIR", &data_dir)
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("XDG_DATA_HOME")
+        .env_remove("OPENAI_API_KEY")
+        .env_remove("ANTHROPIC_API_KEY")
+        .env_remove("OPENROUTER_API_KEY")
+        .env_remove("OLLAMA_BASE_URL")
+        .env_remove("OLLAMA_API_KEY")
+        .output()
+        .expect("spawn yolop with overridden global directories");
+    assert!(
+        output.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    assert!(
+        data_dir.join("sessions").is_dir(),
+        "sessions should live under YOLOP_DATA_DIR"
+    );
+    assert!(
+        !home.join(".local/share/yolop").exists(),
+        "nothing may fall back to the platform data directory"
+    );
+}
+
 #[test]
 fn llmsim_print_smoke() {
     // The llmsim provider needs no API key and returns deterministic output.

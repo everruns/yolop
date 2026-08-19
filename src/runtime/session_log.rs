@@ -85,19 +85,19 @@ use tokio::sync::{Mutex, RwLock, broadcast};
 /// catch-up via `runtime.events()`.
 const EVENT_BROADCAST_CAPACITY: usize = 1024;
 
-/// Default location for yolop's per-session storage folders. Resolves via
-/// `dirs::data_dir()`, which is the platform-native user data directory
-/// (`~/.local/share/yolop/sessions/` on Linux,
-/// `~/Library/Application Support/yolop/sessions/` on macOS,
-/// `%APPDATA%\yolop\sessions\` on Windows).
+/// Default location for yolop's per-session storage folders: `sessions/` under
+/// the data root (`~/.local/share/yolop/` on Linux,
+/// `~/Library/Application Support/yolop/` on macOS, `%APPDATA%\yolop\` on
+/// Windows), which `--data-dir` / `YOLOP_DATA_DIR` can point elsewhere (see
+/// `crate::config::paths`).
 ///
 /// Returns an error when the platform data dir can't be resolved — we
 /// intentionally do NOT fall back to the current working directory,
 /// because the cwd for yolop is usually the user's workspace and we
 /// don't want sensitive session logs landing in the repo.
 pub fn default_sessions_dir() -> Result<PathBuf> {
-    dirs::data_dir()
-        .map(|p| p.join("yolop").join("sessions"))
+    crate::config::paths::data_dir()
+        .map(|p| p.join("sessions"))
         .ok_or_else(|| {
             AgentLoopError::config(
                 "could not resolve a platform data directory for session logs; \
