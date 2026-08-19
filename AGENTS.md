@@ -37,7 +37,7 @@ its split-footer mode. See [Tuika](#tuika).
   repository secret.
 
   ```bash
-  doppler run -- cargo test --all-features
+  doppler run -- cargo test --features local-inference
   doppler run -- cargo run -- --provider openai -p "hi"
   ```
 
@@ -66,8 +66,8 @@ private rotating files under `<data_dir>/yolop/logs/` inside it.
 
 ```bash
 cargo fmt --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all-features
+cargo clippy --all-targets --features local-inference -- -D warnings
+cargo test --features local-inference
 python3 scripts/validate_okf.py knowledge --check-links   # when knowledge/ changed
 ```
 

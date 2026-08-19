@@ -45,7 +45,7 @@ request/result payload, keyed by method under `messages`, full types under
 yolop-yep --features schema --bin schema-gen` (the mira pattern). `schema.json`
 comes from `#[derive(schemars::JsonSchema)]` on the payload structs behind an
 optional `schema` feature, so the published SDK stays serde-only for authors.
-A `cargo test` drift guard (run under CI's `--all-features` coverage job) fails
+A `cargo test` drift guard (run under CI's `yolop-yep/schema` coverage job) fails
 if either committed file is stale, so the wire surface can't change without the
 artifacts changing. A non-Rust author reads them to discover and validate the
 wire format.
@@ -582,7 +582,7 @@ shape:
   `$defs`) and `meta.json` (protocol version, method list, capability
   tokens, event vocabularies). The directory is versioned by protocol
   **major**. CI runs the generator with `--check` (and the drift tests under
-  `--all-features`) so a wire change cannot merge without a matching schema
+  `yolop-yep/schema`) so a wire change cannot merge without a matching schema
   update.
   *Implemented shape:* rather than a root `anyOf` over the three envelopes
   (the envelope is field-classified, see `classify_line`, and its

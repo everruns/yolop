@@ -155,7 +155,7 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --all-targets --features local-inference -- -D warnings
 
   test:
     name: Build + Tests + Offline Smoke
@@ -211,7 +211,7 @@ jobs:
         # The live provider tests skip themselves here (no API keys and
         # YOLOP_REQUIRE_LIVE_TESTS unset); they run in the `live-smoke` job below.
         run: |
-          cargo llvm-cov --no-report --all-features --workspace
+          cargo llvm-cov --no-report --features local-inference,yolop-yep/schema --workspace
           cargo llvm-cov report --lcov --output-path lcov.info
           cargo llvm-cov report --summary-only
 

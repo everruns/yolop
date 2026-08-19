@@ -623,3 +623,13 @@ wording, formatting, and link fixes do not need entries.
   artifact exists.
 - Non-discoverable owner-private coordination locks preserve fail-fast
   simultaneous-open safety before the event log is materialized.
+
+## 2026-08-19, Local inference gains GPU backends
+
+- [Local inference](specs/local-inference.md) now defines `metal` and `cuda` as
+  first-class features implying `local-inference`, replacing the earlier claim
+  that accelerated backends were already opt-in; release binaries remain
+  CPU-only.
+- Repository checks run `--features local-inference` instead of
+  `--all-features`, which now fails to build on Linux because it enables both
+  accelerated backends.

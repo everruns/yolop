@@ -28,7 +28,7 @@ Also check `ratatui`, `crossterm`, `clap`, and `tokio` minors — they tend to
 ship breaking-feeling lint changes. Grep for direct dependencies no longer used
 in `src/`, and flag deprecated crates with a replacement.
 
-Evidence after a bump: `cargo test --all-features`, plus one real-provider
+Evidence after a bump: `cargo test --features local-inference`, plus one real-provider
 smoke (`doppler run -- cargo run -- --provider openai -p "hi"`).
 
 ## Upstream mirror
@@ -84,7 +84,7 @@ change — call it out in the PR.
 ## Test and runtime confidence
 
 ```bash
-cargo test --all-features
-doppler run -- cargo test --all-features --test integration
+cargo test --features local-inference
+doppler run -- cargo test --features local-inference --test integration
 cargo run -- --provider llmsim -p "hi"     # non-empty response, exit 0
 ```

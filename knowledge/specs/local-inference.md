@@ -101,8 +101,35 @@ is compiled out. Such a build reports the provider unusable so it stays out of
 automatic provider fallback, and fails loudly if selected explicitly, rather
 than silently disappearing from the picker.
 
-Accelerated backends (`metal`, `cuda`) do require vendor toolchains and stay
-opt-in on top of `local-inference`.
+## Acceleration
+
+The engine runs on **CPU** unless a GPU backend is compiled in, and the
+difference is not a detail: an 8B model on CPU is slow enough to read as "local
+models are useless" when the real finding is "this was never accelerated".
+Evaluating the experiment on an unaccelerated build measures the wrong thing.
+
+Two features turn a backend on. Each implies `local-inference`, and each needs a
+vendor toolchain the plain feature does not, which is why they are separate:
+
+```bash
+cargo build --release --features metal   # Apple Silicon; macOS only
+cargo build --release --features cuda    # NVIDIA; needs the CUDA toolkit
+```
+
+These two features are also why the repository checks say
+`--features local-inference` rather than `--all-features`. `--all-features`
+enables both, and on a Linux CI runner both fail before a single test runs:
+`cuda` pulls `cudarc`, whose build script panics when `nvcc` is absent, and
+`metal` pulls `objc2`, which refuses to
+compile off Apple platforms. Cargo cannot exclude a feature from
+`--all-features`, so the list is spelled out instead; the workspace coverage run
+adds `yolop-yep/schema` to keep the YEP drift guard in the same job.
+
+**The release binaries are built with `local-inference` alone, so they are
+CPU-only** ([`cli-binaries.yml`](../../.github/workflows/cli-binaries.yml)).
+A Homebrew install therefore runs local models on the CPU; accelerating the
+shipped macOS binaries is a separate decision, not something the feature flag
+settles.
 
 ## The model store
 

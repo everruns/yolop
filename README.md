@@ -239,6 +239,14 @@ yolop --features local-inference`, which is much slower to compile. How well a
 local model actually drives the agent loop is the open question this is here to
 answer.
 
+Those builds run on the CPU. GPU acceleration needs a vendor toolchain, so it is
+a separate feature that implies `local-inference`:
+
+```bash
+cargo install yolop --features metal   # macOS
+cargo install yolop --features cuda    # NVIDIA, needs the CUDA toolkit
+```
+
 ### Git attribution
 
 On by default. When yolop creates commits it keeps your git identity and appends
