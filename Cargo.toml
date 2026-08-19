@@ -226,3 +226,21 @@ vt100 = "0.16"
 lto = "thin"
 codegen-units = 1
 strip = "debuginfo"
+
+# Full DWARF dominated `target/`: a clean `cargo build --tests` left 6.3 GB
+# behind (3.7 GB now), two of yolop's own test binaries accounting for 839 MB
+# of it. Line tables are what a backtrace actually reads, and backtraces plus
+# `RUST_LOG` are how this codebase is debugged; a debugger that needs variable
+# inspection gets it from `cargo build --profile dev-debuginfo`. Build scripts
+# and proc macros keep nothing, since nobody steps into those at all.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.build-override]
+debug = false
+
+# Opt back in to full DWARF for a debugger session, without making every other
+# build pay for it.
+[profile.dev-debuginfo]
+inherits = "dev"
+debug = true

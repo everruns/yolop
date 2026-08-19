@@ -216,7 +216,7 @@ impl HooksStore {
 }
 
 pub fn global_hooks_config_path() -> Option<PathBuf> {
-    dirs::config_dir().map(|p| p.join("yolop").join(GLOBAL_HOOKS_FILE_NAME))
+    crate::config::paths::config_dir().map(|p| p.join(GLOBAL_HOOKS_FILE_NAME))
 }
 
 pub fn global_hooks_config_path_beside_settings(settings: &SettingsStore) -> PathBuf {

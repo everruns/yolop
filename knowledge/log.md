@@ -1,5 +1,30 @@
 # Knowledge Log
 
+## 2026-08-19, Debug target size: one feature set, thin dependency debuginfo
+
+- The routine checks ran `--all-features` while `cargo build`/`cargo run` ran
+  the default set. Two feature sets in one `target/` are two graphs: 248 crates
+  were compiled under both, and a directory carrying both reached 16 GB.
+- [Local inference](specs/local-inference.md): records the debug-build cost the
+  release table did not cover, and that no test is gated on `local-inference`,
+  so running the suite with the engine on adds ~220 crates for no coverage.
+- Routine commands now share `--features yolop-yep/schema`, which resolves to
+  the same 519 crates as a default build.
+- They also gained `--workspace`. Root `cargo test` covers the root package
+  only, so the wire-schema drift guard in `yolop-yep` had never run outside
+  CI's coverage job; the root commands now match what AGENTS.md claims of
+  them, and run 1273 tests instead of 70.
+- CI's `lint`, `test`, and `live-smoke` jobs share the `debug` cache and now
+  agree on that set; `local-inference` became a clippy-only gate with its own
+  cache key.
+- `[profile.dev]` carries line tables instead of full DWARF, and build scripts
+  carry none. Backtraces keep file and line, which with `RUST_LOG` is how this
+  codebase is debugged; `--profile dev-debuginfo` opts back in to full DWARF
+  for a debugger session.
+- Together: a clean `cargo build --tests --workspace` went from 6.3 GB to
+  3.7 GB, dependency rlibs from 2136 MiB to 1238 MiB, and the mixed-feature
+  directory no longer happens at all.
+
 ## 2026-08-18, Session coordination uses attached CLI actions
 
 - [Session coordination](specs/session-coordination.md): removed its four
@@ -89,6 +114,21 @@ wording, formatting, and link fixes do not need entries.
 - Seeded enabled extensions at the session layer so attached disable is
   reversible; detached operations remain global and reload requires a live
   session.
+
+## 2026-08-18, Global directories are relocatable
+
+- [Configuration](specs/configuration.md) now names two roots, config and data,
+  and both move with `--config-dir` / `--data-dir` or `YOLOP_CONFIG_DIR` /
+  `YOLOP_DATA_DIR`. `src/config/paths.rs` owns the resolution; every global path
+  joins a leaf onto one of those roots instead of calling `dirs` itself.
+- The reason for the change: isolating a run, or keeping several yolop
+  identities side by side, previously meant moving `HOME`, which drags along
+  everything else the process reads. An override names yolop's own directory, so
+  no second `yolop` folder is appended to it.
+- The flags are read from argv as the process's first act, not from clap
+  matches: the crash reporter and the contributed-CLI registry both resolve
+  paths before parsing finishes, so matches arrive too late to cover them.
+  Other applications' directories are never redirected.
 
 ## 2026-08-18, Loopback setup page for ACP clients (experimental)
 
@@ -630,8 +670,13 @@ wording, formatting, and link fixes do not need entries.
   first-class features implying `local-inference`, replacing the earlier claim
   that accelerated backends were already opt-in; release binaries remain
   CPU-only.
-- Repository checks run `--features local-inference` instead of
-  `--all-features`, which now fails to build on Linux because it enables both
-  accelerated backends.
+- `--all-features` is now unusable on Linux at all, since it turns on both
+  accelerated backends; every check names the features it wants.
 - A macOS job compiles `metal` for both release targets so the accelerated
   backend cannot bitrot unnoticed; `cuda` has no runner and stays unbuilt.
+- The engine's own CI job runs the ten feature-gated tests, which the coverage
+  job cannot see because it never enables the feature.
+- The default local model is a pre-quantized MoE GGUF. A default must be GGUF
+  rather than safetensors, and its chat template must emit JSON tool calls
+  inside `<tool_call>`; the engine cannot parse the `<function=…>` XML variant,
+  which disqualifies Qwen3-Coder.

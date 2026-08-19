@@ -582,8 +582,8 @@ shape:
   `$defs`) and `meta.json` (protocol version, method list, capability
   tokens, event vocabularies). The directory is versioned by protocol
   **major**. CI runs the generator with `--check` (and the drift tests under
-  `yolop-yep/schema`) so a wire change cannot merge without a matching schema
-  update.
+  `--features yolop-yep/schema`) so a wire change cannot merge without a
+  matching schema update.
   *Implemented shape:* rather than a root `anyOf` over the three envelopes
   (the envelope is field-classified, see `classify_line`, and its
   direction vocabulary already lives in `meta.json`), `schema.json` keys

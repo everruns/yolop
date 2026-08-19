@@ -28,7 +28,7 @@ pub const GGUF_SEPARATOR: &str = "::";
 
 /// Root of the model store, or `None` when the platform has no data directory.
 pub fn store_root() -> Option<PathBuf> {
-    dirs::data_dir().map(|dir| dir.join("yolop").join("models"))
+    crate::config::paths::data_dir().map(|dir| dir.join("models"))
 }
 
 /// Split a model spec into its repo and, for GGUF specs, the file within it.

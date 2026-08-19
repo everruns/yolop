@@ -126,7 +126,7 @@ Before tagging a release:
 
 - the `everruns-*` family is on the latest released minor
 - `cargo build --release` succeeds and the resulting binary starts (`./target/release/yolop --help`)
-- `cargo test --features local-inference` is green
+- `cargo test --workspace --features yolop-yep/schema` is green
 - the live-provider integration test passes under Doppler
 - the README's feature list, flag table, and provider env-var table match the source
 

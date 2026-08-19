@@ -191,7 +191,7 @@ impl PromptHistory {
 /// the per-session logs. Mirrors [`crate::runtime::session_log::default_sessions_dir`]'s
 /// use of the platform data dir.
 fn default_history_path() -> Option<PathBuf> {
-    dirs::data_dir().map(|p| p.join("yolop").join("prompt_history.jsonl"))
+    crate::config::paths::data_dir().map(|p| p.join("prompt_history.jsonl"))
 }
 
 /// Read `{"text": "..."}` lines from the log, skipping blank or malformed lines.

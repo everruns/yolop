@@ -1,6 +1,8 @@
 # Rust
 /target/
 **/target/
+# Separate target dir for the `local-inference` engine build (see AGENTS.md).
+/target-local-inference/
 **/*.rs.bk
 Cargo.lock.bak
 

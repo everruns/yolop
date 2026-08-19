@@ -72,6 +72,20 @@ probe lockfile against this one.
 | Release tarball (`.tar.gz`) | 27.8 MiB | not measured | — |
 | Native-toolchain deps | none | none | — |
 
+Debug builds pay a separate, larger price. `mistralrs-core` alone links an
+844 MiB debug rlib, and because a feature set defines a whole graph, a `target/`
+holding both the routine set and `--all-features` compiled 248 crates twice and
+reached 16 GB.
+
+So the routine commands stay on `--features yolop-yep/schema`, which resolves to
+the same 519 crates as a default build, and the engine gets one job of its own
+with its own cache ([`ci.yml`](../../.github/workflows/ci.yml)). That job both
+lints and tests: ten tests are behind the feature (the driver's tool-call
+conversion, the downloader's progress accounting), and they are invisible to the
+coverage job because it never enables the feature. Running them there is nearly
+free, since linting `--all-targets` has already compiled them. Locally, use a
+separate `CARGO_TARGET_DIR` when you need the engine compiled.
+
 Absolute times are machine-specific; the ratios are the durable part.
 [`local-inference-cost.yml`](../../.github/workflows/local-inference-cost.yml)
 reproduces this on a runner.
@@ -125,14 +139,12 @@ cargo build --release --features metal   # Apple Silicon; macOS only
 cargo build --release --features cuda    # NVIDIA; needs the CUDA toolkit
 ```
 
-These two features are also why the repository checks say
-`--features local-inference` rather than `--all-features`. `--all-features`
-enables both, and on a Linux CI runner both fail before a single test runs:
-`cuda` pulls `cudarc`, whose build script panics when `nvcc` is absent, and
-`metal` pulls `objc2`, which refuses to
-compile off Apple platforms. Cargo cannot exclude a feature from
-`--all-features`, so the list is spelled out instead; the workspace coverage run
-adds `yolop-yep/schema` to keep the YEP drift guard in the same job.
+Their existence is a second reason no check can use `--all-features`, on top of
+the build-cost one above: `--all-features` turns both on, and on a Linux runner
+both fail outright. `cuda` pulls `cudarc`, whose build script panics when `nvcc`
+is absent; `metal` pulls `objc2`, which refuses to compile off Apple platforms.
+Cargo cannot exclude a feature from `--all-features`, so every check names the
+features it wants.
 
 `metal` is compiled for both macOS release targets by
 [`metal-build-check.yml`](../../.github/workflows/metal-build-check.yml), on
