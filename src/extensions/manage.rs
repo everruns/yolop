@@ -822,6 +822,7 @@ impl ManageTool {
                 // session to mutate (the TUI). The App answers on `ui_rx` by
                 // calling activate/deactivate_capability, so the extension's
                 // tools/prompt/hooks land on the next turn — no restart.
+                let mut needs_restart = false;
                 let live = if let Some(tx) = &self.ctx.ui_tx {
                     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
                     if tx
@@ -842,17 +843,24 @@ impl ManageTool {
                         // request from being reported as live when activation
                         // actually failed (for example, a package installed
                         // after this session registered its manifests).
-                        tokio::time::timeout(std::time::Duration::from_secs(10), reply_rx)
-                            .await
-                            .ok()
-                            .and_then(Result::ok)
-                            .is_some_and(|messages| {
-                                messages.is_empty()
-                                    || messages.iter().any(|message| {
-                                        message.contains("for this session")
-                                            && message.contains("effective on the next turn")
-                                    })
+                        let messages =
+                            tokio::time::timeout(std::time::Duration::from_secs(10), reply_rx)
+                                .await
+                                .ok()
+                                .and_then(Result::ok);
+                        needs_restart = messages.as_ref().is_some_and(|messages| {
+                            messages.iter().any(|message| {
+                                message
+                                    .contains(crate::tui::host_ui::EXTENSION_INSTALLED_MID_SESSION)
                             })
+                        });
+                        messages.is_some_and(|messages| {
+                            messages.is_empty()
+                                || messages.iter().any(|message| {
+                                    message.contains("for this session")
+                                        && message.contains("effective on the next turn")
+                                })
+                        })
                     }
                 } else {
                     false
@@ -860,6 +868,13 @@ impl ManageTool {
                 let note = if live {
                     "Applying to the running session now; effective on the next turn (and \
                      persisted for future sessions)."
+                } else if needs_restart {
+                    // The package reached disk after this session composed its
+                    // capability registry, so there is nothing to activate here.
+                    // Do not tell the agent to keep trying in this session.
+                    "Enabled and persisted, but this extension was installed after the session \
+                     started, so the running session has no server for it. It works after a \
+                     yolop restart; enabling again in this session will not change that."
                 } else {
                     "Takes effect on the next session."
                 };
@@ -1223,7 +1238,9 @@ impl Tool for ManageTool {
             Verb::Enable => {
                 "Enable an installed extension (adds `ext:<name>` to the harness). In the TUI it \
                  is also applied to the running session immediately — its tools/prompt/hooks are \
-                 live on the next turn — and persisted for future sessions."
+                 live on the next turn — and persisted for future sessions. An extension \
+                 installed during this session is the exception: the session's capability set is \
+                 composed at startup, so that one needs a yolop restart, and the result says so."
             }
             Verb::Disable => {
                 "Disable an extension without uninstalling it. Applied to the running session \
@@ -1799,6 +1816,70 @@ mod tests {
             ToolExecutionResult::ToolError(m) => assert!(m.contains("not enabled"), "{m}"),
             other => panic!("{other:?}"),
         }
+    }
+
+    /// An extension installed mid-session cannot activate: the runtime composes
+    /// its capability registry at startup, so `activate_capability` reports an
+    /// unknown id. The result must name that, not "takes effect on the next
+    /// session", which invites the agent to keep enabling in this one.
+    #[tokio::test]
+    async fn enable_reports_a_restart_when_the_package_arrived_mid_session() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        seed_package(&src, "echo");
+        let ext_dir = tmp.path().join("extensions");
+        let settings = Arc::new(SettingsStore::open(tmp.path().join("settings.toml")));
+        let (ui_tx, mut ui_rx) = tokio::sync::mpsc::unbounded_channel::<UiRequest>();
+        let cap = ExtensionsCapability {
+            extensions_dir: ext_dir,
+            workspace_root: tmp.path().to_path_buf(),
+            settings,
+            git: Arc::new(crate::extensions::store::SystemGit),
+            crates: Arc::new(crate::extensions::store::SystemCrateFetcher::default()),
+            live_processes: LiveProcessRegistry::default(),
+            ui_tx: Some(ui_tx),
+            secrets: None,
+            ask_sink: None,
+        };
+        let tools = cap.management_tools();
+        let get = |name: &str| tools.iter().find(|t| t.name() == name).unwrap();
+        get("install_extension")
+            .execute(json!({ "source": src.to_str().unwrap() }))
+            .await;
+
+        // Stand in for the App answering an activation it cannot perform.
+        let ui = tokio::spawn(async move {
+            let request = ui_rx.recv().await.unwrap();
+            request
+                .reply
+                .unwrap()
+                .send(vec![format!(
+                    "extension `echo` is enabled for future sessions, but it was {}, so this \
+                     session has no server for it. Restart yolop to use it now.",
+                    crate::tui::host_ui::EXTENSION_INSTALLED_MID_SESSION
+                )])
+                .unwrap();
+        });
+
+        let result = get("enable_extension")
+            .execute(json!({ "name": "echo" }))
+            .await;
+        ui.await.unwrap();
+
+        let ToolExecutionResult::Success(value) = result else {
+            panic!("enable should still persist");
+        };
+        assert_eq!(value["live"], json!(false));
+        let note = value["note"].as_str().expect("note");
+        assert!(
+            note.contains("installed after the session started"),
+            "{note}"
+        );
+        assert!(note.contains("restart"), "{note}");
+        assert!(
+            !note.contains("Takes effect on the next session"),
+            "the next-session wording hides that a restart is required: {note}"
+        );
     }
 
     #[tokio::test]

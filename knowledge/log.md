@@ -24,6 +24,18 @@
 - Together: a clean `cargo build --tests --workspace` went from 6.3 GB to
   3.7 GB, dependency rlibs from 2136 MiB to 1238 MiB, and the mixed-feature
   directory no longer happens at all.
+## 2026-08-18, Mid-session installs report a restart, not a mystery
+
+- [Extensions](specs/extensions.md): enabling an extension installed during the
+  session surfaced the engine's "unknown capability: ext:<name>" plus "will load
+  on the next session". Both the transcript and the `enable_extension` result now
+  say the package arrived after startup and needs a restart.
+- Registering a newly installed package into the live runtime is blocked
+  upstream: `everruns-host` composes the capability registry once and offers no
+  dynamic registration, and yolop holds the runtime as a shared `Arc`.
+- Enabling with a cancelled required prompt no longer reports a bare success; the
+  result names the unset fields.
+
 ## 2026-08-18, Eager bash schema, deferred LSP schemas
 
 - [`tool_search`](specs/tool-search.md): `bash` joins the never-defer allowlist.
