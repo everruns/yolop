@@ -43,6 +43,43 @@ fn yolop_binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_yolop"))
 }
 
+/// `models pull` must reach the download without panicking.
+///
+/// 0.16.0 shipped a `Runtime::new().block_on(..)` inside the pull, which is
+/// reached from `#[tokio::main]` and therefore panicked with "Cannot start a
+/// runtime from within a runtime" before fetching a byte — the command could
+/// never have worked. The unit tests missed it because they exercised the
+/// pieces, not the command, and a spec that is already installed returns before
+/// the download; only a spec that actually attempts a fetch reproduces it.
+///
+/// The spec below is deliberately unresolvable, so the command must *fail* —
+/// with or without the engine compiled in, and with or without network. What is
+/// asserted is only that it fails cleanly rather than panicking.
+#[test]
+fn models_pull_reaches_the_download_without_a_nested_runtime() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let output = Command::new(yolop_binary())
+        .args([
+            "models",
+            "pull",
+            "yolop-test/definitely-not-a-real-repo-2b9f1c",
+        ])
+        .env("HOME", tmp.path())
+        .env("XDG_DATA_HOME", tmp.path().join("data"))
+        .output()
+        .expect("run yolop models pull");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("Cannot start a runtime from within a runtime"),
+        "models pull built a nested runtime: {stderr}"
+    );
+    assert!(
+        !stderr.contains("panicked at"),
+        "models pull panicked instead of failing cleanly: {stderr}"
+    );
+}
+
 #[test]
 fn coordination_cli_lists_workers_without_model_startup() {
     let tmp = tempfile::tempdir().expect("tempdir");
