@@ -106,7 +106,8 @@ struct Cli {
     #[arg(long, value_enum)]
     provider: Option<ProviderArg>,
 
-    /// Load a named profile from `<config_dir>/yolop/profiles/<name>.toml`: an
+    /// Load a named profile from `profiles/<name>.toml` under the config
+    /// directory (see `--config-dir`): an
     /// overlay of provider, model, approval, sandbox, and worktree settings plus
     /// the profile's own capabilities, extensions, MCP servers, skills, and
     /// system-prompt instructions.
@@ -143,6 +144,20 @@ struct Cli {
     /// external agent. Builds one runtime per ACP session (cwd comes from the
     /// client); the `-C/--cwd`, `--print`, and `--session` flags are
     /// ignored in this mode. See `knowledge/specs/acp.md`.
+    /// Directory holding yolop's global configuration (settings, profiles,
+    /// hooks, installed extensions). Defaults to `yolop` inside the platform
+    /// config directory; `YOLOP_CONFIG_DIR` sets it for a whole shell. Point
+    /// both this and `--data-dir` somewhere private to run an isolated yolop
+    /// identity without moving `HOME`.
+    #[arg(long = "config-dir", value_name = "PATH", global = true)]
+    config_dir: Option<PathBuf>,
+
+    /// Directory holding yolop's global data (sessions, logs, models, prompt
+    /// history). Defaults to `yolop` inside the platform data directory;
+    /// `YOLOP_DATA_DIR` sets it for a whole shell.
+    #[arg(long = "data-dir", value_name = "PATH", global = true)]
+    data_dir: Option<PathBuf>,
+
     #[arg(long, conflicts_with = "print")]
     acp: bool,
 
@@ -600,6 +615,11 @@ fn pick_provider(cli: &Cli, settings: &SettingsStore) -> (ProviderChoice, Vec<St
 }
 
 fn main() -> Result<()> {
+    // First: the crash reporter below, and the CLI registry that builds the
+    // command line, both resolve global paths, so the directory overrides have
+    // to be known before either runs.
+    config::paths::init_from_args(std::env::args_os());
+
     // Windows caps the main-thread stack at 1 MiB. The entry future (settings
     // load → runtime build → TUI/print loop) is large enough to overflow that,
     // though it fits comfortably in the 8 MiB default Linux and macOS give the
@@ -830,11 +850,11 @@ fn trace_writer(interactive: bool) -> BoxMakeWriter {
     if !interactive {
         return BoxMakeWriter::new(io::stderr);
     }
-    let Some(data_dir) = dirs::data_dir() else {
+    let Some(data_dir) = config::paths::data_dir() else {
         eprintln!("yolop: no platform data dir resolvable — interactive tracing is disabled");
         return BoxMakeWriter::new(io::sink);
     };
-    let trace_dir = data_dir.join("yolop").join("logs");
+    let trace_dir = data_dir.join("logs");
     match open_interactive_trace_log(&trace_dir) {
         Ok((file, _path)) => BoxMakeWriter::new(Mutex::new(BoundedTraceWriter::new(
             file,
@@ -2430,6 +2450,8 @@ mod tests {
             print: None,
             images: vec![],
             acp: false,
+            config_dir: None,
+            data_dir: None,
             acp_setup_page: false,
             session: None,
             session_dir: None,
@@ -2521,6 +2543,8 @@ mod tests {
             print: None,
             images: vec![],
             acp: false,
+            config_dir: None,
+            data_dir: None,
             acp_setup_page: false,
             session: None,
             session_dir: None,

@@ -90,6 +90,21 @@ wording, formatting, and link fixes do not need entries.
   reversible; detached operations remain global and reload requires a live
   session.
 
+## 2026-08-18, Global directories are relocatable
+
+- [Configuration](specs/configuration.md) now names two roots, config and data,
+  and both move with `--config-dir` / `--data-dir` or `YOLOP_CONFIG_DIR` /
+  `YOLOP_DATA_DIR`. `src/config/paths.rs` owns the resolution; every global path
+  joins a leaf onto one of those roots instead of calling `dirs` itself.
+- The reason for the change: isolating a run, or keeping several yolop
+  identities side by side, previously meant moving `HOME`, which drags along
+  everything else the process reads. An override names yolop's own directory, so
+  no second `yolop` folder is appended to it.
+- The flags are read from argv as the process's first act, not from clap
+  matches: the crash reporter and the contributed-CLI registry both resolve
+  paths before parsing finishes, so matches arrive too late to cover them.
+  Other applications' directories are never redirected.
+
 ## 2026-08-18, Loopback setup page for ACP clients (experimental)
 
 - [ACP](specs/acp.md) gained an opt-in `local_setup_page` authentication method:

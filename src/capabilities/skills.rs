@@ -231,7 +231,7 @@ pub fn global_skills_dir() -> Option<PathBuf> {
 pub fn legacy_global_skills_dir() -> Option<PathBuf> {
     Some(match std::env::var(LEGACY_GLOBAL_SKILLS_DIR_ENV) {
         Ok(value) if !value.is_empty() => PathBuf::from(value),
-        _ => dirs::config_dir()?.join("yolop").join("skills"),
+        _ => crate::config::paths::config_dir()?.join("skills"),
     })
 }
 
@@ -292,7 +292,7 @@ pub fn system_skills_dir() -> Option<PathBuf> {
         return None;
     }
 
-    let dest = dirs::data_dir()?.join("yolop").join("system-skills");
+    let dest = crate::config::paths::data_dir()?.join("system-skills");
     match materialize_system_skills(&dest) {
         Ok(()) => Some(dest),
         Err(e) => {

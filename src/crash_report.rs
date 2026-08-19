@@ -95,7 +95,7 @@ fn crash_report_dir() -> Option<PathBuf> {
     if let Some(path) = std::env::var_os("YOLOP_TEST_CRASH_DIR") {
         return Some(PathBuf::from(path));
     }
-    dirs::data_dir().map(|dir| dir.join("yolop").join("crashes"))
+    crate::config::paths::data_dir().map(|dir| dir.join("crashes"))
 }
 
 fn prepare_crash_dir(dir: &Path) -> bool {

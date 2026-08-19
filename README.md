@@ -381,6 +381,8 @@ act of consent. MCP tools run autonomously like the rest of yolop's tools.
 | `--acp`                    | Speak the Agent Client Protocol over stdio (for editors like Zed)    |
 | `--session <ID>`           | Resume a previous session by id                                      |
 | `--session-dir <PATH>`     | Override the parent directory for session folders                    |
+| `--config-dir <PATH>`      | Override the global config directory (settings, profiles, extensions) |
+| `--data-dir <PATH>`        | Override the global data directory (sessions, logs, models)          |
 | `--sandbox`                | One-run `workspace-write` containment without changing settings      |
 | `--reasoning-effort <E>`   | Reasoning effort override when the model profile supports it          |
 | `--trajectory-out <PATH>`  | Write the session as an [ATIF](https://github.com/harbor-framework/harbor/blob/main/rfcs/0001-trajectory-format.md) v1.7 trajectory JSON at end of run |
@@ -433,6 +435,17 @@ update the active provider, keys, model, and reasoning effort, and yolop can rea
 and edit the file itself through the `get_config` / `set_config` tools or the
 `yolop-config` skill (e.g. "use anthropic by default", "store my OpenAI key").
 Unknown keys are ignored, so the format stays forward-compatible.
+
+Both global directories can be moved: `--config-dir <PATH>` (settings, profiles,
+hooks, extensions) and `--data-dir <PATH>` (sessions, logs, models, prompt
+history), or `YOLOP_CONFIG_DIR` / `YOLOP_DATA_DIR` for a whole shell. Point both
+somewhere private to run isolated or side-by-side yolop identities without
+moving `HOME` (global skills stay in the cross-agent `~/.agents/skills`, which
+`YOLOP_GLOBAL_SKILLS_DIR` moves separately):
+
+```bash
+yolop --config-dir ~/agents/triage/config --data-dir ~/agents/triage/data
+```
 
 Named profiles are sparse execution overlays stored under
 `<config_dir>/yolop/profiles/<name>.toml` and selected explicitly with

@@ -15,6 +15,7 @@
 pub mod capability_settings;
 pub mod hooks;
 pub mod mcp;
+pub mod paths;
 pub mod profile;
 pub mod schema;
 pub mod service;
@@ -590,7 +591,7 @@ fn codex_auth_to_table(auth: &CodexAuth) -> Table {
 }
 
 pub fn default_settings_path() -> Option<PathBuf> {
-    dirs::config_dir().map(|p| p.join("yolop").join("settings.toml"))
+    paths::config_dir().map(|p| p.join("settings.toml"))
 }
 
 pub fn load_from(path: &Path) -> Settings {

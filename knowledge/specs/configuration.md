@@ -68,10 +68,38 @@ generic compatible endpoint. It reads `MODEL_API_KEY`, defaults to
 `muse-spark-1.2`, and exposes both the standard and
 `muse-spark-1.2-contributor` published profiles.
 
+### Where the global directories live
+
+Every global path derives from one of two roots, both owned by
+`src/config/paths.rs`:
+
+| Root   | Default                     | Holds                                                        |
+|--------|-----------------------------|--------------------------------------------------------------|
+| config | `<config_dir>/yolop/`       | `settings.toml`, `profiles/`, `hooks.json`, `extensions/`     |
+| data   | `<data_dir>/yolop/`         | `sessions/`, `logs/`, `models/`, `prompt_history.jsonl`, materialized system skills, `crashes/` |
+
+`<config_dir>` and `<data_dir>` are the platform directories (`~/.config` and
+`~/.local/share` on Linux, `~/Library/Application Support` on macOS, `%APPDATA%`
+on Windows). Either root can be moved with `--config-dir` / `--data-dir` or
+`YOLOP_CONFIG_DIR` / `YOLOP_DATA_DIR`, flag first, then environment, then the
+platform default. An override names yolop's directory itself rather than a
+prefix, so nothing appends a second `yolop` folder to it, and a relative
+override resolves against the startup working directory because turns may run
+from a worktree elsewhere.
+
+This is what lets several yolop identities run side by side, and lets a test
+run touch nothing real, without moving `HOME`. Because the crash reporter and
+the contributed-CLI registry both resolve paths before the command line is
+parsed, the flags are read straight from argv as the process's first act rather
+than from clap matches, so no global path escapes them. Directories belonging to
+other applications are never redirected, and neither is the cross-agent
+`~/.agents/skills` convention, which is shared with other agents on purpose and
+has its own `YOLOP_GLOBAL_SKILLS_DIR` override for anyone who wants it moved
+too.
+
 ### Named execution profiles
 
-`--profile <name>` loads
-`<config_dir>/yolop/profiles/<name>.toml`. Profile selection is explicit for
+`--profile <name>` loads `profiles/<name>.toml` under the config root. Profile selection is explicit for
 each process; it is never persisted and has no environment-variable selector.
 Names contain 1–64 lowercase ASCII letters, numbers, hyphens, or underscores,
 start with a letter or number, and are validated before constructing the path.

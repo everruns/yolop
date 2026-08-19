@@ -435,7 +435,7 @@ pub fn extensions_dir() -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os("YOLOP_EXTENSIONS_DIR") {
         return Some(PathBuf::from(dir));
     }
-    dirs::config_dir().map(|p| p.join("yolop").join("extensions"))
+    crate::config::paths::config_dir().map(|p| p.join("extensions"))
 }
 
 /// Discover installed packages. Malformed packages warn and are skipped;
