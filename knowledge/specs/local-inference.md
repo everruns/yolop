@@ -63,10 +63,10 @@ probe lockfile against this one.
 | Release tarball (`.tar.gz`) | 27.8 MiB | not measured | — |
 | Native-toolchain deps | none | none | — |
 
-Debug builds pay a separate, larger price. `cargo build --tests` leaves a 5.0 GB
-`target/`; adding `--all-features` on top of it takes that to 16 GB, because the
-two feature sets are different graphs and 248 crates get compiled under both.
-`mistralrs-core` alone links an 844 MiB debug rlib.
+Debug builds pay a separate, larger price. `mistralrs-core` alone links an
+844 MiB debug rlib, and because a feature set defines a whole graph, a `target/`
+holding both the routine set and `--all-features` compiled 248 crates twice and
+reached 16 GB.
 
 No test is gated on `local-inference`, so running the suite with the feature on
 buys no coverage for that cost. CI gates it with clippy in a job holding its own

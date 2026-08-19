@@ -62,6 +62,10 @@ its split-footer mode. See [Tuika](#tuika).
 `RUST_LOG` is honored for the tracing layer: stderr outside the interactive TUI,
 private rotating files under `<data_dir>/yolop/logs/` inside it.
 
+The `dev` profile carries line tables, not full DWARF, so backtraces keep
+file and line while `target/` stays a few gigabytes smaller. A debugger that
+needs variable inspection wants `cargo build --profile dev-debuginfo`.
+
 ## Checks
 
 `--features yolop-yep/schema`, not `--all-features`: the schema feature resolves

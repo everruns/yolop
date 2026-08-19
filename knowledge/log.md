@@ -17,9 +17,13 @@
 - CI's `lint`, `test`, and `live-smoke` jobs share the `debug` cache and now
   agree on that set; `local-inference` became a clippy-only gate with its own
   cache key.
-- `[profile.dev.package."*"]` drops dependency debuginfo to line tables and
-  build scripts lose it entirely. A clean `cargo build --tests` went 6.3 GB to
-  5.0 GB, with dependency rlibs down from 2136 MiB to 1227 MiB.
+- `[profile.dev]` carries line tables instead of full DWARF, and build scripts
+  carry none. Backtraces keep file and line, which with `RUST_LOG` is how this
+  codebase is debugged; `--profile dev-debuginfo` opts back in to full DWARF
+  for a debugger session.
+- Together: a clean `cargo build --tests --workspace` went from 6.3 GB to
+  3.7 GB, dependency rlibs from 2136 MiB to 1238 MiB, and the mixed-feature
+  directory no longer happens at all.
 
 ## 2026-08-18, Session coordination uses attached CLI actions
 
