@@ -222,8 +222,18 @@ tempfile = "3"
 tiny_http = "0.12"
 vt100 = "0.16"
 
+# Yolop ships as one binary, and users pay for its size on every tarball
+# download, `cargo install`, and cold start. Measured on x86_64 Linux with
+# default features: thin LTO at opt-level 3 gave 89.8 MB (24.6 MB gzipped) in
+# 6m47, fat LTO with opt-level "s" 70.2 MB (17.9 MB gzipped) in 7m06. Keeping
+# opt-level 3 under fat LTO recovered only a third of those bytes and cost half
+# again as much build time, so size wins the trade twice over. `knowledge/specs/maintenance.md` owns the surface,
+# including the two levers that stay rejected: `panic = "abort"` breaks the
+# crash path in `join_worker`, and `strip = "symbols"` leaves crash-report
+# backtraces as `<unknown>` because a release build has no debug info left.
 [profile.release]
-lto = "thin"
+lto = "fat"
+opt-level = "s"
 codegen-units = 1
 strip = "debuginfo"
 

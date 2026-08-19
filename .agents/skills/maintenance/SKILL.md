@@ -22,7 +22,8 @@ Use the scope the user gave; otherwise state the one you inferred before
 starting. Typical scopes: release readiness, CI health on `main`, `everruns-*`
 dependency refresh, knowledge or docs drift, feature-completeness drift across
 CLI / TUI / knowledge / README / tests, test gaps, code simplification, security
-hygiene, performance of recently changed code, AGENTS / skills / command hygiene.
+hygiene, performance of recently changed code, binary size, AGENTS / skills /
+command hygiene.
 
 ## Working a pass
 

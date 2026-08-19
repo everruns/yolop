@@ -86,6 +86,11 @@ coverage job because it never enables the feature. Running them there is nearly
 free, since linting `--all-targets` has already compiled them. Locally, use a
 separate `CARGO_TARGET_DIR` when you need the engine compiled.
 
+These rows predate the size-optimized release profile (fat LTO at
+`opt-level = "s"`). On the same container that profile took a default binary
+from 92.8 MB to 71.8 MB, and the engine delta has not been re-measured under it,
+so re-run the workflow before quoting either column.
+
 Absolute times are machine-specific; the ratios are the durable part.
 [`local-inference-cost.yml`](../../.github/workflows/local-inference-cost.yml)
 reproduces this on a runner.

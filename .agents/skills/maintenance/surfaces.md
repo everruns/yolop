@@ -73,6 +73,31 @@ build`, `cargo clippy`, and `cargo test`: a simplification that changes behavior
 is a bug. Removing a public item from `yolop-yep` is a breaking
 change — call it out in the PR.
 
+## Binary size
+
+```bash
+cargo install cargo-bsize             # once
+cargo bsize --bin yolop --limit 25    # full attribution report
+cargo bsize --bin yolop --baseline target/release/yolop   # what grew since a kept build
+ls -l target/release/yolop            # the number users actually download
+```
+
+`cargo bsize` builds into its own `target/bsize` profile, so it neither reuses
+nor clobbers `target/release`; expect a full release-grade build the first time.
+Attribute before proposing: the report's dependency, feature, and generic-family
+tables say whether a growth came from a bump, a feature that unified on, or
+yolop's own code.
+
+To measure a profile lever without editing `Cargo.toml`:
+
+```bash
+cargo build --release --config 'profile.release.opt-level="s"'
+```
+
+[`knowledge/specs/maintenance.md`](../../../knowledge/specs/maintenance.md#binary-size)
+owns which levers are rejected and why; the live profile's rationale is in the
+`Cargo.toml` comment beside it.
+
 ## Security posture
 
 - the write blocklist in `runtime.rs` still covers `.git/`, `node_modules/`,
