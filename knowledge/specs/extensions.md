@@ -230,6 +230,9 @@ Later, the full `yolop-extension-lsp` control-plane extraction (gated on
 `evals/lsp_integration` parity to retire the built-in),
 `workspace/changed`,
 providers, remain design-of-record below.
+`remove` is also spelled `uninstall`: it is the natural opposite of `install`,
+and without the alias clap rejected it and suggested `install` itself.
+
 Toolchain-free crates.io install is now wired: `yolop extensions install
 crates.io:yolop-extension-<name>[@ver]` (or the bare-`<name>`
 shorthand) resolves the version through the crates.io **sparse index**

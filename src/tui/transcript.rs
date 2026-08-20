@@ -704,16 +704,23 @@ pub fn summarize_tool_result(data: &ToolCompletedData) -> String {
             format!("{path} ({size} bytes)")
         }
         "bash" => {
-            let cmd = v
-                .get("command")
-                .and_then(Value::as_str)
-                .map(|c| first_line(c, 80))
-                .unwrap_or_default();
             let code = v
                 .get("exit_code")
                 .and_then(Value::as_i64)
                 .map(|c| c.to_string())
                 .unwrap_or_else(|| "?".into());
+            // The line reads "{label}  {summary}", and the shell narration is
+            // already "Ran `<command>`". Repeating the command here rendered it
+            // twice ("Ran `cmd` `cmd` exit=0"), so it is only spelled out when
+            // no narration carries it (then the label is a bare "Bash").
+            if data.narration.is_some() {
+                return format!("exit={code}");
+            }
+            let cmd = v
+                .get("command")
+                .and_then(Value::as_str)
+                .map(|c| first_line(c, 80))
+                .unwrap_or_default();
             format!("`{cmd}` exit={code}")
         }
         _ => String::new(),

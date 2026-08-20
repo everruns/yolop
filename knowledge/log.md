@@ -1,5 +1,18 @@
 # Knowledge Log
 
+## 2026-08-20, One command per transcript line, and uninstall says uninstall
+
+- [Extensions](specs/extensions.md): `remove` is aliased `uninstall`. Clap had
+  answered `yolop extensions uninstall <name>` with "unrecognized subcommand"
+  and a tip suggesting `install`, which does the opposite of what was asked.
+- The transcript line is `{label}  {summary}`, and for `bash` both halves
+  carried the command: the shell narration is already "Ran `<cmd>`", so the line
+  read "Ran `cmd` `cmd` exit=0". The summary is now just `exit=<code>` when a
+  narration carries the command, and keeps spelling it out when none does.
+- The old test set narration to a bare "Ran Bash", a shape the real narrator
+  never produces, so it could not see the duplication. It now builds its
+  narration with `narrate_shell_exec`.
+
 ## 2026-08-20, Trace export keeps the root span
 
 - [Extensions](specs/extensions.md): ending a session dropped the trace servers

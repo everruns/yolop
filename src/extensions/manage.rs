@@ -56,6 +56,12 @@ enum ExtensionCommand {
     /// Install an extension without enabling it.
     Install { source: String },
     /// Remove an installed extension and its persisted enablement/secrets.
+    ///
+    /// Aliased as `uninstall`, the natural opposite of `install`: without it
+    /// clap answered `yolop extensions uninstall <name>` with "unrecognized
+    /// subcommand" and suggested `install`, the one command that does the
+    /// opposite of what was asked.
+    #[command(alias = "uninstall")]
     Remove { name: String },
     /// Persist enablement and apply it to the attached session when present.
     Enable { name: String },
@@ -1399,6 +1405,27 @@ mod tests {
             .to_string(),
         )
         .unwrap();
+    }
+
+    /// `uninstall` is the natural opposite of `install`, and clap answered it
+    /// with "unrecognized subcommand" plus a tip suggesting `install` itself.
+    #[test]
+    fn uninstall_is_accepted_as_an_alias_for_remove() {
+        use clap::Parser;
+
+        let parsed = ExtensionCommandLine::try_parse_from(["extensions", "uninstall", "logfire"])
+            .expect("`uninstall` must parse");
+        assert!(matches!(
+            parsed.command,
+            Some(ExtensionCommand::Remove { ref name }) if name == "logfire"
+        ));
+
+        let canonical = ExtensionCommandLine::try_parse_from(["extensions", "remove", "logfire"])
+            .expect("`remove` must keep working");
+        assert!(matches!(
+            canonical.command,
+            Some(ExtensionCommand::Remove { ref name }) if name == "logfire"
+        ));
     }
 
     /// A package published as source (no `bin/`, nothing on PATH by that name)
