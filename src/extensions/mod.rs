@@ -304,6 +304,84 @@ mod spawn_tests {
         assert!(types.contains(&"tool.completed"), "recorded: {types:?}");
     }
 
+    /// The tail of the event stream must survive session teardown. `turn.completed`
+    /// closes the trace's root span, so losing it exports children with no root
+    /// (and a short run exports nothing at all). The fixture is slowed with
+    /// `trace_delay_ms` so the tail is still in flight when the stream closes,
+    /// making the teardown race deterministic rather than one the test usually
+    /// wins.
+    #[tokio::test]
+    async fn teardown_flushes_the_final_trace_events() {
+        use everruns_core::events::{EventContext, EventRequest};
+        use everruns_provider::typed_id::{EventId, SessionId};
+        use tokio::sync::broadcast;
+
+        let Some(python) = python3() else {
+            eprintln!("skipping: python3 not available");
+            return;
+        };
+        let dir = tempfile::tempdir().expect("tempdir");
+        let log = dir.path().join("trace.log");
+        let capability = ExtensionCapability::new(trace_package(&python), std::env::temp_dir());
+        let config = json!({
+            "trace_log": log.display().to_string(),
+            "trace_delay_ms": 40,
+        });
+        let forwarder =
+            crate::extensions::trace::TraceForwarder::for_capability(&capability, &config)
+                .expect("trace forwarder for a declaring extension");
+
+        let session_id = SessionId::new();
+        let (tx, rx) = broadcast::channel(64);
+        let (stop, stop_rx) = tokio::sync::watch::channel(false);
+        let handle = forwarder.start(session_id, rx, stop_rx);
+        let flush = crate::extensions::trace::TraceFlush::new(stop, vec![handle]);
+
+        for (seq, event_type) in [
+            everruns_core::TURN_STARTED,
+            everruns_core::TOOL_COMPLETED,
+            everruns_core::TURN_COMPLETED,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let request = EventRequest {
+                event_type: event_type.into(),
+                ts: chrono::Utc::now(),
+                session_id,
+                context: EventContext::empty(),
+                data: everruns_core::events::EventData::unsupported(event_type.into(), json!({})),
+                metadata: None,
+                tags: None,
+            };
+            tx.send(request.into_event(EventId::new(), seq as i32))
+                .expect("broadcast event");
+        }
+
+        // Session teardown, exactly as a host path runs it: the event stream is
+        // still open (the runtime outlives the forwarder) and the fixture is
+        // still working through the queue.
+        tokio::time::timeout(std::time::Duration::from_secs(10), flush.flush())
+            .await
+            .expect("flush finished");
+        drop(tx);
+
+        let recorded = std::fs::read_to_string(&log).unwrap_or_default();
+        let types: Vec<&str> = recorded.lines().collect();
+        assert!(
+            types.contains(&everruns_core::TURN_COMPLETED),
+            "the root span's terminal event was lost at teardown; recorded: {types:?}"
+        );
+        assert!(
+            types.contains(&everruns_core::TURN_STARTED),
+            "recorded: {types:?}"
+        );
+        assert!(
+            types.contains(&everruns_core::TOOL_COMPLETED),
+            "recorded: {types:?}"
+        );
+    }
+
     /// A `secret` config field is injected into the server's environment (per
     /// its `env` mapping) from the secret store — never via `initialize.config`.
     #[tokio::test]

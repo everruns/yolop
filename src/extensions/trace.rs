@@ -16,7 +16,7 @@ use everruns_core::{
 use everruns_provider::typed_id::SessionId;
 use serde_json::Value;
 use std::sync::Arc;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, watch};
 
 /// High-frequency streaming deltas carry no span-shaped meaning on their own and
 /// would flood the exporter (and the broadcast channel); the paired
@@ -68,8 +68,15 @@ impl TraceForwarder {
     }
 
     /// Begin forwarding this session's events to the extension server.
-    pub(crate) fn start(self, session_id: SessionId, events: broadcast::Receiver<Event>) {
-        spawn_forwarder(self.name, self.process, session_id, events);
+    /// The returned handle completes once forwarding has stopped and the
+    /// server has been flushed; teardown awaits it so the final events survive.
+    pub(crate) fn start(
+        self,
+        session_id: SessionId,
+        events: broadcast::Receiver<Event>,
+        stop: watch::Receiver<bool>,
+    ) -> tokio::task::JoinHandle<()> {
+        spawn_forwarder(self.name, self.process, session_id, events, stop)
     }
 }
 
@@ -81,22 +88,46 @@ pub(crate) fn spawn_forwarder(
     process: Arc<ExtensionProcess>,
     session_id: SessionId,
     mut events: broadcast::Receiver<Event>,
-) {
+    mut stop: watch::Receiver<bool>,
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
+        // One forwarding step, shared by the live loop and the drain below.
+        async fn forward(
+            ext_name: &str,
+            process: &ExtensionProcess,
+            session_id: SessionId,
+            event: Event,
+        ) {
+            if event.session_id != session_id || !is_forwardable(&event.event_type) {
+                return;
+            }
+            if let Err(err) = process.send_trace_event(trace_event_params(&event)).await {
+                tracing::warn!(
+                    target: "yolop::ext", ext = %ext_name,
+                    "trace/event forward failed: {err}"
+                );
+            }
+        }
+
         loop {
-            match events.recv().await {
-                Ok(event) if event.session_id == session_id => {
-                    if !is_forwardable(&event.event_type) {
-                        continue;
+            let received = tokio::select! {
+                received = events.recv() => received,
+                // Teardown asked us to stop. The broadcast may still be open
+                // (the runtime outlives this task), so this, not stream close,
+                // is what normally ends forwarding.
+                _ = stop.changed() => {
+                    // Everything already buffered still belongs to this
+                    // session's trace, `turn.completed` above all. Drain it
+                    // before flushing, or stopping would drop exactly the
+                    // events the flush exists to save.
+                    while let Ok(event) = events.try_recv() {
+                        forward(&ext_name, &process, session_id, event).await;
                     }
-                    if let Err(err) = process.send_trace_event(trace_event_params(&event)).await {
-                        tracing::warn!(
-                            target: "yolop::ext", ext = %ext_name,
-                            "trace/event forward failed: {err}"
-                        );
-                    }
+                    break;
                 }
-                Ok(_) => {}
+            };
+            match received {
+                Ok(event) => forward(&ext_name, &process, session_id, event).await,
                 // The exporter fell behind the broadcast buffer: skip the gap
                 // rather than block the agent. A lossy trace beats a stalled run.
                 Err(broadcast::error::RecvError::Lagged(n)) => {
@@ -108,7 +139,51 @@ pub(crate) fn spawn_forwarder(
                 Err(broadcast::error::RecvError::Closed) => break,
             }
         }
-    });
+        // The stream closed: the session is tearing down. Flush before the
+        // process is dropped, or the tail of the stream dies with the child.
+        // `turn.completed` is the one that matters most: it closes the trace's
+        // root span, so losing it exports children with no root.
+        process.shutdown_gracefully().await;
+    })
+}
+
+/// Stops the session's trace forwarders and waits for their final flush.
+///
+/// Forwarding is fire-and-forget and the servers are `kill_on_drop`, so without
+/// an explicit stop-and-wait the tail of the event stream dies with the child
+/// at teardown. `turn.completed` is the casualty that matters: it closes the
+/// trace's root span, so traces exported with no root and short runs exported
+/// nothing at all.
+pub struct TraceFlush {
+    stop: watch::Sender<bool>,
+    handles: Vec<tokio::task::JoinHandle<()>>,
+}
+
+impl TraceFlush {
+    pub(crate) fn new(
+        stop: watch::Sender<bool>,
+        handles: Vec<tokio::task::JoinHandle<()>>,
+    ) -> Self {
+        Self { stop, handles }
+    }
+
+    /// Signal every forwarder to stop, then wait for each to flush its server.
+    /// Bounded: a server that will not answer must not hold up process exit.
+    pub async fn flush(self) {
+        const BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
+        if self.handles.is_empty() {
+            return;
+        }
+        let _ = self.stop.send(true);
+        for handle in self.handles {
+            if tokio::time::timeout(BUDGET, handle).await.is_err() {
+                tracing::debug!(
+                    target: "yolop::ext",
+                    "trace forwarder did not flush within {BUDGET:?}; exiting anyway"
+                );
+            }
+        }
+    }
 }
 
 #[cfg(test)]

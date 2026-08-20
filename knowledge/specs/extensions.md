@@ -196,6 +196,19 @@ and can never widen it. A manifest change (a new tool, a changed schema) still
 requires a restart, the enabled-capability set is fixed for the session
 because `everruns-core` builds the harness once with no live-reconfigure boundary.
 Covered by `reload_respawns_the_server_with_edited_code`.
+Trace forwarding has a teardown contract. `trace/event` is fire-and-forget and
+a server is `kill_on_drop`, so ending a session by dropping the runtime killed
+the child with the tail of the stream still in flight. `turn.completed` closes
+the trace's root span, so exported traces arrived with orphaned children, and a
+run short enough that the whole tail was still queued exported nothing at all.
+Every host path that ends a session (`--print`, the TUI, ACP) now calls
+`RuntimeHandles::flush_trace_exporters`: it signals the forwarders, each drains
+the events already buffered, and then a `shutdown` **request** flushes the
+server. The request is the barrier that matters, since the stream is ordered and
+its response cannot arrive until the server has handled every notification
+queued before it. Bounded, so a server that will not answer cannot hold up
+exit. Covered by `teardown_flushes_the_final_trace_events`.
+
 Attached control: `everruns-runtime` grew a live-reconfigure boundary
 (`InProcessRuntime::activate_capability`/`deactivate_capability` →
 `CapabilityDelta`, EVE-795). `yolop extensions enable|disable` persists the

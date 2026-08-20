@@ -541,6 +541,13 @@ where
     for poller in pollers {
         let _ = poller.await;
     }
+    // Same teardown contract as the TUI and `--print`: let each session's trace
+    // extensions export their final events before the runtimes drop and their
+    // servers are killed.
+    let sessions: Vec<Arc<Session>> = server.sessions.lock().unwrap().values().cloned().collect();
+    for session in sessions {
+        session.handles.flush_trace_exporters().await;
+    }
 
     match result {
         Ok(()) => Ok(()),

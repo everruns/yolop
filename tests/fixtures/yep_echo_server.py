@@ -17,6 +17,12 @@ import sys
 # than env-driven so parallel tests don't collide.
 TRACE_LOG = None
 
+# Set from `initialize.config.trace_delay_ms`: seconds to sleep before recording
+# each `trace/event`. A teardown test needs the tail of the stream to still be
+# in flight when the host stops the server, which a delay makes deterministic
+# instead of a race the test would win most of the time.
+TRACE_DELAY_S = 0.0
+
 
 def send(obj):
     sys.stdout.write(json.dumps(obj) + "\n")
@@ -26,6 +32,9 @@ def send(obj):
 def record_trace(event_type):
     if not TRACE_LOG:
         return
+    if TRACE_DELAY_S:
+        import time
+        time.sleep(TRACE_DELAY_S)
     with open(TRACE_LOG, "a", encoding="utf-8") as handle:
         handle.write(event_type + "\n")
 
@@ -46,6 +55,9 @@ def main():
             if isinstance(config, dict) and config.get("trace_log"):
                 global TRACE_LOG
                 TRACE_LOG = config["trace_log"]
+            if isinstance(config, dict) and config.get("trace_delay_ms"):
+                global TRACE_DELAY_S
+                TRACE_DELAY_S = float(config["trace_delay_ms"]) / 1000.0
             # Echo an injected env var (for the secret-injection spawn test):
             # the host injects `secret`/`env`-mapped config fields into our
             # environment. Record it so the test can assert it arrived.

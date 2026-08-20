@@ -1779,6 +1779,9 @@ async fn run_tui(
         trajectory_out.as_deref(),
     )
     .await;
+    // Same teardown contract as `--print`: let the trace extensions export the
+    // session's final events before their servers are killed.
+    trajectory_handles.flush_trace_exporters().await;
 
     if show_resume_hint {
         println!();
@@ -2128,6 +2131,9 @@ async fn run_print_mode(
         }
     }
     write_trajectory_if_requested(&handles, &model, trajectory_out.as_deref()).await;
+    // Let the trace extensions export the turn's final events before the
+    // process exits and their servers are killed.
+    handles.flush_trace_exporters().await;
     Ok(())
 }
 
