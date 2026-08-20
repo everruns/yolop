@@ -30,7 +30,7 @@ pub enum Source {
 }
 
 /// The crate-name prefix every published yolop extension carries.
-const CRATE_PREFIX: &str = "yolop-extension-";
+pub(crate) const CRATE_PREFIX: &str = "yolop-extension-";
 
 impl Source {
     /// Parse a user-supplied `<source>` argument.
