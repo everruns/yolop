@@ -249,17 +249,17 @@ better-aimed model: its chat template emits tool calls as
 `<tool_call>`, so none of its tool calls would be understood.
 
 Weights live under `<data_dir>/yolop/models/`. The engine is compiled into the
-Homebrew and GitHub release binaries; a build from source needs `cargo install
-yolop --features local-inference`, which is much slower to compile. How well a
-local model actually drives the agent loop is the open question this is here to
-answer.
+Homebrew and GitHub release binaries; a build from source needs
+`cargo install yolop --locked --features local-inference`, which is much slower
+to compile. How well a local model actually drives the agent loop is the open
+question this is here to answer.
 
 Those builds run on the CPU. GPU acceleration needs a vendor toolchain, so it is
 a separate feature that implies `local-inference`:
 
 ```bash
-cargo install yolop --features metal   # macOS
-cargo install yolop --features cuda    # NVIDIA, needs the CUDA toolkit
+cargo install yolop --locked --features metal   # macOS
+cargo install yolop --locked --features cuda    # NVIDIA, needs the CUDA toolkit
 ```
 
 ### Git attribution
