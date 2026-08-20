@@ -1,5 +1,20 @@
 # Knowledge Log
 
+## 2026-08-19, Binary size becomes a maintenance surface
+
+- [Maintenance](specs/maintenance.md) now owns binary size, with
+  [`cargo-bsize`](https://github.com/Boshen/cargo-bsize) as the tool of record
+  and an evidence bar of measured before and after on one target and profile.
+- The shipped binary's shape decides which findings pay: about a third is
+  tree-sitter parse tables from the 19 shared grammars, and yolop's own code is
+  under 5%, so dependency features and profile settings are the levers, not
+  `src/`.
+- `panic = "abort"` and `strip = "symbols"` are rejected levers, not untried
+  ones: the first breaks the crash path `join_worker` depends on, the second
+  leaves crash-report backtraces unsymbolicated.
+- The release profile moved to fat LTO at `opt-level = "s"`, measured at 70.2 MB
+  from 89.8 MB (17.9 MB gzipped from 24.6 MB) for 19 seconds of build time.
+
 ## 2026-08-19, Extensions installed mid-session load without a restart
 
 - [Extensions](specs/extensions.md): enabling a package installed during the

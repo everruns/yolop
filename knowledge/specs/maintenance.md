@@ -23,6 +23,7 @@ The canonical agent workflow lives in [`.agents/skills/maintenance/SKILL.md`](..
    (CLI flags, TUI behavior, specs, README, docs, tests, bundled skills) but are
    missing or stale on another.
 7. Reduce accidental complexity: remove over-abstraction, dead code, and premature generalization the codebase no longer earns.
+8. Keep the shipped binary honest about its size: attribute growth to a cause before proposing a fix.
 
 ## Ownership Boundary
 
@@ -93,6 +94,49 @@ Beyond the everruns family, dependency hygiene means:
 - no known CVEs in the tree (`cargo audit` when available, plus the repo's Dependabot alerts)
 - duplicate transitive versions reviewed (`cargo tree --duplicates`), fix or note why unfixable
 - no unused direct dependencies; prefer narrow sub-crates over umbrella crates when only a slice is used
+
+## Binary Size
+
+Yolop ships as a single binary, so its size is a user-visible cost three times
+over: the release tarball download, the `cargo install yolop` build, and the
+page-ins of every cold start. Size is a maintenance surface with the same
+evidence bar as the others, a size claim needs a measured before and after on
+one target and one profile, never an estimate.
+
+[`cargo-bsize`](https://github.com/Boshen/cargo-bsize) is the tool of record. It
+attributes the shipped bytes to crates, features, generic families, constant
+data, and unwind tables, so a finding can name the thing to change instead of
+only the number that hurts.
+
+The shape of the binary decides which findings are worth chasing. Measured at
+0.16.0 on `x86_64-unknown-linux-gnu` with default features, before the everruns
+0.20 bump dropped the second HTTP/TLS stack, 79 MiB shipped of an 88.5 MiB
+on-disk binary:
+
+- About a third is tree-sitter parse tables. The 19 grammars are already shared
+  by the symbol scan, ast-grep editing, and syntax highlighting, one copy each,
+  so the only lever left is shipping fewer languages, a product decision rather
+  than a cleanup.
+- Yolop's own code is under 5%. Shrinking `src/` cannot move the total;
+  dependency features and profile settings can.
+- The remainder is dependency code and read-only data, so a size regression is
+  usually a dependency bump or a feature-unification change, not a diff here.
+
+Constraints:
+
+- A lever that degrades a shipped guarantee is a decision, not a default. Two
+  are rejected until the guarantee they break is rebuilt some other way:
+  `panic = "abort"` drops the unwind and exception tables but breaks the crash
+  path, where `join_worker` catches the worker thread's panic to print the
+  crashed session id and report path before resuming the unwind; and
+  `strip = "symbols"` leaves every crash-report backtrace frame as `<unknown>`,
+  since a release build carries no debug info and the symbol table is all that
+  names them.
+- Levers that only trade build time for bytes are fair game, and their cost is
+  paid by `cargo install` users too, not just by release CI.
+- Bytes that a dependency's own feature choices force in cannot be fixed from
+  here. Report them upstream with the measurement attached, and record the
+  finding rather than working around it.
 
 ## Upstream Mirror
 
