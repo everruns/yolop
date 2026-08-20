@@ -141,11 +141,6 @@ struct Cli {
     )]
     images: Vec<PathBuf>,
 
-    /// Speak the Agent Client Protocol (ACP) over stdio instead of launching
-    /// the TUI. Editors such as Zed spawn `yolop --acp` and drive it as an
-    /// external agent. Builds one runtime per ACP session (cwd comes from the
-    /// client); the `-C/--cwd`, `--print`, and `--session` flags are
-    /// ignored in this mode. See `knowledge/specs/acp.md`.
     /// Directory holding yolop's global configuration (settings, profiles,
     /// hooks, installed extensions). Defaults to `yolop` inside the platform
     /// config directory; `YOLOP_CONFIG_DIR` sets it for a whole shell. Point
@@ -160,6 +155,11 @@ struct Cli {
     #[arg(long = "data-dir", value_name = "PATH", global = true)]
     data_dir: Option<PathBuf>,
 
+    /// Speak the Agent Client Protocol (ACP) over stdio instead of launching
+    /// the TUI. Editors such as Zed spawn `yolop --acp` and drive it as an
+    /// external agent. Builds one runtime per ACP session (cwd comes from the
+    /// client); the `-C/--cwd`, `--print`, and `--session` flags are
+    /// ignored in this mode. See `knowledge/specs/acp.md`.
     #[arg(long, conflicts_with = "print")]
     acp: bool,
 
