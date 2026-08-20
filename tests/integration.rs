@@ -2905,6 +2905,10 @@ fn acp_anthropic_handshake_smoke() {
         return;
     };
     let result = run_acp_handshake("anthropic", "Reply with exactly the single word: pong");
+    if looks_provider_quota_exhausted(&format!("{}{}", result.prompt, result.assistant_text)) {
+        eprintln!("skipping live test: Anthropic quota exhausted");
+        return;
+    }
     assert_eq!(
         result.prompt["result"]["stopReason"], "end_turn",
         "prompt response: {}",
