@@ -1,5 +1,22 @@
 # Knowledge Log
 
+## 2026-08-20, The trace payload already carries the host's span tree
+
+- [Extensions](specs/extensions.md): `trace/event` forwards the session event
+  verbatim, so an extension sees exactly what an in-process `EventListener`
+  sees, `context.parent_span_id` included. Confirmed by dumping a real run: all
+  17 event types arrive, `llm.generation` parents to `reason`, `tool.*` to
+  `act`, and `data.metadata` carries model, provider, token usage, and cost.
+- `TraceEventParams` gained `span_id`/`parent_span_id`/`trace_id`/`turn_id`/
+  `exec_id` plus `family`/`phase`. The tree was always on the wire; nothing
+  named it, so the first exporter written against this facet re-derived a flat
+  one from `turn_id` and every exported trace lost its nesting.
+- `turn.*` is the root and carries no span id; its children name it by
+  `turn_id`. An exporter mints the root span itself.
+- Attribute names stay upstream in `everruns-core`'s `telemetry::gen_ai`. The
+  SDK does not restate them and does not depend on that crate, so it stays
+  serde-only; an exporter copies what it needs and cites the source.
+
 ## 2026-08-20, One extension name, however it is spelled
 
 - [Extensions](specs/extensions.md): every by-name subcommand accepts the
