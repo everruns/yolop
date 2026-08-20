@@ -198,6 +198,13 @@ struct Cli {
     #[arg(long)]
     inline: bool,
 
+    /// Collapse each active turn's narration and tool output into one updating
+    /// transcript row. Press Ctrl+O to expand or collapse the latest turn's
+    /// retained work details. Fullscreen only because inline scrollback cannot
+    /// repaint a previously published accordion.
+    #[arg(long, conflicts_with_all = ["inline", "print", "acp"])]
+    compact_work: bool,
+
     /// Color theme for the interactive TUI. `yolop` (default) is yolop's own
     /// palette; other values select a bundled `tuika` preset (e.g.
     /// `solarized-dark`, `gruvbox-dark`, `dracula`, `light`). Persisted default
@@ -840,7 +847,14 @@ async fn async_main(crash_reporter: &crash_report::CrashReporter) -> Result<()> 
         return run_print_mode(runtime, prompt, image_parts, cli.trajectory_out).await;
     }
     let pending_images = tui::input::image_input::load_image_parts(&cli.images)?;
-    run_tui(runtime, pending_images, cli.trajectory_out, !cli.inline).await
+    run_tui(
+        runtime,
+        pending_images,
+        cli.trajectory_out,
+        !cli.inline,
+        cli.compact_work,
+    )
+    .await
 }
 
 fn uses_interactive_renderer(cli: &Cli) -> bool {
@@ -1682,6 +1696,7 @@ async fn run_tui(
     pending_images: Vec<ContentPart>,
     trajectory_out: Option<PathBuf>,
     fullscreen: bool,
+    compact_work: bool,
 ) -> Result<()> {
     // Cheap Arc clones taken before `App` consumes the runtime, so the
     // trajectory can be exported after the TUI loop ends.
@@ -1736,7 +1751,11 @@ async fn run_tui(
         tracing::warn!("footer pinning failed, starting unpinned: {err:#}");
     }
 
-    let mut app = App::new(runtime, pending_images);
+    let mut app = if compact_work {
+        App::new_with_work_display(runtime, pending_images, tui::WorkDisplayMode::Compact)
+    } else {
+        App::new(runtime, pending_images)
+    };
     app.enable_native_progress();
     if fullscreen {
         app.set_render_mode(tui::RenderMode::Fullscreen);
@@ -2307,6 +2326,15 @@ mod tests {
     }
 
     #[test]
+    fn compact_work_is_fullscreen_only() {
+        let compact =
+            Cli::try_parse_from(["yolop", "--compact-work"]).expect("compact fullscreen TUI");
+        assert!(compact.compact_work);
+        assert!(Cli::try_parse_from(["yolop", "--compact-work", "--inline"]).is_err());
+        assert!(Cli::try_parse_from(["yolop", "--compact-work", "-p", "hi"]).is_err());
+    }
+
+    #[test]
     fn interactive_trace_logs_are_private_and_bounded() {
         let dir = tempfile::tempdir().expect("trace tempdir");
         for index in 0..MAX_INTERACTIVE_TRACE_LOGS {
@@ -2446,6 +2474,18 @@ mod tests {
         );
     }
 
+    #[test]
+    fn continuation_preserves_compact_work_mode() {
+        let args = ["yolop", "--compact-work", "--session=old-session"]
+            .into_iter()
+            .map(OsString::from);
+
+        assert_eq!(
+            continuation_command(args, "new-session"),
+            "yolop --compact-work --session new-session"
+        );
+    }
+
     fn cli_with_reasoning_effort(reasoning_effort: Option<&str>) -> Cli {
         Cli {
             command: None,
@@ -2465,6 +2505,7 @@ mod tests {
             session_dir: None,
             trajectory_out: None,
             inline: false,
+            compact_work: false,
             theme: None,
             sandbox: false,
         }
@@ -2558,6 +2599,7 @@ mod tests {
             session_dir: None,
             trajectory_out: None,
             inline: false,
+            compact_work: false,
             theme: None,
             sandbox: false,
         };

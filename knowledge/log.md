@@ -1,5 +1,16 @@
 # Knowledge Log
 
+## 2026-08-20, Compact work keeps one mutable row per turn
+
+- [Presentation](specs/presentation.md): `--compact-work` replaces live
+  narration and tool transcript entries with one updating summary. The final
+  assistant answer stays separate, and the session event log remains lossless.
+- `Ctrl+O` expands or collapses retained details for the current or latest turn.
+  Success, failure, and cancellation finalize to distinct summary markers.
+- The mode is fullscreen-only. Split-footer rows become immutable native
+  scrollback once published, so a real inline accordion could not reliably
+  collapse historical details.
+
 ## 2026-08-20, One command per transcript line, and uninstall says uninstall
 
 - [Extensions](specs/extensions.md): `remove` is aliased `uninstall`. Clap had

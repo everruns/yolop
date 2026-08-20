@@ -277,7 +277,7 @@ async fn session_run_turn_emits_lines_and_finishes_with_done() {
                 }
             }
             Ok(Some(TurnEvent::Failed(err))) => failure = Some(err),
-            Ok(Some(TurnEvent::Done(_))) => {
+            Ok(Some(TurnEvent::Done { .. })) => {
                 saw_done = true;
                 break;
             }

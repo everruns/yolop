@@ -18,11 +18,68 @@ pub(crate) struct PresentedTranscriptLine {
     pub text: String,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CompactWorkOutcome {
+    Active,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CompactWorkPresentation<'a> {
+    pub outcome: CompactWorkOutcome,
+    pub activity: &'a str,
+    pub action_count: usize,
+    pub elapsed_secs: u64,
+    pub expanded: bool,
+}
+
+impl CompactWorkPresentation<'_> {
+    pub(crate) fn summary(&self) -> String {
+        let elapsed = compact_elapsed(self.elapsed_secs);
+        let actions = if self.action_count == 1 {
+            "1 action".to_string()
+        } else {
+            format!("{} actions", self.action_count)
+        };
+        let body = match self.outcome {
+            CompactWorkOutcome::Active => {
+                format!("◒ {} · {actions} · {elapsed}", self.activity)
+            }
+            CompactWorkOutcome::Completed => format!("✓ Worked for {elapsed} · {actions}"),
+            CompactWorkOutcome::Failed => format!("✗ Failed after {elapsed} · {actions}"),
+            CompactWorkOutcome::Cancelled => {
+                format!("■ Cancelled after {elapsed} · {actions}")
+            }
+        };
+        let hint = if self.expanded {
+            "Ctrl+O collapse"
+        } else {
+            "Ctrl+O details"
+        };
+        format!("{body}  {hint}")
+    }
+}
+
+fn compact_elapsed(secs: u64) -> String {
+    if secs < 60 {
+        return format!("{secs}s");
+    }
+    if secs < 3_600 {
+        return format!("{}m{:02}s", secs / 60, secs % 60);
+    }
+    format!("{}h{:02}m", secs / 3_600, (secs % 3_600) / 60)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PresentationState {
     pub startup: StartupPresentation,
     pub stream_preview: Option<StreamPreview>,
     pub busy: bool,
+    /// Compact work owns the live activity row inside the transcript, so the
+    /// composer separator must not repeat the same status a second time.
+    pub compact_work: bool,
     /// Messages accepted by the composer while the active turn is running.
     pub queued_messages: usize,
     pub turn_activity: Option<String>,
@@ -134,6 +191,7 @@ impl Author {
             Author::User => "you",
             Author::Assistant => "agent",
             Author::Narration => "note",
+            Author::WorkSummary | Author::WorkDetail => "",
             Author::Tool => "tool",
             Author::ToolDetail => "",
             Author::Stderr => "",
@@ -289,7 +347,7 @@ impl PresentationState {
     }
 
     pub(crate) fn activity_text(&self) -> Option<&str> {
-        self.busy
+        (self.busy && !self.compact_work)
             .then(|| self.turn_activity.as_deref().unwrap_or("thinking"))
     }
 }
@@ -322,7 +380,7 @@ pub(crate) fn safety_status_label(
 
 pub(crate) fn present_transcript_line(chat: &ChatLine) -> PresentedTranscriptLine {
     let label = match chat.author {
-        Author::ToolDetail | Author::Stderr => None,
+        Author::WorkSummary | Author::WorkDetail | Author::ToolDetail | Author::Stderr => None,
         _ => Some(chat.author.label()),
     };
     PresentedTranscriptLine {
@@ -617,6 +675,7 @@ mod tests {
             },
             stream_preview: None,
             busy: false,
+            compact_work: false,
             queued_messages: 0,
             turn_activity: None,
             model_id: "gpt-5.5".to_string(),
@@ -640,6 +699,57 @@ mod tests {
             agent_status: None,
             extension_status: Vec::new(),
         }
+    }
+
+    #[test]
+    fn compact_work_summary_covers_live_expanded_and_terminal_states() {
+        let live = CompactWorkPresentation {
+            outcome: CompactWorkOutcome::Active,
+            activity: "Running tests",
+            action_count: 3,
+            elapsed_secs: 75,
+            expanded: false,
+        };
+        assert_eq!(
+            live.summary(),
+            "◒ Running tests · 3 actions · 1m15s  Ctrl+O details"
+        );
+
+        let expanded = CompactWorkPresentation {
+            expanded: true,
+            ..live.clone()
+        };
+        assert!(expanded.summary().ends_with("Ctrl+O collapse"));
+
+        let completed = CompactWorkPresentation {
+            outcome: CompactWorkOutcome::Completed,
+            action_count: 1,
+            elapsed_secs: 8,
+            ..live.clone()
+        };
+        assert_eq!(
+            completed.summary(),
+            "✓ Worked for 8s · 1 action  Ctrl+O details"
+        );
+
+        let failed = CompactWorkPresentation {
+            outcome: CompactWorkOutcome::Failed,
+            elapsed_secs: 3_725,
+            ..live.clone()
+        };
+        assert!(failed.summary().starts_with("✗ Failed after 1h02m"));
+
+        let cancelled = CompactWorkPresentation {
+            outcome: CompactWorkOutcome::Cancelled,
+            ..live
+        };
+        assert!(cancelled.summary().starts_with("■ Cancelled after"));
+
+        let mut presentation = state();
+        presentation.busy = true;
+        presentation.compact_work = true;
+        presentation.turn_activity = Some("Running tests".into());
+        assert_eq!(presentation.activity_text(), None);
     }
 
     #[test]
