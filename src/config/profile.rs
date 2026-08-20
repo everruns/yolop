@@ -578,6 +578,53 @@ mod tests {
     }
 
     #[test]
+    fn a_legacy_models_table_survives_a_profile_rewrite_under_its_new_name() {
+        // `models` used to be the per-provider map and is now the model list.
+        // A rewrite must migrate the old entries rather than dropping them on
+        // the floor when the (empty) list clears the `models` key.
+        let table: Table = toml::from_str("[models]\nopenai = 'gpt-5.5 high'\n").unwrap();
+        let (overlay, _) = SettingsOverlay::from_table(&table, Path::new("/nonexistent")).unwrap();
+        let rewritten = overlay.to_table();
+        assert!(
+            rewritten.get("models").is_none(),
+            "the old table does not linger as a malformed list: {rewritten:?}"
+        );
+        assert_eq!(
+            rewritten["default_models"]["openai"].as_str(),
+            Some("gpt-5.5 high"),
+            "the pick is preserved under the new key: {rewritten:?}"
+        );
+
+        let (reparsed, _) =
+            SettingsOverlay::from_table(&rewritten, Path::new("/nonexistent")).unwrap();
+        assert_eq!(
+            reparsed.default_models["openai"].as_deref(),
+            Some("gpt-5.5 high"),
+            "and it round-trips"
+        );
+    }
+
+    #[test]
+    fn a_profile_model_list_replaces_the_global_menu() {
+        let table: Table =
+            toml::from_str("[[models]]\nprovider = 'openai'\nmodel = 'gpt-5.4-mini'\n").unwrap();
+        let (overlay, warnings) =
+            SettingsOverlay::from_table(&table, Path::new("/nonexistent")).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+
+        let mut settings = Settings {
+            models: vec![ModelEntry::new("anthropic", "claude-opus-4-8")],
+            ..Settings::default()
+        };
+        overlay.apply_to(&mut settings);
+        assert_eq!(
+            settings.models,
+            vec![ModelEntry::new("openai", "gpt-5.4-mini")],
+            "a profile that names a menu means those models, not those plus the global ones"
+        );
+    }
+
+    #[test]
     fn overlay_replaces_scalars_and_merges_provider_maps() {
         let mut settings = Settings {
             default_provider: Some("anthropic".to_string()),

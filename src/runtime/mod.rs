@@ -3177,12 +3177,12 @@ impl ModelState {
             // The value carries no reasoning effort so it still matches the
             // `provider:model` id the client echoes back as "selected";
             // `select_model_id` re-applies the entry's effort on the way in.
-            Self::push_model_option(
-                &mut options,
-                &entry.provider,
-                &entry.model,
-                &entry.display(),
-            );
+            //
+            // The name omits the provider: ACP renders these as
+            // `<group>: <name>` with the group already naming the provider, so
+            // `display()` here would read "ollama: ollama/llama3.2".
+            let name = entry.label.clone().unwrap_or_else(|| entry.spec());
+            Self::push_model_option(&mut options, &entry.provider, &entry.model, &name);
         }
 
         // The installed session model remains usable even if its credential is

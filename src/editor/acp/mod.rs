@@ -1037,6 +1037,17 @@ mod tests {
             selected_model, "ollama:llama3.2",
             "the offered option is the listed entry"
         );
+        let offered_name = model["options"]
+            .as_array()
+            .expect("model options")
+            .iter()
+            .find(|option| option["value"] == "ollama:llama3.2")
+            .and_then(|option| option["name"].as_str())
+            .expect("named option");
+        assert_eq!(
+            offered_name, "ollama: llama3.2",
+            "ACP prefixes the provider group itself, so the name must not repeat it"
+        );
 
         send_json(
             &mut w,
