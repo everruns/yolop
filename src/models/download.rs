@@ -24,14 +24,37 @@ const SAFETENSORS_SUPPORT_FILES: &[&str] = &[
     "tokenizer_config.json",
     "generation_config.json",
     "special_tokens_map.json",
+    // Newer repos carry the chat template here instead of inlining it in
+    // `tokenizer_config.json`. `openai/gpt-oss-20b` has no `chat_template` key
+    // at all, so without this file its weights arrive with no way to format a
+    // conversation. Repos that inline the template simply do not ship it, which
+    // is why it is optional.
+    "chat_template.jinja",
 ];
 
 /// Support files whose absence is fine — not every repo ships all of them.
 fn is_optional(file: &str) -> bool {
     matches!(
         file,
-        "generation_config.json" | "special_tokens_map.json" | "tokenizer.json"
+        "generation_config.json"
+            | "special_tokens_map.json"
+            | "tokenizer.json"
+            | "chat_template.jinja"
     )
+}
+
+/// Whether a repo listing entry is one of the weight shards to fetch.
+///
+/// Shards live at the repo root. A repo may also carry a second copy of the
+/// same weights in a subdirectory for other runtimes to consume:
+/// `openai/gpt-oss-20b` ships 13.76 GB of shards *and* a 13.76 GB
+/// `original/model.safetensors`. Matching on the extension alone doubles the
+/// download and writes a copy nothing loads.
+fn is_weight_shard(filename: &str) -> bool {
+    if filename.contains('/') {
+        return false;
+    }
+    filename.ends_with(".safetensors") || filename.ends_with(".safetensors.index.json")
 }
 
 /// Progress sink for a download. `pull` reports through this so tests can
@@ -201,9 +224,7 @@ pub async fn pull(spec: &str, sink: Arc<Mutex<dyn ProgressSink>>) -> Result<Pull
                 .siblings
                 .iter()
                 .map(|sibling| sibling.rfilename.clone())
-                .filter(|name| {
-                    name.ends_with(".safetensors") || name.ends_with(".safetensors.index.json")
-                })
+                .filter(|name| is_weight_shard(name))
                 .map(|name| (name, false))
                 .collect();
             if shards.is_empty() {
@@ -331,6 +352,32 @@ mod tests {
         // Without a config the engine cannot construct the model at all, so a
         // missing one has to fail the pull rather than be skipped.
         assert!(!is_optional("config.json"));
+    }
+
+    // `openai/gpt-oss-20b` has no `chat_template` key in its
+    // `tokenizer_config.json`; the template ships only as `chat_template.jinja`.
+    // Leaving it out of the support list downloads 14 GB of weights that cannot
+    // format a single conversation.
+    #[test]
+    fn the_support_files_include_a_standalone_chat_template() {
+        assert!(SAFETENSORS_SUPPORT_FILES.contains(&"chat_template.jinja"));
+        // Optional, because repos that inline the template do not ship the file
+        // and their pull must not fail on its absence.
+        assert!(is_optional("chat_template.jinja"));
+    }
+
+    // A repo may carry a second copy of its weights under a subdirectory for a
+    // different runtime. Matching the extension alone pulls both copies.
+    #[test]
+    fn only_root_level_shards_count_as_weights() {
+        assert!(is_weight_shard("model-00001-of-00002.safetensors"));
+        assert!(is_weight_shard("model.safetensors.index.json"));
+
+        assert!(!is_weight_shard("original/model.safetensors"));
+        assert!(!is_weight_shard(
+            "consolidated/model.safetensors.index.json"
+        ));
+        assert!(!is_weight_shard("README.md"));
     }
 
     #[test]
