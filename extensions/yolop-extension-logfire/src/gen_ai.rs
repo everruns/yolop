@@ -54,4 +54,5 @@ pub mod operation {
     pub const INVOKE_AGENT: &str = "invoke_agent";
     pub const REASON: &str = "reason";
     pub const ACT: &str = "act";
+    pub const THINKING: &str = "thinking";
 }

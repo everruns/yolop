@@ -16,6 +16,15 @@
   dependencies, too much for a small extension binary. The copy can drift, so
   re-check it when bumping the everruns line.
 - Cost has no convention and keeps the `yolop.` namespace.
+- `reason.thinking.*` becomes its own span under its reason phase. Its phase
+  (`thinking.started`) matched neither the started nor the terminal arm, so it
+  had been dropped outright. It carries no span id, only the `exec_id` of the
+  phase it ran in, so a phase now claims its exec id and a child without a
+  parent id resolves through it. Only phases may claim it: an exec groups the
+  phase and its children, so a child registering would displace the phase.
+- The reasoning text itself is never exported. The Gen-AI conventions put
+  content behind an opt-in this exporter does not have, so enabling the
+  extension must not ship chain-of-thought to a tracing backend.
 
 ## 2026-08-20, The trace payload already carries the host's span tree
 

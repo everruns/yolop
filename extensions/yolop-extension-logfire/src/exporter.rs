@@ -27,7 +27,22 @@ use std::collections::HashMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Paired families: a `started` opens a span, a terminal phase closes it.
-const PAIRED_FAMILIES: &[&str] = &["turn", "reason", "act", "tool"];
+const PAIRED_FAMILIES: &[&str] = &["turn", "reason", "act", "tool", "thinking"];
+
+/// Model-authored content, which spans never carry.
+///
+/// The Gen-AI conventions put prompts, completions, and reasoning behind an
+/// explicit content-capture opt-in, and this exporter has none: `thinking`
+/// holds the model's full chain-of-thought, so exporting it would put reasoning
+/// text into a tracing backend as a side effect of enabling the extension.
+fn is_model_content(key: &str) -> bool {
+    matches!(key, "thinking")
+}
+
+/// Families that are an agentic phase of a turn, and so own their `exec_id`.
+fn is_phase_family(family: &str) -> bool {
+    matches!(family, "reason" | "act" | "turn")
+}
 
 /// Terminal phases that close an open span (or, unpaired, emit a point span).
 fn is_terminal_phase(phase: &str) -> bool {
@@ -53,6 +68,7 @@ struct Parsed<'a> {
     /// children, since the turn has no span id to name.
     parent_span_id: Option<&'a str>,
     turn_id: Option<&'a str>,
+    exec_id: Option<&'a str>,
 }
 
 /// Folds events into OpenTelemetry spans emitted through `tracer`.
@@ -163,6 +179,16 @@ impl TraceExporter {
         {
             keys.push(turn.to_string());
         }
+        // A phase owns its `exec_id`, which is how a child that carries no
+        // `parent_span_id` of its own (thinking) finds the phase it belongs to.
+        // Only the phase may claim it: an exec groups the phase *and* its
+        // children (reason with llm, act with tool), so letting a child
+        // register would make it the exec's representative instead.
+        if is_phase_family(parsed.family)
+            && let Some(exec) = parsed.exec_id
+        {
+            keys.push(exec.to_string());
+        }
         for key in &keys {
             self.span_cx.insert(key.clone(), cx.clone());
         }
@@ -198,6 +224,14 @@ impl TraceExporter {
         parsed
             .parent_span_id
             .and_then(|id| self.span_cx.get(id).cloned())
+            // A child with no parent id of its own belongs to its exec's phase.
+            // Skipped for phases themselves, which own that exec id.
+            .or_else(|| {
+                (!is_phase_family(parsed.family))
+                    .then_some(parsed.exec_id)
+                    .flatten()
+                    .and_then(|e| self.span_cx.get(e).cloned())
+            })
             .or_else(|| parsed.turn_id.and_then(|t| self.span_cx.get(t).cloned()))
             .unwrap_or_default()
     }
@@ -208,9 +242,19 @@ impl TraceExporter {
 
 fn parse(params: &yolop_yep::TraceEventParams) -> Option<Parsed<'_>> {
     let ts = ts_to_system_time(&params.ts)?;
+    // `reason.thinking.*` is a span in its own right, nested inside its reason
+    // phase. Left as family `reason` with phase `thinking.started` it matched
+    // neither the `started` nor the terminal arm, so thinking was dropped.
+    let (family, phase) = match (params.family(), params.phase()) {
+        ("reason", rest) => match rest.strip_prefix("thinking.") {
+            Some(phase) => ("thinking", phase),
+            None => ("reason", rest),
+        },
+        (family, phase) => (family, phase),
+    };
     Some(Parsed {
-        family: params.family(),
-        phase: params.phase(),
+        family,
+        phase,
         ts,
         context: &params.context,
         data: &params.data,
@@ -220,6 +264,7 @@ fn parse(params: &yolop_yep::TraceEventParams) -> Option<Parsed<'_>> {
         span_id: params.span_id(),
         parent_span_id: params.parent_span_id(),
         turn_id: params.turn_id(),
+        exec_id: params.exec_id(),
     })
 }
 
@@ -274,6 +319,7 @@ fn operation_name(family: &str) -> Option<&'static str> {
         "act" => Some(gen_ai::operation::ACT),
         "tool" => Some(gen_ai::operation::EXECUTE_TOOL),
         "llm" => Some(gen_ai::operation::CHAT),
+        "thinking" => Some(gen_ai::operation::THINKING),
         _ => None,
     }
 }
@@ -374,6 +420,9 @@ fn attributes(parsed: &Parsed) -> Vec<KeyValue> {
     ));
     if let Some(map) = parsed.data.as_object() {
         for (key, value) in map {
+            if is_model_content(key) {
+                continue;
+            }
             let name = format!("yolop.{key}");
             match value {
                 Value::String(s) => attrs.push(KeyValue::new(name, s.clone())),
@@ -556,6 +605,112 @@ mod tests {
         // Still one trace.
         for span in [&reason, &act, &tool, &llm] {
             assert_eq!(span.span_context.trace_id(), turn.span_context.trace_id());
+        }
+    }
+
+    /// `reason.thinking.*` carries no span id of its own, only the `exec_id` of
+    /// the reason phase it belongs to. Left as family `reason` with phase
+    /// `thinking.started` it matched neither arm and was dropped entirely.
+    #[test]
+    fn thinking_becomes_a_span_nested_in_its_reason_phase() {
+        let (mut exp, mem) = exporter();
+        let reason_span = "reason-span-1";
+        let exec = "exec_1";
+
+        exp.handle(&ev(
+            "turn.started",
+            "2024-01-01T00:00:00Z",
+            serde_json::json!({ "turn_id": "t1" }),
+            serde_json::json!({}),
+        ));
+        exp.handle(&ev(
+            "reason.started",
+            "2024-01-01T00:00:01Z",
+            serde_json::json!({
+                "turn_id": "t1", "exec_id": exec,
+                "span_id": reason_span, "parent_span_id": "t1"
+            }),
+            serde_json::json!({}),
+        ));
+        // Exactly the shape the host emits: no span id, no parent id, just the
+        // exec it belongs to.
+        exp.handle(&ev(
+            "reason.thinking.started",
+            "2024-01-01T00:00:02Z",
+            serde_json::json!({ "turn_id": "t1", "exec_id": exec }),
+            serde_json::json!({ "model": "claude-opus-4-8" }),
+        ));
+        exp.handle(&ev(
+            "reason.thinking.completed",
+            "2024-01-01T00:00:03Z",
+            serde_json::json!({ "turn_id": "t1", "exec_id": exec }),
+            serde_json::json!({ "thinking": "secret chain of thought" }),
+        ));
+        // Close the phase so it is exported and can be compared against.
+        exp.handle(&ev(
+            "reason.completed",
+            "2024-01-01T00:00:04Z",
+            serde_json::json!({
+                "turn_id": "t1", "exec_id": exec,
+                "span_id": reason_span, "parent_span_id": "t1"
+            }),
+            serde_json::json!({}),
+        ));
+
+        let spans = mem.get_finished_spans().expect("spans");
+        let thinking = spans
+            .iter()
+            .find(|s| s.name == "thinking")
+            .expect("thinking must produce a span");
+        let reason = spans
+            .iter()
+            .find(|s| s.name == "reason")
+            .map(|s| s.span_context.span_id());
+
+        // Paired into one span with real duration, under its reason phase.
+        assert!(thinking.end_time > thinking.start_time);
+        assert_eq!(
+            Some(thinking.parent_span_id),
+            reason,
+            "thinking belongs to the reason phase it ran inside"
+        );
+        assert!(
+            thinking
+                .attributes
+                .iter()
+                .any(|kv| kv.key.as_str() == "gen_ai.operation.name"
+                    && kv.value.to_string() == "thinking")
+        );
+    }
+
+    /// Reasoning text is model-authored content, and the conventions put
+    /// content behind an opt-in this exporter does not have. Enabling the
+    /// extension must not ship chain-of-thought to a tracing backend.
+    #[test]
+    fn thinking_text_is_never_exported() {
+        let (mut exp, mem) = exporter();
+        exp.handle(&ev(
+            "reason.thinking.started",
+            "2024-01-01T00:00:02Z",
+            serde_json::json!({ "turn_id": "t1", "exec_id": "e1" }),
+            serde_json::json!({}),
+        ));
+        exp.handle(&ev(
+            "reason.thinking.completed",
+            "2024-01-01T00:00:03Z",
+            serde_json::json!({ "turn_id": "t1", "exec_id": "e1" }),
+            serde_json::json!({ "thinking": "secret chain of thought" }),
+        ));
+
+        let spans = mem.get_finished_spans().expect("spans");
+        for span in &spans {
+            for kv in &span.attributes {
+                assert!(
+                    !kv.value.to_string().contains("secret chain of thought"),
+                    "reasoning text leaked into attribute {}",
+                    kv.key.as_str()
+                );
+            }
         }
     }
 
