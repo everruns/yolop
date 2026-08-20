@@ -70,7 +70,7 @@ impl LocalChatDriver {
 
         // Load only from the local store. Letting the engine fetch its own
         // weights would turn the first turn into a silent multi-gigabyte stall;
-        // `yolop models pull` owns that wait and shows progress for it.
+        // `yolop weights pull` owns that wait and shows progress for it.
         if !crate::models::is_installed(spec) {
             return Err(missing_weights_error(spec));
         }
@@ -317,8 +317,8 @@ fn missing_weights_error(spec: &str) -> AgentLoopError {
     AgentLoopError::llm_kind(
         LlmErrorKind::Unavailable,
         format!(
-            "local model '{spec}' is not downloaded. Run `yolop models pull {spec}` first \
-             (several GB), then retry. `yolop models list` shows what is already on disk."
+            "local model '{spec}' is not downloaded. Run `yolop weights pull {spec}` first \
+             (several GB), then retry. `yolop weights list` shows what is already on disk."
         ),
     )
 }

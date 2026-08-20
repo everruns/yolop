@@ -273,6 +273,10 @@ pub struct App {
     /// name. Once populated, replaces the curated fallback list in the
     /// model picker.
     model_catalog: HashMap<String, ModelPickerCatalog>,
+    /// A model chosen from the list whose provider still needs credentials.
+    /// Held across the credential/login steps so authenticating applies the
+    /// model the user actually picked instead of dropping them in a catalog.
+    pending_list_model: Option<crate::config::model_list::ModelEntry>,
     /// Providers with an in-flight models API fetch.
     model_fetches_in_flight: HashSet<String>,
     /// Disabled in unit tests so opening the picker never spawns real
@@ -455,6 +459,13 @@ pub(crate) enum SetupStep {
         custom: Option<String>,
         error: Option<String>,
     },
+    /// The model list: the default view when switching models, spanning
+    /// providers. `PickModel` above is the browse-one-provider's-catalog step
+    /// behind it. See [`crate::capabilities::model_list`].
+    PickListedModel {
+        selected: usize,
+        error: Option<String>,
+    },
     PickEffort {
         selected: usize,
         error: Option<String>,
@@ -623,6 +634,17 @@ pub(crate) struct ModelOption {
     hint: String,
 }
 
+/// One row of the model list overlay: an entry from `[[models]]`, or the
+/// trailing row that falls through to browsing a provider's whole catalog.
+#[derive(Clone, Debug)]
+pub(crate) struct ListedModelRow {
+    /// `None` on the "Browse all models…" row.
+    pub(crate) entry: Option<crate::config::model_list::ModelEntry>,
+    pub(crate) label: String,
+    pub(crate) hint: String,
+    pub(crate) selected_now: bool,
+}
+
 /// Owned snapshot of the App fields the pure-render chrome helpers
 /// (command suggestions, stream preview, separators, session status)
 /// consume. Extracted from `App` so those helpers can be exercised by
@@ -734,6 +756,7 @@ impl App {
             settings: runtime.settings,
             sandbox_mode_override: runtime.sandbox_mode_override,
             model_catalog: HashMap::new(),
+            pending_list_model: None,
             model_fetches_in_flight: HashSet::new(),
             model_discovery_enabled: true,
             models_tx,
@@ -3151,7 +3174,7 @@ impl App {
             UiCommand::RunShell { command } => self.start_shell_command(command),
             UiCommand::Quit => self.should_quit = true,
             UiCommand::OpenModelOverlay { arg } => match arg {
-                Some(arg) => self.start_model_setup_with_arg(&arg),
+                Some(arg) => self.start_model_setup_with_arg(&arg).await,
                 None => self.start_model_setup(),
             },
             UiCommand::OpenEffortOverlay { arg } => {
@@ -11079,26 +11102,97 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn model_command_opens_model_picker_overlay() {
+    async fn model_command_opens_the_model_list() {
         let mut fixture = app_with_llmsim().await;
         let app = &mut fixture.app;
         app.lines.clear();
 
         app.dispatch_command_for_test("model").await;
 
-        assert!(matches!(
-            app.setup,
-            Some(SetupStep::PickModel {
-                ref provider,
-                ..
-            }) if provider == "llmsim"
-        ));
+        // `/model` opens the cross-provider list, not one provider's catalog.
+        assert!(matches!(app.setup, Some(SetupStep::PickListedModel { .. })));
         let rendered = setup_overlay_text(app);
-        assert!(rendered.iter().any(|line| line.contains("Select Model")));
+        assert!(rendered.iter().any(|line| line.contains("Models")));
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line.contains("Browse all models")),
+            "the full catalog stays reachable from the list: {rendered:?}"
+        );
+    }
+
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn picking_an_unauthenticated_model_routes_through_sign_in() {
+        let _guard = crate::testing::test_env::lock();
+        unsafe {
+            std::env::remove_var("OLLAMA_BASE_URL");
+            std::env::remove_var("OLLAMA_API_KEY");
+        }
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.settings
+            .set_models(vec![crate::config::model_list::ModelEntry::new(
+                "ollama", "llama3.2",
+            )])
+            .expect("write the model list");
+        app.lines.clear();
+
+        app.start_model_setup();
+        // The entry is visible and marked rather than hidden: picking a model
+        // you have not signed in to yet is how you start using it.
+        let rows = app.listed_model_rows();
+        assert!(
+            rows[0].hint.contains("needs sign-in"),
+            "unauthenticated entries are marked: {:?}",
+            rows[0]
+        );
+
+        app.confirm_listed_model(0).await;
+
+        assert!(
+            matches!(app.setup, Some(SetupStep::Credential { ref provider, .. }) if provider == "ollama"),
+            "selecting it opens sign-in for its provider: {:?}",
+            app.setup
+        );
+        assert_eq!(
+            app.pending_list_model,
+            Some(crate::config::model_list::ModelEntry::new(
+                "ollama", "llama3.2"
+            )),
+            "the picked model is held so authenticating applies it"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn model_command_preselects_current_raw_model_id() {
+    async fn finishing_sign_in_applies_the_model_that_was_picked() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.lines.clear();
+        app.handle_command("setup token openai sk-test").await;
+        app.pending_list_model = Some(crate::config::model_list::ModelEntry::new(
+            "openai",
+            "gpt-5.4-mini",
+        ));
+
+        app.finish_auth_step("openai").await;
+
+        assert!(
+            app.model
+                .provider_label()
+                .starts_with("openai/gpt-5.4-mini"),
+            "authentication lands on the picked model, not a catalog: {}",
+            app.model.provider_label()
+        );
+        assert!(app.setup.is_none(), "the overlay closes: {:?}", app.setup);
+        assert!(
+            app.pending_list_model.is_none(),
+            "the pending pick is consumed"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn model_list_preselects_the_current_model() {
         let mut fixture = app_with_llmsim().await;
         let app = &mut fixture.app;
         app.lines.clear();
@@ -11111,18 +11205,21 @@ mod tests {
         app.run_setup_command(Some("model gpt-5.4"))
             .await
             .expect("set openai model");
+        app.settings
+            .set_models(vec![
+                crate::config::model_list::ModelEntry::new("openai", "gpt-5.6-sol"),
+                crate::config::model_list::ModelEntry::new("openai", "gpt-5.4"),
+            ])
+            .expect("write the model list");
         app.lines.clear();
 
         app.dispatch_command_for_test("model").await;
 
-        assert!(matches!(
-            app.setup,
-            Some(SetupStep::PickModel {
-                ref provider,
-                selected,
-                ..
-            }) if provider == "openai" && selected == 4
-        ));
+        assert!(
+            matches!(app.setup, Some(SetupStep::PickListedModel { selected, .. }) if selected == 1),
+            "the list opens on the model in use: {:?}",
+            app.setup
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -11557,7 +11654,7 @@ mod tests {
             ));
             match action {
                 StatusAction::OpenModel => {
-                    assert!(matches!(app.setup, Some(SetupStep::PickModel { .. })));
+                    assert!(matches!(app.setup, Some(SetupStep::PickListedModel { .. })));
                 }
                 StatusAction::OpenEffort => {
                     assert!(matches!(app.setup, Some(SetupStep::PickEffort { .. })));

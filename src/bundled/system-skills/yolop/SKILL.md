@@ -37,7 +37,7 @@ can also run them via `run_command` when the user asks in plain language.
 | `/mcp` | List configured MCP servers |
 | `/cwd` | Print the workspace root |
 | `/status [compact\|expanded\|toggle]` | Change session status bar layout (clicking the status bar toggles too) |
-| `/model [id]` | Open the model picker; an argument pre-fills selection |
+| `/model [id]` | Open the model list; an argument switches straight to a listed model |
 | `/effort [level]` | Open the reasoning-effort picker; an argument pre-fills selection |
 | `/clear` | Clear the transcript and re-show the startup banner |
 | `/shell <command>` | Run a shell command from the workspace root with bounded inline output |
@@ -58,6 +58,31 @@ path as `/shell` (handy for quick one-offs).
 
 User-invocable skills (for example `/yolop`, `/yolop-config`, `/skill-management`)
 also appear in the registry when installed.
+
+## The model list
+
+`/model` (and clicking the model in the status bar) opens your model list: an
+ordered, cross-provider menu of the models you switch between, spanning
+providers so one selection changes provider and model together. A "Browse all
+models…" row falls through to the old per-provider catalog for anything not on
+the list.
+
+Entries whose provider you have not signed in to are shown and marked; picking
+one runs that provider's sign-in first, then switches to the model you picked.
+
+Edit the list from a shell (it applies to the running session):
+
+```bash
+yolop models list
+yolop models add openrouter anthropic/claude-opus-4-8 --label "Opus (OpenRouter)"
+yolop models move claude-opus-4-8 1
+yolop models rm gpt-5.4-mini
+yolop models use gpt-5.6-sol
+yolop models reset          # back to the built-in default list
+```
+
+It is stored as `[[models]]` in `settings.toml`, so it can also be edited by
+hand. Unset means the built-in default list, led by `gpt-5.6-sol`.
 
 ## Keyboard shortcuts
 
@@ -104,6 +129,8 @@ viewport); there is no in-app page-up/page-down.
 | `Enter` | Confirm |
 | `Esc` | Cancel / go back |
 | `0`–`9` | Jump to numbered entry (where shown) |
+
+`/model` opens the model list; its last row browses a provider's full catalog.
 
 ## What yolop can do
 

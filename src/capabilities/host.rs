@@ -561,6 +561,24 @@ impl ModelsCapability {
     }
 }
 
+/// Build the shared controller from the same handles `ModelsCapability` holds,
+/// for a sibling capability that must mutate the live provider/model through
+/// the one implementation rather than a second copy of it.
+pub(crate) fn setup_controller(
+    provider: Arc<RwLock<ProviderChoice>>,
+    provider_store: Arc<dyn RuntimeProviderStore>,
+    settings: Arc<SettingsStore>,
+    pending_model_choice: Arc<RwLock<Option<ProviderChoice>>>,
+) -> SetupController {
+    SetupController {
+        provider,
+        provider_store,
+        config: settings.clone(),
+        settings,
+        pending_model_choice,
+    }
+}
+
 /// Live provider/model/effort controller. Holds the same handles as
 /// [`ModelsCapability`] and owns every mutation (`change_provider`,
 /// `change_model`, `change_effort`, tokens, urls, attribution, approval). The
@@ -718,6 +736,15 @@ fn setup_command_arg() -> CommandArg {
 }
 
 impl SetupController {
+    /// The live provider/model selection, for surfaces that mark the current
+    /// entry (the model list, the status bar).
+    pub(crate) fn current_choice(&self) -> ProviderChoice {
+        self.provider
+            .read()
+            .expect("provider lock poisoned")
+            .clone()
+    }
+
     fn status_result(&self) -> CommandResult {
         let current = self
             .provider
@@ -762,7 +789,10 @@ impl SetupController {
     /// provider and model atomically — the wizard needs this for the custom
     /// provider, whose `/setup model` form would otherwise have no provider
     /// context to resolve against on first-time setup.
-    async fn change_provider(&self, raw: &str) -> everruns_provider::error::Result<CommandResult> {
+    pub(crate) async fn change_provider(
+        &self,
+        raw: &str,
+    ) -> everruns_provider::error::Result<CommandResult> {
         let mut parts = raw.splitn(2, char::is_whitespace);
         let name = parts.next().unwrap_or_default();
         let model_spec = parts.next().unwrap_or_default().trim();
@@ -1673,7 +1703,7 @@ mod tests {
             .await
             .expect("change model");
         let before = controller.settings.snapshot();
-        assert_eq!(before.models.get("openai"), None);
+        assert_eq!(before.default_models.get("openai"), None);
         assert_eq!(before.default_provider, None);
 
         let warning = SetupController::persist_pending_model_choice(
@@ -1683,7 +1713,7 @@ mod tests {
         assert!(warning.is_empty(), "unexpected warning: {warning}");
         let after = controller.settings.snapshot();
         assert_eq!(
-            after.models.get("openai").map(String::as_str),
+            after.default_models.get("openai").map(String::as_str),
             Some("gpt-5.4 none")
         );
         assert_eq!(after.default_provider.as_deref(), Some("openai"));

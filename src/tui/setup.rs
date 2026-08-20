@@ -40,15 +40,82 @@ impl App {
         self.start_setup();
     }
 
+    /// `/model` and the status-bar click open the model list, not one
+    /// provider's catalog: the list is what a user switches between, and it
+    /// spans providers. Browsing a provider's full catalog is one row down.
     pub(crate) fn start_model_setup(&mut self) {
-        let provider = self.current_provider_name();
-        self.open_model_step(&provider);
+        let rows = self.listed_model_rows();
+        let selected = rows.iter().position(|row| row.selected_now).unwrap_or(0);
+        self.setup = Some(SetupStep::PickListedModel {
+            selected,
+            error: None,
+        });
     }
 
-    pub(crate) fn start_model_setup_with_arg(&mut self, raw: &str) {
+    /// Rows for the model list overlay. Entries whose provider has no
+    /// credential stay visible and marked: picking one is a legitimate way to
+    /// start using it, and it routes into sign-in (see `confirm_listed_model`).
+    pub(crate) fn listed_model_rows(&self) -> Vec<ListedModelRow> {
+        let settings = self.settings.snapshot();
+        let current_provider = self.current_provider_name();
+        let current_model = self.model.model_id();
+        let mut rows: Vec<ListedModelRow> = settings
+            .model_list()
+            .into_iter()
+            .map(|entry| {
+                let selected_now =
+                    entry.provider == current_provider && entry.model == current_model;
+                let connected = crate::capabilities::model_discovery::provider_is_usable(
+                    &settings,
+                    &entry.provider,
+                );
+                let mut hint = App::provider_label(&entry.provider).to_string();
+                if let Some(effort) = &entry.effort {
+                    hint.push_str(&format!(" · {effort}"));
+                }
+                if !connected {
+                    hint.push_str(" · needs sign-in");
+                }
+                if selected_now {
+                    hint.push_str(" · current");
+                }
+                ListedModelRow {
+                    label: entry.display(),
+                    hint,
+                    selected_now,
+                    entry: Some(entry),
+                }
+            })
+            .collect();
+        rows.push(ListedModelRow {
+            entry: None,
+            label: "Browse all models…".to_string(),
+            hint: "every model each provider offers".to_string(),
+            selected_now: false,
+        });
+        rows
+    }
+
+    pub(crate) async fn start_model_setup_with_arg(&mut self, raw: &str) {
         let spec = raw.trim();
         if spec.is_empty() {
             self.start_model_setup();
+            return;
+        }
+        // `/model <id>` names a model, and the list is where the named models
+        // are: apply it directly when it is on the list rather than opening a
+        // picker the user then has to confirm.
+        let listed = self
+            .listed_model_rows()
+            .into_iter()
+            .filter_map(|row| row.entry)
+            .find(|entry| {
+                entry.model == spec
+                    || entry.key() == spec
+                    || format!("{}/{}", entry.provider, entry.model) == spec
+            });
+        if let Some(entry) = listed {
+            self.apply_listed_model(&entry, 0).await;
             return;
         }
         let provider = self.current_provider_name();
@@ -724,6 +791,9 @@ impl App {
             } => {
                 self.handle_model_key(key, provider, selected, custom).await;
             }
+            SetupStep::PickListedModel { selected, .. } => {
+                self.handle_listed_model_key(key, selected).await;
+            }
             SetupStep::PickEffort { selected, .. } => {
                 self.handle_effort_key(key, selected).await;
             }
@@ -792,7 +862,7 @@ impl App {
             // yet, and the model step right after sets provider + model
             // atomically via `provider custom <model>`.
             let _ = self.run_setup_command(Some("provider custom")).await;
-            self.open_model_step("custom");
+            self.finish_auth_step("custom").await;
             return;
         }
 
@@ -800,7 +870,7 @@ impl App {
             .run_setup_command(Some(&format!("provider {}", option.name)))
             .await
         {
-            Ok(()) => self.open_model_step(option.name),
+            Ok(()) => self.finish_auth_step(option.name).await,
             Err(error) => {
                 // A connected-looking provider that still fails to switch
                 // (stale key, unreachable endpoint) lands on the credential
@@ -976,14 +1046,14 @@ impl App {
                 // chosen, so the validation switch is deferred to the model
                 // step (its key is optional anyway).
                 if provider == "custom" {
-                    self.open_model_step("custom");
+                    self.finish_auth_step("custom").await;
                     return;
                 }
                 match self
                     .run_setup_command(Some(&format!("provider {provider}")))
                     .await
                 {
-                    Ok(()) => self.open_model_step(&provider),
+                    Ok(()) => self.finish_auth_step(&provider).await,
                     Err(error) => {
                         self.setup = Some(SetupStep::Credential {
                             provider,
@@ -1191,7 +1261,7 @@ impl App {
                                     error: Some(error),
                                 });
                             } else {
-                                self.open_model_step("codex");
+                                self.finish_auth_step("codex").await;
                             }
                         }
                         Err(error) => {
@@ -1239,7 +1309,7 @@ impl App {
                             error: Some(error),
                         });
                     } else {
-                        self.open_model_step("openrouter");
+                        self.finish_auth_step("openrouter").await;
                     }
                 }
                 Err(error) => {
@@ -1296,7 +1366,7 @@ impl App {
                         return;
                     }
                     match self.run_setup_command(Some("provider codex")).await {
-                        Ok(()) => self.open_model_step("codex"),
+                        Ok(()) => self.finish_auth_step("codex").await,
                         Err(error) => {
                             self.setup = Some(SetupStep::TokenInput {
                                 provider,
@@ -1320,14 +1390,14 @@ impl App {
                 // model is known yet); other providers validate the new key
                 // by switching now.
                 if provider == "custom" {
-                    self.open_model_step("custom");
+                    self.finish_auth_step("custom").await;
                     return;
                 }
                 match self
                     .run_setup_command(Some(&format!("provider {provider}")))
                     .await
                 {
-                    Ok(()) => self.open_model_step(&provider),
+                    Ok(()) => self.finish_auth_step(&provider).await,
                     Err(error) => {
                         self.setup = Some(SetupStep::TokenInput {
                             provider,
@@ -1451,6 +1521,104 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    pub(crate) async fn handle_listed_model_key(&mut self, key: KeyEvent, selected: usize) {
+        let rows = self.listed_model_rows();
+        match key.code {
+            KeyCode::Esc => self.setup = None,
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.setup = Some(SetupStep::PickListedModel {
+                    selected: select_up(selected),
+                    error: None,
+                });
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.setup = Some(SetupStep::PickListedModel {
+                    selected: select_down(selected, rows.len()),
+                    error: None,
+                });
+            }
+            KeyCode::Char(ch) if ch.is_ascii_digit() => {
+                if let Some(index) = digit_index(ch, rows.len()) {
+                    self.confirm_listed_model(index).await;
+                }
+            }
+            KeyCode::Enter => self.confirm_listed_model(selected).await,
+            _ => {}
+        }
+    }
+
+    pub(crate) async fn confirm_listed_model(&mut self, selected: usize) {
+        let rows = self.listed_model_rows();
+        let Some(row) = rows.get(selected) else {
+            self.setup = Some(SetupStep::PickListedModel {
+                selected: 0,
+                error: None,
+            });
+            return;
+        };
+        let Some(entry) = row.entry.clone() else {
+            // "Browse all models…": the provider picker, then that provider's
+            // catalog — the pre-list flow, kept as the way to reach anything
+            // not on the list (and to add to it).
+            self.start_setup();
+            return;
+        };
+        let settings = self.settings.snapshot();
+        if !crate::capabilities::model_discovery::provider_is_usable(&settings, &entry.provider) {
+            // Picking a model is a request to use it, so sign-in is part of the
+            // same gesture: authenticate, then apply the model that was picked
+            // (`finish_auth_step`) rather than dumping the user in a catalog.
+            self.push_system(format!(
+                "{} needs credentials; signing in first, then switching to {}",
+                App::provider_label(&entry.provider),
+                entry.display()
+            ));
+            self.pending_list_model = Some(entry.clone());
+            self.setup = Some(SetupStep::Credential {
+                provider: entry.provider.clone(),
+                selected: 0,
+                error: None,
+            });
+            return;
+        }
+        self.apply_listed_model(&entry, selected).await;
+    }
+
+    /// Apply one list entry: provider and model together, through the same
+    /// `/setup provider <name> <model> [effort]` path every other surface uses.
+    pub(crate) async fn apply_listed_model(
+        &mut self,
+        entry: &crate::config::model_list::ModelEntry,
+        selected: usize,
+    ) {
+        let command = format!("provider {} {}", entry.provider, entry.spec());
+        match self.run_setup_command(Some(&command)).await {
+            Ok(()) => {
+                self.setup = None;
+                self.push_system(format!("model: {}", self.model.provider_label()));
+            }
+            Err(error) => {
+                self.setup = Some(SetupStep::PickListedModel {
+                    selected,
+                    error: Some(error),
+                });
+            }
+        }
+    }
+
+    /// The hop every credential path takes once authentication succeeds. A
+    /// model picked from the list is applied here; otherwise this is the
+    /// provider's model picker, as before.
+    pub(crate) async fn finish_auth_step(&mut self, provider: &str) {
+        if let Some(entry) = self.pending_list_model.take()
+            && entry.provider == provider
+        {
+            self.apply_listed_model(&entry, 0).await;
+            return;
+        }
+        self.open_model_step(provider);
     }
 
     pub(crate) async fn confirm_model(&mut self, provider: String, selected: usize) {

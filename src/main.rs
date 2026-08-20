@@ -229,7 +229,11 @@ enum Commands {
     /// Manage MCP servers in global settings or workspace `.mcp.json`.
     Mcp(McpArgs),
     /// Manage downloaded weights for the `local` provider.
-    Models(ModelsArgs),
+    ///
+    /// Named `weights` rather than `models` because `yolop models` is the
+    /// user's model list (see `capabilities::model_list`); this command is
+    /// about files on disk.
+    Weights(WeightsArgs),
     /// Live demo of the experimental `tuika` TUI toolkit (spinners, progress
     /// bars, loader). Press `q` or `Esc` to quit. Hidden dev helper.
     #[command(hide = true)]
@@ -256,13 +260,13 @@ struct McpArgs {
 }
 
 #[derive(Args, Debug)]
-struct ModelsArgs {
+struct WeightsArgs {
     #[command(subcommand)]
-    command: ModelsCommand,
+    command: WeightsCommand,
 }
 
 #[derive(Subcommand, Debug)]
-enum ModelsCommand {
+enum WeightsCommand {
     /// List downloaded models and the disk they use.
     List,
     /// Download a model into the store.
@@ -955,16 +959,16 @@ fn resolve_workspace_root(
     std::env::current_dir().context("resolve current workspace directory")
 }
 
-async fn run_models_command(command: ModelsCommand) -> Result<()> {
+async fn run_weights_command(command: WeightsCommand) -> Result<()> {
     match command {
-        ModelsCommand::List => {
+        WeightsCommand::List => {
             let models = models::installed()?;
             if models.is_empty() {
                 let location = models::store_root()
                     .map(|root| root.display().to_string())
                     .unwrap_or_else(|| "<no data directory>".to_string());
                 println!("No models downloaded. Store: {location}");
-                println!("Pull one with `yolop models pull {DEFAULT_LOCAL_MODEL}`.");
+                println!("Pull one with `yolop weights pull {DEFAULT_LOCAL_MODEL}`.");
                 return Ok(());
             }
             let total: u64 = models.iter().map(|model| model.bytes).sum();
@@ -974,7 +978,7 @@ async fn run_models_command(command: ModelsCommand) -> Result<()> {
             println!("{:<44} {}", "total", models::human_bytes(total));
             Ok(())
         }
-        ModelsCommand::Rm { repo } => {
+        WeightsCommand::Rm { repo } => {
             let reclaimed = models::remove(&repo)?;
             println!(
                 "Removed {repo} ({} reclaimed)",
@@ -982,7 +986,7 @@ async fn run_models_command(command: ModelsCommand) -> Result<()> {
             );
             Ok(())
         }
-        ModelsCommand::Pull { spec } => run_models_pull(&spec).await,
+        WeightsCommand::Pull { spec } => run_models_pull(&spec).await,
     }
 }
 
@@ -1273,7 +1277,7 @@ async fn run_command(command: Commands) -> Result<()> {
         }
         Commands::Worktree(args) => run_worktree_command(args.command),
         Commands::Mcp(args) => run_mcp_command(args.command),
-        Commands::Models(args) => run_models_command(args.command).await,
+        Commands::Weights(args) => run_weights_command(args.command).await,
         Commands::TuikaGallery => run_tuika_gallery(),
         #[cfg(target_os = "linux")]
         Commands::SandboxExec {
@@ -1397,6 +1401,7 @@ fn detached_cli_registry() -> Result<control::CliRegistry> {
     let connections_path =
         connectors::default_connections_path().unwrap_or_else(|| fallback.join("connections.toml"));
     let settings = Arc::new(SettingsStore::open(settings_path));
+    let model_list_settings = settings.clone();
     let secrets = extensions::ExtensionSecrets::new(Arc::new(connectors::ConnectionStore::open(
         connections_path,
     )));
@@ -1414,6 +1419,12 @@ fn detached_cli_registry() -> Result<control::CliRegistry> {
     );
     let mut registry = control::CliRegistry::default();
     registry.register(capability)?;
+    // `yolop models` edits the model list. Detached it writes global settings
+    // like any other CLI invocation; `use` needs a session and says so.
+    registry.register(Arc::new(capabilities::ModelListCapability::new(
+        model_list_settings,
+        None,
+    )))?;
     let coordination_store = match runtime::session_log::default_sessions_dir()
         .ok()
         .and_then(|dir| capabilities::CoordinationStore::open(&dir).ok())

@@ -64,6 +64,7 @@ command, an overlay confirmation, or a next-run-only settings write fail this ba
 |---|---|---|
 | Reasoning effort | `set_reasoning_effort` | `/effort` overlay, `/setup effort` |
 | Model | `search_models` / `set_model` | `/model` overlay, `/setup model` |
+| Model list (the menu `/model` and ACP offer) | `yolop models …` (attached CLI) | `/model` overlay, `[[models]]` in settings |
 | Provider | `set_provider` | `/setup provider` |
 | Skills, list | `list_skills` (upstream) | system-prompt listing |
 | Skills, search (skills.sh) | `search_skills` |, |
@@ -84,7 +85,7 @@ Notes:
 - `set_config` is intentionally next-run for provider/model edits, it edits the
   settings file. The *live* equivalents are the `set_*` tools above.
 - **Attached administration is the deliberate exception to "a model-facing tool".**
-  Extension and coordination administration is reachable conversationally by
+  Extension, coordination, and model-list administration is reachable conversationally by
   running `yolop <subcommand> ...` in the foreground Bash tool, which the host
   attaches to the live session, rather than by tool schemas that would cost
   context every turn. It still meets the rest of this contract: live effect,

@@ -3,7 +3,7 @@
 //! The engine can download its own weights, but it does so silently inside the
 //! first inference call: a turn appears to hang for several gigabytes with
 //! nothing on screen. Yolop pulls the files itself instead, so the wait is an
-//! explicit `yolop models pull` with a progress bar, and a turn either has its
+//! explicit `yolop weights pull` with a progress bar, and a turn either has its
 //! weights or fails immediately with an actionable message.
 
 use super::{GGUF_SEPARATOR, repo_dir, split_spec};

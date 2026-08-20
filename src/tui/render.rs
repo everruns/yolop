@@ -1128,6 +1128,28 @@ pub(crate) fn setup_overlay_content(app: &App) -> (Vec<Line<'static>>, Option<(u
             push_setup_error(&mut lines, error.as_deref());
             lines.push(setup_footer("Enter confirm · ↑/↓ move · Esc back"));
         }
+        Some(SetupStep::PickListedModel { selected, error }) => {
+            lines.push(setup_title("Models"));
+            lines.push(setup_hint(
+                "Your model list. Applies to this session and future sessions.",
+            ));
+            lines.push(Line::from(""));
+            let rows = app.listed_model_rows();
+            let (start, end) = model_window(*selected, rows.len(), MAX_VISIBLE_MODEL_ROWS);
+            if start > 0 {
+                lines.push(setup_hint(&format!("↑ {start} more")));
+            }
+            for (idx, row) in rows.iter().enumerate().take(end).skip(start) {
+                lines.push(setup_row(idx == *selected, idx + 1, &row.label, &row.hint));
+            }
+            if end < rows.len() {
+                lines.push(setup_hint(&format!("↓ {} more", rows.len() - end)));
+            }
+            push_setup_error(&mut lines, error.as_deref());
+            lines.push(setup_footer(
+                "Enter confirm · ↑/↓ move · Esc cancel · `yolop models` to edit",
+            ));
+        }
         Some(SetupStep::PickEffort { selected, error }) => {
             lines.push(setup_title("Select Reasoning Effort"));
             lines.push(setup_hint(
@@ -1290,6 +1312,31 @@ pub(crate) fn setup_picker(app: &App) -> Option<SetupPicker> {
                 selected: *selected,
                 footer,
                 viewport: None,
+            })
+        }
+        SetupStep::PickListedModel { selected, error } => {
+            let header = vec![
+                setup_title("Models"),
+                setup_hint("Your model list. Applies to this session and future sessions."),
+                Line::from(""),
+            ];
+            let options = app
+                .listed_model_rows()
+                .iter()
+                .enumerate()
+                .map(|(idx, row)| setup_option_line(idx + 1, &row.label, &row.hint))
+                .collect();
+            let mut footer = Vec::new();
+            push_setup_error(&mut footer, error.as_deref());
+            footer.push(setup_footer(
+                "Enter confirm · ↑/↓ move · Esc cancel · `yolop models` to edit",
+            ));
+            Some(SetupPicker {
+                header,
+                options,
+                selected: *selected,
+                footer,
+                viewport: Some(MAX_VISIBLE_MODEL_ROWS as u16),
             })
         }
         // The model list is a windowed SelectList. Its custom-id sub-mode

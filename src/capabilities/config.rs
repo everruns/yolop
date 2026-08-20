@@ -628,20 +628,28 @@ impl SetConfigTool {
                     "theme = {value}; applies to new interactive sessions"
                 )))
             }
+            // The list has one editor: `yolop models`, which validates
+            // provider/model pairs and owns ordering. A key/value setter here
+            // would be a second, weaker write path for the same file.
+            KeyTarget::Models => Err(
+                "the model list is edited with `yolop models add|rm|move|use`, not `set_config`; \
+                 run `yolop models list` to see it"
+                    .to_string(),
+            ),
             KeyTarget::Model(provider) => {
                 if clearing {
                     let existed = self.settings.clear_model(provider).map_err(map_err)?;
                     return Ok(saved(if existed {
-                        format!("cleared models.{provider}")
+                        format!("cleared default_models.{provider}")
                     } else {
-                        format!("models.{provider} was already unset")
+                        format!("default_models.{provider} was already unset")
                     }));
                 }
                 self.settings
                     .set_model(provider.clone(), value.to_string())
                     .map_err(map_err)?;
                 Ok(saved(format!(
-                    "models.{provider} = {value}; applies on the next run for that provider"
+                    "default_models.{provider} = {value}; applies on the next run for that provider"
                 )))
             }
             KeyTarget::Token(provider) => {
@@ -1045,8 +1053,8 @@ mod tests {
             .as_array()
             .expect("fields array")
             .iter()
-            .find(|f| f["key"] == "models")
-            .expect("models field present");
+            .find(|f| f["key"] == "default_models")
+            .expect("default_models field present");
         assert_eq!(models["current"]["openai"], "gpt-5.5");
         assert!(
             models["current"].get("frobnicate").is_none(),

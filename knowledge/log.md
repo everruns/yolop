@@ -1,5 +1,25 @@
 # Knowledge Log
 
+## 2026-08-20, The model menu is a list, not a catalog
+
+- [Model list](specs/model-list.md): `/model`, the status bar, and ACP now serve
+  an ordered, cross-provider `[[models]]` list instead of a provider's whole
+  models API response. A user switches between a handful of models; nothing in
+  yolop used to know which handful.
+- Not "favourites" or "bookmarks". Those words describe marking items inside a
+  larger list you still browse. Here the list *is* the offer and the catalog is
+  the fallback, reachable from a "Browse all models…" row.
+- An entry pairs provider with model, so one selection switches both, and the
+  same weights through two accounts (direct, OpenRouter) are two entries.
+- Two keys split apart: `[[models]]` is the curated menu, `[default_models]` is
+  the per-provider memory that used to own the `models` name. A `models` table
+  in an existing file still reads as `default_models`.
+- Picking a model whose provider has no credential opens sign-in and then
+  applies that model, instead of showing a dead option (ACP) or a catalog (TUI).
+- Administration is `yolop models list|add|rm|move|use|reset` on the attached
+  control plane, following extensions rather than adding model tools. The
+  local-weights command it displaced became `yolop weights`.
+
 ## 2026-08-20, The trace payload already carries the host's span tree
 
 - [Extensions](specs/extensions.md): `trace/event` forwards the session event

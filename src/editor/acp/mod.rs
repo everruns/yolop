@@ -982,9 +982,18 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn standard_config_options_select_the_live_session_model() {
         let sessions = tempfile::tempdir().expect("sessions tempdir");
-        SettingsStore::open(sessions.path().join("settings.toml"))
+        let settings = SettingsStore::open(sessions.path().join("settings.toml"));
+        settings
             .set_token("ollama".to_string(), "local".to_string())
             .expect("mark Ollama configured");
+        // ACP is offered the user's model list, not every model every
+        // credentialed provider advertises, so Ollama appears here because it
+        // is listed — a credential alone no longer puts a model on the menu.
+        settings
+            .set_models(vec![crate::config::model_list::ModelEntry::new(
+                "ollama", "llama3.2",
+            )])
+            .expect("write the model list");
         let (mut w, mut reader, _server) =
             start_raw_server(fixed("unused"), sessions.path().to_path_buf());
         send_json(
@@ -1024,6 +1033,10 @@ mod tests {
             })
             .expect("Ollama model option")
             .to_owned();
+        assert_eq!(
+            selected_model, "ollama:llama3.2",
+            "the offered option is the listed entry"
+        );
 
         send_json(
             &mut w,

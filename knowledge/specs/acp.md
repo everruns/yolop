@@ -56,8 +56,12 @@ Yolop uses ACP's standard session configuration mechanism for model selection. `
 - a `model` select option in the standard `model` category;
 - a `reasoning_effort` select option in the standard `thought_level` category when the selected model supports reasoning levels.
 
-The model list contains only currently usable providers; a stale preference is
-never presented as a connected model. If the preferred provider is unusable,
+The `model` option serves the user's model list (see
+[`model-list.md`](./model-list.md)), not every model every credentialed provider
+advertises: an editor's model menu holds the handful a user switches between.
+Entries whose provider is not currently usable are filtered out, so a stale
+preference is never presented as a connected model, and an option value is
+`provider:model` so selecting one switches both. If the preferred provider is unusable,
 ACP starts with another usable provider and falls back to local `llmsim` when
 none is connected. Session creation therefore never fails only because a saved
 provider lost its credentials, while one-shot print mode remains fail-fast.
