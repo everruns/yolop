@@ -97,6 +97,13 @@ jobs:
             exit 1
           fi
 
+      - name: Documented installs are locked
+        run: |
+          if grep -R -n --include='*.md' 'cargo install yolop' README.md docs | grep -v -- '--locked'; then
+            echo "::error::Every documented 'cargo install yolop' must pass --locked so it resolves against the published lockfile."
+            exit 1
+          fi
+
   eval-analyzers:
     name: Eval analyzers (Python)
     needs: changes
