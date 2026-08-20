@@ -196,6 +196,19 @@ and can never widen it. A manifest change (a new tool, a changed schema) still
 requires a restart, the enabled-capability set is fixed for the session
 because `everruns-core` builds the harness once with no live-reconfigure boundary.
 Covered by `reload_respawns_the_server_with_edited_code`.
+The `trace/event` payload is the host's session event verbatim, the same one an
+in-process `EventListener` receives, so an extension is not working from a
+lossy summary. Its `context` carries the host's OTel-style
+`trace_id`/`span_id`/`parent_span_id`, and that hierarchy is real:
+`llm.generation` parents to its `reason` span and `tool.*` to its `act` span.
+`turn.*` is the root, carrying no span id, and its children name it by
+`turn_id`. `TraceEventParams` exposes those ids so an exporter reads the tree
+the host already computed instead of re-deriving a flat one from `turn_id`.
+Attribute names are the Gen-AI semantic conventions, defined upstream in
+`everruns-core`'s `telemetry::gen_ai`; the SDK does not restate them and does
+not depend on that crate, so an exporter copies the constants it needs and
+cites the source.
+
 Trace forwarding has a teardown contract. `trace/event` is fire-and-forget and
 a server is `kill_on_drop`, so ending a session by dropping the runtime killed
 the child with the tail of the stream still in flight. `turn.completed` closes
