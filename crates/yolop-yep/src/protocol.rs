@@ -362,6 +362,21 @@ fn default_true() -> bool {
 /// everruns event protocol, `knowledge/specs/events.md`); the server maps it to spans.
 /// Lenient/defaulted per the forward-compat rules — a new event type parses
 /// with its `data` intact even if this struct predates it.
+///
+/// Exporters should not invent their own vocabulary. The payload is the same
+/// event an in-process `everruns_core::event_listeners::EventListener` sees, so
+/// an exporter that wants to agree with the host's own OTel and Braintrust
+/// backends should use the Gen-AI semantic conventions
+/// (`gen_ai.request.model`, `gen_ai.usage.input_tokens`, …) rather than a
+/// private `myextension.*` namespace, which is what leaves a tracing UI
+/// showing empty fields.
+///
+/// Those names are defined in `everruns-core`'s `telemetry::gen_ai` module.
+/// This SDK deliberately does not restate them and does not depend on
+/// `everruns-core`: it stays serde-only so an extension binary stays small. An
+/// exporter that wants them copies the constants it needs and cites the source,
+/// accepting that a copy can drift from upstream.
+/// See <https://opentelemetry.io/docs/specs/semconv/gen-ai/>.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct TraceEventParams {
@@ -378,12 +393,81 @@ pub struct TraceEventParams {
     #[serde(default)]
     pub session_id: String,
     /// Correlation ids (turn/exec/message/model/…) carried verbatim, for
-    /// stitching point-in-time events into spans.
+    /// stitching point-in-time events into spans. Includes the host's
+    /// OTel-style `trace_id`/`span_id`/`parent_span_id`; see
+    /// [`TraceEventParams::parent_span_id`].
     #[serde(default, skip_serializing_if = "Value::is_null")]
     pub context: Value,
     /// Event-type-specific payload, carried verbatim.
     #[serde(default, skip_serializing_if = "Value::is_null")]
     pub data: Value,
+}
+
+impl TraceEventParams {
+    /// This event's own span id, from `context.span_id`.
+    ///
+    /// Events that share a span carry the same id: a `*.started` and its
+    /// terminal `*.completed` are two events describing one span.
+    pub fn span_id(&self) -> Option<&str> {
+        self.context_str("span_id")
+    }
+
+    /// The parent span id the host already computed, from
+    /// `context.parent_span_id`.
+    ///
+    /// **Use this for hierarchy.** The host emits a real tree:
+    /// `llm.generation` parents to its `reason` span, `tool.*` to its `act`
+    /// span, and `reason`/`act` to the turn. An exporter that re-derives
+    /// parenting from `turn_id` instead flattens all of that into one level,
+    /// which is what a trace with orphaned children looks like.
+    ///
+    /// Two shapes to handle. `turn.*` is the root: it carries **no** span id
+    /// and no parent, so an exporter mints the root span itself. Its children
+    /// name it by its `turn_id` rather than by a span id, so a `parent_span_id`
+    /// equal to [`turn_id`](Self::turn_id) means "the turn's span"; deeper
+    /// parents are ordinary span ids.
+    pub fn parent_span_id(&self) -> Option<&str> {
+        self.context_str("parent_span_id")
+    }
+
+    /// Trace id grouping one turn's spans, from `context.trace_id`.
+    pub fn trace_id(&self) -> Option<&str> {
+        self.context_str("trace_id")
+    }
+
+    /// Turn this event belongs to, from `context.turn_id`.
+    pub fn turn_id(&self) -> Option<&str> {
+        self.context_str("turn_id")
+    }
+
+    /// Atom execution this event belongs to, from `context.exec_id`.
+    pub fn exec_id(&self) -> Option<&str> {
+        self.context_str("exec_id")
+    }
+
+    /// The family half of `event_type`: `llm` for `llm.generation`, `turn` for
+    /// `turn.started`. The whole string when there is no `.`.
+    pub fn family(&self) -> &str {
+        self.event_type
+            .split_once('.')
+            .map_or(self.event_type.as_str(), |(family, _)| family)
+    }
+
+    /// The phase half of `event_type`: `started`, `completed`, `generation`.
+    /// Empty when there is no `.`. Keeps the full remainder, so
+    /// `reason.thinking.started` yields `thinking.started`.
+    pub fn phase(&self) -> &str {
+        self.event_type
+            .split_once('.')
+            .map_or("", |(_, phase)| phase)
+    }
+
+    fn context_str(&self, key: &str) -> Option<&str> {
+        self.context
+            .get(key)
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -422,6 +506,83 @@ pub struct StatusChangedParams {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Payloads copied from a real session (a bash turn against Anthropic), so
+    /// these pin the wire shape the host actually emits rather than an assumed
+    /// one.
+    #[test]
+    fn correlation_accessors_read_the_hosts_span_tree() {
+        let reason: TraceEventParams = serde_json::from_str(
+            r#"{"event_type":"reason.started","id":"e1","ts":"2026-08-20T04:07:00Z",
+                "session_id":"s1",
+                "context":{"turn_id":"turn_01a0","exec_id":"exec_01a0",
+                           "trace_id":"turn_01a0",
+                           "span_id":"01a01d59-fd57-7083-b7b4-a0c51beaf956",
+                           "parent_span_id":"turn_01a0"}}"#,
+        )
+        .expect("reason payload");
+        let llm: TraceEventParams = serde_json::from_str(
+            r#"{"event_type":"llm.generation","id":"e2","ts":"2026-08-20T04:07:02Z",
+                "session_id":"s1",
+                "context":{"turn_id":"turn_01a0",
+                           "span_id":"01a01d5a-06ee-7620-a8a2-402acd0c6b90",
+                           "parent_span_id":"01a01d59-fd57-7083-b7b4-a0c51beaf956"}}"#,
+        )
+        .expect("llm payload");
+
+        // The generation nests under the reason span, not under the turn.
+        assert_eq!(llm.parent_span_id(), reason.span_id());
+        assert_eq!(reason.trace_id(), Some("turn_01a0"));
+        assert_eq!(llm.turn_id(), Some("turn_01a0"));
+        assert_eq!(reason.exec_id(), Some("exec_01a0"));
+
+        // A reason parents to the turn, and names it by turn id.
+        assert_eq!(reason.parent_span_id(), reason.turn_id());
+
+        assert_eq!((llm.family(), llm.phase()), ("llm", "generation"));
+        assert_eq!((reason.family(), reason.phase()), ("reason", "started"));
+    }
+
+    /// `turn.*` is the root: no span id, no parent, so an exporter mints the
+    /// root span itself.
+    #[test]
+    fn a_turn_event_carries_no_span_identity() {
+        let turn: TraceEventParams = serde_json::from_str(
+            r#"{"event_type":"turn.started","id":"e0","ts":"2026-08-20T04:07:00Z",
+                "session_id":"s1","context":{"turn_id":"turn_01a0"}}"#,
+        )
+        .expect("turn payload");
+
+        assert_eq!(turn.span_id(), None);
+        assert_eq!(turn.parent_span_id(), None);
+        assert_eq!(turn.turn_id(), Some("turn_01a0"));
+        assert_eq!((turn.family(), turn.phase()), ("turn", "started"));
+    }
+
+    /// A nested phase keeps its whole remainder, and a missing or empty context
+    /// reads as absent rather than as an empty string.
+    #[test]
+    fn phase_keeps_nesting_and_absent_context_is_none() {
+        let thinking = TraceEventParams {
+            event_type: "reason.thinking.started".into(),
+            ..Default::default()
+        };
+        assert_eq!(thinking.family(), "reason");
+        assert_eq!(thinking.phase(), "thinking.started");
+        assert_eq!(thinking.span_id(), None);
+
+        let bare = TraceEventParams {
+            event_type: "heartbeat".into(),
+            ..Default::default()
+        };
+        assert_eq!(bare.family(), "heartbeat");
+        assert_eq!(bare.phase(), "");
+
+        let empty: TraceEventParams =
+            serde_json::from_str(r#"{"event_type":"x.y","context":{"span_id":""}}"#)
+                .expect("empty span id");
+        assert_eq!(empty.span_id(), None, "an empty id must read as absent");
+    }
 
     #[test]
     fn classification_is_field_based() {

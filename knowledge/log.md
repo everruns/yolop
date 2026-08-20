@@ -1,5 +1,104 @@
 # Knowledge Log
 
+## 2026-08-20, The trace payload already carries the host's span tree
+
+- [Extensions](specs/extensions.md): `trace/event` forwards the session event
+  verbatim, so an extension sees exactly what an in-process `EventListener`
+  sees, `context.parent_span_id` included. Confirmed by dumping a real run: all
+  17 event types arrive, `llm.generation` parents to `reason`, `tool.*` to
+  `act`, and `data.metadata` carries model, provider, token usage, and cost.
+- `TraceEventParams` gained `span_id`/`parent_span_id`/`trace_id`/`turn_id`/
+  `exec_id` plus `family`/`phase`. The tree was always on the wire; nothing
+  named it, so the first exporter written against this facet re-derived a flat
+  one from `turn_id` and every exported trace lost its nesting.
+- `turn.*` is the root and carries no span id; its children name it by
+  `turn_id`. An exporter mints the root span itself.
+- Attribute names stay upstream in `everruns-core`'s `telemetry::gen_ai`. The
+  SDK does not restate them and does not depend on that crate, so it stays
+  serde-only; an exporter copies what it needs and cites the source.
+
+## 2026-08-20, One extension name, however it is spelled
+
+- [Extensions](specs/extensions.md): every by-name subcommand accepts the
+  published crate name as well as the manifest name, matching what `install`
+  already took. Installing `yolop-extension-logfire` and then enabling it by
+  that same name had failed with "no extension named".
+- The literal name always wins, so a package whose manifest really is
+  `yolop-extension-foo` still resolves to itself, and an unknown name is passed
+  through untouched so the error quotes what was typed.
+- `disable` no longer reports success for a name that was never installed; it
+  had written a persisted override for a package that does not exist. It stays
+  more permissive than `enable` on purpose: a package whose manifest no longer
+  parses is skipped by discovery and is exactly the one that needs switching
+  off, so a directory on disk or an existing override is enough.
+
+## 2026-08-20, Compact work keeps one mutable row per turn
+
+- [Presentation](specs/presentation.md): `--compact-work` replaces live
+  narration and tool transcript entries with one updating summary. The final
+  assistant answer stays separate, and the session event log remains lossless.
+- `Ctrl+O` expands or collapses retained details for the current or latest turn.
+  Success, failure, and cancellation finalize to distinct summary markers.
+- The mode is fullscreen-only. Split-footer rows become immutable native
+  scrollback once published, so a real inline accordion could not reliably
+  collapse historical details.
+
+## 2026-08-20, One command per transcript line, and uninstall says uninstall
+
+- [Extensions](specs/extensions.md): `remove` is aliased `uninstall`. Clap had
+  answered `yolop extensions uninstall <name>` with "unrecognized subcommand"
+  and a tip suggesting `install`, which does the opposite of what was asked.
+- The transcript line is `{label}  {summary}`, and for `bash` both halves
+  carried the command: the shell narration is already "Ran `<cmd>`", so the line
+  read "Ran `cmd` `cmd` exit=0". The summary is now just `exit=<code>` when a
+  narration carries the command, and keeps spelling it out when none does.
+- The old test set narration to a bare "Ran Bash", a shape the real narrator
+  never produces, so it could not see the duplication. It now builds its
+  narration with `narrate_shell_exec`.
+
+## 2026-08-20, Trace export keeps the root span
+
+- [Extensions](specs/extensions.md): ending a session dropped the trace servers
+  while `trace/event` notifications were still in flight, so `turn.completed`
+  was lost. It closes the root span, so Logfire showed traces whose `reason`,
+  `act`, `tool`, and `llm` children had no root, and a short run exported
+  nothing at all.
+- Every host path that ends a session flushes first. Stopping drains the events
+  already buffered, then a `shutdown` request acts as the barrier: the stream is
+  ordered, so its response proves the server handled everything queued before
+  it. Bounded, so an unresponsive server cannot hold up exit.
+- Draining on stop is the part that is easy to get wrong: signalling the
+  forwarders without it drops exactly the events the flush exists to save.
+
+## 2026-08-20, Install tells the truth about a package it cannot run
+
+- [Extensions](specs/extensions.md): `install` resolves the declared
+  `capabilityServer.command` and reports `server_command_found`. A crate
+  published as source ships no binary, so the package installed cleanly and
+  only `doctor` knew it could never spawn; the note now names the remedy.
+- The bare-name shorthand prefixed unconditionally, so
+  `install yolop-extension-logfire`, the name on crates.io, looked up
+  `yolop-extension-yolop-extension-logfire`. It is idempotent now.
+- Same parse: splitting `@<version>` before validating the name makes the
+  documented `<name>@<version>` pin work. The guard had rejected `@` and the
+  version's dots, leaving that branch's version split unreachable.
+- `--acp` had lost its doc comment to `--config-dir`, so `--help` showed the
+  flag blank and pasted the ACP paragraph in front of the config-dir text.
+## 2026-08-19, Binary size becomes a maintenance surface
+
+- [Maintenance](specs/maintenance.md) now owns binary size, with
+  [`cargo-bsize`](https://github.com/Boshen/cargo-bsize) as the tool of record
+  and an evidence bar of measured before and after on one target and profile.
+- The shipped binary's shape decides which findings pay: about a third is
+  tree-sitter parse tables from the 19 shared grammars, and yolop's own code is
+  under 5%, so dependency features and profile settings are the levers, not
+  `src/`.
+- `panic = "abort"` and `strip = "symbols"` are rejected levers, not untried
+  ones: the first breaks the crash path `join_worker` depends on, the second
+  leaves crash-report backtraces unsymbolicated.
+- The release profile moved to fat LTO at `opt-level = "s"`, measured at 70.2 MB
+  from 89.8 MB (17.9 MB gzipped from 24.6 MB) for 19 seconds of build time.
+
 ## 2026-08-19, Extensions installed mid-session load without a restart
 
 - [Extensions](specs/extensions.md): enabling a package installed during the

@@ -28,6 +28,7 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 use std::sync::Arc;
@@ -134,11 +135,54 @@ struct TranscriptWrapCache {
     links: Vec<BufferLink>,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WorkDisplayMode {
+    #[default]
+    Detailed,
+    Compact,
+}
+
+#[derive(Clone, Debug)]
+struct CompactTurn {
+    summary_index: usize,
+    details: VecDeque<ChatLine>,
+    pending_output: VecDeque<ChatLine>,
+    action_count: usize,
+    activity: String,
+    started_at: Instant,
+    elapsed_secs: u64,
+    outcome: CompactWorkOutcome,
+    expanded: bool,
+    cancel_requested: bool,
+}
+
+fn compact_detail_line(line: &ChatLine) -> ChatLine {
+    let text = match line.author {
+        Author::Tool | Author::Narration => line.text.clone(),
+        Author::ToolDetail => format!("  {}", line.text),
+        Author::Stderr => format!("● {}", line.text),
+        Author::Sandbox => format!("sandbox  {}", line.text),
+        Author::Diff => format!("diff  {}", line.text),
+        Author::System => format!("system  {}", line.text),
+        Author::User => format!("you  {}", line.text),
+        Author::Assistant => format!("agent  {}", line.text),
+        Author::WorkSummary | Author::WorkDetail => line.text.clone(),
+    };
+    ChatLine {
+        author: Author::WorkDetail,
+        text,
+    }
+}
+
 pub struct App {
     session: Session,
     startup: StartupInfo,
     model: ModelState,
     pub lines: Vec<ChatLine>,
+    work_display: WorkDisplayMode,
+    compact_turns: Vec<CompactTurn>,
+    compact_detail_count: usize,
+    active_compact_turn: Option<usize>,
     /// Fullscreen repository context for the empty state. Collection runs on a
     /// blocking worker so Git never delays drawing or composer input. Inline
     /// leaves this disabled because adding rows would reflow its pinned footer.
@@ -616,6 +660,14 @@ impl ViewState {
 
 impl App {
     pub fn new(runtime: BuiltRuntime, pending_images: Vec<ContentPart>) -> Self {
+        Self::new_with_work_display(runtime, pending_images, WorkDisplayMode::Detailed)
+    }
+
+    pub fn new_with_work_display(
+        runtime: BuiltRuntime,
+        pending_images: Vec<ContentPart>,
+        work_display: WorkDisplayMode,
+    ) -> Self {
         let should_setup = runtime.startup.setup_recommended;
         let goal_store = runtime.goal_store.clone();
         let user_ask_store = runtime.user_ask_store.clone();
@@ -633,6 +685,10 @@ impl App {
             startup: runtime.startup,
             model: runtime.model,
             lines: Vec::new(),
+            work_display,
+            compact_turns: Vec::new(),
+            compact_detail_count: 0,
+            active_compact_turn: None,
             repo_pulse: None,
             repo_pulse_rx: None,
             printed_lines: 0,
@@ -1161,6 +1217,7 @@ impl App {
             },
             stream_preview: self.stream_preview.clone(),
             busy: self.busy,
+            compact_work: self.work_display == WorkDisplayMode::Compact,
             queued_messages: self.queued_messages.len(),
             turn_activity: self.turn_activity.clone(),
             model_id: self.model.model_id(),
@@ -1318,6 +1375,179 @@ impl App {
         });
     }
 
+    fn begin_compact_turn(&mut self, started_at: Instant) {
+        if self.work_display != WorkDisplayMode::Compact {
+            return;
+        }
+        let summary_index = self.lines.len();
+        self.lines.push(ChatLine {
+            author: Author::WorkSummary,
+            text: String::new(),
+        });
+        self.compact_turns.push(CompactTurn {
+            summary_index,
+            details: VecDeque::new(),
+            pending_output: VecDeque::new(),
+            action_count: 0,
+            activity: "Working".into(),
+            started_at,
+            elapsed_secs: 0,
+            outcome: CompactWorkOutcome::Active,
+            expanded: false,
+            cancel_requested: false,
+        });
+        self.active_compact_turn = Some(self.compact_turns.len() - 1);
+        self.refresh_active_compact_summary();
+    }
+
+    fn refresh_active_compact_summary(&mut self) {
+        let Some(turn_index) = self.active_compact_turn else {
+            return;
+        };
+        self.refresh_compact_summary(turn_index);
+    }
+
+    fn refresh_compact_summary(&mut self, turn_index: usize) {
+        let Some(turn) = self.compact_turns.get(turn_index) else {
+            return;
+        };
+        let elapsed_secs = if turn.outcome == CompactWorkOutcome::Active {
+            turn.started_at.elapsed().as_secs()
+        } else {
+            turn.elapsed_secs
+        };
+        let summary = CompactWorkPresentation {
+            outcome: turn.outcome,
+            activity: &turn.activity,
+            action_count: turn.action_count,
+            elapsed_secs,
+            expanded: turn.expanded,
+        }
+        .summary();
+        let summary_index = turn.summary_index;
+        if let Some(line) = self.lines.get_mut(summary_index)
+            && line.text != summary
+        {
+            line.text = summary;
+            self.transcript_generation = self.transcript_generation.wrapping_add(1);
+        }
+    }
+
+    fn update_compact_activity(&mut self, activity: &str) {
+        let Some(turn_index) = self.active_compact_turn else {
+            return;
+        };
+        self.compact_turns[turn_index].activity = activity.to_string();
+        self.refresh_compact_summary(turn_index);
+    }
+
+    fn apply_turn_lines(&mut self, lines: Vec<ChatLine>) {
+        let Some(turn_index) = self.active_compact_turn else {
+            self.lines.extend(lines);
+            return;
+        };
+        let (was_expanded, added_details) = {
+            let turn = &mut self.compact_turns[turn_index];
+            let was_expanded = turn.expanded;
+            let mut added_details = 0;
+            for line in lines {
+                if line.author == Author::Assistant {
+                    if turn.pending_output.len() == MAX_RETAINED_TRANSCRIPT_LINES {
+                        turn.pending_output.pop_front();
+                    }
+                    turn.pending_output.push_back(line);
+                } else {
+                    if line.author == Author::Tool {
+                        turn.action_count = turn.action_count.saturating_add(1);
+                    }
+                    turn.details.push_back(line);
+                    added_details += 1;
+                }
+            }
+            (was_expanded, added_details)
+        };
+        self.compact_detail_count = self.compact_detail_count.saturating_add(added_details);
+        let trimmed_expanded = self.trim_compact_details_to(MAX_RETAINED_TRANSCRIPT_LINES);
+        if was_expanded || trimmed_expanded {
+            self.transcript_generation = self.transcript_generation.wrapping_add(1);
+        }
+        self.refresh_compact_summary(turn_index);
+    }
+
+    /// Keep compact projection state under the same line budget as the base
+    /// transcript. Returns whether trimming changed a currently expanded turn.
+    fn trim_compact_details_to(&mut self, max: usize) -> bool {
+        let mut excess = self.compact_detail_count.saturating_sub(max);
+        let mut trimmed_expanded = false;
+        for turn in &mut self.compact_turns {
+            if excess == 0 {
+                break;
+            }
+            let drop = excess.min(turn.details.len());
+            if drop > 0 {
+                turn.details.drain(..drop);
+                excess -= drop;
+                self.compact_detail_count -= drop;
+                trimmed_expanded |= turn.expanded;
+            }
+        }
+        trimmed_expanded
+    }
+
+    fn finalize_compact_turn(&mut self, outcome: CompactWorkOutcome) {
+        let Some(turn_index) = self.active_compact_turn.take() else {
+            return;
+        };
+        let turn = &mut self.compact_turns[turn_index];
+        turn.elapsed_secs = turn.started_at.elapsed().as_secs();
+        turn.outcome = outcome;
+        let pending_output = std::mem::take(&mut turn.pending_output);
+        self.refresh_compact_summary(turn_index);
+        self.lines.extend(pending_output);
+    }
+
+    fn toggle_compact_work_details(&mut self) {
+        if self.work_display != WorkDisplayMode::Compact || !self.render_mode.is_fullscreen() {
+            return;
+        }
+        let turn_index = self
+            .active_compact_turn
+            .or_else(|| self.compact_turns.len().checked_sub(1));
+        let Some(turn_index) = turn_index else {
+            return;
+        };
+        self.compact_turns[turn_index].expanded = !self.compact_turns[turn_index].expanded;
+        self.refresh_compact_summary(turn_index);
+    }
+
+    fn projected_transcript_lines(&self) -> Cow<'_, [ChatLine]> {
+        if !self.render_mode.is_fullscreen() || !self.compact_turns.iter().any(|turn| turn.expanded)
+        {
+            return Cow::Borrowed(&self.lines);
+        }
+        let turns: HashMap<usize, &CompactTurn> = self
+            .compact_turns
+            .iter()
+            .filter(|turn| turn.expanded)
+            .map(|turn| (turn.summary_index, turn))
+            .collect();
+        let detail_count = turns.values().map(|turn| turn.details.len()).sum::<usize>();
+        let mut projected = Vec::with_capacity(self.lines.len() + detail_count);
+        for (index, line) in self.lines.iter().enumerate() {
+            projected.push(line.clone());
+            if let Some(turn) = turns.get(&index) {
+                projected.extend(turn.details.iter().map(compact_detail_line));
+            }
+        }
+        Cow::Owned(projected)
+    }
+
+    fn clear_compact_turns(&mut self) {
+        self.compact_turns.clear();
+        self.compact_detail_count = 0;
+        self.active_compact_turn = None;
+    }
+
     fn push_evaluation_status(
         &mut self,
         evaluation: &crate::session_state::user_ask::UserAskEvaluation,
@@ -1341,9 +1571,15 @@ impl App {
     fn refresh_transcript_cache(&mut self, width: usize) -> usize {
         // Move the cache out so we can borrow `self.lines` immutably alongside.
         let mut cache = std::mem::take(&mut self.transcript_cache);
+        let projection_is_owned =
+            self.render_mode.is_fullscreen() && self.compact_turns.iter().any(|turn| turn.expanded);
         let stale = cache.width != width
             || cache.generation != self.transcript_generation
-            || cache.source_len > self.lines.len();
+            || cache.source_len > self.lines.len()
+            // Expanded work details are interleaved into a temporary
+            // projection. A base transcript append cannot be incrementally
+            // applied to that projection, so rebuild it when the source grows.
+            || (projection_is_owned && cache.source_len != self.lines.len());
         if stale {
             cache.lines.clear();
             cache.links.clear();
@@ -1352,14 +1588,23 @@ impl App {
             cache.source_len = 0;
             cache.prev_author = None;
         }
-        cache.prev_author = render::append_transcript_range(
-            &mut cache.lines,
-            &mut cache.links,
-            &self.lines,
-            cache.source_len,
-            width,
-            cache.prev_author.take(),
-        );
+        let projected = self.projected_transcript_lines();
+        let should_append = !projection_is_owned || cache.source_len == 0;
+        if should_append {
+            let start = if projection_is_owned {
+                0
+            } else {
+                cache.source_len
+            };
+            cache.prev_author = render::append_transcript_range(
+                &mut cache.lines,
+                &mut cache.links,
+                &projected,
+                start,
+                width,
+                cache.prev_author.take(),
+            );
+        }
         cache.source_len = self.lines.len();
         let len = cache.lines.len();
         self.transcript_cache = cache;
@@ -1415,6 +1660,27 @@ impl App {
             return;
         }
         self.lines.drain(0..drop);
+        let active_summary = self
+            .active_compact_turn
+            .and_then(|index| self.compact_turns.get(index))
+            .map(|turn| turn.summary_index);
+        self.compact_turns.retain(|turn| turn.summary_index >= drop);
+        self.compact_detail_count = self
+            .compact_turns
+            .iter()
+            .map(|turn| turn.details.len())
+            .sum();
+        for turn in &mut self.compact_turns {
+            turn.summary_index -= drop;
+        }
+        self.active_compact_turn = active_summary.and_then(|summary| {
+            (summary >= drop).then(|| {
+                self.compact_turns
+                    .iter()
+                    .position(|turn| turn.summary_index == summary - drop)
+                    .expect("retained active compact turn")
+            })
+        });
         self.printed_lines = self.printed_lines.saturating_sub(drop);
         self.transcript_generation = self.transcript_generation.wrapping_add(1);
     }
@@ -1447,6 +1713,7 @@ impl App {
         loop {
             if self.busy {
                 self.busy_frame = self.busy_frame.wrapping_add(1);
+                self.refresh_active_compact_summary();
             }
             match self.run_loop_iteration(terminal).await {
                 Ok(()) => io_failures = 0,
@@ -1553,11 +1820,12 @@ impl App {
         if let Some(rx) = self.rx.as_mut() {
             match rx.try_recv() {
                 Ok(TurnEvent::Lines(lines)) => {
-                    self.lines.extend(lines);
+                    self.apply_turn_lines(lines);
                     return Ok(());
                 }
                 Ok(TurnEvent::Activity(activity)) => {
                     if !activity.fallback || self.turn_activity.is_none() {
+                        self.update_compact_activity(&activity.text);
                         self.turn_activity = Some(activity.text);
                     }
                     return Ok(());
@@ -1575,7 +1843,19 @@ impl App {
                     self.context_used_tokens = Some(used);
                     return Ok(());
                 }
-                Ok(TurnEvent::Done(result)) => {
+                Ok(TurnEvent::Done { result, success }) => {
+                    let cancelled = self
+                        .active_compact_turn
+                        .and_then(|index| self.compact_turns.get(index))
+                        .is_some_and(|turn| turn.cancel_requested);
+                    let outcome = if cancelled {
+                        CompactWorkOutcome::Cancelled
+                    } else if !success {
+                        CompactWorkOutcome::Failed
+                    } else {
+                        CompactWorkOutcome::Completed
+                    };
+                    self.finalize_compact_turn(outcome);
                     self.finish_busy();
                     if let Some(notice) = self.session.take_checkpoint_notice() {
                         self.refresh_after_checkpoint_restore(notice).await;
@@ -1600,6 +1880,7 @@ impl App {
                     return Ok(());
                 }
                 Ok(TurnEvent::Failed(err)) => {
+                    self.finalize_compact_turn(CompactWorkOutcome::Failed);
                     self.finish_busy();
                     self.push_system(format!("turn failed: {err}"));
                     self.record_completion_state(
@@ -1610,6 +1891,7 @@ impl App {
                 }
                 Err(mpsc::error::TryRecvError::Empty) => {}
                 Err(mpsc::error::TryRecvError::Disconnected) => {
+                    self.finalize_compact_turn(CompactWorkOutcome::Failed);
                     self.finish_busy();
                     self.start_next_queued_turn();
                 }
@@ -1834,6 +2116,7 @@ impl App {
         match self.session.active_lines().await {
             Ok(lines) => {
                 self.lines = lines;
+                self.clear_compact_turns();
                 self.printed_lines = 0;
                 self.printed_rows = 0;
                 self.transcript_generation = self.transcript_generation.wrapping_add(1);
@@ -1983,6 +2266,7 @@ impl App {
                     self.toggle_background_panel();
                 }
                 GlobalAction::PasteImage => self.try_paste_clipboard(),
+                GlobalAction::ToggleWorkDetails => self.toggle_compact_work_details(),
             }
             return;
         }
@@ -2857,6 +3141,7 @@ impl App {
             UiCommand::SetStatusLayout { arg } => self.set_status_layout(arg.as_deref()),
             UiCommand::ClearTranscript => {
                 self.lines.clear();
+                self.clear_compact_turns();
                 self.printed_lines = 0;
                 self.printed_rows = 0;
                 self.transcript_generation = self.transcript_generation.wrapping_add(1);
@@ -3393,6 +3678,10 @@ impl App {
         if let Some(cancel) = self.turn_cancel.take() {
             let _ = cancel.send(());
             self.turn_activity = Some("cancelling".into());
+            if let Some(turn_index) = self.active_compact_turn {
+                self.compact_turns[turn_index].cancel_requested = true;
+                self.update_compact_activity("Cancelling");
+            }
             self.stream_preview = None;
         }
     }
@@ -3694,7 +3983,12 @@ impl App {
         self.esc_pending_cancel = false;
         self.busy = true;
         self.turn_activity = activity;
-        self.turn_started_at = Some(Instant::now());
+        let started_at = Instant::now();
+        self.turn_started_at = Some(started_at);
+        self.begin_compact_turn(started_at);
+        if let Some(activity) = self.turn_activity.clone() {
+            self.update_compact_activity(&activity);
+        }
         self.stream_preview = None;
         if self.native_progress {
             // Turn length is unknown, so show the terminal's busy/indeterminate
@@ -5829,6 +6123,7 @@ mod tests {
             },
             stream_preview: None,
             busy: false,
+            compact_work: false,
             queued_messages: 0,
             turn_activity: None,
             model_id: "gpt-5.5".to_string(),
@@ -7446,9 +7741,10 @@ mod tests {
                 }
                 if let Some(rx) = self.rx.as_mut() {
                     match rx.try_recv() {
-                        Ok(TurnEvent::Lines(lines)) => self.lines.extend(lines),
+                        Ok(TurnEvent::Lines(lines)) => self.apply_turn_lines(lines),
                         Ok(TurnEvent::Activity(activity)) => {
                             if !activity.fallback || self.turn_activity.is_none() {
+                                self.update_compact_activity(&activity.text);
                                 self.turn_activity = Some(activity.text);
                             }
                         }
@@ -7460,17 +7756,31 @@ mod tests {
                         Ok(TurnEvent::ContextUsed(used)) => {
                             self.context_used_tokens = Some(used);
                         }
-                        Ok(TurnEvent::Done(_)) => {
+                        Ok(TurnEvent::Done { success, .. }) => {
+                            let cancelled = self
+                                .active_compact_turn
+                                .and_then(|index| self.compact_turns.get(index))
+                                .is_some_and(|turn| turn.cancel_requested);
+                            let outcome = if cancelled {
+                                CompactWorkOutcome::Cancelled
+                            } else if !success {
+                                CompactWorkOutcome::Failed
+                            } else {
+                                CompactWorkOutcome::Completed
+                            };
+                            self.finalize_compact_turn(outcome);
                             self.finish_busy();
                             self.start_next_queued_turn();
                         }
                         Ok(TurnEvent::Failed(err)) => {
+                            self.finalize_compact_turn(CompactWorkOutcome::Failed);
                             self.finish_busy();
                             self.push_system(format!("turn failed: {err}"));
                             self.start_next_queued_turn();
                         }
                         Err(mpsc::error::TryRecvError::Empty) => {}
                         Err(mpsc::error::TryRecvError::Disconnected) => {
+                            self.finalize_compact_turn(CompactWorkOutcome::Failed);
                             self.finish_busy();
                             self.start_next_queued_turn();
                         }
@@ -7531,6 +7841,116 @@ mod tests {
         );
         assert!(!app.busy);
         assert!(app.stream_preview.is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn compact_work_keeps_one_summary_row_and_toggles_retained_details() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+        app.lines.clear();
+        app.clear_compact_turns();
+        app.work_display = WorkDisplayMode::Compact;
+        app.set_render_mode(RenderMode::Fullscreen);
+
+        app.begin_compact_turn(Instant::now());
+        app.update_compact_activity("Running tests");
+        app.apply_turn_lines(vec![
+            ChatLine {
+                author: Author::Narration,
+                text: "Checking the renderer".into(),
+            },
+            ChatLine {
+                author: Author::Tool,
+                text: "✓ Bash `cargo test` exit=0".into(),
+            },
+            ChatLine {
+                author: Author::ToolDetail,
+                text: "stdout: 12 passed".into(),
+            },
+            ChatLine {
+                author: Author::Assistant,
+                text: "All checks pass.".into(),
+            },
+        ]);
+
+        assert_eq!(app.lines.len(), 1, "only the mutable summary is persistent");
+        assert_eq!(app.lines[0].author, Author::WorkSummary);
+        assert!(app.lines[0].text.contains("Running tests · 1 action"));
+        assert_eq!(app.projected_transcript_lines().len(), 1);
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL))
+            .await;
+        let expanded = app.projected_transcript_lines();
+        assert_eq!(expanded.len(), 4);
+        assert_eq!(expanded[0].author, Author::WorkSummary);
+        assert!(expanded[0].text.ends_with("Ctrl+O collapse"));
+        assert!(
+            expanded[1..]
+                .iter()
+                .all(|line| line.author == Author::WorkDetail)
+        );
+
+        app.finalize_compact_turn(CompactWorkOutcome::Completed);
+        assert_eq!(app.lines.len(), 2);
+        assert!(app.lines[0].text.starts_with("✓ Worked for"));
+        assert_eq!(app.lines[1].author, Author::Assistant);
+
+        let _ = app.full_transcript_lines_cached(80);
+        app.push_system("late status".into());
+        let refreshed = app.full_transcript_lines_cached(80);
+        let refreshed_text = refreshed
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        assert!(
+            refreshed_text.contains("late status"),
+            "expanded projection cache must include appended transcript lines"
+        );
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL))
+            .await;
+        assert_eq!(app.projected_transcript_lines().len(), 3);
+        assert_eq!(app.compact_detail_count, 3);
+        assert!(!app.trim_compact_details_to(2));
+        assert_eq!(app.compact_detail_count, 2);
+        assert_eq!(app.compact_turns[0].details.len(), 2);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn compact_work_llmsim_turn_finishes_before_the_assistant_answer() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+        app.lines.clear();
+        app.clear_compact_turns();
+        app.work_display = WorkDisplayMode::Compact;
+
+        app.push_user("hello turn".into());
+        app.begin_user_request("hello turn");
+        app.start_turn("hello turn".into());
+        app.pump_turn_until_idle_for_test().await;
+
+        let summary = app
+            .lines
+            .iter()
+            .position(|line| line.author == Author::WorkSummary)
+            .expect("compact work summary");
+        let answer = app
+            .lines
+            .iter()
+            .position(|line| line.author == Author::Assistant)
+            .expect("assistant answer");
+        assert!(
+            summary < answer,
+            "work summary must precede the final answer"
+        );
+        assert!(app.lines[summary].text.starts_with("✓ Worked for"));
+        assert!(app.lines.iter().all(|line| !matches!(
+            line.author,
+            Author::Narration | Author::Tool | Author::ToolDetail | Author::Diff
+        )));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

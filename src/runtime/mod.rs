@@ -2725,6 +2725,10 @@ pub struct BuiltRuntime {
 
 #[derive(Clone)]
 pub struct RuntimeHandles {
+    /// Stops the trace forwarders and waits for their final flush. Taken by
+    /// [`RuntimeHandles::flush_trace_exporters`] at teardown; `None` once
+    /// flushed, so a second call is a no-op.
+    trace_flush: Arc<tokio::sync::Mutex<Option<crate::extensions::trace::TraceFlush>>>,
     pub runtime: Arc<InProcessRuntime>,
     settings: Arc<SettingsStore>,
     pending_model_choice: Arc<RwLock<Option<ProviderChoice>>>,
@@ -2775,6 +2779,22 @@ pub(crate) type ExtensionFactory =
     Arc<dyn Fn(&str) -> Result<Arc<dyn everruns_core::Capability>, String> + Send + Sync>;
 
 impl RuntimeHandles {
+    /// Stop trace forwarding and wait for each extension server to flush.
+    ///
+    /// Every host path that ends a session calls this before dropping the
+    /// runtime. `trace/event` is fire-and-forget and the servers are
+    /// `kill_on_drop`, so without it the tail of the stream is killed in
+    /// flight: `turn.completed` closes the trace's root span, and losing it
+    /// exported traces whose children had no root (and exported nothing at all
+    /// for a run short enough that the whole tail was still queued).
+    /// Idempotent and bounded.
+    pub async fn flush_trace_exporters(&self) {
+        let flush = self.trace_flush.lock().await.take();
+        if let Some(flush) = flush {
+            flush.flush().await;
+        }
+    }
+
     pub(crate) fn report_herdr_state(&self, state: crate::capabilities::herdr::HerdrState) {
         self.herdr.report_background(state);
     }
@@ -4422,12 +4442,22 @@ pub async fn build_with_options(
     // Start agentic-trace forwarding for each enabled `trace` extension: one
     // task per extension consuming its own subscription, filtered to this
     // session. Observe-only — a slow exporter never stalls the run.
-    for forwarder in trace_forwarders {
-        forwarder.start(session_id, event_bus_typed.subscribe());
-    }
+    let (trace_stop, trace_stop_rx) = tokio::sync::watch::channel(false);
+    let trace_handles: Vec<_> = trace_forwarders
+        .into_iter()
+        .map(|forwarder| {
+            forwarder.start(
+                session_id,
+                event_bus_typed.subscribe(),
+                trace_stop_rx.clone(),
+            )
+        })
+        .collect();
+    let trace_flush = crate::extensions::trace::TraceFlush::new(trace_stop, trace_handles);
 
     Ok(BuiltRuntime {
         handles: RuntimeHandles {
+            trace_flush: Arc::new(tokio::sync::Mutex::new(Some(trace_flush))),
             runtime,
             settings: settings.clone(),
             pending_model_choice,

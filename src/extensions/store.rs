@@ -29,6 +29,9 @@ pub enum Source {
     Crate { crate_name: String, version: String },
 }
 
+/// The crate-name prefix every published yolop extension carries.
+pub(crate) const CRATE_PREFIX: &str = "yolop-extension-";
+
 impl Source {
     /// Parse a user-supplied `<source>` argument.
     ///
@@ -60,14 +63,27 @@ impl Source {
                 path: absolute.display().to_string(),
             });
         }
-        // Bare name shorthand: `lsp` → crate `yolop-extension-lsp`.
-        if spec
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        // Bare name shorthand: `lsp` → crate `yolop-extension-lsp`. The
+        // published crate name is what a user copies off crates.io, so the
+        // prefix is applied only when it is not already there: prefixing
+        // unconditionally turned `yolop-extension-lsp` into a lookup for
+        // `yolop-extension-yolop-extension-lsp`, which cannot exist.
+        // Split the optional `@<version>` pin off first, then validate the
+        // name: checking the whole spec instead forbade `@` and the version's
+        // dots, which made the `<name>@<version>` form unparseable and left
+        // this branch's version split unreachable.
+        let (name, version) = split_at_version(spec);
+        if !name.is_empty()
+            && name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
         {
-            let (name, version) = split_at_version(spec);
+            let crate_name = match name.strip_prefix(CRATE_PREFIX) {
+                Some(rest) if !rest.is_empty() => name.to_string(),
+                _ => format!("{CRATE_PREFIX}{name}"),
+            };
             return Ok(Source::Crate {
-                crate_name: format!("yolop-extension-{name}"),
+                crate_name,
                 version: version.unwrap_or_default().to_string(),
             });
         }
@@ -187,6 +203,31 @@ fn collect_files(root: &Path, dir: &Path, out: &mut Vec<(String, Vec<u8>)>) -> R
         }
     }
     Ok(())
+}
+
+/// Whether the package's declared `capabilityServer.command` can actually be
+/// spawned: resolvable in the package's own `bin/`, as a path, or on `PATH`.
+///
+/// A crates.io `.crate` carries source, not binaries, and the install path is
+/// toolchain-free by design, so a Rust extension published without a `bin/`
+/// installs cleanly and can never spawn. Install says so rather than reporting
+/// a bare success and leaving `doctor` to explain it later.
+pub fn server_command_resolves(package_dir: &Path, command: &str) -> bool {
+    if command.contains(std::path::MAIN_SEPARATOR) || command.contains('/') {
+        let candidate = Path::new(command);
+        return if candidate.is_absolute() {
+            candidate.is_file()
+        } else {
+            package_dir.join(candidate).is_file()
+        };
+    }
+    if package_dir.join("bin").join(command).is_file() {
+        return true;
+    }
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path).any(|dir| dir.join(command).is_file())
 }
 
 /// Result of an install/update, for the caller to summarize to the user.
@@ -596,6 +637,30 @@ mod tests {
             Source::parse("lsp").unwrap(),
             Source::Crate {
                 crate_name: "yolop-extension-lsp".into(),
+                version: String::new()
+            }
+        );
+        // The published crate name is what a user copies off crates.io, so the
+        // shorthand must not prefix a name that already carries the prefix.
+        assert_eq!(
+            Source::parse("yolop-extension-lsp").unwrap(),
+            Source::Crate {
+                crate_name: "yolop-extension-lsp".into(),
+                version: String::new()
+            }
+        );
+        assert_eq!(
+            Source::parse("yolop-extension-lsp@0.1.0").unwrap(),
+            Source::Crate {
+                crate_name: "yolop-extension-lsp".into(),
+                version: "0.1.0".into()
+            }
+        );
+        // A name that merely starts with the same letters keeps its prefix.
+        assert_eq!(
+            Source::parse("yolop-extensions-thing").unwrap(),
+            Source::Crate {
+                crate_name: "yolop-extension-yolop-extensions-thing".into(),
                 version: String::new()
             }
         );

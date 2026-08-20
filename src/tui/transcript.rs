@@ -24,6 +24,8 @@ pub enum Author {
     User,
     Assistant,
     Narration,
+    WorkSummary,
+    WorkDetail,
     Tool,
     ToolDetail,
     Stderr,
@@ -70,7 +72,10 @@ pub(crate) enum TurnEvent {
     /// Prompt tokens the latest LLM generation consumed — the current fill of
     /// the model's context window. Replaces (not accumulates) the prior value.
     ContextUsed(u32),
-    Done(Option<everruns_host::TurnResult>),
+    Done {
+        result: Option<everruns_host::TurnResult>,
+        success: bool,
+    },
     Failed(String),
 }
 
@@ -704,16 +709,23 @@ pub fn summarize_tool_result(data: &ToolCompletedData) -> String {
             format!("{path} ({size} bytes)")
         }
         "bash" => {
-            let cmd = v
-                .get("command")
-                .and_then(Value::as_str)
-                .map(|c| first_line(c, 80))
-                .unwrap_or_default();
             let code = v
                 .get("exit_code")
                 .and_then(Value::as_i64)
                 .map(|c| c.to_string())
                 .unwrap_or_else(|| "?".into());
+            // The line reads "{label}  {summary}", and the shell narration is
+            // already "Ran `<command>`". Repeating the command here rendered it
+            // twice ("Ran `cmd` `cmd` exit=0"), so it is only spelled out when
+            // no narration carries it (then the label is a bare "Bash").
+            if data.narration.is_some() {
+                return format!("exit={code}");
+            }
+            let cmd = v
+                .get("command")
+                .and_then(Value::as_str)
+                .map(|c| first_line(c, 80))
+                .unwrap_or_default();
             format!("`{cmd}` exit={code}")
         }
         _ => String::new(),
@@ -748,12 +760,27 @@ pub(crate) fn shell_result_lines(result: ToolExecutionResult) -> Vec<ChatLine> {
     }
 }
 
-fn shell_success_lines(value: &Value) -> Vec<ChatLine> {
+pub(crate) fn shell_result_succeeded(result: &ToolExecutionResult) -> bool {
+    match result {
+        ToolExecutionResult::Success(value) => shell_value_succeeded(value),
+        ToolExecutionResult::SuccessWithImages { result, .. } => shell_value_succeeded(result),
+        ToolExecutionResult::ToolError(_)
+        | ToolExecutionResult::InternalError(_)
+        | ToolExecutionResult::ConnectionRequired { .. } => false,
+    }
+}
+
+fn shell_value_succeeded(value: &Value) -> bool {
     let exit_code = value.get("exit_code").and_then(Value::as_i64).unwrap_or(-1);
-    let success = value
+    value
         .get("success")
         .and_then(Value::as_bool)
-        .unwrap_or(exit_code == 0);
+        .unwrap_or(exit_code == 0)
+}
+
+fn shell_success_lines(value: &Value) -> Vec<ChatLine> {
+    let exit_code = value.get("exit_code").and_then(Value::as_i64).unwrap_or(-1);
+    let success = shell_value_succeeded(value);
     let mut out = vec![ChatLine {
         author: Author::Tool,
         text: format!("shell exited with code {exit_code}"),

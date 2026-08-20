@@ -10,7 +10,9 @@ use super::package::{discover_extensions, extension_capability_id};
 use super::protocol::UiAskParams;
 use super::scaffold::{self, HookSpec, Language, ScaffoldRequest, ToolSpec};
 use super::secrets::{ExtensionSecrets, Secret};
-use super::store::{self, CrateFetcher, GitRunner, Source, SystemCrateFetcher, SystemGit};
+use super::store::{
+    self, CRATE_PREFIX, CrateFetcher, GitRunner, Source, SystemCrateFetcher, SystemGit,
+};
 use crate::capabilities::narration::stable_labeled;
 use crate::config::SettingsStore;
 use crate::control::{
@@ -56,6 +58,12 @@ enum ExtensionCommand {
     /// Install an extension without enabling it.
     Install { source: String },
     /// Remove an installed extension and its persisted enablement/secrets.
+    ///
+    /// Aliased as `uninstall`, the natural opposite of `install`: without it
+    /// clap answered `yolop extensions uninstall <name>` with "unrecognized
+    /// subcommand" and suggested `install`, the one command that does the
+    /// opposite of what was asked.
+    #[command(alias = "uninstall")]
     Remove { name: String },
     /// Persist enablement and apply it to the attached session when present.
     Enable { name: String },
@@ -559,6 +567,51 @@ impl ManageTool {
         Self { ctx, verb }
     }
 
+    /// Accept the published crate name wherever an installed extension is named.
+    ///
+    /// `install` takes `logfire`, `yolop-extension-logfire`, and
+    /// `crates.io:yolop-extension-logfire` alike, but the package installs under
+    /// its manifest name (`logfire`). Without this, installing by the name
+    /// printed on crates.io and then enabling by that same name failed with
+    /// "no extension named `yolop-extension-logfire`", a seam a user has no way
+    /// to guess at.
+    ///
+    /// Conservative: the literal name always wins, so a package whose manifest
+    /// really is called `yolop-extension-foo` still resolves to itself. An
+    /// unknown name is left untouched so the error quotes what was typed.
+    /// `scaffold` is excluded because it names a package being created, not an
+    /// installed one, and `install` parses its own source spec.
+    fn resolve_name_argument(&self, arguments: Value) -> Value {
+        if matches!(self.verb, Verb::Scaffold | Verb::Install | Verb::List) {
+            return arguments;
+        }
+        let Some(name) = arguments
+            .get("name")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+        else {
+            return arguments;
+        };
+        let Some(stripped) = name
+            .strip_prefix(CRATE_PREFIX)
+            .filter(|rest| !rest.is_empty())
+            .map(str::to_string)
+        else {
+            return arguments;
+        };
+        let installed = discover_extensions(&self.ctx.extensions_dir);
+        if installed.iter().any(|pkg| pkg.manifest.name == name)
+            || !installed.iter().any(|pkg| pkg.manifest.name == stripped)
+        {
+            return arguments;
+        }
+        let mut arguments = arguments;
+        if let Some(object) = arguments.as_object_mut() {
+            object.insert("name".into(), Value::String(stripped));
+        }
+        arguments
+    }
+
     fn scaffold(&self, args: &Value) -> ToolExecutionResult {
         let Some(name) = args.get("name").and_then(Value::as_str) else {
             return ToolExecutionResult::ToolError("`name` is required".into());
@@ -761,6 +814,27 @@ impl ManageTool {
         {
             Ok(installed) => {
                 let m = &installed.manifest;
+                // A package whose declared server command cannot be spawned is
+                // installed but unrunnable; say it here rather than reporting a
+                // bare success and leaving `doctor` to explain it later.
+                let runnable = store::server_command_resolves(
+                    &self.ctx.extensions_dir.join(&m.name),
+                    &m.capability_server.command,
+                );
+                let note = if runnable {
+                    format!(
+                        "Installed but not enabled. Run `yolop extensions enable {}` to enable it.",
+                        m.name
+                    )
+                } else {
+                    format!(
+                        "Installed, but its server command `{}` was not found in the package's \
+                         `bin/` or on PATH, so the extension cannot start. A crate published as \
+                         source ships no binary; install it (for a Rust extension, \
+                         `cargo install {}`) and check with `yolop extensions doctor {}`.",
+                        m.capability_server.command, m.capability_server.command, m.name
+                    )
+                };
                 ToolExecutionResult::Success(json!({
                     "installed": m.name,
                     "version": m.version,
@@ -772,10 +846,8 @@ impl ManageTool {
                     },
                     "content_hash": installed.content_hash,
                     "grant_changed": installed.previous_hash.is_some(),
-                    "note": format!(
-                        "Installed but not enabled. Run `yolop extensions enable {}` to enable it.",
-                        m.name
-                    ),
+                    "server_command_found": runnable,
+                    "note": note,
                 }))
             }
             Err(err) => ToolExecutionResult::ToolError(format!("install failed: {err}")),
@@ -806,14 +878,34 @@ impl ManageTool {
         let Some(name) = args.get("name").and_then(Value::as_str) else {
             return ToolExecutionResult::ToolError("`name` is required".into());
         };
-        if enable
-            && !discover_extensions(&self.ctx.extensions_dir)
-                .iter()
-                .any(|pkg| pkg.manifest.name == name)
-        {
+        let installed = discover_extensions(&self.ctx.extensions_dir)
+            .iter()
+            .any(|pkg| pkg.manifest.name == name);
+        if enable && !installed {
             return ToolExecutionResult::ToolError(format!(
                 "no extension named `{name}` is installed; run `yolop extensions install` first"
             ));
+        }
+        // Disable is deliberately more permissive than enable: an extension
+        // whose manifest no longer parses is exactly the one a user needs to
+        // switch off, and `discover_extensions` skips it. So accept a package
+        // directory that exists on disk, or a name that already carries an
+        // override to clear. A name matching neither is a typo, and writing a
+        // persisted override for it reported success for a package that does
+        // not exist.
+        if !enable && !installed {
+            let on_disk = self.ctx.extensions_dir.join(name).is_dir();
+            let has_override = !self
+                .ctx
+                .settings
+                .snapshot()
+                .capability_overrides_for(&extension_capability_id(name))
+                .is_empty();
+            if !on_disk && !has_override {
+                return ToolExecutionResult::ToolError(format!(
+                    "no extension named `{name}` is installed; `yolop extensions list` shows what is"
+                ));
+            }
         }
         let cap_id = extension_capability_id(name);
         match self.ctx.settings.set_capability_enabled(&cap_id, enable) {
@@ -1348,6 +1440,7 @@ impl Tool for ManageTool {
     }
 
     async fn execute(&self, arguments: Value) -> ToolExecutionResult {
+        let arguments = self.resolve_name_argument(arguments);
         match self.verb {
             Verb::Scaffold => self.scaffold(&arguments),
             Verb::List => self.list(),
@@ -1380,6 +1473,225 @@ mod tests {
             .to_string(),
         )
         .unwrap();
+    }
+
+    /// Every by-name subcommand must accept the same spellings `install` does.
+    /// Installing by the published crate name and then being told
+    /// "no extension named `yolop-extension-logfire`" by `enable` is the kind
+    /// of seam a user has no way to guess at.
+    #[tokio::test]
+    async fn by_name_subcommands_accept_the_published_crate_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        seed_package(&src, "logfire");
+        let (cap, settings, _ext_dir) = capability(tmp.path());
+        let tools = cap.management_tools();
+        let get = |name: &str| tools.iter().find(|t| t.name() == name).unwrap();
+
+        get("install_extension")
+            .execute(json!({ "source": src.to_str().unwrap() }))
+            .await;
+
+        // The full crate name resolves to the installed package.
+        match get("enable_extension")
+            .execute(json!({ "name": "yolop-extension-logfire" }))
+            .await
+        {
+            ToolExecutionResult::Success(v) => assert_eq!(v["name"], json!("logfire")),
+            other => panic!("enable by crate name must work, got {other:?}"),
+        }
+        assert!(
+            settings
+                .snapshot()
+                .capability_overrides_for(&extension_capability_id("logfire"))
+                .iter()
+                .any(|(_, entry)| !entry.is_remove()),
+            "the override must be keyed by the installed name, not the crate name"
+        );
+
+        match get("disable_extension")
+            .execute(json!({ "name": "yolop-extension-logfire" }))
+            .await
+        {
+            ToolExecutionResult::Success(v) => assert_eq!(v["name"], json!("logfire")),
+            other => panic!("disable by crate name must work, got {other:?}"),
+        }
+
+        // And the conventional short name still works.
+        match get("enable_extension")
+            .execute(json!({ "name": "logfire" }))
+            .await
+        {
+            ToolExecutionResult::Success(v) => assert_eq!(v["name"], json!("logfire")),
+            other => panic!("enable by short name must work, got {other:?}"),
+        }
+
+        match get("remove_extension")
+            .execute(json!({ "name": "yolop-extension-logfire" }))
+            .await
+        {
+            ToolExecutionResult::Success(v) => assert_eq!(v["removed"], json!("logfire")),
+            other => panic!("remove by crate name must work, got {other:?}"),
+        }
+    }
+
+    /// Disabling a name that was never installed wrote a persisted override for
+    /// a package that does not exist and reported success, so a typo looked like
+    /// it had taken effect.
+    #[tokio::test]
+    async fn disable_rejects_a_name_that_was_never_installed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (cap, _settings, _ext_dir) = capability(tmp.path());
+        let tools = cap.management_tools();
+        let disable = tools
+            .iter()
+            .find(|t| t.name() == "disable_extension")
+            .unwrap();
+
+        match disable
+            .execute(json!({ "name": "totally-made-up-thing" }))
+            .await
+        {
+            ToolExecutionResult::ToolError(err) => {
+                assert!(err.contains("totally-made-up-thing"), "error was: {err}");
+            }
+            other => panic!("expected an error for an unknown extension, got {other:?}"),
+        }
+    }
+
+    /// An extension whose manifest no longer parses is skipped by discovery and
+    /// is precisely the one a user needs to switch off, so disable must still
+    /// accept it. This is why disable checks the directory rather than reusing
+    /// enable's stricter installed-check.
+    #[tokio::test]
+    async fn disable_still_works_for_a_package_with_a_broken_manifest() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (cap, _settings, ext_dir) = capability(tmp.path());
+        let broken = ext_dir.join("brokenext");
+        std::fs::create_dir_all(&broken).unwrap();
+        std::fs::write(broken.join(MANIFEST_FILE), "{ not json").unwrap();
+        assert!(
+            discover_extensions(&ext_dir).is_empty(),
+            "the fixture must be undiscoverable for this test to mean anything"
+        );
+
+        let tools = cap.management_tools();
+        let disable = tools
+            .iter()
+            .find(|t| t.name() == "disable_extension")
+            .unwrap();
+
+        match disable.execute(json!({ "name": "brokenext" })).await {
+            ToolExecutionResult::Success(v) => assert_eq!(v["name"], json!("brokenext")),
+            other => panic!("disable must reach a broken package, got {other:?}"),
+        }
+    }
+
+    /// `uninstall` is the natural opposite of `install`, and clap answered it
+    /// with "unrecognized subcommand" plus a tip suggesting `install` itself.
+    #[test]
+    fn uninstall_is_accepted_as_an_alias_for_remove() {
+        use clap::Parser;
+
+        let parsed = ExtensionCommandLine::try_parse_from(["extensions", "uninstall", "logfire"])
+            .expect("`uninstall` must parse");
+        assert!(matches!(
+            parsed.command,
+            Some(ExtensionCommand::Remove { ref name }) if name == "logfire"
+        ));
+
+        let canonical = ExtensionCommandLine::try_parse_from(["extensions", "remove", "logfire"])
+            .expect("`remove` must keep working");
+        assert!(matches!(
+            canonical.command,
+            Some(ExtensionCommand::Remove { ref name }) if name == "logfire"
+        ));
+    }
+
+    /// A package published as source (no `bin/`, nothing on PATH by that name)
+    /// installs cleanly but can never spawn. Install must say so instead of
+    /// reporting a bare success and leaving `doctor` to explain it later.
+    #[tokio::test]
+    async fn install_reports_a_server_command_that_cannot_be_found() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(
+            src.join(MANIFEST_FILE),
+            json!({
+                "name": "sourceonly", "description": "T.",
+                "yolop": { "protocol_version": "1.0",
+                    "capabilityServer": { "command": "yolop-extension-definitely-absent" },
+                    "trace": true }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let (cap, _settings, _ext_dir) = capability(tmp.path());
+        let tools = cap.management_tools();
+        let install = tools
+            .iter()
+            .find(|t| t.name() == "install_extension")
+            .unwrap();
+
+        match install
+            .execute(json!({ "source": src.to_str().unwrap() }))
+            .await
+        {
+            ToolExecutionResult::Success(v) => {
+                assert_eq!(v["server_command_found"], json!(false));
+                let note = v["note"].as_str().unwrap();
+                assert!(note.contains("cannot start"), "note was: {note}");
+                assert!(note.contains("doctor sourceonly"), "note was: {note}");
+                assert!(
+                    !note.contains("Installed but not enabled"),
+                    "unrunnable package must not read as a plain success: {note}"
+                );
+            }
+            other => panic!("expected success, got {other:?}"),
+        }
+    }
+
+    /// The companion: a package whose command does resolve keeps the ordinary
+    /// enable-next note.
+    #[tokio::test]
+    async fn install_keeps_the_plain_note_when_the_command_resolves() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        std::fs::create_dir_all(src.join("bin")).unwrap();
+        std::fs::write(
+            src.join(MANIFEST_FILE),
+            json!({
+                "name": "hasbin", "description": "T.",
+                "yolop": { "protocol_version": "1.0",
+                    "capabilityServer": { "command": "server" }, "trace": true }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        std::fs::write(src.join("bin").join("server"), "#!/bin/sh\n").unwrap();
+        let (cap, _settings, _ext_dir) = capability(tmp.path());
+        let tools = cap.management_tools();
+        let install = tools
+            .iter()
+            .find(|t| t.name() == "install_extension")
+            .unwrap();
+
+        match install
+            .execute(json!({ "source": src.to_str().unwrap() }))
+            .await
+        {
+            ToolExecutionResult::Success(v) => {
+                assert_eq!(v["server_command_found"], json!(true));
+                assert!(
+                    v["note"]
+                        .as_str()
+                        .unwrap()
+                        .contains("Installed but not enabled")
+                );
+            }
+            other => panic!("expected success, got {other:?}"),
+        }
     }
 
     fn capability(tmp: &Path) -> (ExtensionsCapability, Arc<SettingsStore>, PathBuf) {

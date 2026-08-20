@@ -72,6 +72,19 @@ files under the platform data directory's `yolop/logs/` folder; command,
 `--print`, and ACP modes continue to write tracing output to stderr. At most
 five interactive trace files are retained, capped at 4 MiB each.
 
+`--compact-work` selects an alternate fullscreen transcript projection. Each
+live turn owns one mutable work summary instead of appending narration and tool
+rows. The summary carries current activity, elapsed time, top-level action
+count, and its terminal success, failure, or cancellation state. `Ctrl+O`
+expands or collapses the latest turn's retained detail rows inline beneath the
+summary; the final assistant response remains an ordinary transcript entry
+after it. Compact projection never changes the canonical session event log,
+trajectory export, or non-TUI hosts. It conflicts with `--inline`, because a
+split-footer renderer cannot collapse details after the terminal has accepted
+them as immutable native scrollback. While compact work owns the live activity
+row, the composer separator does not repeat that activity a second time. Its
+retained detail projection shares the transcript's bounded line budget.
+
 Transcript links use OSC 8 targets and leave activation to the terminal
 emulator, including its platform-native modifier (`Ctrl` on Linux, `Command` on
 macOS). The fullscreen host must not also launch the URL from the reported mouse
@@ -152,6 +165,9 @@ Required coverage examples:
   events.
 - Status-bar segments must be asserted through the presentation model whenever a
   feature adds or changes a visible status value.
+- Compact work summaries must be asserted through the presentation model for
+  active, completed, failed, cancelled, expanded, and collapsed states. A real
+  fullscreen PTY test must prove `Ctrl+O` reveals and hides retained details.
 - Startup empty-state wording must be asserted through the presentation model;
   TUI tests cover its responsive wrapping and disappearance when the transcript
   begins. Repository inspection tests must prove the worker can remain blocked

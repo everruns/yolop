@@ -36,6 +36,8 @@ pub struct TuiSpawnOptions {
     pub path_prefix: Option<PathBuf>,
     /// Pass `--inline` instead of using the default fullscreen renderer.
     pub inline: bool,
+    /// Collapse turn work into an expandable fullscreen summary row.
+    pub compact_work: bool,
     /// Workspace passed through `-C`; useful for real-binary containment tests.
     pub workspace: Option<PathBuf>,
     /// Enable shell sandboxing for this process.
@@ -53,6 +55,7 @@ impl Default for TuiSpawnOptions {
             cursor_reply_budget: usize::MAX,
             path_prefix: None,
             inline: true,
+            compact_work: false,
             workspace: None,
             sandbox: false,
             rust_log: None,
@@ -259,6 +262,9 @@ pub fn spawn_tui_llmsim_with_settings(
     cmd.arg(session_dir.path());
     if options.inline {
         cmd.arg("--inline");
+    }
+    if options.compact_work {
+        cmd.arg("--compact-work");
     }
     if options.sandbox {
         cmd.arg("--sandbox");

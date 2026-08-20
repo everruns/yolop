@@ -29,6 +29,8 @@ pub(crate) enum GlobalAction {
     ToggleBackground,
     /// Ctrl+V: paste an image (or large text) from the clipboard into the composer.
     PasteImage,
+    /// Ctrl+O: expand or collapse retained work details for the latest compact turn.
+    ToggleWorkDetails,
 }
 
 /// Build yolop's global keymap: one always-active layer of chord shortcuts.
@@ -43,7 +45,8 @@ pub(crate) fn global_keymap() -> Keymap<GlobalAction> {
             .bind_labeled("ctrl+c", "interrupt", GlobalAction::Interrupt)
             .bind_labeled("ctrl+d", "quit", GlobalAction::Quit)
             .bind_labeled("ctrl+b", "activity", GlobalAction::ToggleBackground)
-            .bind_labeled("ctrl+v", "paste image", GlobalAction::PasteImage),
+            .bind_labeled("ctrl+v", "paste image", GlobalAction::PasteImage)
+            .bind_labeled("ctrl+o", "work details", GlobalAction::ToggleWorkDetails),
     )
 }
 
@@ -85,6 +88,10 @@ mod tests {
             keymap.dispatch(ctrl('v')),
             Dispatch::Command(GlobalAction::PasteImage)
         );
+        assert_eq!(
+            keymap.dispatch(ctrl('o')),
+            Dispatch::Command(GlobalAction::ToggleWorkDetails)
+        );
     }
 
     #[test]
@@ -101,7 +108,7 @@ mod tests {
     #[test]
     fn every_binding_carries_a_help_label() {
         let hints = global_keymap().hints();
-        assert_eq!(hints.len(), 5);
+        assert_eq!(hints.len(), 6);
         assert!(hints.iter().all(|hint| hint.label.is_some()));
         assert!(hints.iter().any(|hint| hint.keys == "Ctrl+R"));
     }
