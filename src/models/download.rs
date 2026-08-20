@@ -278,6 +278,15 @@ pub async fn pull(spec: &str, sink: Arc<Mutex<dyn ProgressSink>>) -> Result<Pull
 /// Move a downloaded file into the store, falling back to a copy when the hub
 /// cache sits on a different filesystem (rename fails across mount points).
 fn install(source: &PathBuf, target: &PathBuf) -> Result<u64> {
+    // `hf_hub` hands back a path inside its own cache, and for a real download
+    // that path is a symlink into a shared `blobs/` directory whose target is
+    // *relative*. Renaming moves the link rather than the file it names, so the
+    // store ends up holding a dangling 76-byte symlink where a multi-gigabyte
+    // model should be, and the very next `metadata` call fails with ENOENT.
+    // Resolve the link before touching it.
+    let source =
+        &std::fs::canonicalize(source).with_context(|| format!("resolve {}", source.display()))?;
+
     if let Some(parent) = target.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -378,6 +387,33 @@ mod tests {
             "consolidated/model.safetensors.index.json"
         ));
         assert!(!is_weight_shard("README.md"));
+    }
+
+    // `hf_hub` returns `snapshots/<rev>/<file>`, a relative symlink into
+    // `blobs/`. Moving the link into the store breaks it: the relative target
+    // no longer resolves from the new location.
+    #[test]
+    fn install_resolves_the_hub_cache_symlink() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let blobs = temp.path().join("blobs");
+        let snapshot = temp.path().join("snapshots").join("main");
+        std::fs::create_dir_all(&blobs).expect("blobs");
+        std::fs::create_dir_all(&snapshot).expect("snapshot");
+
+        let blob = blobs.join("deadbeef");
+        std::fs::write(&blob, vec![3u8; 2048]).expect("write blob");
+        let link = snapshot.join("model.safetensors");
+        std::os::unix::fs::symlink("../../blobs/deadbeef", &link).expect("symlink");
+
+        let target = temp.path().join("store").join("model.safetensors");
+        assert_eq!(install(&link, &target).expect("install"), 2048);
+
+        // The store must hold the bytes, not a link that stopped resolving.
+        assert!(
+            !target.is_symlink(),
+            "a symlink was moved instead of the file"
+        );
+        assert_eq!(std::fs::read(&target).expect("read").len(), 2048);
     }
 
     #[test]
