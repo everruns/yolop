@@ -798,13 +798,53 @@ mod tests {
             )],
             None,
         );
-        data.narration = Some("Ran Bash".to_string());
+        // The real narration for a shell call, which carries the command. The
+        // transcript line is "{label}  {summary}", so a summary that also spelled
+        // out the command printed it twice ("Ran `cmd` `cmd` exit=0").
+        data.narration = Some(everruns_core::tool_narration::narrate_shell_exec(
+            &json!({ "command": "git status --short" }),
+            "Bash",
+            everruns_core::tool_narration::ToolNarrationPhase::Completed,
+            None,
+        ));
         let event = RuntimeEvent::new(SessionId::new(), EventContext::empty(), data);
         let lines = lines_for_event(&event);
 
         let rendered = plain_transcript_line(&lines[0]);
 
-        assert_eq!(rendered, "tool › ✓ Ran Bash  `git status --short` exit=0");
+        assert_eq!(rendered, "tool › ✓ Ran `git status --short`  exit=0");
+        assert_eq!(
+            rendered.matches("git status --short").count(),
+            1,
+            "the command must appear once, not once per narration and summary: {rendered}"
+        );
+    }
+
+    /// Without narration the label falls back to a bare "Bash", so the summary
+    /// is the only place the command can appear and must keep spelling it out.
+    #[test]
+    fn plain_transcript_line_keeps_the_command_when_narration_is_absent() {
+        let mut data = ToolCompletedData::success(
+            "call_bash".to_string(),
+            "bash".to_string(),
+            vec![ContentPart::text(
+                json!({
+                    "command": "git status --short",
+                    "exit_code": 0
+                })
+                .to_string(),
+            )],
+            None,
+        );
+        data.narration = None;
+        data.display_name = Some("Bash".to_string());
+        let event = RuntimeEvent::new(SessionId::new(), EventContext::empty(), data);
+        let lines = lines_for_event(&event);
+
+        assert_eq!(
+            plain_transcript_line(&lines[0]),
+            "tool › ✓ Bash  `git status --short` exit=0"
+        );
     }
 
     #[test]
