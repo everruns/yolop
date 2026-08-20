@@ -95,6 +95,13 @@ Beyond the everruns family, dependency hygiene means:
 - duplicate transitive versions reviewed (`cargo tree --duplicates`), fix or note why unfixable
 - no unused direct dependencies; prefer narrow sub-crates over umbrella crates when only a slice is used
 
+The CI toolchain is not a dependency Dependabot can reason about. Every
+workflow's `dtolnay/rust-toolchain@<ref>` names a Rust version, not an action
+release, and that repository carries branches for Rust versions rustup cannot
+yet download. The ref must equal the `rust-toolchain.toml` channel, which
+tracks the everruns MSRV, so Dependabot ignores the action and both move by
+hand together.
+
 ## Binary Size
 
 Yolop ships as a single binary, so its size is a user-visible cost three times
