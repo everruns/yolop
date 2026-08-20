@@ -209,6 +209,14 @@ Attribute names are the Gen-AI semantic conventions, defined upstream in
 not depend on that crate, so an exporter copies the constants it needs and
 cites the source.
 
+The bundled `logfire` exporter is the worked example of that contract: it
+parents each span by `parent_span_id`, minting the root itself for `turn.*`,
+and labels spans with the Gen-AI semantic conventions so a tracing UI reads
+model, provider, token, and cache fields instead of showing them empty. The
+constants are copied into the extension with their upstream source cited rather
+than imported, since depending on `everruns-core` for a set of `&'static str`
+names would pull its whole dependency tree into a small extension binary.
+
 Trace forwarding has a teardown contract. `trace/event` is fire-and-forget and
 a server is `kill_on_drop`, so ending a session by dropping the runtime killed
 the child with the tail of the stream still in flight. `turn.completed` closes

@@ -21,6 +21,7 @@
 //!   spans. Defaults to `yolop`.
 
 mod exporter;
+mod gen_ai;
 
 use exporter::TraceExporter;
 use opentelemetry::trace::TracerProvider as _;
