@@ -761,6 +761,27 @@ impl ManageTool {
         {
             Ok(installed) => {
                 let m = &installed.manifest;
+                // A package whose declared server command cannot be spawned is
+                // installed but unrunnable; say it here rather than reporting a
+                // bare success and leaving `doctor` to explain it later.
+                let runnable = store::server_command_resolves(
+                    &self.ctx.extensions_dir.join(&m.name),
+                    &m.capability_server.command,
+                );
+                let note = if runnable {
+                    format!(
+                        "Installed but not enabled. Run `yolop extensions enable {}` to enable it.",
+                        m.name
+                    )
+                } else {
+                    format!(
+                        "Installed, but its server command `{}` was not found in the package's \
+                         `bin/` or on PATH, so the extension cannot start. A crate published as \
+                         source ships no binary; install it (for a Rust extension, \
+                         `cargo install {}`) and check with `yolop extensions doctor {}`.",
+                        m.capability_server.command, m.capability_server.command, m.name
+                    )
+                };
                 ToolExecutionResult::Success(json!({
                     "installed": m.name,
                     "version": m.version,
@@ -772,10 +793,8 @@ impl ManageTool {
                     },
                     "content_hash": installed.content_hash,
                     "grant_changed": installed.previous_hash.is_some(),
-                    "note": format!(
-                        "Installed but not enabled. Run `yolop extensions enable {}` to enable it.",
-                        m.name
-                    ),
+                    "server_command_found": runnable,
+                    "note": note,
                 }))
             }
             Err(err) => ToolExecutionResult::ToolError(format!("install failed: {err}")),
@@ -1380,6 +1399,92 @@ mod tests {
             .to_string(),
         )
         .unwrap();
+    }
+
+    /// A package published as source (no `bin/`, nothing on PATH by that name)
+    /// installs cleanly but can never spawn. Install must say so instead of
+    /// reporting a bare success and leaving `doctor` to explain it later.
+    #[tokio::test]
+    async fn install_reports_a_server_command_that_cannot_be_found() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(
+            src.join(MANIFEST_FILE),
+            json!({
+                "name": "sourceonly", "description": "T.",
+                "yolop": { "protocol_version": "1.0",
+                    "capabilityServer": { "command": "yolop-extension-definitely-absent" },
+                    "trace": true }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let (cap, _settings, _ext_dir) = capability(tmp.path());
+        let tools = cap.management_tools();
+        let install = tools
+            .iter()
+            .find(|t| t.name() == "install_extension")
+            .unwrap();
+
+        match install
+            .execute(json!({ "source": src.to_str().unwrap() }))
+            .await
+        {
+            ToolExecutionResult::Success(v) => {
+                assert_eq!(v["server_command_found"], json!(false));
+                let note = v["note"].as_str().unwrap();
+                assert!(note.contains("cannot start"), "note was: {note}");
+                assert!(note.contains("doctor sourceonly"), "note was: {note}");
+                assert!(
+                    !note.contains("Installed but not enabled"),
+                    "unrunnable package must not read as a plain success: {note}"
+                );
+            }
+            other => panic!("expected success, got {other:?}"),
+        }
+    }
+
+    /// The companion: a package whose command does resolve keeps the ordinary
+    /// enable-next note.
+    #[tokio::test]
+    async fn install_keeps_the_plain_note_when_the_command_resolves() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        std::fs::create_dir_all(src.join("bin")).unwrap();
+        std::fs::write(
+            src.join(MANIFEST_FILE),
+            json!({
+                "name": "hasbin", "description": "T.",
+                "yolop": { "protocol_version": "1.0",
+                    "capabilityServer": { "command": "server" }, "trace": true }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        std::fs::write(src.join("bin").join("server"), "#!/bin/sh\n").unwrap();
+        let (cap, _settings, _ext_dir) = capability(tmp.path());
+        let tools = cap.management_tools();
+        let install = tools
+            .iter()
+            .find(|t| t.name() == "install_extension")
+            .unwrap();
+
+        match install
+            .execute(json!({ "source": src.to_str().unwrap() }))
+            .await
+        {
+            ToolExecutionResult::Success(v) => {
+                assert_eq!(v["server_command_found"], json!(true));
+                assert!(
+                    v["note"]
+                        .as_str()
+                        .unwrap()
+                        .contains("Installed but not enabled")
+                );
+            }
+            other => panic!("expected success, got {other:?}"),
+        }
     }
 
     fn capability(tmp: &Path) -> (ExtensionsCapability, Arc<SettingsStore>, PathBuf) {

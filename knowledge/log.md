@@ -1,5 +1,19 @@
 # Knowledge Log
 
+## 2026-08-20, Install tells the truth about a package it cannot run
+
+- [Extensions](specs/extensions.md): `install` resolves the declared
+  `capabilityServer.command` and reports `server_command_found`. A crate
+  published as source ships no binary, so the package installed cleanly and
+  only `doctor` knew it could never spawn; the note now names the remedy.
+- The bare-name shorthand prefixed unconditionally, so
+  `install yolop-extension-logfire`, the name on crates.io, looked up
+  `yolop-extension-yolop-extension-logfire`. It is idempotent now.
+- Same parse: splitting `@<version>` before validating the name makes the
+  documented `<name>@<version>` pin work. The guard had rejected `@` and the
+  version's dots, leaving that branch's version split unreachable.
+- `--acp` had lost its doc comment to `--config-dir`, so `--help` showed the
+  flag blank and pasted the ACP paragraph in front of the config-dir text.
 ## 2026-08-19, Binary size becomes a maintenance surface
 
 - [Maintenance](specs/maintenance.md) now owns binary size, with
