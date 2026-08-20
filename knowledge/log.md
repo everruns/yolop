@@ -1,5 +1,20 @@
 # Knowledge Log
 
+## 2026-08-20, One extension name, however it is spelled
+
+- [Extensions](specs/extensions.md): every by-name subcommand accepts the
+  published crate name as well as the manifest name, matching what `install`
+  already took. Installing `yolop-extension-logfire` and then enabling it by
+  that same name had failed with "no extension named".
+- The literal name always wins, so a package whose manifest really is
+  `yolop-extension-foo` still resolves to itself, and an unknown name is passed
+  through untouched so the error quotes what was typed.
+- `disable` no longer reports success for a name that was never installed; it
+  had written a persisted override for a package that does not exist. It stays
+  more permissive than `enable` on purpose: a package whose manifest no longer
+  parses is skipped by discovery and is exactly the one that needs switching
+  off, so a directory on disk or an existing override is enough.
+
 ## 2026-08-20, One command per transcript line, and uninstall says uninstall
 
 - [Extensions](specs/extensions.md): `remove` is aliased `uninstall`. Clap had

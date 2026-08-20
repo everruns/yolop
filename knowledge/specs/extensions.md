@@ -230,6 +230,15 @@ Later, the full `yolop-extension-lsp` control-plane extraction (gated on
 `evals/lsp_integration` parity to retire the built-in),
 `workspace/changed`,
 providers, remain design-of-record below.
+Every subcommand that names an installed extension accepts the published crate
+name (`yolop-extension-<name>`) as well as the manifest name, matching what
+`install` takes. The literal name wins, so a package actually named
+`yolop-extension-foo` resolves to itself, and an unknown name is left untouched
+so the error quotes what the user typed. `disable` refuses a name that is
+neither installed, present on disk, nor already carrying an override: it stays
+looser than `enable` so a package with a broken manifest can still be switched
+off, but it no longer reports success for a typo.
+
 `remove` is also spelled `uninstall`: it is the natural opposite of `install`,
 and without the alias clap rejected it and suggested `install` itself.
 
