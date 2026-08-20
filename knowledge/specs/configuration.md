@@ -40,7 +40,8 @@ Keys are addressed the way a human would name them:
 | Key                       | Type   | Meaning                                                        |
 |---------------------------|--------|----------------------------------------------------------------|
 | `default_provider`        | text   | Provider used when no `--provider` flag is given; takes precedence over env auto-detection. |
-| `models.<provider>`       | text   | Per-provider model spec, survives provider switches.           |
+| `models`                  | list   | The ordered, cross-provider `[[models]]` menu `/model` and ACP offer; edited with `yolop models` (see [Model list](model-list.md)). |
+| `default_models.<provider>` | text | Per-provider model spec, survives provider switches. Remembered state, not the menu. |
 | `tokens.<provider>`       | secret | Provider API token (owner-only on disk; env vars override). OpenRouter PKCE browser login stores the minted key as `tokens.openrouter`. |
 | `base_urls.<provider>`    | text   | Endpoint base URL (used by the `custom` provider).             |
 | `approval_mode`           | text   | Soft-approval paranoia level (`protective` / `normal` / `off`). |
@@ -112,7 +113,7 @@ precedence where read (credentials and `CUSTOM_BASE_URL`). ACP's standard
 `session/set_config_option` model and reasoning changes remain local to that ACP
 session.
 
-The profileable keys are `default_provider`, `models`, `base_urls`,
+The profileable keys are `default_provider`, `models`, `default_models`, `base_urls`,
 `approval_mode`, `approval_policy`, `sandbox_mode`, `worktrees`,
 `capabilities`, `capabilities_mode`, `mcp`, `mcp_mode`, `instructions`,
 `instructions_file`, and `skills_dir`. Credentials (`tokens`, `codex_auth`) and

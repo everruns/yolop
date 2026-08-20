@@ -15,6 +15,7 @@
 pub mod capability_settings;
 pub mod hooks;
 pub mod mcp;
+pub mod model_list;
 pub mod paths;
 pub mod profile;
 pub mod schema;
@@ -24,6 +25,7 @@ use crate::config::capability_settings::{
     CapabilityOverride, capabilities_to_toml, parse_capabilities_table,
 };
 use crate::config::mcp::McpSettings;
+use crate::config::model_list::{ModelEntry, models_to_toml, parse_models_list};
 use anyhow::{Context, Result};
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -222,10 +224,15 @@ pub struct Settings {
     /// (the legacy `provider` key is still read for backward compatibility).
     pub default_provider: Option<String>,
     pub tokens: BTreeMap<String, String>,
-    /// Last model spec chosen per provider, in the provider-relative
-    /// `model [effort]` form `/setup model` accepts. Lets a model pick
-    /// survive restarts and provider switches.
-    pub models: BTreeMap<String, String>,
+    /// The user's model list (`[[models]]` in settings.toml): the ordered,
+    /// cross-provider menu `/model`, the status bar, and ACP offer. Empty means
+    /// never configured, and `model_list::default_models` stands in.
+    pub models: Vec<ModelEntry>,
+    /// Last model spec chosen per provider (`[default_models]`), in the
+    /// provider-relative `model [effort]` form `/setup model` accepts. Lets a
+    /// model pick survive restarts and provider switches. This is remembered
+    /// state, not a menu; the menu is `models` above.
+    pub default_models: BTreeMap<String, String>,
     /// Endpoint base URLs keyed by provider. Today only `custom` (the
     /// generic OpenAI-compatible provider) writes here.
     pub base_urls: BTreeMap<String, String>,
@@ -272,7 +279,8 @@ impl Default for Settings {
         Self {
             default_provider: None,
             tokens: BTreeMap::new(),
-            models: BTreeMap::new(),
+            models: Vec::new(),
+            default_models: BTreeMap::new(),
             base_urls: BTreeMap::new(),
             codex_auth: None,
             attribution: true,
@@ -355,7 +363,14 @@ impl Settings {
         Self {
             default_provider,
             tokens: string_map("tokens"),
-            models: string_map("models"),
+            models: parse_models_list(table),
+            // `models` written as a table is the pre-list layout: a per-provider
+            // default map. Read it as `default_models` so an existing settings
+            // file keeps its remembered picks after the key split.
+            default_models: match table.get("models") {
+                Some(Value::Table(_)) => string_map("models"),
+                _ => string_map("default_models"),
+            },
             base_urls: string_map("base_urls"),
             codex_auth,
             attribution,
@@ -432,7 +447,7 @@ impl Settings {
             }
         };
         insert_map("tokens", &self.tokens);
-        insert_map("models", &self.models);
+        insert_map("default_models", &self.default_models);
         insert_map("base_urls", &self.base_urls);
         if let Some(auth) = &self.codex_auth {
             table.insert(
@@ -444,6 +459,12 @@ impl Settings {
             table.insert(
                 "mcp".to_string(),
                 Value::Table(mcp_settings_to_table(&self.mcp)),
+            );
+        }
+        if !self.models.is_empty() {
+            table.insert(
+                "models".to_string(),
+                Value::Array(models_to_toml(&self.models)),
             );
         }
         let caps = capabilities_to_toml(&self.capabilities);
@@ -463,8 +484,20 @@ impl Settings {
         self.tokens.contains_key(provider)
     }
 
+    /// The model list as configured, falling back to the built-in default
+    /// menu when the user has never set one. Credential filtering is *not*
+    /// applied here; that needs provider-usability knowledge and belongs to
+    /// `capabilities::model_list`.
+    pub fn model_list(&self) -> Vec<ModelEntry> {
+        if self.models.is_empty() {
+            model_list::default_models()
+        } else {
+            self.models.clone()
+        }
+    }
+
     pub fn model_for(&self, provider: &str) -> Option<&str> {
-        self.models.get(provider).map(String::as_str)
+        self.default_models.get(provider).map(String::as_str)
     }
 
     pub fn base_url_for(&self, provider: &str) -> Option<&str> {
@@ -753,7 +786,8 @@ impl SettingsStore {
             schema::KeyTarget::ApprovalPolicy => overlay.approval_policy.is_some(),
             schema::KeyTarget::Worktrees => overlay.worktrees.is_some(),
             schema::KeyTarget::Sandbox => overlay.sandbox.is_some(),
-            schema::KeyTarget::Model(provider) => overlay.models.contains_key(provider),
+            schema::KeyTarget::Model(provider) => overlay.default_models.contains_key(provider),
+            schema::KeyTarget::Models => !overlay.models.is_empty(),
             schema::KeyTarget::BaseUrl(provider) => overlay.base_urls.contains_key(provider),
             schema::KeyTarget::Capabilities => !overlay.capabilities.is_empty(),
             schema::KeyTarget::Mcp => !overlay.mcp.servers.is_empty(),
@@ -898,10 +932,10 @@ impl SettingsStore {
         let base_spec = spec.clone();
         self.update_profileable(
             |settings| {
-                settings.models.insert(base_provider, base_spec);
+                settings.default_models.insert(base_provider, base_spec);
             },
             |profile| {
-                profile.models.insert(provider, Some(spec));
+                profile.default_models.insert(provider, Some(spec));
             },
         )
     }
@@ -910,15 +944,27 @@ impl SettingsStore {
     pub fn clear_model(&self, provider: &str) -> Result<bool> {
         let mut guard = self.inner.lock().expect("settings lock poisoned");
         let existed = if let Some(active) = &mut guard.profile {
-            let existed = active.overlay.models.remove(provider).is_some();
+            let existed = active.overlay.default_models.remove(provider).is_some();
             save_profile_to(&active.path, &active.overlay)?;
             existed
         } else {
-            let existed = guard.base.models.remove(provider).is_some();
+            let existed = guard.base.default_models.remove(provider).is_some();
             save_to(&self.path, &guard.base)?;
             existed
         };
         Ok(existed)
+    }
+
+    /// Replace the model list. Every `yolop models` edit reads the resolved
+    /// list, changes it, and writes the whole thing back, so ordering is
+    /// explicit and there is one write path. Under an active profile this
+    /// writes the profile's own `[[models]]`, which replaces the global menu.
+    pub fn set_models(&self, models: Vec<ModelEntry>) -> Result<()> {
+        let base_models = models.clone();
+        self.update_profileable(
+            |settings| settings.models = base_models,
+            |profile| profile.models = models,
+        )
     }
 
     pub fn set_base_url(&self, provider: String, url: String) -> Result<()> {
@@ -1743,7 +1789,7 @@ Authorization = "Bearer ${LINEAR_API_KEY}"
             .expect("save base url");
 
         let on_disk = std::fs::read_to_string(&path).expect("read");
-        assert!(on_disk.contains("[models]"), "got: {on_disk}");
+        assert!(on_disk.contains("[default_models]"), "got: {on_disk}");
         assert!(on_disk.contains("[base_urls]"), "got: {on_disk}");
 
         let reloaded = SettingsStore::open(path);

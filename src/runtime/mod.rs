@@ -3123,9 +3123,19 @@ impl ModelState {
         let (provider, model) = value
             .split_once(':')
             .ok_or_else(|| anyhow!("model selection must be `provider:model`"))?;
+        // A list entry may pin a reasoning effort alongside the model; the
+        // wire value carries only `provider:model`, so recover the effort here
+        // rather than silently dropping it on selection.
+        let settings = self.settings.snapshot();
+        let spec = settings
+            .model_list()
+            .into_iter()
+            .find(|entry| entry.provider == provider && entry.model == model)
+            .map(|entry| entry.spec())
+            .unwrap_or_else(|| model.to_string());
         let selected =
-            ProviderChoice::default_for_provider_name(provider)?.resolve_model_spec(model)?;
-        let resolved = selected.model_with_provider(&self.settings.snapshot())?;
+            ProviderChoice::default_for_provider_name(provider)?.resolve_model_spec(&spec)?;
+        let resolved = selected.model_with_provider(&settings)?;
         self.provider_store
             .set_default_model_spec(resolved.model_spec())
             .await?;
@@ -3146,6 +3156,14 @@ impl ModelState {
         options.push((value, name.to_string(), provider.to_string()));
     }
 
+    /// The models this session offers, for ACP's model config option.
+    ///
+    /// This is the user's model list (`[[models]]`), not every model every
+    /// credentialed provider advertises: an editor's model menu should hold the
+    /// handful a user switches between. Browsing the full catalog is
+    /// `search_models` and the `/model` picker's "browse all models" path.
+    /// Entries are `(value, name, group)` where the value is `provider:model`,
+    /// so selecting one switches provider and model together.
     pub(crate) async fn model_options(&self) -> Vec<(String, String, String)> {
         let settings = self.settings.snapshot();
         let current = self
@@ -3153,39 +3171,18 @@ impl ModelState {
             .read()
             .expect("provider lock poisoned")
             .clone();
+        let current_key = format!("{}:{}", current.provider_name(), current.model_id());
         let mut options = Vec::new();
-
-        for provider in SUPPORTED_PROVIDERS.iter().copied().filter(|provider| {
-            crate::capabilities::model_discovery::provider_is_usable(&settings, provider)
-        }) {
-            let Ok(resolved) = resolve_for_settings(provider, &settings) else {
-                continue;
-            };
-            Self::push_model_option(
-                &mut options,
-                provider,
-                resolved.choice.model_id(),
-                resolved.choice.model_id(),
-            );
-
-            for model in ProviderChoice::model_suggestions_for_provider(provider) {
-                Self::push_model_option(&mut options, provider, model, model);
-            }
-
-            if let Ok(Ok(Some(discovered))) = tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                crate::capabilities::model_discovery::discover_provider_models(
-                    &resolved.choice,
-                    &settings,
-                ),
-            )
-            .await
-            {
-                for model in discovered {
-                    let name = model.display_name.as_deref().unwrap_or(&model.model_id);
-                    Self::push_model_option(&mut options, provider, &model.model_id, name);
-                }
-            }
+        for entry in crate::capabilities::offered_models(&settings, Some(current_key.as_str())) {
+            // The value carries no reasoning effort so it still matches the
+            // `provider:model` id the client echoes back as "selected";
+            // `select_model_id` re-applies the entry's effort on the way in.
+            //
+            // The name omits the provider: ACP renders these as
+            // `<group>: <name>` with the group already naming the provider, so
+            // `display()` here would read "ollama: ollama/llama3.2".
+            let name = entry.label.clone().unwrap_or_else(|| entry.spec());
+            Self::push_model_option(&mut options, &entry.provider, &entry.model, &name);
         }
 
         // The installed session model remains usable even if its credential is
@@ -3885,6 +3882,22 @@ pub async fn build_with_options(
     let live_processes = crate::extensions::LiveProcessRegistry::default();
     let mut session_control_registry = crate::control::ControlRegistry::default();
     session_control_registry.register(coordination_capability)?;
+    // The model list administers itself through the same attached-CLI plane:
+    // `yolop models ...`. It shares `ModelsCapability`'s controller, so
+    // `yolop models use` switches this live session exactly like `/setup
+    // provider <name> <model>`.
+    let pending_model_choice = Arc::new(RwLock::new(None));
+    let model_list = Arc::new(crate::capabilities::ModelListCapability::new(
+        settings.clone(),
+        Some(crate::capabilities::host::setup_controller(
+            provider_state.clone(),
+            provider_store.clone(),
+            settings.clone(),
+            pending_model_choice.clone(),
+        )),
+    ));
+    session_control_registry.register(model_list.clone())?;
+    capabilities.register_arc(model_list);
     // Per-extension secrets ride the shared credential store (`connections.toml`,
     // 0600), keyed `ext:<name>` — never `settings.toml`. Injected as env at
     // spawn; never surfaced to the agent.
@@ -4085,7 +4098,6 @@ pub async fn build_with_options(
     });
     // `/setup` (below) is the capability-sourced slash command. It implements
     // `Capability::execute_command` end to end.
-    let pending_model_choice = Arc::new(RwLock::new(None));
     capabilities.register(ModelsCapability {
         provider: provider_state.clone(),
         provider_store: provider_store.clone(),
@@ -7277,7 +7289,7 @@ mod tests {
         // With a persisted model the custom endpoint is auto-selected (the
         // caller's `resolve_for_settings` fills the model in).
         settings
-            .models
+            .default_models
             .insert("custom".to_string(), "qwen3-coder".to_string());
         let provider = ProviderChoice::from_env_or_settings(&settings);
         assert_eq!(provider.provider_name(), "custom");
@@ -7363,12 +7375,12 @@ mod tests {
         }
         let mut settings = Settings::default();
         settings
-            .models
+            .default_models
             .insert("openai".to_string(), "gpt-5.4 high".to_string());
         // Anthropic profiles own their effort support too, so a persisted
         // model+effort spec is restored when the model profile allows it.
         settings
-            .models
+            .default_models
             .insert("anthropic".to_string(), "claude-opus-4-5 high".to_string());
 
         let openai = resolve_for_settings("openai", &settings)
@@ -7390,7 +7402,7 @@ mod tests {
         }
         let mut settings = Settings::default();
         settings
-            .models
+            .default_models
             .insert("openai".to_string(), "gpt-5.4 high".to_string());
 
         let resolved = resolve_for_settings("openai", &settings).expect("resolve");

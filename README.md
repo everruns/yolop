@@ -212,7 +212,7 @@ yolop --provider llmsim -p "hi"         # offline demo, no API key required
 | OpenRouter | browser PKCE login or `OPENROUTER_API_KEY` | `openai/gpt-5.6-sol` |
 | Google     | `GEMINI_API_KEY` / `GOOGLE_API_KEY`   | `gemini-2.5-flash` |
 | Ollama     | `OLLAMA_BASE_URL` / `OLLAMA_API_KEY`  | `llama3.2`        |
-| Local (in-process) | none (weights pulled with `yolop models pull`) | `Qwen3-30B-A3B-Instruct` Q4 GGUF |
+| Local (in-process) | none (weights pulled with `yolop weights pull`) | `Qwen3-30B-A3B-Instruct` Q4 GGUF |
 | Custom     | `CUSTOM_BASE_URL` (+ optional `CUSTOM_API_KEY`) |, (set via `/setup`) |
 | llmsim     | none (offline simulator)              |, |
 
@@ -231,9 +231,9 @@ a turn never blocks on a download:
 
 ```bash
 M=unsloth/Qwen3-8B-GGUF::Qwen3-8B-Q4_K_M.gguf
-yolop models pull "$M"      # several GB, with progress
-yolop models list           # what is on disk, and how much
-yolop models rm "$M"        # reclaim it
+yolop weights pull "$M"     # several GB, with progress
+yolop weights list          # what is on disk, and how much
+yolop weights rm "$M"       # reclaim it
 yolop --provider local -m "$M"
 ```
 

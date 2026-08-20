@@ -982,9 +982,24 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn standard_config_options_select_the_live_session_model() {
         let sessions = tempfile::tempdir().expect("sessions tempdir");
-        SettingsStore::open(sessions.path().join("settings.toml"))
+        let settings = SettingsStore::open(sessions.path().join("settings.toml"));
+        settings
             .set_token("ollama".to_string(), "local".to_string())
             .expect("mark Ollama configured");
+        // ACP is offered the user's model list, not every model every
+        // credentialed provider advertises, so Ollama appears here because it
+        // is listed — a credential alone no longer puts a model on the menu.
+        settings
+            .set_models(vec![
+                crate::config::model_list::ModelEntry::new("ollama", "llama3.2"),
+                crate::config::model_list::ModelEntry {
+                    provider: "ollama".to_string(),
+                    model: "qwen2.5-coder".to_string(),
+                    effort: Some("high".to_string()),
+                    label: None,
+                },
+            ])
+            .expect("write the model list");
         let (mut w, mut reader, _server) =
             start_raw_server(fixed("unused"), sessions.path().to_path_buf());
         send_json(
@@ -1024,6 +1039,30 @@ mod tests {
             })
             .expect("Ollama model option")
             .to_owned();
+        assert_eq!(
+            selected_model, "ollama:llama3.2",
+            "the offered option is the listed entry"
+        );
+        let offered_name = model["options"]
+            .as_array()
+            .expect("model options")
+            .iter()
+            .find(|option| option["value"] == "ollama:llama3.2")
+            .and_then(|option| option["name"].as_str())
+            .expect("named option");
+        assert_eq!(
+            offered_name, "ollama: llama3.2",
+            "ACP prefixes the provider group itself, so the name must not repeat it"
+        );
+        // An entry that pins a reasoning effort shows it in the name, while the
+        // value stays `provider:model` so the client's "selected" echo matches.
+        let with_effort = model["options"]
+            .as_array()
+            .expect("model options")
+            .iter()
+            .find(|option| option["value"] == "ollama:qwen2.5-coder")
+            .expect("effort-bearing option");
+        assert_eq!(with_effort["name"], "ollama: qwen2.5-coder high");
 
         send_json(
             &mut w,

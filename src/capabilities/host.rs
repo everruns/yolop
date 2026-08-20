@@ -561,6 +561,24 @@ impl ModelsCapability {
     }
 }
 
+/// Build the shared controller from the same handles `ModelsCapability` holds,
+/// for a sibling capability that must mutate the live provider/model through
+/// the one implementation rather than a second copy of it.
+pub(crate) fn setup_controller(
+    provider: Arc<RwLock<ProviderChoice>>,
+    provider_store: Arc<dyn RuntimeProviderStore>,
+    settings: Arc<SettingsStore>,
+    pending_model_choice: Arc<RwLock<Option<ProviderChoice>>>,
+) -> SetupController {
+    SetupController {
+        provider,
+        provider_store,
+        config: settings.clone(),
+        settings,
+        pending_model_choice,
+    }
+}
+
 /// Live provider/model/effort controller. Holds the same handles as
 /// [`ModelsCapability`] and owns every mutation (`change_provider`,
 /// `change_model`, `change_effort`, tokens, urls, attribution, approval). The
@@ -718,6 +736,15 @@ fn setup_command_arg() -> CommandArg {
 }
 
 impl SetupController {
+    /// The live provider/model selection, for surfaces that mark the current
+    /// entry (the model list, the status bar).
+    pub(crate) fn current_choice(&self) -> ProviderChoice {
+        self.provider
+            .read()
+            .expect("provider lock poisoned")
+            .clone()
+    }
+
     fn status_result(&self) -> CommandResult {
         let current = self
             .provider
@@ -762,7 +789,10 @@ impl SetupController {
     /// provider and model atomically — the wizard needs this for the custom
     /// provider, whose `/setup model` form would otherwise have no provider
     /// context to resolve against on first-time setup.
-    async fn change_provider(&self, raw: &str) -> everruns_provider::error::Result<CommandResult> {
+    pub(crate) async fn change_provider(
+        &self,
+        raw: &str,
+    ) -> everruns_provider::error::Result<CommandResult> {
         let mut parts = raw.splitn(2, char::is_whitespace);
         let name = parts.next().unwrap_or_default();
         let model_spec = parts.next().unwrap_or_default().trim();
@@ -1558,15 +1588,16 @@ fn env_credential_present() -> bool {
         .any(|var| std::env::var(var).map(|v| !v.is_empty()).unwrap_or(false))
 }
 
+/// Controller scaffolding shared by the tests in this module and by
+/// `capabilities::model_list`, which drives the same live session through
+/// `yolop models use`.
 #[cfg(test)]
-mod tests {
+pub(crate) mod test_support {
     use super::*;
-
-    // ---------- live-config tools (set_model / set_provider / set_reasoning_effort) ----------
 
     /// Minimal provider store for controller tests: `change_*` only ever calls
     /// `set_default_model`, which we accept; the reads are never exercised here.
-    struct StubProviderStore;
+    pub(crate) struct StubProviderStore;
 
     #[async_trait::async_trait]
     impl everruns_core::ProviderStore for StubProviderStore {
@@ -1607,7 +1638,7 @@ mod tests {
     /// A controller wired to a temp settings file and the stub store, plus the
     /// shared provider handle so the test can observe live changes. The returned
     /// `TempDir` must be kept alive for the settings path to stay valid.
-    fn test_controller(
+    pub(crate) fn test_controller(
         provider: ProviderChoice,
     ) -> (
         SetupController,
@@ -1635,6 +1666,29 @@ mod tests {
         };
         (controller, provider, dir)
     }
+
+    /// As [`test_controller`], plus the settings handle, for a caller that must
+    /// write settings the controller then reads (the model list).
+    pub(crate) fn test_controller_with_settings(
+        provider: ProviderChoice,
+    ) -> (
+        SetupController,
+        Arc<RwLock<ProviderChoice>>,
+        Arc<SettingsStore>,
+        tempfile::TempDir,
+    ) {
+        let (controller, provider, dir) = test_controller(provider);
+        let settings = controller.settings.clone();
+        (controller, provider, settings, dir)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use test_support::test_controller;
+
+    // ---------- live-config tools (set_model / set_provider / set_reasoning_effort) ----------
 
     #[tokio::test]
     async fn set_reasoning_effort_tool_applies_live_and_validates() {
@@ -1673,7 +1727,7 @@ mod tests {
             .await
             .expect("change model");
         let before = controller.settings.snapshot();
-        assert_eq!(before.models.get("openai"), None);
+        assert_eq!(before.default_models.get("openai"), None);
         assert_eq!(before.default_provider, None);
 
         let warning = SetupController::persist_pending_model_choice(
@@ -1683,7 +1737,7 @@ mod tests {
         assert!(warning.is_empty(), "unexpected warning: {warning}");
         let after = controller.settings.snapshot();
         assert_eq!(
-            after.models.get("openai").map(String::as_str),
+            after.default_models.get("openai").map(String::as_str),
             Some("gpt-5.4 none")
         );
         assert_eq!(after.default_provider.as_deref(), Some("openai"));

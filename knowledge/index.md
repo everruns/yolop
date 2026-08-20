@@ -28,6 +28,7 @@ and [`docs/`](../docs/); it must not link back into this internal bundle.
 - [Extensions](specs/extensions.md), installable capability packages.
 - [Hooks](specs/hooks.md), lifecycle automation.
 - [Memory](specs/memory.md), durable user personalization.
+- [Model list](specs/model-list.md), the cross-provider menu of models a session offers.
 - [Session history](specs/session-history.md), discovery of earlier sessions.
 - [Session coordination](specs/session-coordination.md), local coordinator and worker orchestration.
 - [Session titles](specs/session-titles.md), automatic conversation titles.

@@ -3,8 +3,8 @@
 //! Weights for the `local` provider live under `<data_dir>/yolop/models/`,
 //! one directory per Hugging Face repo. Yolop owns this directory rather than
 //! deferring to the engine's own cache so the bytes are inspectable: `yolop
-//! models list` can report what is on disk and how much it costs, and `yolop
-//! models rm` can reclaim it. An engine-managed cache would leave users with
+//! weights list` can report what is on disk and how much it costs, and `yolop
+//! weights rm` can reclaim it. An engine-managed cache would leave users with
 //! gigabytes they can neither see nor delete through yolop.
 //!
 //! Listing and removal are plain filesystem work and compile into every build.

@@ -21,6 +21,7 @@ pub(crate) mod lsp;
 pub(crate) mod mcp;
 pub(crate) mod memory;
 pub(crate) mod model_discovery;
+pub(crate) mod model_list;
 pub(crate) mod model_ranking;
 pub(crate) mod model_runtime_context;
 pub(crate) mod narration;
@@ -65,6 +66,7 @@ pub(crate) use host::{
     MODELS_CAPABILITY_ID, ModelsCapability,
 };
 pub(crate) use lsp::LspCapability;
+pub(crate) use model_list::{ModelListCapability, offered_models};
 pub(crate) use model_runtime_context::{
     MODEL_RUNTIME_CONTEXT_CAPABILITY_ID, ModelRuntimeContextCapability,
 };

@@ -169,13 +169,13 @@ settles.
 Weights live under `<data_dir>/yolop/models/`, one flat directory per repo
 (`/` → `__`). Yolop owns this directory instead of deferring to the engine's own
 cache, because an engine-managed cache leaves users with gigabytes they can
-neither see nor delete through yolop. `yolop models list` reports what is on
-disk and its size; `yolop models rm` reclaims it.
+neither see nor delete through yolop. `yolop weights list` reports what is on
+disk and its size; `yolop weights rm` reclaims it.
 
 **A turn never downloads.** The engine is capable of fetching its own weights,
 but it does so inside the first inference call — the turn appears to hang for
 several gigabytes with nothing on screen. Instead the driver loads only from the
-store and, when the weights are absent, fails immediately with the `yolop models
+store and, when the weights are absent, fails immediately with the `yolop weights
 pull` command that fixes it. The wait is explicit, has a progress bar, and
 happens where a progress bar can be drawn.
 

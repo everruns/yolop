@@ -99,16 +99,34 @@ pub fn schema() -> &'static [ConfigField] {
         },
         ConfigField {
             key: "models",
+            aliases: &["model_list"],
+            title: "Model list",
+            description: "The ordered, cross-provider menu of models to switch between: what \
+                          `/model`, the status bar, and ACP offer. Stored as `[[models]]` \
+                          entries with `provider`, `model`, and optional `effort`/`label`. \
+                          Edit it with `yolop models add|rm|move`, not `set_config`. Unset \
+                          means the built-in default list.",
+            kind: ValueKind::List,
+            default: Some(
+                "openai/gpt-5.6-sol, openai/gpt-5.4-mini, anthropic/claude-opus-4-8, \
+                           anthropic/claude-sonnet-4-5, codex/gpt-5.6-sol",
+            ),
+            examples: &["yolop models add openrouter anthropic/claude-opus-4-8"],
+            provider_scoped: false,
+        },
+        ConfigField {
+            key: "default_models",
             aliases: &["model_for"],
             title: "Per-provider model",
             description: "Model spec remembered for a specific provider, so a pick survives \
-                          restarts and provider switches. Addressed as `models.<provider>`.",
+                          restarts and provider switches. This is remembered state, not the \
+                          menu; the menu is `models`. Addressed as `default_models.<provider>`.",
             kind: ValueKind::Text,
             default: None,
             examples: &[
-                "models.openai = gpt-5.5 high",
-                "models.codex = gpt-5.5 high",
-                "models.anthropic = claude-opus-4-5",
+                "default_models.openai = gpt-5.5 high",
+                "default_models.codex = gpt-5.5 high",
+                "default_models.anthropic = claude-opus-4-5",
             ],
             provider_scoped: true,
         },
@@ -283,6 +301,8 @@ pub enum KeyTarget {
     Theme,
     /// Per-provider model spec, for the named provider.
     Model(String),
+    /// The ordered `[[models]]` list, edited through `yolop models`.
+    Models,
     /// Per-provider API token.
     Token(String),
     /// Per-provider endpoint base URL.
@@ -308,7 +328,8 @@ impl KeyTarget {
             KeyTarget::Worktrees => "worktrees",
             KeyTarget::Sandbox => "sandbox_mode",
             KeyTarget::Theme => "theme",
-            KeyTarget::Model(_) => "models",
+            KeyTarget::Model(_) => "default_models",
+            KeyTarget::Models => "models",
             KeyTarget::Token(_) => "tokens",
             KeyTarget::BaseUrl(_) => "base_urls",
             KeyTarget::Capabilities | KeyTarget::CapabilityRef(_) => "capabilities",
@@ -364,7 +385,11 @@ pub fn parse_key(input: &str) -> Result<KeyTarget, String> {
         "worktrees" | "worktree" => scalar(KeyTarget::Worktrees),
         "sandbox_mode" | "sandbox" | "containment" => scalar(KeyTarget::Sandbox),
         "theme" => scalar(KeyTarget::Theme),
-        "models" | "model_for" => scoped(KeyTarget::Model),
+        // `models` is the ordered list; the per-provider memory it used to name
+        // is `default_models`. A bare `models.<provider>` still routes to the
+        // per-provider key so older muscle memory and settings files work.
+        "models" | "model_list" if sub.is_none() => Ok(KeyTarget::Models),
+        "models" | "default_models" | "model_for" => scoped(KeyTarget::Model),
         "tokens" | "token" => scoped(KeyTarget::Token),
         "base_urls" | "base_url" | "url" => scoped(KeyTarget::BaseUrl),
         "mcp" | "mcp_servers" => scalar(KeyTarget::Mcp),

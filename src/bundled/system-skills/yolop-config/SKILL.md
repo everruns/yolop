@@ -21,7 +21,7 @@ values are validated and persisted atomically.
    its meaning, type, default, examples, and current value. Secrets (API
    tokens) are shown only as `stored` / `unset`, never echoed.
 2. Call `get_config` with a single `key` (e.g. `default_provider`,
-   `models.anthropic`, `tokens.openai`) to focus on one entry.
+   `default_models.anthropic`, `tokens.openai`) to focus on one entry.
 3. For harness capabilities, use `get_config key=capabilities` (registered catalog,
    stored overrides, effective harness) or `get_config key=capabilities.<ref>`
    (per-capability schema metadata from `config_schema` / `config_ui_schema`).
@@ -30,16 +30,20 @@ Lead with `get_config` whenever you are unsure of the exact key name or the
 accepted values, the returned schema is the source of truth, so you never have
 to guess.
 
+The model list (`models`) is read here but edited with the `yolop models`
+command, not `set_config`, see "Model list" below.
+
 ## Change
 
 Call `set_config` with a `key` and a `value` for scalar settings:
 
 - `set_config key=default_provider value=anthropic`, the default provider when
   neither `--provider` nor an env credential forces a choice.
-- `set_config key=models.anthropic value="claude-sonnet-4-5"`, provider preference
-  model for the active provider. A per-provider pick wins over it.
-- `set_config key=models.openai value="gpt-5.5 high"`, remember a model for one
-  provider (survives provider switches). The spec is `model [reasoning-effort]`.
+- `set_config key=default_models.anthropic value="claude-sonnet-4-5"`, provider
+  preference model for the active provider. A per-provider pick wins over it.
+- `set_config key=default_models.openai value="gpt-5.5 high"`, remember a model
+  for one provider (survives provider switches). The spec is
+  `model [reasoning-effort]`.
 - `set_config key=tokens.anthropic value=…`, store an API token (owner-only on
   disk). Environment variables still override stored tokens.
 - `set_config key=base_urls.custom value=http://localhost:8000/v1`, endpoint
@@ -105,5 +109,20 @@ keys.
   exposed via the capability's `config_schema`, not a `settings.toml` key.
 - **Behavioral hooks** (block/allow/audit tool calls): use the `yolop-hooks`
   skill and the `hooks` capability tools.
+## Model list
+
+`models` is the ordered, cross-provider menu `/model`, the status bar, and ACP
+offer: the handful of models the user switches between, not every model a
+provider publishes. Edit it by running the CLI, which affects the live session:
+
+- `yolop models list`, show it (entries needing sign-in are marked)
+- `yolop models add <provider> <model> [--effort E] [--label L] [--position N]`
+- `yolop models rm <model>` / `yolop models move <model> <position>`
+- `yolop models use <model>`, switch this session (provider and model together)
+- `yolop models reset`, restore the built-in default list
+
+Reference a model as `provider/model`, or by its bare id when only one entry has
+it. `set_config` refuses `models` on purpose: the CLI is the one editor.
+
 - **Interactive provider/model setup**: the `/setup` command runs a guided
   wizard and switches the live model immediately.

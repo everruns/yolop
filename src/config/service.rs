@@ -92,6 +92,24 @@ pub(crate) fn current_value(settings: &Settings, target: &KeyTarget) -> Value {
             .base_url_for(p)
             .map(|s| Value::String(s.to_string()))
             .unwrap_or(Value::Null),
+        KeyTarget::Models => Value::Array(
+            settings
+                .model_list()
+                .into_iter()
+                .map(|entry| {
+                    let mut object = serde_json::Map::new();
+                    object.insert("provider".into(), Value::String(entry.provider));
+                    object.insert("model".into(), Value::String(entry.model));
+                    if let Some(effort) = entry.effort {
+                        object.insert("effort".into(), Value::String(effort));
+                    }
+                    if let Some(label) = entry.label {
+                        object.insert("label".into(), Value::String(label));
+                    }
+                    Value::Object(object)
+                })
+                .collect(),
+        ),
         KeyTarget::Capabilities => {
             crate::config::capability_settings::overrides_to_json(&settings.capabilities)
         }
@@ -125,8 +143,8 @@ pub(crate) fn scoped_current(settings: &Settings, key: &str) -> Value {
                 map.insert(provider.clone(), Value::String("stored".to_string()));
             }
         }
-        "models" => {
-            for (provider, spec) in settings.models.iter().filter(|(p, _)| supported(p)) {
+        "default_models" => {
+            for (provider, spec) in settings.default_models.iter().filter(|(p, _)| supported(p)) {
                 map.insert(provider.clone(), Value::String(spec.clone()));
             }
         }

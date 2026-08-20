@@ -1,4 +1,5 @@
 use super::mcp::McpSettings;
+use super::model_list::{ModelEntry, models_to_toml, parse_models_list};
 use super::{
     ApprovalMode, ApprovalPolicy, CapabilityOverride, SandboxMode, Settings, WorktreesMode,
     capabilities_to_toml, mcp_settings_to_table, parse_capabilities_table, parse_mcp_settings,
@@ -12,6 +13,7 @@ use toml::{Table, Value};
 const PROFILEABLE_KEYS: &[&str] = &[
     "default_provider",
     "models",
+    "default_models",
     "base_urls",
     "approval_mode",
     "approval_policy",
@@ -33,6 +35,7 @@ const PROFILEABLE_KEYS: &[&str] = &[
 const REWRITTEN_KEYS: &[&str] = &[
     "default_provider",
     "models",
+    "default_models",
     "base_urls",
     "approval_mode",
     "approval_policy",
@@ -111,7 +114,11 @@ impl ListMode {
 #[derive(Clone, Debug, Default)]
 pub struct SettingsOverlay {
     pub default_provider: Option<Option<String>>,
-    pub models: BTreeMap<String, Option<String>>,
+    /// The profile's own model list. Non-empty replaces the global
+    /// `[[models]]` menu wholesale rather than merging: a profile that names a
+    /// menu means "these models, for this job".
+    pub models: Vec<ModelEntry>,
+    pub default_models: BTreeMap<String, Option<String>>,
     pub base_urls: BTreeMap<String, Option<String>>,
     pub approval_mode: Option<ApprovalMode>,
     pub approval_policy: Option<ApprovalPolicy>,
@@ -142,7 +149,10 @@ impl SettingsOverlay {
         if let Some(provider) = &self.default_provider {
             settings.default_provider.clone_from(provider);
         }
-        apply_map(&mut settings.models, &self.models);
+        if !self.models.is_empty() {
+            settings.models.clone_from(&self.models);
+        }
+        apply_map(&mut settings.default_models, &self.default_models);
         apply_map(&mut settings.base_urls, &self.base_urls);
         if let Some(mode) = self.approval_mode {
             settings.approval_mode = mode;
@@ -197,7 +207,16 @@ impl SettingsOverlay {
             .collect();
 
         let default_provider = optional_string(table, "default_provider")?.map(Some);
-        let models = optional_string_map(table, "models")?;
+        // As in global settings, a `models` *table* is the pre-list layout and
+        // is read as `default_models`; a `models` array is the model list.
+        let models = parse_models_list(table);
+        if matches!(table.get("models"), Some(Value::Array(_))) && models.is_empty() {
+            bail!("`models` must be an array of tables, each with `provider` and `model`");
+        }
+        let default_models = match table.get("models") {
+            Some(Value::Table(_)) => optional_string_map(table, "models")?,
+            _ => optional_string_map(table, "default_models")?,
+        };
         let base_urls = optional_string_map(table, "base_urls")?;
         if let Some(Some(provider)) = &default_provider
             && !SUPPORTED_PROVIDERS.contains(&provider.as_str())
@@ -207,7 +226,7 @@ impl SettingsOverlay {
                 SUPPORTED_PROVIDERS.join(", ")
             );
         }
-        for provider in models.keys().chain(base_urls.keys()) {
+        for provider in default_models.keys().chain(base_urls.keys()) {
             if !SUPPORTED_PROVIDERS.contains(&provider.as_str()) {
                 bail!(
                     "unknown provider `{provider}` in profile table; expected one of {}",
@@ -268,6 +287,7 @@ impl SettingsOverlay {
             Self {
                 default_provider,
                 models,
+                default_models,
                 base_urls,
                 approval_mode,
                 approval_policy,
@@ -288,7 +308,15 @@ impl SettingsOverlay {
     pub fn to_table(&self) -> Table {
         let mut table = self.unknown.clone();
         insert_optional_string(&mut table, "default_provider", &self.default_provider);
-        insert_map(&mut table, "models", &self.models);
+        if self.models.is_empty() {
+            table.remove("models");
+        } else {
+            table.insert(
+                "models".to_string(),
+                Value::Array(models_to_toml(&self.models)),
+            );
+        }
+        insert_map(&mut table, "default_models", &self.default_models);
         insert_map(&mut table, "base_urls", &self.base_urls);
         if let Some(mode) = self.approval_mode {
             table.insert(
@@ -527,7 +555,11 @@ mod tests {
         assert_eq!(warnings, ["ignoring unknown profile key `future_setting`"]);
         assert_eq!(overlay.default_provider, Some(Some("openai".to_string())));
         assert_eq!(overlay.approval_policy, Some(ApprovalPolicy::Never));
-        assert_eq!(overlay.models["openai"].as_deref(), Some("gpt-5.6 high"));
+        assert_eq!(
+            overlay.default_models["openai"].as_deref(),
+            Some("gpt-5.6 high"),
+            "a `models` table is the pre-list layout and reads as default_models"
+        );
         assert!(overlay.to_table().get("sandbox_mode").is_none());
         assert_eq!(
             overlay.to_table()["future_setting"].as_str(),
@@ -546,10 +578,57 @@ mod tests {
     }
 
     #[test]
+    fn a_legacy_models_table_survives_a_profile_rewrite_under_its_new_name() {
+        // `models` used to be the per-provider map and is now the model list.
+        // A rewrite must migrate the old entries rather than dropping them on
+        // the floor when the (empty) list clears the `models` key.
+        let table: Table = toml::from_str("[models]\nopenai = 'gpt-5.5 high'\n").unwrap();
+        let (overlay, _) = SettingsOverlay::from_table(&table, Path::new("/nonexistent")).unwrap();
+        let rewritten = overlay.to_table();
+        assert!(
+            rewritten.get("models").is_none(),
+            "the old table does not linger as a malformed list: {rewritten:?}"
+        );
+        assert_eq!(
+            rewritten["default_models"]["openai"].as_str(),
+            Some("gpt-5.5 high"),
+            "the pick is preserved under the new key: {rewritten:?}"
+        );
+
+        let (reparsed, _) =
+            SettingsOverlay::from_table(&rewritten, Path::new("/nonexistent")).unwrap();
+        assert_eq!(
+            reparsed.default_models["openai"].as_deref(),
+            Some("gpt-5.5 high"),
+            "and it round-trips"
+        );
+    }
+
+    #[test]
+    fn a_profile_model_list_replaces_the_global_menu() {
+        let table: Table =
+            toml::from_str("[[models]]\nprovider = 'openai'\nmodel = 'gpt-5.4-mini'\n").unwrap();
+        let (overlay, warnings) =
+            SettingsOverlay::from_table(&table, Path::new("/nonexistent")).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+
+        let mut settings = Settings {
+            models: vec![ModelEntry::new("anthropic", "claude-opus-4-8")],
+            ..Settings::default()
+        };
+        overlay.apply_to(&mut settings);
+        assert_eq!(
+            settings.models,
+            vec![ModelEntry::new("openai", "gpt-5.4-mini")],
+            "a profile that names a menu means those models, not those plus the global ones"
+        );
+    }
+
+    #[test]
     fn overlay_replaces_scalars_and_merges_provider_maps() {
         let mut settings = Settings {
             default_provider: Some("anthropic".to_string()),
-            models: BTreeMap::from([
+            default_models: BTreeMap::from([
                 ("anthropic".to_string(), "claude-sonnet".to_string()),
                 ("openai".to_string(), "gpt-base".to_string()),
             ]),
@@ -557,13 +636,16 @@ mod tests {
         };
         let overlay = SettingsOverlay {
             default_provider: Some(Some("openai".to_string())),
-            models: BTreeMap::from([("openai".to_string(), Some("gpt-profile".to_string()))]),
+            default_models: BTreeMap::from([(
+                "openai".to_string(),
+                Some("gpt-profile".to_string()),
+            )]),
             ..SettingsOverlay::default()
         };
         overlay.apply_to(&mut settings);
         assert_eq!(settings.default_provider.as_deref(), Some("openai"));
-        assert_eq!(settings.models["openai"], "gpt-profile");
-        assert_eq!(settings.models["anthropic"], "claude-sonnet");
+        assert_eq!(settings.default_models["openai"], "gpt-profile");
+        assert_eq!(settings.default_models["anthropic"], "claude-sonnet");
     }
 
     #[test]
