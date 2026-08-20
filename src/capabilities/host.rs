@@ -1588,15 +1588,16 @@ fn env_credential_present() -> bool {
         .any(|var| std::env::var(var).map(|v| !v.is_empty()).unwrap_or(false))
 }
 
+/// Controller scaffolding shared by the tests in this module and by
+/// `capabilities::model_list`, which drives the same live session through
+/// `yolop models use`.
 #[cfg(test)]
-mod tests {
+pub(crate) mod test_support {
     use super::*;
-
-    // ---------- live-config tools (set_model / set_provider / set_reasoning_effort) ----------
 
     /// Minimal provider store for controller tests: `change_*` only ever calls
     /// `set_default_model`, which we accept; the reads are never exercised here.
-    struct StubProviderStore;
+    pub(crate) struct StubProviderStore;
 
     #[async_trait::async_trait]
     impl everruns_core::ProviderStore for StubProviderStore {
@@ -1637,7 +1638,7 @@ mod tests {
     /// A controller wired to a temp settings file and the stub store, plus the
     /// shared provider handle so the test can observe live changes. The returned
     /// `TempDir` must be kept alive for the settings path to stay valid.
-    fn test_controller(
+    pub(crate) fn test_controller(
         provider: ProviderChoice,
     ) -> (
         SetupController,
@@ -1665,6 +1666,29 @@ mod tests {
         };
         (controller, provider, dir)
     }
+
+    /// As [`test_controller`], plus the settings handle, for a caller that must
+    /// write settings the controller then reads (the model list).
+    pub(crate) fn test_controller_with_settings(
+        provider: ProviderChoice,
+    ) -> (
+        SetupController,
+        Arc<RwLock<ProviderChoice>>,
+        Arc<SettingsStore>,
+        tempfile::TempDir,
+    ) {
+        let (controller, provider, dir) = test_controller(provider);
+        let settings = controller.settings.clone();
+        (controller, provider, settings, dir)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use test_support::test_controller;
+
+    // ---------- live-config tools (set_model / set_provider / set_reasoning_effort) ----------
 
     #[tokio::test]
     async fn set_reasoning_effort_tool_applies_live_and_validates() {

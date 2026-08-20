@@ -705,6 +705,67 @@ mod tests {
         assert!(message.contains("between 1 and"), "{message}");
     }
 
+    /// The core promise of pairing provider with model: one selection moves
+    /// both. Drives the real `SetupController` an attached session holds, so
+    /// this covers `yolop models use` past the CLI envelope.
+    #[tokio::test]
+    async fn using_a_listed_model_switches_provider_and_model_on_the_live_session() {
+        use crate::capabilities::host::test_support::test_controller_with_settings;
+        use crate::runtime::ProviderChoice;
+
+        let (controller, provider, settings, _dir) =
+            test_controller_with_settings(ProviderChoice::OpenAi {
+                model: "gpt-5.5".to_string(),
+                reasoning_effort: None,
+            });
+        settings
+            .set_models(vec![
+                ModelEntry::new("openai", "gpt-5.5"),
+                ModelEntry::new("anthropic", "claude-opus-4-8"),
+            ])
+            .expect("write the model list");
+        let capability = ModelListCapability::new(settings, Some(controller));
+
+        let result = capability
+            .execute_action(&ModelListAction::Use {
+                model: "claude-opus-4-8".to_string(),
+            })
+            .await;
+        assert!(result.is_success(), "{result:?}");
+
+        let live = provider.read().expect("provider lock");
+        assert_eq!(live.provider_name(), "anthropic", "the provider switched");
+        assert_eq!(live.model_id(), "claude-opus-4-8", "and so did the model");
+    }
+
+    #[tokio::test]
+    async fn using_a_model_that_is_not_listed_is_refused_before_touching_the_session() {
+        use crate::capabilities::host::test_support::test_controller_with_settings;
+        use crate::runtime::ProviderChoice;
+
+        let (controller, provider, settings, _dir) =
+            test_controller_with_settings(ProviderChoice::OpenAi {
+                model: "gpt-5.5".to_string(),
+                reasoning_effort: None,
+            });
+        settings
+            .set_models(vec![ModelEntry::new("openai", "gpt-5.5")])
+            .expect("write the model list");
+        let capability = ModelListCapability::new(settings, Some(controller));
+
+        let result = capability
+            .execute_action(&ModelListAction::Use {
+                model: "claude-opus-4-8".to_string(),
+            })
+            .await;
+        assert!(result.is_error(), "{result:?}");
+        assert_eq!(
+            provider.read().expect("provider lock").model_id(),
+            "gpt-5.5",
+            "a refused switch leaves the session on its model"
+        );
+    }
+
     #[tokio::test]
     async fn switching_models_without_a_session_says_so_instead_of_failing_silently() {
         let (_dir, capability) = capability();

@@ -990,9 +990,15 @@ mod tests {
         // credentialed provider advertises, so Ollama appears here because it
         // is listed — a credential alone no longer puts a model on the menu.
         settings
-            .set_models(vec![crate::config::model_list::ModelEntry::new(
-                "ollama", "llama3.2",
-            )])
+            .set_models(vec![
+                crate::config::model_list::ModelEntry::new("ollama", "llama3.2"),
+                crate::config::model_list::ModelEntry {
+                    provider: "ollama".to_string(),
+                    model: "qwen2.5-coder".to_string(),
+                    effort: Some("high".to_string()),
+                    label: None,
+                },
+            ])
             .expect("write the model list");
         let (mut w, mut reader, _server) =
             start_raw_server(fixed("unused"), sessions.path().to_path_buf());
@@ -1048,6 +1054,15 @@ mod tests {
             offered_name, "ollama: llama3.2",
             "ACP prefixes the provider group itself, so the name must not repeat it"
         );
+        // An entry that pins a reasoning effort shows it in the name, while the
+        // value stays `provider:model` so the client's "selected" echo matches.
+        let with_effort = model["options"]
+            .as_array()
+            .expect("model options")
+            .iter()
+            .find(|option| option["value"] == "ollama:qwen2.5-coder")
+            .expect("effort-bearing option");
+        assert_eq!(with_effort["name"], "ollama: qwen2.5-coder high");
 
         send_json(
             &mut w,
