@@ -41,6 +41,21 @@ provider exists to answer that question with evidence rather than argument.
   `<function=…><parameter=…>` XML variant, Qwen3-Coder among them, produces tool
   calls that never parse. A local model that cannot call tools cannot drive the
   agent loop, so this disqualifies a model no matter how well it codes.
+- A safetensors pull fetches the shards at the **repo root** plus the support
+  files. Both halves are load-bearing. A repo may keep a second copy of the same
+  weights in a subdirectory for another runtime, so matching the extension alone
+  doubles the download; and the chat template may live in `chat_template.jinja`
+  rather than inlined in `tokenizer_config.json`, so omitting it leaves weights
+  that cannot format a conversation.
+- Files are resolved out of the Hugging Face cache before being installed. That
+  cache addresses blobs through *relative* symlinks, so moving the link instead
+  of the file leaves the store holding one that no longer resolves.
+- A repo that ships quantized weights is loaded as-is. In-situ quantization is
+  for full-precision weights; the engine refuses it on pre-quantized layers, and
+  the refusal surfaces as a panic rather than an error.
+- The no-output window is wider than for network providers. Silence from an
+  in-process engine is prompt prefill, not a failed response, and this agent's
+  prompt plus tool definitions take real time to prefill without a GPU.
 - No base URL and no credential: `Provider::Local` carries neither, because
   there is no endpoint to address and nothing to authenticate against.
 - Reasoning effort is rejected rather than ignored. A repo id is not an entry in

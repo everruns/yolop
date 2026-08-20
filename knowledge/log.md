@@ -755,3 +755,19 @@ wording, formatting, and link fixes do not need entries.
   rather than safetensors, and its chat template must emit JSON tool calls
   inside `<tool_call>`; the engine cannot parse the `<function=…>` XML variant,
   which disqualifies Qwen3-Coder.
+
+## 2026-08-20, The local provider reaches a first turn
+
+- [Local inference](specs/local-inference.md) records what a safetensors pull
+  must fetch: the chat template may live in `chat_template.jinja` rather than
+  inlined in `tokenizer_config.json`, and weight shards are the ones at the repo
+  root, since a repo may keep a second copy of the same weights in a
+  subdirectory.
+- Weights are resolved out of the Hugging Face cache before they are installed.
+  That cache addresses files through relative symlinks into a shared blob store,
+  so moving the link rather than the file left the model store holding a
+  dangling link.
+- A repo that arrives already quantized is loaded as-is. In-situ quantization is
+  for full-precision weights and the engine refuses it on pre-quantized layers.
+- In-process inference gets a wider no-output window than a network provider,
+  because its silence is prompt prefill rather than a failure.
