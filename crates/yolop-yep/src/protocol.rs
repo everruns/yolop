@@ -360,6 +360,8 @@ fn default_true() -> bool {
 ///
 /// The `data` field carries the event-type-specific payload verbatim (see the
 /// everruns event protocol, `knowledge/specs/events.md`); the server maps it to spans.
+/// Lenient/defaulted per the forward-compat rules — a new event type parses
+/// with its `data` intact even if this struct predates it.
 ///
 /// Exporters should not invent their own vocabulary. The payload is the same
 /// event an in-process `everruns_core::event_listeners::EventListener` sees, so
@@ -375,8 +377,6 @@ fn default_true() -> bool {
 /// exporter that wants them copies the constants it needs and cites the source,
 /// accepting that a copy can drift from upstream.
 /// See <https://opentelemetry.io/docs/specs/semconv/gen-ai/>.
-/// Lenient/defaulted per the forward-compat rules — a new event type parses
-/// with its `data` intact even if this struct predates it.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct TraceEventParams {
