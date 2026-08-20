@@ -225,7 +225,14 @@ SHA-256 against the index `cksum`, and unpacks the gzip'd tar, no cargo/rustc.
 A published crate ships *source*, so the manifest's `capabilityServer.command`
 names a binary the user has on `PATH` (or in the package `bin/`); yolop does
 not compile it (`cargo install` remains an optional author-side path, not a
-yolop dependency). Still follow-ups: full JSON-Schema config validation and
+yolop dependency). Because that binary can be absent, install resolves the
+declared command (package `bin/`, then `PATH`) and reports
+`server_command_found`: a package that installs cleanly but can never spawn
+says so at install time, with the remedy, instead of reading as a plain success
+and leaving `doctor` to explain it later. The bare-`<name>` shorthand only adds
+the `yolop-extension-` prefix when it is absent, so the published crate name,
+the spelling a user copies off crates.io, resolves to itself rather than to a
+doubly-prefixed crate that cannot exist. Still follow-ups: full JSON-Schema config validation and
 `config/changed` restart. Phase-1 deltas from the original sketch: tool *definitions*
 (description, schema, policy) live in the manifest, and the handshake's
 `tools` list carries only the served names it narrows to, keeping every
