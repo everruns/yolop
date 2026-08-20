@@ -84,17 +84,49 @@ impl LocalChatDriver {
                 .build()
                 .await
                 .map_err(|err| load_error(spec, err))?,
-            None => ModelBuilder::new(dir)
-                .with_auto_isq(IsqBits::Eight)
-                .build()
-                .await
-                .map_err(|err| load_error(spec, err))?,
+            None => {
+                let builder = ModelBuilder::new(dir.clone());
+                // In-situ quantization is for repos that ship full-precision
+                // weights. A repo that arrives already quantized must be left
+                // alone: `MXFP4Layer::apply_isq` in mistralrs 0.8.1 returns
+                // "MXFP4Layer does not support ISQ", and the ISQ pass unwraps
+                // that error, so asking for it on `openai/gpt-oss-20b` panics
+                // rather than failing gracefully.
+                let builder = if repo_is_prequantized(&dir) {
+                    tracing::info!(
+                        model = spec,
+                        "repo ships quantized weights; skipping in-situ quantization"
+                    );
+                    builder
+                } else {
+                    builder.with_auto_isq(IsqBits::Eight)
+                };
+                builder.build().await.map_err(|err| load_error(spec, err))?
+            }
         };
 
         let engine: &'static Model = Box::leak(Box::new(model));
         engines.insert(spec.to_string(), engine);
         Ok(engine)
     }
+}
+
+/// Whether the repo in `dir` ships weights that are already quantized.
+///
+/// Hugging Face records this as a `quantization_config` object in
+/// `config.json`; `openai/gpt-oss-20b` carries `{"quant_method": "mxfp4"}`,
+/// while a full-precision repo like `Qwen/Qwen3-0.6B` has no such key. An
+/// unreadable or unparseable config is treated as not quantized, which keeps
+/// the previous behaviour and lets the engine report the real problem.
+fn repo_is_prequantized(dir: &str) -> bool {
+    let config = std::path::Path::new(dir).join("config.json");
+    let Ok(text) = std::fs::read_to_string(config) else {
+        return false;
+    };
+    serde_json::from_str::<serde_json::Value>(&text)
+        .ok()
+        .and_then(|value| value.get("quantization_config").cloned())
+        .is_some_and(|config| !config.is_null())
 }
 
 #[async_trait]
@@ -367,6 +399,35 @@ mod tests {
             thinking: None,
             thinking_signature: None,
         }
+    }
+
+    // `MXFP4Layer::apply_isq` bails and the ISQ pass unwraps it, so asking for
+    // in-situ quantization on an already-quantized repo panics on load.
+    #[test]
+    fn prequantized_repos_are_detected_from_the_config() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let dir = temp.path().to_string_lossy().to_string();
+
+        // No config at all: treat as full precision and let the engine speak.
+        assert!(!repo_is_prequantized(&dir));
+
+        let config = temp.path().join("config.json");
+
+        // A full-precision repo, the shape `Qwen/Qwen3-0.6B` has.
+        std::fs::write(&config, r#"{"architectures":["Qwen3ForCausalLM"]}"#).expect("write");
+        assert!(!repo_is_prequantized(&dir));
+
+        // The shape `openai/gpt-oss-20b` has.
+        std::fs::write(
+            &config,
+            r#"{"architectures":["GptOssForCausalLM"],"quantization_config":{"quant_method":"mxfp4"}}"#,
+        )
+        .expect("write");
+        assert!(repo_is_prequantized(&dir));
+
+        // Unparseable config: no reason to guess, keep the old behaviour.
+        std::fs::write(&config, "not json").expect("write");
+        assert!(!repo_is_prequantized(&dir));
     }
 
     #[test]
