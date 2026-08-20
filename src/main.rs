@@ -678,9 +678,69 @@ fn join_worker<T>(
     }
 }
 
+/// Render a clap parse failure, listing the valid subcommands when the user
+/// named one that does not exist.
+///
+/// Clap's own message is `unrecognized subcommand '<x>'` followed by a usage
+/// line whose `[COMMAND]` is a placeholder, so it never says what the real
+/// commands are. A caller that guesses wrong learns nothing and has to fetch
+/// `--help` separately, which is a wasted round trip for a human and several
+/// for an agent. Every other error keeps clap's own rendering and exit code.
+fn exit_with_cli_error(err: clap::Error, root: &clap::Command) -> ! {
+    if err.kind() == clap::error::ErrorKind::InvalidSubcommand
+        && let Some((path, names)) = unknown_subcommand_context(root)
+        && !names.is_empty()
+    {
+        eprint!("{err}");
+        eprintln!("Available `{path}` commands:");
+        for name in names {
+            eprintln!("  {name}");
+        }
+        std::process::exit(2);
+    }
+    err.exit()
+}
+
+/// Walk the real argv down the command tree to the group that owns the
+/// unrecognized name, and return that group's path and its subcommand names.
+/// Flags and their values are skipped: only positionals can name a subcommand.
+fn unknown_subcommand_context(root: &clap::Command) -> Option<(String, Vec<String>)> {
+    let mut command = root;
+    let mut path = vec![root.get_name().to_string()];
+    for arg in std::env::args().skip(1) {
+        if arg.starts_with('-') {
+            continue;
+        }
+        match command
+            .get_subcommands()
+            .find(|sub| sub.get_name() == arg || sub.get_all_aliases().any(|alias| alias == arg))
+        {
+            // A known subcommand: descend and keep looking.
+            Some(sub) => {
+                path.push(sub.get_name().to_string());
+                command = sub;
+            }
+            // The first name that does not match is the failure; `command` owns it.
+            None => {
+                let names = command
+                    .get_subcommands()
+                    .filter(|sub| !sub.is_hide_set())
+                    .map(|sub| sub.get_name().to_string())
+                    .collect();
+                return Some((path.join(" "), names));
+            }
+        }
+    }
+    None
+}
+
 async fn async_main(crash_reporter: &crash_report::CrashReporter) -> Result<()> {
     let cli_registry = detached_cli_registry()?;
-    let mut matches = cli_registry.augment(Cli::command())?.get_matches();
+    let root = cli_registry.augment(Cli::command())?;
+    let mut matches = match root.clone().try_get_matches() {
+        Ok(matches) => matches,
+        Err(err) => exit_with_cli_error(err, &root),
+    };
     if let Some(invocation) = cli_registry.invocation(&matches)? {
         tracing_subscriber::fmt()
             .with_env_filter(

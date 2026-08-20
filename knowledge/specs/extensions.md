@@ -260,6 +260,16 @@ neither installed, present on disk, nor already carrying an override: it stays
 looser than `enable` so a package with a broken manifest can still be switched
 off, but it no longer reports success for a typo.
 
+`yolop extensions config show <name>` prints every declared field, whether it
+is set, the value of each non-secret one, and the file it is read from;
+`config set <name> <field> <value>` writes a non-secret field. Secrets are
+refused there and keep the prompt-only path, so a value never reaches a shell
+history or a tool call, and `show` reports a secret only as set or unset. Before
+this, a non-secret field like an endpoint was reachable only through the
+enable-time prompt or by hand-editing `settings.toml`, and nothing named where
+values lived, so callers reverse engineered the config directory with `find`
+and `grep`.
+
 `remove` is also spelled `uninstall`: it is the natural opposite of `install`,
 and without the alias clap rejected it and suggested `install` itself.
 

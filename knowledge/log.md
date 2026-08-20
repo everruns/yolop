@@ -1,5 +1,24 @@
 # Knowledge Log
 
+## 2026-08-20, A wrong guess should cost one call, not six
+
+- An unrecognized subcommand now lists the ones that exist. Clap's message names
+  none of them and its usage line shows a `[COMMAND]` placeholder, so a caller
+  that guessed wrong learned nothing and had to fetch `--help` separately. This
+  is root-level, so every command group gets it.
+- [Extensions](specs/extensions.md): `config show` and `config set` close the
+  gap the guessing was reaching for. A non-secret field was reachable only
+  through the enable-time prompt or by hand-editing `settings.toml`, and no
+  output named where values were stored, so a session went hunting through the
+  config directory with `find`, `cat`, and `grep`.
+- Secrets keep their prompt-only path: `config set` refuses them and names
+  `secret set`, and `config show` reports a secret as set or unset, never by
+  value. The leak guard is the reason the read path was incomplete, so widening
+  it deliberately stops short of secrets.
+- The lesson generalizes: a model guessing a plausible verb is a given. What a
+  CLI controls is whether that guess self-corrects in one call or turns into a
+  filesystem investigation.
+
 ## 2026-08-20, The model menu is a list, not a catalog
 
 - [Model list](specs/model-list.md): `/model`, the status bar, and ACP now serve
