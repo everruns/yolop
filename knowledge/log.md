@@ -1,5 +1,19 @@
 # Knowledge Log
 
+## 2026-08-20, Trace export keeps the root span
+
+- [Extensions](specs/extensions.md): ending a session dropped the trace servers
+  while `trace/event` notifications were still in flight, so `turn.completed`
+  was lost. It closes the root span, so Logfire showed traces whose `reason`,
+  `act`, `tool`, and `llm` children had no root, and a short run exported
+  nothing at all.
+- Every host path that ends a session flushes first. Stopping drains the events
+  already buffered, then a `shutdown` request acts as the barrier: the stream is
+  ordered, so its response proves the server handled everything queued before
+  it. Bounded, so an unresponsive server cannot hold up exit.
+- Draining on stop is the part that is easy to get wrong: signalling the
+  forwarders without it drops exactly the events the flush exists to save.
+
 ## 2026-08-20, Install tells the truth about a package it cannot run
 
 - [Extensions](specs/extensions.md): `install` resolves the declared

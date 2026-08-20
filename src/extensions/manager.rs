@@ -167,6 +167,41 @@ impl ExtensionProcess {
         }
     }
 
+    /// Stop the server gracefully, flushing anything already queued.
+    ///
+    /// `trace/event` is fire-and-forget, so a notification only reaches the
+    /// server's handler after the writer task and the child's own read loop
+    /// have both moved it along. Dropping the process kills the child
+    /// (`kill_on_drop`) with that pipeline in flight, which silently lost the
+    /// tail of the event stream, `turn.completed` above all: it closes the
+    /// trace's root span, so exported traces arrived with orphaned children.
+    ///
+    /// The stream is ordered, so a `shutdown` **request** is a real flush
+    /// barrier: its response cannot arrive until the server has read and
+    /// handled every notification queued before it. Bounded by the spec's
+    /// request timeout, and best-effort by design — a server that never
+    /// answers is still dropped and killed.
+    pub async fn shutdown_gracefully(&self) {
+        let connection = {
+            let state = self.state.lock().await;
+            match state.as_ref() {
+                Some(live) => live.connection.clone(),
+                // Never spawned, or already torn down: nothing to flush.
+                None => return,
+            }
+        };
+        if let Err(err) = connection
+            .request("shutdown", serde_json::Value::Null)
+            .await
+        {
+            tracing::debug!(
+                target: "yolop::ext", ext = %self.name(),
+                "graceful shutdown failed, killing: {err}"
+            );
+        }
+        *self.state.lock().await = None;
+    }
+
     /// Forward one agentic-lifecycle event to the server as a fire-and-forget
     /// `trace/event` notification (the `trace` facet). Spawns/handshakes the
     /// server first if needed — the facet is eager, so the first event brings
