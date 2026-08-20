@@ -1209,6 +1209,76 @@ fn tui_inline_renders_and_responds_smoke() {
     tui_smoke(TuiSpawnOptions::default(), "inline", false);
 }
 
+#[test]
+fn tui_compact_work_collapses_and_expands_shell_details() {
+    let mut tui = spawn_tui_llmsim_with(
+        &yolop_binary(),
+        TuiSpawnOptions {
+            inline: false,
+            compact_work: true,
+            ..TuiSpawnOptions::default()
+        },
+    );
+    assert!(
+        tui.wait_for_output("Enter to send", Duration::from_secs(5)),
+        "compact TUI never rendered: {}",
+        tui.output_text()
+    );
+
+    tui.write_input(b"!echo $((6*7))\r");
+    assert!(
+        tui.wait_for_output("Worked for", Duration::from_secs(5)),
+        "compact summary never finalized: {}",
+        tui.output_text()
+    );
+    let collapsed = tui
+        .wait_for_screen(Duration::from_secs(3), |screen| {
+            screen.iter().any(|line| line.contains("Ctrl+O details"))
+        })
+        .join("\n");
+    assert!(collapsed.contains("Ctrl+O details"), "{collapsed}");
+    assert!(!collapsed.contains("stdout:"), "{collapsed}");
+
+    tui.write_input(b"\x0f");
+    let expanded = tui
+        .wait_for_screen(Duration::from_secs(3), |screen| {
+            screen.iter().any(|line| line.contains("stdout:"))
+                && screen.iter().any(|line| line.trim() == "42")
+        })
+        .join("\n");
+    assert!(expanded.contains("Ctrl+O collapse"), "{expanded}");
+    assert!(expanded.contains("stdout:"), "{expanded}");
+    assert!(
+        expanded.lines().any(|line| line.trim() == "42"),
+        "{expanded}"
+    );
+
+    tui.write_input(b"\x0f");
+    let collapsed_again = tui
+        .wait_for_screen(Duration::from_secs(3), |screen| {
+            screen.iter().any(|line| line.contains("Ctrl+O details"))
+                && screen.iter().all(|line| !line.contains("stdout:"))
+                && screen.iter().all(|line| line.trim() != "42")
+        })
+        .join("\n");
+    assert!(!collapsed_again.contains("stdout:"), "{collapsed_again}");
+
+    tui.write_input(b"!false\r");
+    let failed = tui
+        .wait_for_screen(Duration::from_secs(3), |screen| {
+            screen.iter().any(|line| line.contains("Failed after"))
+        })
+        .join("\n");
+    assert!(failed.contains("✗ Failed after"), "{failed}");
+
+    tui.write_input(b"\x03\x03");
+    let status = tui.wait_or_kill(Duration::from_secs(5));
+    assert!(
+        status.success(),
+        "compact TUI did not exit cleanly: {status:?}"
+    );
+}
+
 /// End-to-end smoke for both TUI renderers: start the TUI, drive one llmsim
 /// turn, and assert the rendered grid shows the composer and provider status
 /// bar with no subprocess output leaked onto the frame (the corruption this
@@ -2835,6 +2905,10 @@ fn acp_anthropic_handshake_smoke() {
         return;
     };
     let result = run_acp_handshake("anthropic", "Reply with exactly the single word: pong");
+    if looks_provider_quota_exhausted(&format!("{}{}", result.prompt, result.assistant_text)) {
+        eprintln!("skipping live test: Anthropic quota exhausted");
+        return;
+    }
     assert_eq!(
         result.prompt["result"]["stopReason"], "end_turn",
         "prompt response: {}",

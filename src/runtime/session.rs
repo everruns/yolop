@@ -25,7 +25,7 @@ use crate::runtime::{ModelState, RuntimeHandles};
 use crate::tui::transcript::{
     Author, ChatLine, DeltaRouter, TurnEvent, assistant_lines_since, handle_live_event,
     lines_for_event_with_router, lines_for_replayed_event, remember_write_todos_args,
-    shell_result_lines, status_for_event, tokens_for_event,
+    shell_result_lines, shell_result_succeeded, status_for_event, tokens_for_event,
 };
 
 /// Outcome of a capability-provided slash command, reduced to what the host UI
@@ -212,14 +212,20 @@ impl Session {
                 let _ = tx.send(TurnEvent::Failed(format!(
                     "model availability check: {error:#}"
                 )));
-                let _ = tx.send(TurnEvent::Done(None));
+                let _ = tx.send(TurnEvent::Done {
+                    result: None,
+                    success: false,
+                });
                 return;
             }
             let before = match handles.runtime.messages(session_id).await {
                 Ok(m) => m.len(),
                 Err(e) => {
                     let _ = tx.send(TurnEvent::Failed(format!("load history: {e}")));
-                    let _ = tx.send(TurnEvent::Done(None));
+                    let _ = tx.send(TurnEvent::Done {
+                        result: None,
+                        success: false,
+                    });
                     return;
                 }
             };
@@ -295,7 +301,10 @@ impl Session {
             if cancelled {
                 handles.report_herdr_state(crate::capabilities::herdr::HerdrState::Idle);
                 let _ = tx.send(TurnEvent::Stream(None));
-                let _ = tx.send(TurnEvent::Done(None));
+                let _ = tx.send(TurnEvent::Done {
+                    result: None,
+                    success: false,
+                });
                 return;
             }
 
@@ -323,7 +332,10 @@ impl Session {
                 Ok(result) => result,
                 Err(e) => {
                     let _ = tx.send(TurnEvent::Failed(format!("turn task: {e}")));
-                    let _ = tx.send(TurnEvent::Done(None));
+                    let _ = tx.send(TurnEvent::Done {
+                        result: None,
+                        success: false,
+                    });
                     return;
                 }
             };
@@ -331,7 +343,10 @@ impl Session {
                 Ok(r) => r,
                 Err(e) => {
                     let _ = tx.send(TurnEvent::Failed(format!("{e}")));
-                    let _ = tx.send(TurnEvent::Done(None));
+                    let _ = tx.send(TurnEvent::Done {
+                        result: None,
+                        success: false,
+                    });
                     return;
                 }
             };
@@ -359,7 +374,11 @@ impl Session {
                 });
             }
             let _ = tx.send(TurnEvent::Lines(out));
-            let _ = tx.send(TurnEvent::Done(Some(response)));
+            let success = response.success;
+            let _ = tx.send(TurnEvent::Done {
+                result: Some(response),
+                success,
+            });
         });
 
         TurnHandle {
@@ -396,18 +415,24 @@ impl Session {
                 // lifecycle, so render a useful bounded window inline.
                 "output": "normal",
             }));
-            tokio::select! {
+            let success = tokio::select! {
                 result = run => {
+                    let success = shell_result_succeeded(&result);
                     let _ = tx.send(TurnEvent::Lines(shell_result_lines(result)));
+                    success
                 }
                 _ = &mut cancel_rx => {
                     let _ = tx.send(TurnEvent::Lines(vec![ChatLine {
                         author: Author::System,
                         text: "turn cancelled".into(),
                     }]));
+                    false
                 }
-            }
-            let _ = tx.send(TurnEvent::Done(None));
+            };
+            let _ = tx.send(TurnEvent::Done {
+                result: None,
+                success,
+            });
         });
 
         TurnHandle {
@@ -589,7 +614,7 @@ mod tests {
         while let Some(event) = turn.events.recv().await {
             match event {
                 TurnEvent::Failed(message) => failure = Some(message),
-                TurnEvent::Done(_) => break,
+                TurnEvent::Done { .. } => break,
                 _ => {}
             }
         }
@@ -637,11 +662,14 @@ mod tests {
         while let Some(event) = turn.events.recv().await {
             match event {
                 TurnEvent::Lines(lines) => transcript.extend(lines),
-                TurnEvent::Done(None) => {
+                TurnEvent::Done { result: None, .. } => {
                     completed = true;
                     break;
                 }
-                TurnEvent::Done(Some(result)) => {
+                TurnEvent::Done {
+                    result: Some(result),
+                    ..
+                } => {
                     panic!("cancelled turn unexpectedly completed: {result:?}")
                 }
                 _ => {}

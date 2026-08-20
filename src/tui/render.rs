@@ -22,6 +22,8 @@ impl Author {
             Author::User => ACCENT_BLUE,
             Author::Assistant => ACCENT_GOLD,
             Author::Narration => TEXT_MUTED,
+            Author::WorkSummary => ACCENT_GOLD,
+            Author::WorkDetail => TEXT_MUTED,
             Author::Tool => TEXT_MUTED,
             Author::ToolDetail => TEXT_MUTED,
             Author::Stderr | Author::Sandbox => ERROR_RED,
@@ -1624,6 +1626,8 @@ pub(crate) fn should_insert_chat_gap(current: &Author, next: Option<&Author>) ->
     !matches!(
         (current, next),
         (&Author::Tool, &Author::Tool)
+            | (&Author::WorkSummary, &Author::WorkDetail)
+            | (&Author::WorkDetail, &Author::WorkDetail)
             | (&Author::Tool, &Author::ToolDetail)
             | (&Author::ToolDetail, &Author::Tool)
             | (&Author::ToolDetail, &Author::ToolDetail)
@@ -1642,6 +1646,21 @@ pub(crate) fn append_chat_lines<'a>(
     inner_width: usize,
 ) -> Vec<BufferLink> {
     let presented = present_transcript_line(chat);
+    if matches!(presented.author, Author::WorkSummary) {
+        append_work_summary(lines, &presented.text, inner_width);
+        return Vec::new();
+    }
+    if matches!(presented.author, Author::WorkDetail) {
+        append_wrapped_styled(
+            lines,
+            "    │ ",
+            Style::default().fg(TEXT_DIM),
+            &presented.text,
+            inner_width,
+            Style::default().fg(TEXT_MUTED),
+        );
+        return Vec::new();
+    }
     if matches!(presented.author, Author::ToolDetail) {
         append_wrapped_plain(
             lines,
@@ -1704,6 +1723,39 @@ pub(crate) fn append_chat_lines<'a>(
         );
         Vec::new()
     }
+}
+
+fn append_work_summary<'a>(lines: &mut Vec<Line<'a>>, text: &str, inner_width: usize) {
+    let (marker, rest) = text
+        .char_indices()
+        .nth(1)
+        .map(|(index, _)| text.split_at(index))
+        .unwrap_or((text, ""));
+    let marker_style = if marker == "✓" {
+        Style::default().fg(DIFF_ADD)
+    } else if marker == "✗" {
+        Style::default().fg(ERROR_RED)
+    } else {
+        Style::default().fg(ACCENT_GOLD)
+    };
+    let first = vec![
+        Span::styled("  ", Style::default()),
+        Span::styled(marker.to_string(), marker_style),
+        Span::styled(rest.to_string(), Style::default().fg(TEXT_MUTED)),
+    ];
+    let line = Line::from(first);
+    if line.width() <= inner_width {
+        lines.push(line);
+        return;
+    }
+    append_wrapped_styled(
+        lines,
+        "  ",
+        Style::default(),
+        text,
+        inner_width,
+        Style::default().fg(TEXT_MUTED),
+    );
 }
 
 pub(crate) fn append_wrapped_plain<'a>(
