@@ -22,8 +22,9 @@ use everruns_provider::error::{AgentLoopError, LlmErrorKind, Result as EverrunsR
 use everruns_provider::tool_types::{ToolCall, ToolDefinition};
 use futures::stream::Stream;
 use mistralrs::{
-    ChatCompletionChunkResponse, ChunkChoice, Delta, Function, GgufModelBuilder, IsqBits, Model,
-    ModelBuilder, RequestBuilder, Response, TextMessageRole, Tool, ToolType,
+    AutoDeviceMapParams, ChatCompletionChunkResponse, ChunkChoice, Delta, DeviceMapSetting,
+    Function, GgufModelBuilder, IsqBits, Model, ModelBuilder, RequestBuilder, Response,
+    TextMessageRole, Tool, ToolType,
 };
 use std::collections::{HashMap, VecDeque};
 use std::pin::Pin;
@@ -43,6 +44,15 @@ use crate::models::GGUF_SEPARATOR;
 /// self-referential. Leaking is honest here — a loaded engine is deliberately
 /// process-lifetime (nothing evicts it, and re-loading costs minutes and
 /// gigabytes), so the reference is never dangling and never reclaimed anyway.
+/// Context window to size the engine's cache for.
+///
+/// The engine's automatic device mapping defaults to 4096 tokens, which this
+/// agent blows past before the user types anything: the runtime's system
+/// prompt, the repository instructions, and a dozen-plus tool schemas all land
+/// in the first message. Sizing for a real coding context is the difference
+/// between a turn that runs and one that never emits a token.
+const LOCAL_MAX_SEQ_LEN: usize = 32_768;
+
 type EngineCache = Arc<Mutex<HashMap<String, &'static Model>>>;
 
 pub fn register_driver(registry: &mut DriverRegistry) {
@@ -85,7 +95,12 @@ impl LocalChatDriver {
                 .await
                 .map_err(|err| load_error(spec, err))?,
             None => {
-                let builder = ModelBuilder::new(dir.clone());
+                let builder = ModelBuilder::new(dir.clone()).with_device_mapping(
+                    DeviceMapSetting::Auto(AutoDeviceMapParams::Text {
+                        max_seq_len: LOCAL_MAX_SEQ_LEN,
+                        max_batch_size: 1,
+                    }),
+                );
                 // In-situ quantization is for repos that ship full-precision
                 // weights. A repo that arrives already quantized must be left
                 // alone: `MXFP4Layer::apply_isq` in mistralrs 0.8.1 returns
