@@ -149,6 +149,17 @@ const WRITE_BLOCKLIST: &[&str] = &[
 /// responses fail at the same budget everywhere.
 pub(crate) const PROVIDER_STALL_TIMEOUT: Duration = Duration::from_secs(120);
 
+/// The same window, widened for in-process inference.
+///
+/// 120 s assumes the silence is a network provider failing to speak. For
+/// `local` the silence is the machine working: nothing streams until prompt
+/// prefill finishes, and this agent's system prompt plus tool definitions run
+/// to thousands of tokens. On a CPU-only build that prefill alone exceeds the
+/// network budget, so the turn was killed mid-computation and reported as a
+/// provider stall. Accelerated builds are far quicker, but the ceiling has to
+/// cover the unaccelerated case or `--provider local` fails on first use.
+pub(crate) const LOCAL_PROVIDER_STALL_TIMEOUT: Duration = Duration::from_secs(900);
+
 /// Bounded recovery for transient provider failures, including stream stalls.
 ///
 /// Upstream's default `max_retry_elapsed` is 30s — shorter than one stall
@@ -4392,12 +4403,13 @@ pub async fn build_with_options(
     // EVE-806 / production stalls: everruns recovers silent streams when the
     // elapsed retry budget can absorb full stall windows. Yolop always installs
     // that aligned policy (tests may override both knobs via BuildOptions).
+    let stall_timeout = if matches!(active_provider, ProviderChoice::Local { .. }) {
+        LOCAL_PROVIDER_STALL_TIMEOUT
+    } else {
+        PROVIDER_STALL_TIMEOUT
+    };
     builder = builder
-        .provider_stall_timeout(
-            options
-                .provider_stall_timeout
-                .unwrap_or(PROVIDER_STALL_TIMEOUT),
-        )
+        .provider_stall_timeout(options.provider_stall_timeout.unwrap_or(stall_timeout))
         .provider_retry_config(
             options
                 .provider_retry_config
@@ -4491,6 +4503,18 @@ mod tests {
     use std::sync::Mutex;
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    // A network provider that goes quiet for two minutes has failed. An
+    // in-process engine that goes quiet for two minutes is prefilling this
+    // agent's system prompt, and killing it there made `--provider local`
+    // unusable on its first turn.
+    #[test]
+    fn local_inference_gets_a_wider_stall_window_than_the_network() {
+        assert!(
+            LOCAL_PROVIDER_STALL_TIMEOUT > PROVIDER_STALL_TIMEOUT,
+            "in-process prefill needs more headroom than a network stall"
+        );
+    }
 
     // Guards the two properties that make the local default usable at all. A
     // safetensors default would download full-precision weights only to
