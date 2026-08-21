@@ -10,6 +10,52 @@ mechanical `### What's Changed` list of merged PRs.
 Releases are cut via [`/release`](./.agents/skills/release/SKILL.md), which
 tags the version and publishes to crates.io and the Homebrew tap.
 
+## [0.17.0] - 2026-08-21
+
+### Highlights
+
+- Compiled extensions install end to end. A package may declare `capabilityServer.binaries`, and `yolop extensions install` fetches the prebuilt server for the host's target triple, verifying its `.sha256` before writing anything. `yolop-extension-logfire` 0.2.0 is the first extension published with prebuilt servers.
+- The Logfire exporter emits a real trace tree: spans nest by the host's `parent_span_id`, carry the Gen-AI semantic conventions (`gen_ai.request.model`, token counts, tool names), and give thinking its own paired span.
+- Model switching serves a curated, cross-provider list the user owns, administered by `yolop models list|add|rm|move|use|reset`, with "Browse all models…" still reaching the per-provider catalog.
+- An opt-in `--compact-work` mode keeps each active turn on one mutable summary row, expandable with `Ctrl+O`.
+- The global config and data directories are relocatable through `--config-dir` / `--data-dir` or `YOLOP_CONFIG_DIR` / `YOLOP_DATA_DIR`, so isolating a run no longer means moving `HOME`.
+- Local inference gains `metal` and `cuda` backends and a default model that runs at small-model speed (Qwen3-30B-A3B-Instruct, Q4 GGUF), both gated in CI.
+
+### Breaking Changes
+
+- **`yolop models` administers the curated model list**: the local-weights commands it displaced moved to `yolop weights`.
+  - Before: `yolop models pull <model>`
+  - After: `yolop weights pull <model>`
+- **The per-provider `models` config key is now `default_models`**: a `models` table is still read as such, and a top-level `[[models]]` array is the curated list.
+- **`yolop-yep` 0.4.0**: `TraceEventParams` gains the host's correlation ids (`span_id`, `parent_span_id`, `trace_id`, `turn_id`, `exec_id`) and `family`/`phase` accessors. Additive on the wire; an exporter should parent by `parent_span_id` rather than re-deriving hierarchy from `turn_id`, which flattens the trace.
+
+### What's Changed
+
+* feat(extensions): install prebuilt server binaries ([#620](https://github.com/everruns/yolop/pull/620)) by @chaliy
+* feat(extensions): show and set config, and list commands on a bad guess ([#619](https://github.com/everruns/yolop/pull/619)) by @chaliy
+* feat(models): serve a curated model list instead of a provider catalog ([#618](https://github.com/everruns/yolop/pull/618)) by @chaliy
+* fix(logfire): nest spans by the host's tree and emit the Gen-AI conventions ([#617](https://github.com/everruns/yolop/pull/617)) by @chaliy
+* docs: pass --locked in the documented cargo install commands ([#616](https://github.com/everruns/yolop/pull/616)) by @chaliy
+* chore(deps): clear the h2 and lru RustSec advisories ([#615](https://github.com/everruns/yolop/pull/615)) by @chaliy
+* chore(ci): stop Dependabot proposing unreleased Rust toolchains ([#614](https://github.com/everruns/yolop/pull/614)) by @chaliy
+* feat(yep): name the span tree the trace payload already carries ([#613](https://github.com/everruns/yolop/pull/613)) by @chaliy
+* feat(tui): add compact work mode ([#612](https://github.com/everruns/yolop/pull/612)) by @chaliy
+* fix(extensions): accept the crate name wherever an extension is named ([#611](https://github.com/everruns/yolop/pull/611)) by @chaliy
+* fix(extensions): alias remove as uninstall, and stop repeating the command ([#610](https://github.com/everruns/yolop/pull/610)) by @chaliy
+* fix(extensions): flush trace exporters before the session ends ([#609](https://github.com/everruns/yolop/pull/609)) by @chaliy
+* fix(extensions): install the published crate name, and say when it cannot run ([#608](https://github.com/everruns/yolop/pull/608)) by @chaliy
+* chore(deps): bump the cargo-minor-and-patch group across 1 directory with 2 updates ([#606](https://github.com/everruns/yolop/pull/606)) by @dependabot
+* chore(deps): bump everruns to the 0.20 cycle and load mid-session installs live ([#604](https://github.com/everruns/yolop/pull/604)) by @chaliy
+* chore(build): optimize the release profile for size ([#603](https://github.com/everruns/yolop/pull/603)) by @chaliy
+* fix(extensions): make attached administration report what it actually did ([#602](https://github.com/everruns/yolop/pull/602)) by @chaliy
+* fix(tui): paste into the surface that owns the keyboard ([#601](https://github.com/everruns/yolop/pull/601)) by @chaliy
+* feat(config): make the global config and data directories relocatable ([#600](https://github.com/everruns/yolop/pull/600)) by @chaliy
+* feat(local-inference): GPU backends, a usable default model, and a CI gate for both ([#599](https://github.com/everruns/yolop/pull/599)) by @chaliy
+* chore(build): stop compiling the tree twice in dev builds ([#598](https://github.com/everruns/yolop/pull/598)) by @chaliy
+* fix(models): run `models pull` on the caller's runtime ([#597](https://github.com/everruns/yolop/pull/597)) by @chaliy
+
+**Full Changelog**: https://github.com/everruns/yolop/compare/v0.16.0...v0.17.0
+
 ## [0.16.0] - 2026-08-19
 
 ### Highlights
