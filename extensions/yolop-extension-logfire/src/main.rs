@@ -131,3 +131,39 @@ fn build_provider(token: Option<String>, endpoint: String, service: String) -> S
         }
     }
 }
+
+#[cfg(test)]
+mod manifest_tests {
+    /// `plugin.json`'s version drives the prebuilt-binary URL that
+    /// `yolop extensions install` fetches, while the release workflow derives
+    /// the tag and asset name from the *crate* version. If the two drift, the
+    /// URL points at a release that does not exist and install silently falls
+    /// back to "cannot start".
+    #[test]
+    fn manifest_version_matches_the_crate_version() {
+        let manifest: serde_json::Value =
+            serde_json::from_str(include_str!("../plugin.json")).expect("plugin.json parses");
+        assert_eq!(
+            manifest["version"].as_str(),
+            Some(env!("CARGO_PKG_VERSION")),
+            "plugin.json version must track Cargo.toml, or the binaries URL 404s"
+        );
+    }
+
+    /// The template must name this crate's assets, since `{name}` would render
+    /// the *package* name (`logfire`), not the crate name the workflow uploads.
+    #[test]
+    fn binaries_template_names_the_crate_assets() {
+        let manifest: serde_json::Value =
+            serde_json::from_str(include_str!("../plugin.json")).expect("plugin.json parses");
+        let template = manifest["yolop"]["capabilityServer"]["binaries"]
+            .as_str()
+            .expect("a binaries template");
+        assert!(template.contains("{version}"), "template: {template}");
+        assert!(template.contains("{target}"), "template: {template}");
+        assert!(
+            template.contains(env!("CARGO_PKG_NAME")),
+            "template must use the crate name the release workflow uploads: {template}"
+        );
+    }
+}

@@ -19,6 +19,13 @@ fn main() {
         .or_else(|| cargo_toml_dependency_version("everruns-runtime"))
         .unwrap_or_else(|| "unknown".to_string());
     println!("cargo:rustc-env=YOLOP_EVERRUNS_RUNTIME_VERSION={runtime_version}");
+
+    // The host's Rust target triple. Needed at runtime to pick the right
+    // prebuilt extension binary; `std::env::consts` gives OS and arch but
+    // never the triple, and guessing it from those two is wrong for targets
+    // that differ only by libc or ABI.
+    let target = env::var("TARGET").unwrap_or_else(|_| "unknown".to_string());
+    println!("cargo:rustc-env=YOLOP_HOST_TARGET={target}");
 }
 
 fn git_short_sha() -> Option<String> {
