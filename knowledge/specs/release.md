@@ -157,7 +157,12 @@ after it goes live.
   `release.yml`.
 - **Actions**: builds each bundled extension server for the three targets and
   uploads it, with its `.sha256`, to a per-extension release
-  (`<crate>-v<version>`) that the job creates on first upload. Then builds
+  (`<crate>-v<version>`) that the job creates on first upload.
+  `scripts/check_release_matrix.py` asserts that job's matrix expands to the
+  same targets the CLI builds: a GitHub Actions matrix fails quietly, an
+  `include` entry naming no existing dimension merges into every combination
+  instead of creating one, and v0.17.0 shipped Linux-only extension servers
+  that way with a green workflow. Then builds
   release binaries for the three CLI targets, packages them as
   `yolop-<target>.tar.gz`, uploads tarballs and `.sha256` files to the GitHub
   Release, and regenerates the Homebrew formula and pushes it to

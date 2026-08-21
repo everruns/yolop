@@ -54,6 +54,11 @@ jobs:
               - 'scripts/assert-gallery.sh'
             docs:
               - '**/*.md'
+              # The same job validates the release metadata: publish order and
+              # the release workflow's build matrices. Those guards are worthless
+              # if a change to what they guard skips them.
+              - 'scripts/*.py'
+              - '.github/workflows/cli-binaries.yml'
             # The regression-gate analyzers under harness_basic are pure Python
             # and decide whether the nightly Search Efficiency Eval passes. They
             # never touch the Rust toolchain, so give them their own fast leg that
@@ -89,6 +94,12 @@ jobs:
           python3 scripts/test_validate_okf.py
           python3 scripts/test_publish_order.py
           test "$(python3 scripts/publish_order.py | tail -1)" = yolop
+          # The matrix guard parses YAML; the runner image usually ships
+          # PyYAML, but do not depend on it staying that way.
+          python3 -c 'import yaml' 2>/dev/null \
+            || python3 -m pip install --quiet --disable-pip-version-check pyyaml
+          python3 scripts/test_check_release_matrix.py
+          python3 scripts/check_release_matrix.py
 
       - name: Public docs boundary
         run: |
