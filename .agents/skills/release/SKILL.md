@@ -60,8 +60,19 @@ Edit `version` in `Cargo.toml`, then `cargo update -p yolop` to refresh the
 lockfile entry.
 
 `yolop-yep` is versioned separately. Bump it when its API or the wire protocol
-changes, and update the workspace path dependency requirement that references
+changes, and update every workspace path dependency requirement that references
 it.
+
+First-party extensions under `extensions/` are versioned separately too. Bump
+one whose code changed since the last release, in both its `Cargo.toml` and its
+`plugin.json`, or it is published nowhere and its manifest keeps pointing at the
+previous tag's binaries. `python3 scripts/publish_order.py` lists exactly what
+the release publishes:
+
+```bash
+python3 scripts/publish_order.py
+git log "$LATEST"..HEAD --oneline -- extensions/ crates/
+```
 
 `tuika` and `tuika-codeformatters` are not released from here — they ship from
 [`everruns/tuika`](https://github.com/everruns/tuika). Bumping their version
@@ -82,15 +93,15 @@ publish` packaging boundary, missing files referenced by `Cargo.toml`, and
 version drift.
 
 ```bash
-cargo publish --dry-run -p yolop-yep   # SDK; publishes before yolop
+cargo publish --dry-run -p yolop-yep   # SDK; publishes before everything else
 cargo search yolop --limit 1           # crates.io version must be < X.Y.Z
 grep '^version' Cargo.toml
 grep '"yolop"' Cargo.lock | head -1
 ```
 
-`cargo publish --dry-run -p yolop` **fails locally** whenever a new `yolop-yep`
-version isn't on crates.io yet — expected, not a broken release. CI validates
-`yolop`'s own publish after the SDK goes live. If the *SDK* dry-run fails, fix
+`cargo publish --dry-run` **fails locally** for `yolop` and for any extension
+whenever a new `yolop-yep` version isn't on crates.io yet — expected, not a
+broken release. CI validates those publishes after the SDK goes live. If the *SDK* dry-run fails, fix
 the root cause and re-run; never open a release PR with a known-broken publish
 path.
 
@@ -122,8 +133,10 @@ gh run list --workflow=cli-binaries.yml --limit 1
 ```
 
 Green workflows are not proof. Run the spec's post-release verification yourself
-and declare **shipped** only when crates.io reports `X.Y.Z` and the tap formula
-points at `vX.Y.Z`. crates.io publishes near-instantly; Homebrew takes minutes
+and declare **shipped** only when crates.io reports `X.Y.Z`, every bumped
+library and extension crate is live, each bumped extension has its
+`<crate>-v<version>` release carrying the three server archives, and the tap
+formula points at `vX.Y.Z`. crates.io publishes near-instantly; Homebrew takes minutes
 for the build and tap commit, so a half-verified release looks shipped when it
 isn't.
 

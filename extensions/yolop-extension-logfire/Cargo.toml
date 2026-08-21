@@ -1,6 +1,6 @@
 [package]
 name = "yolop-extension-logfire"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 authors = ["Everruns <support@everruns.com>"]
 license = "MIT"
@@ -17,7 +17,7 @@ name = "yolop-extension-logfire"
 path = "src/main.rs"
 
 [dependencies]
-yolop-yep = { path = "../../crates/yolop-yep", version = "0.3" }
+yolop-yep = { path = "../../crates/yolop-yep", version = "0.4" }
 serde_json = "1.0"
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 # The official OpenTelemetry Rust SDK + OTLP/HTTP exporter — the path Logfire's

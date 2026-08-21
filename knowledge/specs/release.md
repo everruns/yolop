@@ -34,13 +34,23 @@ Every yolop release ships to:
 | Target          | Surface                                  | How users install                       |
 |-----------------|------------------------------------------|-----------------------------------------|
 | GitHub Release  | tag `vX.Y.Z`, source archive, binaries   | `gh release download vX.Y.Z`            |
-| crates.io       | `yolop` binary + the `yolop-yep` library  | `cargo install yolop --locked`          |
+| crates.io       | `yolop` binary, the `yolop-yep` library, and the first-party extension crates | `cargo install yolop --locked`          |
 | Homebrew tap    | formula at `everruns/homebrew-tap`       | `brew install everruns/tap/yolop`       |
 
 The `yolop-yep` extension SDK is versioned independently of `yolop` and is
 published as a side effect of a `yolop` release only when its in-tree version
 isn't already on crates.io (see § `publish.yml`). Extension authors consume it
 on its own (`cargo add yolop-yep`).
+
+First-party extensions in `extensions/` are versioned independently too, and
+ride the same release on the same terms: `publish.yml` publishes any whose
+in-tree version isn't live yet, and `cli-binaries.yml` builds their servers for
+the three CLI targets and uploads them under a per-extension tag
+(`<crate>-v<version>`). A published extension crate ships source, so an
+extension whose code changed and whose version did not is published nowhere and
+gets no new binaries, while the manifest keeps pointing at the previous tag.
+Bumping a changed extension, in both its `Cargo.toml` and its `plugin.json`,
+is therefore part of preparing the release; a test pins the two together.
 
 The TUI toolkit yolop renders through, `tuika` and `tuika-codeformatters`, is
 **not** released from here. It ships from
@@ -105,12 +115,14 @@ constraints it must satisfy:
    declares **shipped** only when both report the new version. A failure rolls
    forward via hotfix rather than leaving the release half-published.
 
-**Two crates, ordered publish.** `yolop` depends on `yolop-yep` by version, so
-crates.io requires it live first. `publish.yml` derives the dependency-first
-order from Cargo metadata (currently `yolop-yep`, then `yolop`) and skips
-versions already live. A consequence: `cargo publish --dry-run -p yolop` can
-fail locally until a new `yolop-yep` version is on crates.io. That is expected,
-not a broken release, `yolop-yep` is dry-run locally and CI validates `yolop`
+**Ordered publish.** `yolop` and the extensions depend on `yolop-yep` by
+version, so crates.io requires it live first. `publish.yml` derives the
+dependency-first order from Cargo metadata via `scripts/publish_order.py`
+(currently `yolop-yep`, `yolop-extension-logfire`, `yolop`) and skips versions
+already live, so a new publishable workspace member cannot be silently omitted.
+A consequence: `cargo publish --dry-run` fails locally for anything depending on
+a `yolop-yep` version that isn't on crates.io yet. That is expected, not a
+broken release, `yolop-yep` is dry-run locally and CI validates the dependents
 after it goes live.
 
 ## CI Automation
@@ -133,8 +145,9 @@ after it goes live.
 - **Trigger**: `release: published`, or `workflow_dispatch --ref vX.Y.Z` from
   `release.yml`.
 - **Actions**: installs the pinned Rust toolchain, verifies the tag matches
-  `Cargo.toml`, publishes `yolop-yep` and `yolop` in dependency order
-  (skipping versions already live), then runs
+  `Cargo.toml`, publishes every publishable workspace crate in the
+  dependency-first order `scripts/publish_order.py` derives (skipping
+  versions already live), then runs
   `scripts/verify_crates_publish.py` to confirm crates.io serves the new version.
 - **Secret**: `CARGO_REGISTRY_TOKEN`.
 
@@ -142,10 +155,13 @@ after it goes live.
 
 - **Trigger**: `workflow_dispatch --ref vX.Y.Z` with the `tag` input, from
   `release.yml`.
-- **Actions**: builds release binaries for the three CLI targets, packages
-  them as `yolop-<target>.tar.gz`, uploads tarballs and `.sha256` files to
-  the GitHub Release, then regenerates the Homebrew formula and pushes it
-  to `everruns/homebrew-tap`.
+- **Actions**: builds each bundled extension server for the three targets and
+  uploads it, with its `.sha256`, to a per-extension release
+  (`<crate>-v<version>`) that the job creates on first upload. Then builds
+  release binaries for the three CLI targets, packages them as
+  `yolop-<target>.tar.gz`, uploads tarballs and `.sha256` files to the GitHub
+  Release, and regenerates the Homebrew formula and pushes it to
+  `everruns/homebrew-tap`.
 - **Secret**: `DOPPLER_TOKEN`. The Doppler config holds
   `HOMEBREW_TAP_GITHUB_TOKEN`, a fine-grained PAT scoped to
   `everruns/homebrew-tap` only.
@@ -158,8 +174,11 @@ The agent verifies before opening the release PR:
 - [ ] `cargo fmt`, `cargo clippy`, `cargo test` clean.
 - [ ] `CHANGELOG.md` has an entry for every commit since the last release.
 - [ ] `Cargo.toml` and `Cargo.lock` both read `X.Y.Z`.
-- [ ] `cargo publish --dry-run` succeeds for each library crate (`-p yolop` is
-      validated by CI once they are live, see § Agent Steps).
+- [ ] Every workspace crate whose code changed since the last release carries a
+      bumped version, and an extension's `plugin.json` matches its `Cargo.toml`.
+- [ ] `cargo publish --dry-run` succeeds for each library crate (dependents of
+      an unpublished `yolop-yep` are validated by CI once it is live, see
+      § Agent Steps).
 - [ ] `X.Y.Z` is greater than the latest crates.io version.
 - [ ] Terminal verification current (see below) if the TUI renderer changed,
       Tier 1 green on the release commit, Tier 3 walked by a human.
@@ -258,6 +277,11 @@ tap formula points at `vX.Y.Z`.
 ```bash
 # crates.io
 cargo search yolop --limit 1                       # shows X.Y.Z
+cargo search yolop-yep --limit 1                   # shows the SDK version cut
+cargo search yolop-extension- --limit 5            # shows each extension version cut
+
+# Prebuilt extension servers (one release per extension version)
+gh release view yolop-extension-logfire-vX.Y.Z --repo everruns/yolop
 
 # GitHub Release
 gh release view vX.Y.Z --repo everruns/yolop       # tarballs + checksums present

@@ -1,5 +1,17 @@
 # Knowledge Log
 
+## 2026-08-21, A release publishes the extensions too
+
+- [Release](specs/release.md): the release train carries every publishable
+  workspace crate, not just `yolop` and `yolop-yep`. `scripts/publish_order.py`
+  derives the order, so a new first-party extension is picked up without editing
+  the workflow.
+- An extension whose code changed and whose version did not is published
+  nowhere, and its `plugin.json` keeps pointing at the previous tag's binaries.
+  Bumping a changed extension in both files is part of preparing the release.
+- Prebuilt servers ride a per-extension release (`<crate>-v<version>`), so
+  post-release verification checks that tag as well as crates.io and the tap.
+
 ## 2026-08-21, A compiled extension installs without a toolchain
 
 - [Extensions](specs/extensions.md): a package may declare

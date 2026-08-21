@@ -10306,7 +10306,7 @@ dependencies = [
 
 [[package]]
 name = "yolop"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "agent-client-protocol",
  "anyhow",
@@ -10401,7 +10401,7 @@ dependencies = [
 
 [[package]]
 name = "yolop-extension-logfire"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "opentelemetry",
@@ -10413,7 +10413,7 @@ dependencies = [
 
 [[package]]
 name = "yolop-yep"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "schemars 1.2.2",
  "serde",
