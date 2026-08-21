@@ -133,6 +133,22 @@ pub struct ServerSpec {
     pub command: String,
     #[serde(default)]
     pub args: Vec<String>,
+    /// Where prebuilt binaries for this server live, as a URL template.
+    ///
+    /// A crates.io package carries source, and yolop's install path is
+    /// toolchain-free by design, so a compiled extension published without one
+    /// of these installs cleanly and can never spawn. Declaring it lets install
+    /// fetch the binary for the host instead.
+    ///
+    /// Placeholders, substituted at install: `{name}` the package name,
+    /// `{version}` its version, `{target}` the host's Rust target triple. The
+    /// archive must be a `.tar.gz` containing the file named by `command`, and
+    /// a `<archive>.sha256` sibling must exist beside it.
+    ///
+    /// Example (the pattern the bundled extensions use):
+    /// `https://github.com/everruns/yolop/releases/download/{name}-v{version}/{name}-{version}-{target}.tar.gz`
+    #[serde(default)]
+    pub binaries: Option<String>,
 }
 
 /// A manifest-declared MCP server contribution. Manifest-declared (not

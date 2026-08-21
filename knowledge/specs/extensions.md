@@ -281,7 +281,17 @@ SHA-256 against the index `cksum`, and unpacks the gzip'd tar, no cargo/rustc.
 A published crate ships *source*, so the manifest's `capabilityServer.command`
 names a binary the user has on `PATH` (or in the package `bin/`); yolop does
 not compile it (`cargo install` remains an optional author-side path, not a
-yolop dependency). Because that binary can be absent, install resolves the
+yolop dependency). A compiled extension closes that gap by declaring
+`capabilityServer.binaries`, a URL template with `{name}`, `{version}`, and
+`{target}` placeholders: when the command does not already resolve, install
+fetches the archive for the host's target triple and places the binary in the
+package's `bin/`. The archive's `<archive>.sha256` sibling is required, not
+optional, because this downloads an executable yolop will later spawn, so an
+unverifiable download is refused. A failed fetch leaves the package installed
+and says why, rather than half-installing. The bundled `logfire` extension is
+the worked example: CI builds it per target and publishes it under a
+per-extension tag (`<crate>-v<version>`), so the URL is derivable from the
+package alone and an extension can release on its own cadence. Because that binary can be absent, install resolves the
 declared command (package `bin/`, then `PATH`) and reports
 `server_command_found`: a package that installs cleanly but can never spawn
 says so at install time, with the remedy, instead of reading as a plain success

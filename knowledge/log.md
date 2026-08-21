@@ -1,5 +1,27 @@
 # Knowledge Log
 
+## 2026-08-21, A compiled extension installs without a toolchain
+
+- [Extensions](specs/extensions.md): a package may declare
+  `capabilityServer.binaries`, a URL template over `{name}`/`{version}`/
+  `{target}`. When the declared command does not resolve, install fetches the
+  archive for the host triple and puts the binary in the package's `bin/`.
+- This is what makes a compiled extension work end to end. crates.io carries
+  source, the install path is toolchain-free by design, and nothing built the
+  binary, so `yolop-extension-logfire` installed cleanly and could never spawn.
+- The `.sha256` sibling is required, not optional: install downloads an
+  executable that yolop later spawns, so an unverifiable or mismatched archive
+  is refused and nothing is written.
+- A failed fetch leaves the package installed and reports why. Half-installing
+  is worse, and the binary may legitimately arrive another way.
+- The host triple comes from `build.rs` (`YOLOP_HOST_TARGET`). `std::env::consts`
+  gives OS and arch but never the triple, and guessing it from those is wrong
+  for targets that differ only by libc or ABI.
+- Binaries publish under a per-extension tag (`<crate>-v<version>`) rather than
+  riding yolop's release tag, so the URL is derivable from the package alone.
+  The manifest version drives that URL while CI derives the tag from the crate
+  version, so a test pins the two together.
+
 ## 2026-08-20, A wrong guess should cost one call, not six
 
 - An unrecognized subcommand now lists the ones that exist. Clap's message names

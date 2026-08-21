@@ -230,6 +230,170 @@ pub fn server_command_resolves(package_dir: &Path, command: &str) -> bool {
     std::env::split_paths(&path).any(|dir| dir.join(command).is_file())
 }
 
+/// Fetches raw bytes over HTTP. Injectable so the prebuilt-binary path is
+/// testable without a network or a real release.
+#[async_trait]
+pub trait BinaryFetcher: Send + Sync {
+    async fn get(&self, url: &str) -> Result<Vec<u8>>;
+}
+
+#[derive(Default)]
+pub struct SystemBinaryFetcher;
+
+#[async_trait]
+impl BinaryFetcher for SystemBinaryFetcher {
+    async fn get(&self, url: &str) -> Result<Vec<u8>> {
+        let response = reqwest::Client::new()
+            .get(url)
+            .header("User-Agent", "yolop-extension-install")
+            .send()
+            .await
+            .with_context(|| format!("downloading {url}"))?
+            .error_for_status()
+            .with_context(|| format!("downloading {url}"))?;
+        Ok(response.bytes().await?.to_vec())
+    }
+}
+
+/// What install did about the server binary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BinaryOutcome {
+    /// The command already resolved: shipped in the package's `bin/`, or on PATH.
+    AlreadyResolvable,
+    /// Fetched a prebuilt binary for this target and put it in the package.
+    Fetched { target: String },
+    /// The package declares no `binaries` template, so there is nothing to fetch.
+    NotDeclared,
+    /// A template was declared but the fetch did not produce a usable binary.
+    /// Install still succeeds: the package is on disk, and the caller reports
+    /// that it cannot start yet.
+    Failed { reason: String },
+}
+
+/// The host's Rust target triple, baked in at build time (see `build.rs`).
+pub fn host_target() -> &'static str {
+    env!("YOLOP_HOST_TARGET")
+}
+
+/// Substitute the `{name}`, `{version}`, and `{target}` placeholders.
+fn render_binary_url(template: &str, name: &str, version: &str, target: &str) -> String {
+    template
+        .replace("{name}", name)
+        .replace("{version}", version)
+        .replace("{target}", target)
+}
+
+/// Fetch the prebuilt server binary a package declares and place it in the
+/// package's `bin/`, so a compiled extension installs without a toolchain.
+///
+/// Best-effort by design: a failure leaves the package installed and reports
+/// why, because the alternative is a half-installed package and because the
+/// binary may legitimately arrive another way (a distro package, `cargo
+/// install`). The archive's `.sha256` sibling is required, not optional: this
+/// downloads an executable that yolop will later spawn, so an unverifiable
+/// download is refused rather than trusted.
+async fn install_prebuilt_binary(
+    package_dir: &Path,
+    manifest: &ExtensionManifest,
+    fetcher: &dyn BinaryFetcher,
+) -> BinaryOutcome {
+    let command = &manifest.capability_server.command;
+    if server_command_resolves(package_dir, command) {
+        return BinaryOutcome::AlreadyResolvable;
+    }
+    let Some(template) = manifest.capability_server.binaries.as_deref() else {
+        return BinaryOutcome::NotDeclared;
+    };
+    // A path-shaped command names a file inside the package; a fetched binary
+    // lands in `bin/` under the command's own name, so the two are exclusive.
+    if command.contains('/') || command.contains(std::path::MAIN_SEPARATOR) {
+        return BinaryOutcome::Failed {
+            reason: format!(
+                "`capabilityServer.command` is a path (`{command}`), which a prebuilt binary \
+                 cannot satisfy; drop `binaries` or name a bare command"
+            ),
+        };
+    }
+    let target = host_target();
+    let version = manifest.version.as_deref().unwrap_or("0.0.0");
+    let url = render_binary_url(template, &manifest.name, version, target);
+
+    match fetch_verified_binary(fetcher, &url, command).await {
+        Ok(bytes) => match write_package_binary(package_dir, command, &bytes) {
+            Ok(()) => BinaryOutcome::Fetched {
+                target: target.to_string(),
+            },
+            Err(err) => BinaryOutcome::Failed {
+                reason: format!("{err:#}"),
+            },
+        },
+        Err(err) => BinaryOutcome::Failed {
+            reason: format!("{err:#}"),
+        },
+    }
+}
+
+/// Download the archive and its `.sha256` sibling, verify, and return the entry
+/// named `command`.
+async fn fetch_verified_binary(
+    fetcher: &dyn BinaryFetcher,
+    url: &str,
+    command: &str,
+) -> Result<Vec<u8>> {
+    let archive = fetcher.get(url).await?;
+    let checksum_url = format!("{url}.sha256");
+    let checksum = fetcher
+        .get(&checksum_url)
+        .await
+        .context("no checksum beside the archive; refusing to install an unverified binary")?;
+    let expected = String::from_utf8_lossy(&checksum);
+    // `sha256sum` and `shasum -a 256` both write "<hex>  <filename>".
+    let expected = expected
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let actual = sha256_hex(&archive);
+    let actual = actual.strip_prefix("sha256:").unwrap_or(&actual);
+    if expected.is_empty() || expected != actual {
+        bail!("checksum mismatch for {url}: expected {expected}, download is {actual}");
+    }
+    extract_named_entry(&archive, command)
+        .with_context(|| format!("archive at {url} has no entry named `{command}`"))
+}
+
+/// Pull one file out of a `.tar.gz`, matching on the entry's file name so an
+/// archive that nests its payload in a directory still works.
+fn extract_named_entry(archive: &[u8], wanted: &str) -> Result<Vec<u8>> {
+    let decoder = flate2::read::GzDecoder::new(archive);
+    let mut tar = tar::Archive::new(decoder);
+    for entry in tar.entries()? {
+        let mut entry = entry?;
+        let path = entry.path()?.into_owned();
+        if path.file_name().and_then(|n| n.to_str()) == Some(wanted) {
+            let mut bytes = Vec::new();
+            std::io::Read::read_to_end(&mut entry, &mut bytes)?;
+            return Ok(bytes);
+        }
+    }
+    bail!("no entry named `{wanted}`")
+}
+
+/// Write the binary into the package's `bin/`, executable.
+fn write_package_binary(package_dir: &Path, command: &str, bytes: &[u8]) -> Result<()> {
+    let bin_dir = package_dir.join("bin");
+    std::fs::create_dir_all(&bin_dir).with_context(|| format!("creating {}", bin_dir.display()))?;
+    let path = bin_dir.join(command);
+    std::fs::write(&path, bytes).with_context(|| format!("writing {}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+            .with_context(|| format!("making {} executable", path.display()))?;
+    }
+    Ok(())
+}
+
 /// Result of an install/update, for the caller to summarize to the user.
 #[derive(Debug, Clone)]
 pub struct Installed {
@@ -237,6 +401,8 @@ pub struct Installed {
     pub content_hash: String,
     /// Present on an update: the previously approved hash, if the grant changed.
     pub previous_hash: Option<String>,
+    /// What install did about the server binary.
+    pub binary: BinaryOutcome,
 }
 
 /// Install (or update) an extension into `extensions_dir` from `source`.
@@ -251,6 +417,7 @@ pub async fn install(
     source: &Source,
     git: &dyn GitRunner,
     crates: &dyn CrateFetcher,
+    binaries: &dyn BinaryFetcher,
 ) -> Result<Installed> {
     std::fs::create_dir_all(extensions_dir)?;
     let staging = extensions_dir.join(".staging");
@@ -303,6 +470,13 @@ pub async fn install(
         .with_context(|| format!("installing into {}", dest.display()))?;
     std::mem::forget(cleanup); // renamed away; nothing to clean.
 
+    // A compiled extension published to crates.io ships source, and this path
+    // is toolchain-free by design, so fetch the prebuilt binary it declares.
+    // After the rename: the fetched binary belongs to the installed package,
+    // and it is deliberately outside the content hash, which covers the
+    // approved *manifest* surface rather than build outputs.
+    let binary = install_prebuilt_binary(&dest, &manifest, binaries).await;
+
     let mut lock = Lockfile::load(extensions_dir);
     lock.upsert(LockEntry {
         name: manifest.name.clone(),
@@ -316,6 +490,7 @@ pub async fn install(
         manifest,
         content_hash,
         previous_hash,
+        binary,
     })
 }
 
@@ -617,11 +792,220 @@ mod tests {
     /// A crate fetcher that never runs — for path/git tests that don't touch
     /// crates.io. Panics if called so a mis-routed source is caught.
     struct NoCrates;
+
+    /// Writes a package that declares where its prebuilt binaries live.
+    fn write_pkg_with_binaries(dir: &Path, name: &str, command: &str, template: &str) {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(
+            dir.join(MANIFEST_FILE),
+            json!({
+                "name": name,
+                "description": "Test.",
+                "version": "1.2.3",
+                "yolop": {
+                    "protocol_version": "1.0",
+                    "capabilityServer": { "command": command, "binaries": template },
+                    "tools": [{ "name": "t" }]
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+    }
+
+    /// A `.tar.gz` holding one file, as a release archive would.
+    fn tar_gz_with(name: &str, contents: &[u8]) -> Vec<u8> {
+        use flate2::{Compression, write::GzEncoder};
+        let mut tar = tar::Builder::new(Vec::new());
+        let mut header = tar::Header::new_gnu();
+        header.set_size(contents.len() as u64);
+        header.set_mode(0o755);
+        header.set_cksum();
+        tar.append_data(&mut header, name, contents).unwrap();
+        let mut gz = GzEncoder::new(Vec::new(), Compression::default());
+        std::io::Write::write_all(&mut gz, &tar.into_inner().unwrap()).unwrap();
+        gz.finish().unwrap()
+    }
+
+    /// Serves a canned archive and checksum, recording the URLs asked for.
+    struct FakeBinaries {
+        archive: Vec<u8>,
+        checksum: Option<String>,
+        seen: std::sync::Mutex<Vec<String>>,
+    }
+
+    #[async_trait]
+    impl BinaryFetcher for FakeBinaries {
+        async fn get(&self, url: &str) -> Result<Vec<u8>> {
+            self.seen.lock().unwrap().push(url.to_string());
+            if let Some(rest) = url.strip_suffix(".sha256") {
+                let _ = rest;
+                return match &self.checksum {
+                    Some(sum) => Ok(format!("{sum}  archive.tar.gz\n").into_bytes()),
+                    None => bail!("404 no checksum"),
+                };
+            }
+            Ok(self.archive.clone())
+        }
+    }
+
+    /// Refuses every fetch: proves a test path never reaches the network.
+    struct NoBinaries;
+
+    #[async_trait]
+    impl BinaryFetcher for NoBinaries {
+        async fn get(&self, url: &str) -> Result<Vec<u8>> {
+            panic!("binary fetcher should not be used in this test: {url}")
+        }
+    }
+
     #[async_trait]
     impl CrateFetcher for NoCrates {
         async fn fetch_into(&self, _: &str, _: Option<&str>, _: &Path) -> Result<String> {
             panic!("crate fetcher should not be used in this test");
         }
+    }
+
+    #[tokio::test]
+    async fn install_fetches_the_prebuilt_binary_a_package_declares() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src-pkg");
+        let ext_dir = tmp.path().join("extensions");
+        write_pkg_with_binaries(
+            &src,
+            "demo",
+            "yolop-extension-demo",
+            "https://example.test/{name}-v{version}/{name}-{version}-{target}.tar.gz",
+        );
+        let payload = b"#!/bin/sh\necho hi\n";
+        let archive = tar_gz_with("yolop-extension-demo", payload);
+        let fetcher = FakeBinaries {
+            checksum: Some(
+                sha256_hex(&archive)
+                    .trim_start_matches("sha256:")
+                    .to_string(),
+            ),
+            archive,
+            seen: Default::default(),
+        };
+
+        let installed = install(
+            &ext_dir,
+            &Source::parse(src.to_str().unwrap()).unwrap(),
+            &SystemGit,
+            &NoCrates,
+            &fetcher,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            installed.binary,
+            BinaryOutcome::Fetched {
+                target: host_target().to_string()
+            }
+        );
+        // Landed in the package's own bin/, which is what the spawn path
+        // searches before PATH.
+        let placed = ext_dir
+            .join("demo")
+            .join("bin")
+            .join("yolop-extension-demo");
+        assert_eq!(std::fs::read(&placed).unwrap(), payload);
+        assert!(server_command_resolves(
+            &ext_dir.join("demo"),
+            "yolop-extension-demo"
+        ));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&placed).unwrap().permissions().mode() & 0o111,
+                0o111,
+                "the fetched binary must be executable"
+            );
+        }
+
+        // Placeholders were substituted, and the checksum was fetched too.
+        let seen = fetcher.seen.lock().unwrap().clone();
+        assert_eq!(
+            seen[0],
+            format!(
+                "https://example.test/demo-v1.2.3/demo-1.2.3-{}.tar.gz",
+                host_target()
+            )
+        );
+        assert!(seen[1].ends_with(".sha256"), "urls were: {seen:?}");
+    }
+
+    /// Install downloads an executable that yolop will later spawn, so an
+    /// unverifiable or tampered archive must never reach the package.
+    #[tokio::test]
+    async fn a_binary_that_fails_verification_is_refused() {
+        for (label, checksum) in [
+            ("no checksum published", None),
+            ("checksum mismatch", Some("0".repeat(64))),
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            let src = tmp.path().join("src-pkg");
+            let ext_dir = tmp.path().join("extensions");
+            write_pkg_with_binaries(
+                &src,
+                "demo",
+                "yolop-extension-demo",
+                "https://example.test/{name}-{version}-{target}.tar.gz",
+            );
+            let fetcher = FakeBinaries {
+                archive: tar_gz_with("yolop-extension-demo", b"payload"),
+                checksum,
+                seen: Default::default(),
+            };
+
+            let installed = install(
+                &ext_dir,
+                &Source::parse(src.to_str().unwrap()).unwrap(),
+                &SystemGit,
+                &NoCrates,
+                &fetcher,
+            )
+            .await
+            .expect("the package still installs");
+
+            assert!(
+                matches!(installed.binary, BinaryOutcome::Failed { .. }),
+                "{label}: expected refusal, got {:?}",
+                installed.binary
+            );
+            assert!(
+                !ext_dir
+                    .join("demo")
+                    .join("bin")
+                    .join("yolop-extension-demo")
+                    .exists(),
+                "{label}: an unverified binary must not be written"
+            );
+        }
+    }
+
+    /// A package that declares no template is untouched: nothing is fetched,
+    /// which is also why the fetcher panics if called.
+    #[tokio::test]
+    async fn a_package_without_a_template_fetches_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src-pkg");
+        let ext_dir = tmp.path().join("extensions");
+        write_pkg(&src, "echo");
+
+        let installed = install(
+            &ext_dir,
+            &Source::parse(src.to_str().unwrap()).unwrap(),
+            &SystemGit,
+            &NoCrates,
+            &NoBinaries,
+        )
+        .await
+        .unwrap();
+        assert_eq!(installed.binary, BinaryOutcome::NotDeclared);
     }
 
     #[test]
@@ -732,7 +1116,7 @@ mod tests {
         let ext_dir = tmp.path().join("extensions");
 
         let source = Source::parse(src.to_str().unwrap()).unwrap();
-        let installed = install(&ext_dir, &source, &SystemGit, &NoCrates)
+        let installed = install(&ext_dir, &source, &SystemGit, &NoCrates, &NoBinaries)
             .await
             .unwrap();
         assert_eq!(installed.manifest.name, "echo");
@@ -747,14 +1131,14 @@ mod tests {
         );
 
         // Reinstall unchanged: no grant change.
-        let again = install(&ext_dir, &source, &SystemGit, &NoCrates)
+        let again = install(&ext_dir, &source, &SystemGit, &NoCrates, &NoBinaries)
             .await
             .unwrap();
         assert!(again.previous_hash.is_none());
 
         // Change a file, reinstall: previous hash surfaces.
         std::fs::write(src.join("extra.txt"), "new").unwrap();
-        let changed = install(&ext_dir, &source, &SystemGit, &NoCrates)
+        let changed = install(&ext_dir, &source, &SystemGit, &NoCrates, &NoBinaries)
             .await
             .unwrap();
         assert!(changed.previous_hash.is_some());
@@ -771,6 +1155,7 @@ mod tests {
             &Source::parse(src.to_str().unwrap()).unwrap(),
             &SystemGit,
             &NoCrates,
+            &NoBinaries,
         )
         .await
         .unwrap();
@@ -794,7 +1179,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let ext_dir = tmp.path().join("extensions");
         let source = Source::parse("https://example.com/acme/gitext").unwrap();
-        let installed = install(&ext_dir, &source, &FakeGit, &NoCrates)
+        let installed = install(&ext_dir, &source, &FakeGit, &NoCrates, &NoBinaries)
             .await
             .unwrap();
         assert_eq!(installed.manifest.name, "gitext");
@@ -892,7 +1277,7 @@ mod tests {
             crate_name: name.into(),
             version: String::new(),
         };
-        let installed = install(&ext_dir, &source, &SystemGit, &fetcher)
+        let installed = install(&ext_dir, &source, &SystemGit, &fetcher, &NoBinaries)
             .await
             .unwrap();
         let _ = handle.join();

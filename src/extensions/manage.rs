@@ -312,6 +312,7 @@ pub struct ExtensionsCapability {
     settings: Arc<SettingsStore>,
     git: Arc<dyn GitRunner>,
     crates: Arc<dyn CrateFetcher>,
+    binaries: Arc<dyn store::BinaryFetcher>,
     /// Live server processes, so `yolop extensions reload` can restart one in place.
     live_processes: LiveProcessRegistry,
     /// UI-command sink (the TUI's `ui_rx`) used to activate/deactivate an
@@ -340,6 +341,7 @@ impl ExtensionsCapability {
             settings,
             git: Arc::new(SystemGit),
             crates: Arc::new(SystemCrateFetcher::default()),
+            binaries: Arc::new(store::SystemBinaryFetcher),
             live_processes,
             ui_tx,
             secrets: None,
@@ -367,6 +369,7 @@ impl ExtensionsCapability {
             settings: self.settings.clone(),
             git: self.git.clone(),
             crates: self.crates.clone(),
+            binaries: self.binaries.clone(),
             live_processes: self.live_processes.clone(),
             ui_tx: self.ui_tx.clone(),
             secrets: self.secrets.clone(),
@@ -582,6 +585,7 @@ struct ManageCtx {
     settings: Arc<SettingsStore>,
     git: Arc<dyn GitRunner>,
     crates: Arc<dyn CrateFetcher>,
+    binaries: Arc<dyn store::BinaryFetcher>,
     live_processes: LiveProcessRegistry,
     ui_tx: Option<UnboundedSender<UiRequest>>,
     secrets: Option<ExtensionSecrets>,
@@ -855,6 +859,7 @@ impl ManageTool {
             &source,
             self.ctx.git.as_ref(),
             self.ctx.crates.as_ref(),
+            self.ctx.binaries.as_ref(),
         )
         .await
         {
@@ -871,6 +876,16 @@ impl ManageTool {
                     format!(
                         "Installed but not enabled. Run `yolop extensions enable {}` to enable it.",
                         m.name
+                    )
+                } else if let store::BinaryOutcome::Failed { reason } = &installed.binary {
+                    // A prebuilt binary was declared but did not arrive. Say why,
+                    // rather than leaving the generic "no binary" note to imply
+                    // the package simply ships none.
+                    format!(
+                        "Installed, but fetching the prebuilt `{}` for this host failed: {reason}. \
+                         The extension cannot start until the binary is present; check with \
+                         `yolop extensions doctor {}`.",
+                        m.capability_server.command, m.name
                     )
                 } else {
                     format!(
@@ -893,6 +908,16 @@ impl ManageTool {
                     "content_hash": installed.content_hash,
                     "grant_changed": installed.previous_hash.is_some(),
                     "server_command_found": runnable,
+                    "binary": match &installed.binary {
+                        store::BinaryOutcome::AlreadyResolvable => json!("already-resolvable"),
+                        store::BinaryOutcome::Fetched { target } => {
+                            json!({ "fetched": true, "target": target })
+                        }
+                        store::BinaryOutcome::NotDeclared => json!("not-declared"),
+                        store::BinaryOutcome::Failed { reason } => {
+                            json!({ "fetched": false, "reason": reason })
+                        }
+                    },
                     "note": note,
                 }))
             }
@@ -2062,6 +2087,7 @@ mod tests {
             settings: settings.clone(),
             git: Arc::new(crate::extensions::store::SystemGit),
             crates: Arc::new(crate::extensions::store::SystemCrateFetcher::default()),
+            binaries: Arc::new(crate::extensions::store::SystemBinaryFetcher),
             live_processes: LiveProcessRegistry::default(),
             ui_tx: None,
             secrets: None,
@@ -2333,6 +2359,7 @@ mod tests {
             settings,
             git: Arc::new(crate::extensions::store::SystemGit),
             crates: Arc::new(crate::extensions::store::SystemCrateFetcher::default()),
+            binaries: Arc::new(crate::extensions::store::SystemBinaryFetcher),
             live_processes: LiveProcessRegistry::default(),
             ui_tx: None,
             secrets: Some(secrets.clone()),
@@ -2425,6 +2452,7 @@ mod tests {
             settings: settings.clone(),
             git: Arc::new(crate::extensions::store::SystemGit),
             crates: Arc::new(crate::extensions::store::SystemCrateFetcher::default()),
+            binaries: Arc::new(crate::extensions::store::SystemBinaryFetcher),
             live_processes: LiveProcessRegistry::default(),
             ui_tx: None,
             secrets: Some(secrets.clone()),
@@ -2507,6 +2535,7 @@ mod tests {
             settings,
             git: Arc::new(crate::extensions::store::SystemGit),
             crates: Arc::new(crate::extensions::store::SystemCrateFetcher::default()),
+            binaries: Arc::new(crate::extensions::store::SystemBinaryFetcher),
             live_processes: LiveProcessRegistry::default(),
             ui_tx: Some(ui_tx),
             secrets: None,
@@ -2567,6 +2596,7 @@ mod tests {
             settings,
             git: Arc::new(crate::extensions::store::SystemGit),
             crates: Arc::new(crate::extensions::store::SystemCrateFetcher::default()),
+            binaries: Arc::new(crate::extensions::store::SystemBinaryFetcher),
             live_processes: LiveProcessRegistry::default(),
             ui_tx: Some(ui_tx),
             secrets: None,

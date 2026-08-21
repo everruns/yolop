@@ -15,6 +15,80 @@ permissions:
   contents: write
 
 jobs:
+  # Prebuilt extension servers. A crates.io package carries source and yolop's
+  # install path is toolchain-free by design, so an extension published without
+  # these installs cleanly and can never spawn; install fetches the archive its
+  # manifest points at. Tagged per extension (`<crate>-v<version>`) rather than
+  # riding the yolop tag, so the URL is derivable from the package alone and an
+  # extension can release on its own cadence.
+  extensions:
+    name: Build ${{ matrix.crate }} (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        crate: [yolop-extension-logfire]
+        include:
+          - target: aarch64-apple-darwin
+            runner: macos-latest
+          - target: x86_64-apple-darwin
+            runner: macos-latest
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.94.0
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build release binary
+        run: |
+          cargo build --release --target ${{ matrix.target }} -p ${{ matrix.crate }} --locked
+
+      - name: Package binary
+        id: package
+        env:
+          CRATE: ${{ matrix.crate }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          VERSION=$(cargo metadata --no-deps --format-version 1 \
+            | jq -r --arg c "$CRATE" '.packages[] | select(.name == $c) | .version')
+          ARCHIVE="$CRATE-$VERSION-$TARGET.tar.gz"
+          cd "target/$TARGET/release"
+          tar czf "$GITHUB_WORKSPACE/$ARCHIVE" "$CRATE"
+          cd "$GITHUB_WORKSPACE"
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$ARCHIVE" > "$ARCHIVE.sha256"
+          else
+            shasum -a 256 "$ARCHIVE" > "$ARCHIVE.sha256"
+          fi
+          echo "archive=$ARCHIVE" >> "$GITHUB_OUTPUT"
+          echo "ext_tag=$CRATE-v$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Upload to the extension's release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ARCHIVE: ${{ steps.package.outputs.archive }}
+          EXT_TAG: ${{ steps.package.outputs.ext_tag }}
+          CRATE: ${{ matrix.crate }}
+        run: |
+          # The release is per extension version and shared by all targets, so
+          # the first runner to finish creates it and the rest upload into it.
+          if ! gh release view "$EXT_TAG" >/dev/null 2>&1; then
+            gh release create "$EXT_TAG" \
+              --title "$EXT_TAG" \
+              --notes "Prebuilt \`$CRATE\` servers, fetched by \`yolop extensions install\`." \
+              || gh release view "$EXT_TAG" >/dev/null
+          fi
+          gh release upload "$EXT_TAG" \
+            "$ARCHIVE" \
+            "$ARCHIVE.sha256" \
+            --clobber
+
   build:
     name: Build CLI (${{ matrix.target }})
     runs-on: ${{ matrix.runner }}
