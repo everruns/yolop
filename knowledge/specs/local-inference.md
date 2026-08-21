@@ -101,28 +101,37 @@ the gate earns its keep:
 - **Compile time justifies the gate for people who build from source.**
   `cargo install yolop` roughly doubles, and a contributor's cold build pays the
   same. That is worth avoiding for the majority who will never select `local`.
-- **Binary size is not something the gate fixes.** The release binaries are
-  built with the feature on, so a Homebrew install carries the engine whether or
-  not the user ever runs a local model. Two different costs hide behind that,
-  and they should not be quoted interchangeably: **+41.3 MiB of disk** after
-  install, and a *download* that grows by the compressed delta. The formula
-  fetches a `.tar.gz`, and the baseline binary compresses 3.46× (96.3 → 27.8
-  MiB), so the download delta is much smaller than the disk delta — but it has
-  not been measured, so do not quote a figure for it. If the trade stops being
-  worth it — and for an experiment with no eval numbers behind it, that is a
-  fair question — the lever is
-  [`cli-binaries.yml`](../../.github/workflows/cli-binaries.yml), not the
-  feature default.
+- **Binary size is what the distribution split fixes, not the gate.** Through
+  v0.17.0 the release binaries were built with the feature on, so a Homebrew
+  install carried the engine whether or not the user ever ran a local model:
+  **+41.3 MiB of disk** after install, plus a download that grew by the
+  compressed delta (the baseline binary compresses 3.46×, 96.3 → 27.8 MiB; the
+  delta itself was never measured, so do not quote a figure for it). That is
+  what the lever in [`cli-binaries.yml`](../../.github/workflows/cli-binaries.yml)
+  was for, and it has since been pulled: the default artifact no longer carries
+  the engine, and the people who want it download a build that does. See
+  [Distribution](#distribution).
 
-Because compile cost lands on builders rather than users, the gate and the
-distribution point in opposite directions:
+## Distribution
 
-- `local-inference` is **off** in the crate's default features, so
-  `cargo install yolop` and the contributor `cargo check` loop stay fast.
-- The **release binaries are built with it on**
-  (`.github/workflows/cli-binaries.yml`), and the Homebrew formula is generated
-  from those tarballs, so the install path most users take
-  ([Release](release.md)) ships the engine without anyone compiling it.
+`local-inference` is **off** in the crate's default features, so
+`cargo install yolop` and the contributor `cargo check` loop stay fast. A
+release ([Release](release.md)) resolves the same trade by shipping two builds
+per target rather than picking one:
+
+| Asset                              | Features                    | For                              |
+|------------------------------------|-----------------------------|----------------------------------|
+| `yolop-<target>.tar.gz`            | default, no engine          | everyone; what Homebrew installs |
+| `yolop-<target>-metal.tar.gz`      | `metal` (macOS)             | local models on an Apple GPU     |
+| `yolop-<target>-cuda.tar.gz`       | `cuda` (Linux x86_64)       | local models on an NVIDIA GPU    |
+
+The default asset is the portable one because it is the only build that runs
+wherever the target does. An accelerated build carries a runtime requirement
+the plain one does not: a `cuda` binary needs an NVIDIA driver present, and
+that is not a thing to hand someone who typed `brew install`. There is
+deliberately no CPU-only engine build in the list: the [Acceleration](#acceleration)
+finding is that an unaccelerated engine measures the wrong thing, so shipping
+one as a *download* would only spread that mistake.
 
 A build without the feature still resolves `--provider local` — only the driver
 is compiled out. Such a build reports the provider unusable so it stays out of
@@ -158,11 +167,15 @@ would be compiled nowhere in CI, so a dependency bump could break them and only
 a release would find out. `cuda` has no equivalent: no CI runner has the toolkit,
 so it stays unbuilt and its first real evidence has to come from a CUDA host.
 
-**The release binaries are built with `local-inference` alone, so they are
-CPU-only** ([`cli-binaries.yml`](../../.github/workflows/cli-binaries.yml)).
-A Homebrew install therefore runs local models on the CPU; accelerating the
-shipped macOS binaries is a separate decision, not something the feature flag
-settles.
+`cuda` is now also compiled in CI, by the release itself rather than a check:
+[`cli-binaries.yml`](../../.github/workflows/cli-binaries.yml) installs Ubuntu's
+`nvidia-cuda-toolkit` for the accelerated Linux build. That proves it compiles,
+which is all a GPU-less runner can prove. **Its first evidence that it runs
+still has to come from a CUDA host.** Two things about that build are worth
+knowing before quoting it as support: the kernels are compiled for one compute
+capability, pinned to 7.5 (Turing) via `CUDA_COMPUTE_CAP` because there is no
+GPU to interrogate, and anything newer reaches it through PTX rather than a
+native cubin.
 
 ## The model store
 

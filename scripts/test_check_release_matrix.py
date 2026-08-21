@@ -2,7 +2,7 @@
 
 import unittest
 
-from check_release_matrix import expand
+from check_release_matrix import check_accelerated, expand
 
 CLI_STYLE = {
     "include": [
@@ -45,6 +45,32 @@ class ExpandTests(unittest.TestCase):
         self.assertEqual(
             {job["runner"] for job in jobs}, {"macos-latest", "ubuntu-latest"}
         )
+
+
+
+MAC = {"target": "aarch64-apple-darwin", "backend": "metal", "archive": "a.tar.gz"}
+LINUX = {"target": "x86_64-unknown-linux-gnu", "backend": "cuda", "archive": "b.tar.gz"}
+CLI = {"aarch64-apple-darwin", "x86_64-unknown-linux-gnu"}
+
+
+def jobs(*entries: dict) -> dict:
+    return {"build-accelerated": {"strategy": {"matrix": {"include": list(entries)}}}}
+
+
+class AcceleratedTests(unittest.TestCase):
+    def test_matching_targets_pass(self) -> None:
+        check_accelerated(jobs(MAC, LINUX), CLI)
+
+    def test_a_target_the_cli_does_not_ship_is_rejected(self) -> None:
+        stray = {**MAC, "target": "aarch64-unknown-linux-gnu"}
+        with self.assertRaises(SystemExit):
+            check_accelerated(jobs(stray), CLI)
+
+    def test_two_backends_sharing_an_archive_are_rejected(self) -> None:
+        """The second upload would clobber the first, silently."""
+        clash = {**LINUX, "archive": MAC["archive"]}
+        with self.assertRaises(SystemExit):
+            check_accelerated(jobs(MAC, clash), CLI)
 
 
 if __name__ == "__main__":

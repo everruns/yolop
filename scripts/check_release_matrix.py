@@ -63,10 +63,31 @@ def targets(jobs: Mapping[str, Any], job: str) -> set[str]:
     return found
 
 
+def check_accelerated(jobs: Mapping[str, Any], cli: set[str]) -> None:
+    """The accelerated builds ship alongside the CLI, so they must line up.
+
+    Two ways this matrix goes wrong quietly: a backend build for a target the
+    release does not otherwise ship, which produces an asset nothing else
+    corroborates, and two combinations naming the same archive, which makes the
+    second `gh release upload --clobber` overwrite the first.
+    """
+    combinations = expand(jobs["build-accelerated"]["strategy"]["matrix"])
+    stray = {c["target"] for c in combinations} - cli
+    if stray:
+        raise SystemExit(
+            "build-accelerated builds targets the CLI does not ship: "
+            + ", ".join(sorted(stray))
+        )
+    archives = [c["archive"] for c in combinations]
+    if len(set(archives)) != len(archives):
+        raise SystemExit("build-accelerated: two combinations upload the same archive")
+
+
 def main() -> None:
     jobs = yaml.safe_load(WORKFLOW.read_text())["jobs"]
     cli = targets(jobs, "build")
     extensions = targets(jobs, "extensions")
+    check_accelerated(jobs, cli)
     if cli != extensions:
         missing = ", ".join(sorted(cli - extensions)) or "none"
         extra = ", ".join(sorted(extensions - cli)) or "none"

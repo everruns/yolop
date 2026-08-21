@@ -248,19 +248,32 @@ better-aimed model: its chat template emits tool calls as
 `<tool_call><function=…>` XML, and the engine only parses JSON inside
 `<tool_call>`, so none of its tool calls would be understood.
 
-Weights live under `<data_dir>/yolop/models/`. The engine is compiled into the
-Homebrew and GitHub release binaries; a build from source needs
-`cargo install yolop --locked --features local-inference`, which is much slower
-to compile. How well a local model actually drives the agent loop is the open
-question this is here to answer.
+Weights live under `<data_dir>/yolop/models/`. How well a local model actually
+drives the agent loop is the open question this is here to answer.
 
-Those builds run on the CPU. GPU acceleration needs a vendor toolchain, so it is
-a separate feature that implies `local-inference`:
+The engine is **not** in the default build, so `brew install` and
+`cargo install yolop --locked` do not carry it. Each release ships a second,
+GPU-accelerated binary per target that does:
+
+| Download                                     | Needs                        |
+|----------------------------------------------|------------------------------|
+| `yolop-aarch64-apple-darwin-metal.tar.gz`    | Apple Silicon                |
+| `yolop-x86_64-apple-darwin-metal.tar.gz`     | Intel Mac                    |
+| `yolop-x86_64-unknown-linux-gnu-cuda.tar.gz` | NVIDIA GPU and driver        |
+
+Grab one from the [latest release](https://github.com/everruns/yolop/releases/latest),
+or build it yourself. The backend is a feature that implies `local-inference`
+and needs its vendor toolchain:
 
 ```bash
 cargo install yolop --locked --features metal   # macOS
 cargo install yolop --locked --features cuda    # NVIDIA, needs the CUDA toolkit
 ```
+
+There is no CPU-only engine build to download. An 8B model on the CPU is slow
+enough to read as "local models are useless" when the real finding is "this was
+never accelerated", so `cargo install yolop --locked --features local-inference`
+is there if you want it, but it is not something to ship.
 
 ### Git attribution
 
