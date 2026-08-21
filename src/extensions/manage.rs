@@ -73,6 +73,8 @@ enum ExtensionCommand {
     Reload { name: String },
     /// Probe an installed extension's YEP conformance.
     Doctor { name: String },
+    /// Show or set an extension's configuration.
+    Config(ExtensionConfigArgs),
     /// Prompt for and store an extension secret.
     Secret(ExtensionSecretArgs),
     /// Create a new extension package skeleton.
@@ -94,6 +96,27 @@ enum ExtensionCommand {
         skills: bool,
         #[arg(long)]
         dir: Option<PathBuf>,
+    },
+}
+
+#[derive(Args, Debug)]
+pub struct ExtensionConfigArgs {
+    #[command(subcommand)]
+    command: ExtensionConfigCommand,
+}
+
+#[derive(Subcommand, Debug)]
+enum ExtensionConfigCommand {
+    /// Show an extension's configuration: which fields are set, the values of
+    /// the non-secret ones, and the files they are stored in.
+    Show { name: String },
+    /// Set a non-secret field. Secrets are refused here and keep their
+    /// prompt-only path, so a value never lands in a shell history or a
+    /// tool-call argument.
+    Set {
+        name: String,
+        field: String,
+        value: String,
     },
 }
 
@@ -154,6 +177,14 @@ pub enum ExtensionAction {
         name: String,
         field: String,
     },
+    ShowConfig {
+        name: String,
+    },
+    SetConfig {
+        name: String,
+        field: String,
+        value: String,
+    },
     Scaffold {
         name: String,
         description: String,
@@ -177,6 +208,12 @@ impl ExtensionAction {
             ExtensionCommand::Disable { name } => Self::Disable { name },
             ExtensionCommand::Reload { name } => Self::Reload { name },
             ExtensionCommand::Doctor { name } => Self::Doctor { name },
+            ExtensionCommand::Config(args) => match args.command {
+                ExtensionConfigCommand::Show { name } => Self::ShowConfig { name },
+                ExtensionConfigCommand::Set { name, field, value } => {
+                    Self::SetConfig { name, field, value }
+                }
+            },
             ExtensionCommand::Secret(args) => match args.command {
                 ExtensionSecretCommand::Set { name, field } => Self::SetSecret { name, field },
             },
@@ -236,6 +273,11 @@ impl ExtensionAction {
             Self::SetSecret { name, field } => {
                 (Verb::SetSecret, json!({ "name": name, "field": field }))
             }
+            Self::ShowConfig { name } => (Verb::ShowConfig, json!({ "name": name })),
+            Self::SetConfig { name, field, value } => (
+                Verb::SetConfig,
+                json!({ "name": name, "field": field, "value": value }),
+            ),
             Self::Scaffold {
                 name,
                 description,
@@ -351,6 +393,8 @@ impl ExtensionsCapability {
             Verb::Disable,
             Verb::Reload,
             Verb::SetSecret,
+            Verb::ShowConfig,
+            Verb::SetConfig,
             Verb::Doctor,
         ]
         .into_iter()
@@ -554,6 +598,8 @@ enum Verb {
     Disable,
     Reload,
     SetSecret,
+    ShowConfig,
+    SetConfig,
     Doctor,
 }
 
@@ -1070,6 +1116,159 @@ impl ManageTool {
         }
     }
 
+    /// The installed package and its effective (non-secret) config overlay.
+    fn package_and_config(
+        &self,
+        name: &str,
+    ) -> Result<(super::package::ExtensionPackage, Value), String> {
+        let pkg = discover_extensions(&self.ctx.extensions_dir)
+            .into_iter()
+            .find(|pkg| pkg.manifest.name == name)
+            .ok_or_else(|| {
+                format!("no extension named `{name}` is installed; `yolop extensions list` shows what is")
+            })?;
+        let config = self
+            .ctx
+            .settings
+            .snapshot()
+            .capability_overrides_for(&extension_capability_id(name))
+            .iter()
+            .rev()
+            .find(|(_, entry)| !entry.is_remove())
+            .map(|(_, entry)| entry.config.clone())
+            .unwrap_or(Value::Null);
+        Ok((pkg, config))
+    }
+
+    /// Show an extension's configuration, including where the values live.
+    ///
+    /// Non-secret values are returned; a secret is reported only as set or
+    /// unset, never by value, so the credential-store leak guard holds here as
+    /// it does in `list_extensions`. Naming the files closes the gap that sent
+    /// callers hunting through the config directory with `find` and `grep`
+    /// because nothing said where a value was read from.
+    fn show_config(&self, args: &Value) -> ToolExecutionResult {
+        let Some(name) = args.get("name").and_then(Value::as_str) else {
+            return ToolExecutionResult::ToolError("`name` is required".into());
+        };
+        let (pkg, ext_config) = match self.package_and_config(name) {
+            Ok(found) => found,
+            Err(err) => return ToolExecutionResult::ToolError(err),
+        };
+        let fields: Vec<Value> = pkg
+            .manifest
+            .config_fields()
+            .into_iter()
+            .map(|field| {
+                let mut entry = json!({
+                    "name": field.name,
+                    "secret": field.secret,
+                    "required": field.required,
+                });
+                if !field.description.is_empty() {
+                    entry["description"] = json!(field.description);
+                }
+                if !field.options.is_empty() {
+                    entry["options"] = json!(field.options);
+                }
+                if let Some(env) = field.env.as_ref() {
+                    entry["env"] = json!(env);
+                }
+                if field.secret {
+                    let set = self
+                        .ctx
+                        .secrets
+                        .as_ref()
+                        .map(|s| s.is_set(name, &field.name))
+                        .unwrap_or(false);
+                    entry["set"] = json!(set);
+                    entry["stored_in"] = json!("connections.toml");
+                } else {
+                    let value = ext_config.get(&field.name).filter(|v| !v.is_null());
+                    entry["set"] = json!(value.is_some());
+                    if let Some(value) = value {
+                        entry["value"] = value.clone();
+                    }
+                    entry["stored_in"] = json!("settings.toml");
+                }
+                entry
+            })
+            .collect();
+        ToolExecutionResult::Success(json!({
+            "name": name,
+            "config": fields,
+            "paths": {
+                "settings.toml": self.ctx.settings.path().display().to_string(),
+                "connections.toml": crate::connectors::default_connections_path()
+                    .map(|p| p.display().to_string()),
+            },
+            "note": "Set a non-secret field with `yolop extensions config set <name> <field> \
+                     <value>`; a secret with `yolop extensions secret set <name> <field>`, \
+                     which prompts so the value is never passed as an argument.",
+        }))
+    }
+
+    /// Set a non-secret config field.
+    ///
+    /// Secrets are refused: they keep the prompt-only path so a value never
+    /// lands in a shell history, a tool call, or the model's context.
+    fn set_config(&self, args: &Value) -> ToolExecutionResult {
+        let (Some(name), Some(field_name), Some(value)) = (
+            args.get("name").and_then(Value::as_str),
+            args.get("field").and_then(Value::as_str),
+            args.get("value").and_then(Value::as_str),
+        ) else {
+            return ToolExecutionResult::ToolError(
+                "`name`, `field`, and `value` are required".into(),
+            );
+        };
+        let (pkg, _) = match self.package_and_config(name) {
+            Ok(found) => found,
+            Err(err) => return ToolExecutionResult::ToolError(err),
+        };
+        let Some(field) = pkg
+            .manifest
+            .config_fields()
+            .into_iter()
+            .find(|f| f.name == field_name)
+        else {
+            let known: Vec<String> = pkg
+                .manifest
+                .config_fields()
+                .into_iter()
+                .map(|f| f.name)
+                .collect();
+            return ToolExecutionResult::ToolError(format!(
+                "extension `{name}` has no config field `{field_name}`; it declares: {}",
+                if known.is_empty() {
+                    "none".to_string()
+                } else {
+                    known.join(", ")
+                }
+            ));
+        };
+        if field.secret {
+            return ToolExecutionResult::ToolError(format!(
+                "`{field_name}` is a secret: set it with `yolop extensions secret set {name} \
+                 {field_name}`, which prompts for the value so it is never passed as an \
+                 argument"
+            ));
+        }
+        match self.ctx.settings.set_capability_config(
+            &extension_capability_id(name),
+            field_name,
+            Value::String(value.to_string()),
+        ) {
+            Ok(()) => ToolExecutionResult::Success(json!({
+                "name": name,
+                "field": field_name,
+                "value": value,
+                "note": "Stored. Reload or restart the extension to apply it.",
+            })),
+            Err(err) => ToolExecutionResult::ToolError(format!("config write failed: {err}")),
+        }
+    }
+
     async fn set_secret(&self, args: &Value) -> ToolExecutionResult {
         let Some(name) = args.get("name").and_then(Value::as_str) else {
             return ToolExecutionResult::ToolError("`name` is required".into());
@@ -1283,6 +1482,8 @@ impl Tool for ManageTool {
             Verb::Disable => "Disable extension",
             Verb::Reload => "Reload extension",
             Verb::SetSecret => "Set extension secret",
+            Verb::ShowConfig => "Show extension config",
+            Verb::SetConfig => "Set extension config",
             Verb::Doctor => "Check extension",
         };
         let key = if matches!(self.verb, Verb::Install) {
@@ -1304,6 +1505,8 @@ impl Tool for ManageTool {
             Verb::Disable => "disable_extension",
             Verb::Reload => "reload_extension",
             Verb::SetSecret => "set_extension_secret",
+            Verb::ShowConfig => "show_extension_config",
+            Verb::SetConfig => "set_extension_config",
             Verb::Doctor => "doctor_extension",
         }
     }
@@ -1352,6 +1555,19 @@ impl Tool for ManageTool {
                  never see it; it is stored in the credential store, not in settings, and \
                  injected into the extension's server as env. Call with `name` and `field` \
                  only (never `value`). Use for `secret` fields shown by `list_extensions`."
+            }
+            Verb::ShowConfig => {
+                "Show an installed extension's configuration: every field, whether it is \
+                 required, whether a value is set, the value of each non-secret field, and \
+                 the files the values are read from. Secret values are never returned, only \
+                 whether they are set. Use this before `set_extension_config` or \
+                 `set_extension_secret` to see what an extension still needs."
+            }
+            Verb::SetConfig => {
+                "Set a non-secret config field on an installed extension (e.g. an endpoint or \
+                 a service name). Call with `name`, `field`, and `value`. Secret fields are \
+                 refused here: they are entered by the user through `set_extension_secret` so \
+                 the value never passes through a tool call."
             }
             Verb::Doctor => {
                 "Conformance-check an installed extension: spawn its server, run the \
@@ -1429,6 +1645,17 @@ impl Tool for ManageTool {
                 },
                 "required": ["name", "field"]
             }),
+            Verb::SetConfig => json!({
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "Extension name." },
+                    "field": { "type": "string",
+                        "description": "The non-secret config field to set (from \
+                            show_extension_config)." },
+                    "value": { "type": "string", "description": "The value to store." }
+                },
+                "required": ["name", "field", "value"]
+            }),
             _ => json!({
                 "type": "object",
                 "properties": {
@@ -1450,6 +1677,8 @@ impl Tool for ManageTool {
             Verb::Disable => self.toggle(&arguments, false).await,
             Verb::Reload => self.reload(&arguments).await,
             Verb::SetSecret => self.set_secret(&arguments).await,
+            Verb::ShowConfig => self.show_config(&arguments),
+            Verb::SetConfig => self.set_config(&arguments),
             Verb::Doctor => self.doctor(&arguments).await,
         }
     }
@@ -1473,6 +1702,136 @@ mod tests {
             .to_string(),
         )
         .unwrap();
+    }
+
+    fn seed_configurable_package(dir: &Path, name: &str) {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(
+            dir.join(MANIFEST_FILE),
+            json!({
+                "name": name, "description": "T.",
+                "yolop": { "protocol_version": "1.0",
+                    "capabilityServer": { "command": "x" }, "tools": [{"name": "t"}],
+                    "config_schema": {
+                        "type": "object",
+                        "required": ["token"],
+                        "properties": {
+                            "token": { "type": "string", "secret": true,
+                                       "env": "T_TOKEN", "description": "A token" },
+                            "endpoint": { "type": "string", "description": "Where to send" }
+                        }
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+    }
+
+    /// Nothing used to say where a value was read from, so callers reverse
+    /// engineered the config directory with `find` and `grep`. Show names the
+    /// files, returns non-secret values, and still never returns a secret.
+    #[tokio::test]
+    async fn config_show_reports_values_paths_and_never_a_secret() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        seed_configurable_package(&src, "demo");
+        let (cap, _settings, _ext_dir) = capability(tmp.path());
+        let tools = cap.management_tools();
+        let get = |n: &str| tools.iter().find(|t| t.name() == n).unwrap();
+
+        get("install_extension")
+            .execute(json!({ "source": src.to_str().unwrap() }))
+            .await;
+        get("set_extension_config")
+            .execute(json!({ "name": "demo", "field": "endpoint", "value": "https://example" }))
+            .await;
+
+        match get("show_extension_config")
+            .execute(json!({ "name": "demo" }))
+            .await
+        {
+            ToolExecutionResult::Success(v) => {
+                let fields = v["config"].as_array().expect("config array");
+                let endpoint = fields.iter().find(|f| f["name"] == "endpoint").unwrap();
+                assert_eq!(endpoint["set"], json!(true));
+                assert_eq!(endpoint["value"], json!("https://example"));
+                assert_eq!(endpoint["stored_in"], json!("settings.toml"));
+
+                let token = fields.iter().find(|f| f["name"] == "token").unwrap();
+                assert_eq!(token["secret"], json!(true));
+                assert_eq!(token["stored_in"], json!("connections.toml"));
+                assert!(
+                    token.get("value").is_none(),
+                    "a secret value must never be returned: {token}"
+                );
+
+                assert!(
+                    v["paths"]["settings.toml"].as_str().is_some(),
+                    "the file a value comes from must be named"
+                );
+            }
+            other => panic!("expected success, got {other:?}"),
+        }
+    }
+
+    /// A non-secret field was previously reachable only through the enable-time
+    /// prompt or by hand-editing settings.toml.
+    #[tokio::test]
+    async fn config_set_writes_a_non_secret_field_and_refuses_a_secret() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        seed_configurable_package(&src, "demo");
+        let (cap, settings, _ext_dir) = capability(tmp.path());
+        let tools = cap.management_tools();
+        let get = |n: &str| tools.iter().find(|t| t.name() == n).unwrap();
+        get("install_extension")
+            .execute(json!({ "source": src.to_str().unwrap() }))
+            .await;
+
+        match get("set_extension_config")
+            .execute(json!({ "name": "demo", "field": "endpoint", "value": "https://example" }))
+            .await
+        {
+            ToolExecutionResult::Success(v) => assert_eq!(v["value"], json!("https://example")),
+            other => panic!("expected success, got {other:?}"),
+        }
+        assert_eq!(
+            settings
+                .snapshot()
+                .capability_overrides_for(&extension_capability_id("demo"))
+                .iter()
+                .rev()
+                .find(|(_, e)| !e.is_remove())
+                .and_then(|(_, e)| e.config.get("endpoint").cloned()),
+            Some(json!("https://example")),
+            "the value must be persisted to settings"
+        );
+
+        // A secret keeps its prompt-only path so the value never passes through
+        // a tool call, and the refusal names the command that does work.
+        match get("set_extension_config")
+            .execute(json!({ "name": "demo", "field": "token", "value": "hunter2" }))
+            .await
+        {
+            ToolExecutionResult::ToolError(err) => {
+                assert!(err.contains("secret"), "error was: {err}");
+                assert!(err.contains("secret set demo token"), "error was: {err}");
+            }
+            other => panic!("a secret must be refused, got {other:?}"),
+        }
+
+        // An unknown field names the ones that exist rather than just failing.
+        match get("set_extension_config")
+            .execute(json!({ "name": "demo", "field": "nope", "value": "x" }))
+            .await
+        {
+            ToolExecutionResult::ToolError(err) => {
+                assert!(err.contains("token"), "error was: {err}");
+                assert!(err.contains("endpoint"), "error was: {err}");
+            }
+            other => panic!("expected an error, got {other:?}"),
+        }
     }
 
     /// Every by-name subcommand must accept the same spellings `install` does.
