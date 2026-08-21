@@ -1,5 +1,18 @@
 # Knowledge Log
 
+## 2026-08-21, A green release workflow can still ship half the binaries
+
+- [Release](specs/release.md): `cli-binaries.yml` built the extension servers
+  for one target instead of three, and reported success. A GitHub Actions
+  `include` entry that names no existing matrix dimension is merged into every
+  combination rather than creating one, so three of them collapsed onto the
+  single `crate` job and the last one won.
+- v0.17.0 shipped that way: crates.io, the tap, and the CLI binaries were all
+  correct, and `yolop extensions install logfire` still 404s on macOS.
+- `scripts/check_release_matrix.py` now expands both matrices the way Actions
+  does and fails when they disagree. Post-release verification counts the
+  per-extension release's assets rather than trusting the tag's existence.
+
 ## 2026-08-21, A release publishes the extensions too
 
 - [Release](specs/release.md): the release train carries every publishable

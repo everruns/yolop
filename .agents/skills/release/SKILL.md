@@ -132,7 +132,8 @@ gh run list --workflow=publish.yml      --limit 1
 gh run list --workflow=cli-binaries.yml --limit 1
 ```
 
-Green workflows are not proof. Run the spec's post-release verification yourself
+Green workflows are not proof, and a matrix that silently builds one target
+reports success just like a correct one. Run the spec's post-release verification yourself
 and declare **shipped** only when crates.io reports `X.Y.Z`, every bumped
 library and extension crate is live, each bumped extension has its
 `<crate>-v<version>` release carrying the three server archives, and the tap
