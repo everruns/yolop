@@ -1,5 +1,20 @@
 # Knowledge Log
 
+## 2026-08-22, One route for every input event
+
+- [Tuika](specs/tuika.md): input ownership is now one ordered table of surfaces,
+  and every event kind is delivered against it through tuika 0.11's `Router`.
+  `handle_key` and `handle_paste` each used to re-derive precedence with their
+  own `if` chain.
+- The paste chain had never grown the sandbox-approval branch the key chain had,
+  so text pasted while the approval prompt owned the screen was inserted into
+  the composer behind it and went out with the next prompt. Deriving precedence
+  twice is what made that reachable, so the fix is the shared table rather than
+  a seventh branch in the second chain.
+- A running turn's Esc-to-cancel is a partial claim, not a modal, so ownership
+  is resolved against the event rather than once per frame. Reverse search is
+  the one surface that outranks the global chord layer.
+
 ## 2026-08-21, The default binary stops carrying the inference engine
 
 - [Local inference](specs/local-inference.md): every release target now ships

@@ -67,6 +67,7 @@ tuika owns *presentation*; yolop owns *acquisition and meaning*. Concretely:
 | Markdown images | block reservation and protocol emission | an `ImageResolver` that decodes bytes to RGBA |
 | Mermaid fences | the `FencedBlockRenderer` boundary | the renderer (`tuika-mermaid`), the transcript's width guard, and telling the model the TUI paints them ([system prompt](./system-prompt.md)) |
 | Key bindings | the keymap engine (chords, sequences, gated layers, dispatch) | the binding table and what each command *means* |
+| Input routing | `Router` stages, and the `FocusRegistry` ownership they read | which modal state owns input, and in what order |
 | Links | OSC 8 encoding and the `LinkPolicy` sanitizer | which schemes are allowed, and the transcript's link runs |
 | Progress | the OSC 9;4 encoder | when a turn is running |
 | Live data | reading shared state at render time | producing it and requesting redraws |
@@ -74,11 +75,30 @@ tuika owns *presentation*; yolop owns *acquisition and meaning*. Concretely:
 Yolop's keymap adoption is the clearest case of the split: tuika resolves a
 translated key to a named command, and yolop decides that the resulting command
 interrupts a turn, opens the activity rail, or starts a reverse search. The
-engine's precedence is yolop's choice too, the global layer is ungated and
-dispatched ahead of every modal guard, which reproduces the precedence the
-former inline `match` had: global chords fire in any mode, mid-turn, during
-setup, or with an overlay open. A key that no binding matches falls through to
-the composer and modal handlers unchanged.
+engine's precedence is yolop's choice too, the global layer is ungated and runs
+at the router's `Pre` stage, ahead of every surface, which reproduces the
+precedence the former inline `match` had: global chords fire in any mode,
+mid-turn, during setup, or with an overlay open. A key that no binding matches
+falls through to whichever surface owns input.
+
+Routing is the same split one layer down. tuika owns *how* an event reaches a
+surface, and yolop owns *who* the surfaces are: one ordered table names them
+(reverse search, sandbox approval, background panel, extension ask, a running
+turn's Esc claim, setup, composer) and every event kind is delivered against it.
+Two properties are load-bearing and neither is tuika's to enforce:
+
+- **Ownership is derived once, not per event kind.** A key and a paste consult
+  the same table. When they did not, only the key chain knew about the sandbox
+  approval prompt, so pasted text landed in the composer behind an open dialog.
+  A new surface is added in one place or it is wrong everywhere.
+- **Reverse search outranks the global chords.** It owns the keyboard outright,
+  Ctrl+C included, which cancels the search rather than arming exit. `Pre` is
+  the router's first stage and no surface can outrank it, so this exception is
+  written into the `Pre` handler rather than declared.
+
+A running turn is a *partial* claim rather than a modal: it takes Esc and
+nothing else, so every other key reaches the surface underneath. That is why
+ownership is resolved against the event rather than once per frame.
 
 Link activation is the other case worth stating, because it is a *negative*
 requirement: OSC 8 targets are activated by the terminal emulator, using its
