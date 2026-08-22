@@ -235,9 +235,12 @@ jobs:
         env:
           # The kernels are compiled for one compute capability, and the usual
           # way that is chosen is by asking `nvidia-smi` what the build machine
-          # has. No runner has a GPU, so it has to be named. 7.5 (Turing, 2018)
-          # is the floor that still covers everything newer through PTX.
-          CUDA_COMPUTE_CAP: 75
+          # has. No runner has a GPU, so it has to be named. 8.0 is the floor
+          # candle compiles at, not a preference: its kernels call `__hmax_nan`
+          # and `__hmin_nan`, which nvcc only defines for `__CUDA_ARCH__ >= 800`,
+          # so 7.5 fails outright in `compatibility.cuh`. Anything newer than
+          # Ampere reaches the binary through PTX.
+          CUDA_COMPUTE_CAP: 80
         run: |
           cargo build --release --target ${{ matrix.target }} -p yolop --locked \
             --features ${{ matrix.backend }}

@@ -17,8 +17,12 @@
 - [Release](specs/release.md): the accelerated builds are their own job, kept
   out of the Homebrew job's `needs`. `cuda` is the least proven build in the
   release, and a failure there must not hold back the tap. It now at least
-  compiles in CI, with its compute capability pinned to 7.5 because no runner
-  has a GPU to interrogate; evidence that it *runs* still needs a CUDA host.
+  compiles in CI, against Ubuntu's own `nvidia-cuda-toolkit` (nvcc 12.0) with
+  its compute capability pinned to 8.0, because no runner has a GPU to
+  interrogate. 8.0 is candle's floor, not a preference: its kernels call
+  `__hmax_nan`/`__hmin_nan`, which nvcc defines only for `__CUDA_ARCH__ >= 800`,
+  so pre-Ampere cards are out of reach of the shipped build. Evidence that it
+  *runs* still needs a CUDA host.
 
 ## 2026-08-21, A green release workflow can still ship half the binaries
 

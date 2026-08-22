@@ -173,9 +173,13 @@ the slower build and the one no `pull_request` path can justify on runner cost.
 which is all a GPU-less runner can prove. **Its first evidence that it runs
 still has to come from a CUDA host.** Two things about that build are worth
 knowing before quoting it as support: the kernels are compiled for one compute
-capability, pinned to 7.5 (Turing) via `CUDA_COMPUTE_CAP` because there is no
-GPU to interrogate, and anything newer reaches it through PTX rather than a
-native cubin.
+capability, pinned to 8.0 via `CUDA_COMPUTE_CAP` because there is no GPU to
+interrogate, and anything newer reaches it through PTX rather than a native
+cubin. 8.0 is a floor candle imposes, not a choice: its kernels call
+`__hmax_nan` and `__hmin_nan`, which nvcc defines only for
+`__CUDA_ARCH__ >= 800`, so a lower capability fails in `compatibility.cuh`
+rather than producing a wider-reaching binary. **Pre-Ampere cards are therefore
+out of reach of the shipped `cuda` build.**
 
 ## The model store
 

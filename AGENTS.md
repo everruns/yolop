@@ -97,7 +97,7 @@ Linux), so a change there wants the backend compiled too. `cuda` needs `nvcc`
 kernels are compiled for one capability and there is no GPU here to ask:
 
 ```bash
-CARGO_TARGET_DIR=target-cuda CUDA_COMPUTE_CAP=75 \
+CARGO_TARGET_DIR=target-cuda CUDA_COMPUTE_CAP=80 \
   cargo check -p yolop --locked --features cuda
 ```
 

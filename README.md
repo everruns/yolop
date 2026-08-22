@@ -259,7 +259,7 @@ GPU-accelerated binary per target that does:
 |----------------------------------------------|------------------------------|
 | `yolop-aarch64-apple-darwin-metal.tar.gz`    | Apple Silicon                |
 | `yolop-x86_64-apple-darwin-metal.tar.gz`     | Intel Mac                    |
-| `yolop-x86_64-unknown-linux-gnu-cuda.tar.gz` | NVIDIA GPU and driver        |
+| `yolop-x86_64-unknown-linux-gnu-cuda.tar.gz` | NVIDIA GPU, Ampere or newer  |
 
 Grab one from the [latest release](https://github.com/everruns/yolop/releases/latest),
 or build it yourself. The backend is a feature that implies `local-inference`
