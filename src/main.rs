@@ -1021,6 +1021,23 @@ fn resolve_workspace_root(
     std::env::current_dir().context("resolve current workspace directory")
 }
 
+/// What to tell someone whose weights store is empty.
+///
+/// `list` and `rm` compile into every build, so one that dropped the engine can
+/// still clean up after one that had it. Pulling does not, and the default
+/// release binary is now the engine-less one, so the obvious hint would
+/// dead-end most of the people who read it.
+fn empty_weights_store_hint() -> String {
+    if cfg!(feature = "local-inference") {
+        format!("Pull one with `yolop weights pull {DEFAULT_LOCAL_MODEL}`.")
+    } else {
+        "This build has no local inference engine, so there is nothing here to run weights. \
+         Download an accelerated build (`yolop-<target>-metal` or `-cuda`) from \
+         https://github.com/everruns/yolop/releases/latest to pull them."
+            .to_string()
+    }
+}
+
 async fn run_weights_command(command: WeightsCommand) -> Result<()> {
     match command {
         WeightsCommand::List => {
@@ -1030,7 +1047,7 @@ async fn run_weights_command(command: WeightsCommand) -> Result<()> {
                     .map(|root| root.display().to_string())
                     .unwrap_or_else(|| "<no data directory>".to_string());
                 println!("No models downloaded. Store: {location}");
-                println!("Pull one with `yolop weights pull {DEFAULT_LOCAL_MODEL}`.");
+                println!("{}", empty_weights_store_hint());
                 return Ok(());
             }
             let total: u64 = models.iter().map(|model| model.bytes).sum();
@@ -2606,6 +2623,20 @@ mod tests {
             assert!(message.contains("releases/latest"), "{message}");
             assert!(message.contains("--features metal"), "{message}");
             assert!(!message.contains("brew install"), "{message}");
+        }
+    }
+
+    #[test]
+    fn an_empty_weights_store_only_suggests_pulling_when_something_could_run_it() {
+        let hint = empty_weights_store_hint();
+
+        if cfg!(feature = "local-inference") {
+            assert!(hint.contains("yolop weights pull"), "{hint}");
+        } else {
+            // `weights pull` is compiled out here, so suggesting it would send
+            // the reader to a command that only errors.
+            assert!(!hint.contains("yolop weights pull"), "{hint}");
+            assert!(hint.contains("releases/latest"), "{hint}");
         }
     }
 
