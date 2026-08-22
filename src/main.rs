@@ -441,8 +441,9 @@ enum ProviderArg {
     Google,
     Openrouter,
     Ollama,
-    /// In-process inference — no external server. Requires a build with the
-    /// `local-inference` feature (the release binaries and Homebrew formula).
+    /// In-process inference, no external server. Requires a build with the
+    /// `local-inference` feature: the accelerated release binaries
+    /// (`yolop-<target>-metal` / `-cuda`), not the default one or Homebrew.
     Local,
     /// Generic OpenAI-compatible endpoint (CUSTOM_BASE_URL / saved base URL).
     Custom,
@@ -479,8 +480,9 @@ fn ensure_provider_is_built_in(provider: &ProviderChoice) -> Result<()> {
     if matches!(provider, ProviderChoice::Local { .. }) && !cfg!(feature = "local-inference") {
         anyhow::bail!(
             "this build has no local inference engine, so `--provider local` cannot run. \
-             Install a release build (`brew install everruns/tap/yolop`) or build with \
-             `--features local-inference`."
+             Download an accelerated build (`yolop-<target>-metal` or `-cuda`) from \
+             https://github.com/everruns/yolop/releases/latest, or build with \
+             `--features metal` / `--features cuda`."
         );
     }
     Ok(())
@@ -1089,7 +1091,9 @@ async fn run_models_pull(spec: &str) -> Result<()> {
 async fn run_models_pull(_spec: &str) -> Result<()> {
     Err(anyhow::anyhow!(
         "this build has no local inference engine, so downloaded weights could not be run. \
-         Install a release build (Homebrew) or build with `--features local-inference`."
+         Download an accelerated build (`yolop-<target>-metal` or `-cuda`) from \
+         https://github.com/everruns/yolop/releases/latest, or build with \
+         `--features metal` / `--features cuda`."
     ))
 }
 
@@ -2596,8 +2600,12 @@ mod tests {
             // internal driver id and offers the user no way forward.
             let err = result.expect_err("a build without the engine must reject `local`");
             let message = err.to_string();
-            assert!(message.contains("--features local-inference"), "{message}");
-            assert!(message.contains("brew install"), "{message}");
+            // The default release binary and Homebrew both ship without the
+            // engine, so pointing there would send the user in a circle. The
+            // accelerated download is the only prebuilt answer.
+            assert!(message.contains("releases/latest"), "{message}");
+            assert!(message.contains("--features metal"), "{message}");
+            assert!(!message.contains("brew install"), "{message}");
         }
     }
 

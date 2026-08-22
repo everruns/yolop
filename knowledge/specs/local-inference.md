@@ -163,9 +163,9 @@ features it wants.
 `metal` is compiled for both macOS release targets by
 [`metal-build-check.yml`](../../.github/workflows/metal-build-check.yml), on
 pull requests that touch the manifests. Without it the accelerated backends
-would be compiled nowhere in CI, so a dependency bump could break them and only
-a release would find out. `cuda` has no equivalent: no CI runner has the toolkit,
-so it stays unbuilt and its first real evidence has to come from a CUDA host.
+would be compiled nowhere at review time, so a dependency bump could break them
+and only a release would find out. `cuda` has no review-time equivalent: it is
+the slower build and the one no `pull_request` path can justify on runner cost.
 
 `cuda` is now also compiled in CI, by the release itself rather than a check:
 [`cli-binaries.yml`](../../.github/workflows/cli-binaries.yml) installs Ubuntu's
