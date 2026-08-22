@@ -16,7 +16,7 @@
 use tuika::keymap::{Keymap, Layer};
 
 /// A global action a chord shortcut can trigger. Each maps to a method on
-/// [`App`](super::App) in [`App::handle_key`](super::App::handle_key).
+/// [`App`](super::App) in [`App::run_global_action`](super::App::run_global_action).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum GlobalAction {
     /// Open Ctrl+R reverse-history search over past prompts.

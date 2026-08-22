@@ -38,6 +38,7 @@ use tuika::InputOutcome;
 use tuika::components::{ScrollState, SingleLineInputState, TextInputState};
 use tuika::keymap::Dispatch;
 use tuika::mouse::{SelectionRange, selected_text, word_at};
+use tuika::routing::Router;
 use tuika::term::hyperlink::BufferLink;
 use tuika::term::pointer::{self, PointerShape};
 use tuika::term::progress::TerminalProgress;
@@ -46,6 +47,7 @@ pub(crate) mod fullscreen;
 mod keymap;
 mod render;
 mod repo_pulse;
+pub(crate) mod routing;
 mod setup;
 
 pub mod host_ui;
@@ -514,6 +516,21 @@ pub(crate) struct PendingAsk {
 
 struct PendingSandboxApproval {
     reply: oneshot::Sender<crate::sandbox_approval::ApprovalDecision>,
+}
+
+/// Work a route stage asked for but could not run itself.
+///
+/// tuika's route stages are synchronous, while a few of yolop's surfaces handle
+/// a key by awaiting (the setup wizard advances a step, the background panel
+/// reads the task registry, a submitted prompt starts a turn). Those stages
+/// name the work instead of doing it and the caller runs it once the route is
+/// finished, which keeps every surface on the one route rather than splitting
+/// the async ones back out into a chain of their own.
+enum Deferred {
+    SetupKey(KeyEvent),
+    BackgroundPanelKey(KeyEvent),
+    SubmitInput,
+    ClipboardPaste,
 }
 
 enum CodexLoginEvent {
@@ -2072,13 +2089,9 @@ impl App {
                         return Ok(());
                     }
                 }
-                CrosstermEvent::Paste(pasted) => {
-                    if self.setup.is_some() {
-                        self.handle_setup_paste(pasted).await;
-                    } else {
-                        self.handle_paste(pasted);
-                    }
-                }
+                // Every paste takes the same route; the setup wizard is one
+                // more surface on it, not a case checked before routing.
+                CrosstermEvent::Paste(pasted) => self.handle_paste(pasted).await,
                 _ => {}
             }
             if self.should_quit {
@@ -2257,99 +2270,172 @@ impl App {
         }
     }
 
+    /// Deliver one key to whichever surface owns input this event.
+    ///
+    /// Ownership comes from [`routing::InputSurfaces`] and delivery from
+    /// tuika's [`Router`], the same pair [`handle_paste`](Self::handle_paste)
+    /// uses, so a surface added here cannot be missed by another event kind.
+    /// That is how a paste used to reach the composer behind the sandbox
+    /// approval prompt: two chains, and only one of them knew about it.
     async fn handle_key(&mut self, key: KeyEvent) {
-        // Reverse-history search owns the keyboard while active (even Ctrl+C,
-        // which cancels the search rather than arming exit).
-        if self.history_search.is_some() {
-            self.handle_search_key(key);
+        let Some(event) = tuika::translate_event(CrosstermEvent::Key(key)) else {
+            // A key tuika does not model: a release, or a code no yolop surface
+            // binds (function, media, Insert). Nothing to route.
             return;
-        }
-        if self.busy && key.code != KeyCode::Esc {
+        };
+
+        let surfaces = self.input_surfaces();
+        // Reverse-history search owns the keyboard outright, Ctrl+C included,
+        // which cancels the search rather than arming exit. So it runs ahead of
+        // the global chord layer, and a keystroke inside it is not activity in
+        // a running turn: it leaves that turn's Esc and Ctrl+C arming alone.
+        // `Pre` is the router's first stage and no surface can outrank it, so
+        // this one exception is spelled out here instead of declared.
+        let search_owns_keyboard = surfaces.owner(&event) == routing::HISTORY_SEARCH;
+
+        if !search_owns_keyboard && self.busy && key.code != KeyCode::Esc {
             self.esc_pending_cancel = false;
         }
+
+        let focus = surfaces.focus(&event);
+        let mut deferred = None;
+        let mut router = Router::new(&focus, &event);
+
         // App-global chord shortcuts resolve through the keymap (see
         // `crate::tui::keymap`), so yolop's bindings live in one declarative
-        // place instead of a hand-rolled match. They fire regardless of mode
-        // (mid-turn, during setup, or with an overlay open) — the same ordering
-        // they had before, since this sits ahead of every modal guard below.
-        if let Some(action) = self.dispatch_global_key(key) {
-            match action {
-                GlobalAction::ReverseSearch => self.history_search_start(),
-                GlobalAction::Interrupt => self.handle_ctrl_c(),
-                GlobalAction::Quit => {
-                    self.abort_codex_login();
-                    self.abort_openrouter_login();
-                    self.abort_mcp_login();
-                    self.should_quit = true;
-                }
-                GlobalAction::ToggleBackground => {
-                    // This branch returns before the shared grace reset below, so
-                    // clear the armed single-Ctrl+C exit ourselves.
-                    self.disarm_ctrl_c_pending_exit();
-                    self.toggle_background_panel();
-                }
-                GlobalAction::PasteImage => self.try_paste_clipboard(),
-                GlobalAction::ToggleWorkDetails => self.toggle_compact_work_details(),
+        // place instead of a hand-rolled match. They fire regardless of mode:
+        // mid-turn, during setup, or with an overlay open.
+        router.pre_fn(|_| {
+            if search_owns_keyboard {
+                return InputOutcome::Ignored;
             }
-            return;
-        }
-
-        self.disarm_ctrl_c_pending_exit_if_grace_elapsed();
-
-        if self.pending_sandbox_approval.is_some() {
-            match key.code {
-                KeyCode::Char('y') | KeyCode::Char('Y') => {
-                    if let Some(pending) = self.pending_sandbox_approval.take() {
-                        let _ = pending
-                            .reply
-                            .send(crate::sandbox_approval::ApprovalDecision::ApproveOnce);
-                        self.push_system("approved".into());
-                    }
+            match self.dispatch_global_key(key) {
+                Some(action) => {
+                    deferred = self.run_global_action(action);
+                    InputOutcome::Consumed
                 }
-                KeyCode::Char('a') | KeyCode::Char('A') => {
-                    if let Some(pending) = self.pending_sandbox_approval.take() {
-                        let _ = pending
-                            .reply
-                            .send(crate::sandbox_approval::ApprovalDecision::ApproveForSession);
-                        self.push_system("approved for this session".into());
-                    }
-                }
-                KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
-                    self.deny_pending_sandbox_approval();
-                }
-                _ => {}
+                None => InputOutcome::Ignored,
             }
-            return;
+        });
+        // A fired chord returned early before input was routed, so it still
+        // skips the shared grace reset.
+        if !search_owns_keyboard && !router.delivery().consumed() {
+            self.disarm_ctrl_c_pending_exit_if_grace_elapsed();
         }
 
-        // A manually opened/focused sidebar captures task navigation keys. An
-        // automatically opened sidebar is passive and leaves the composer live.
-        if self.background_panel_focused {
-            self.handle_background_panel_key(key).await;
-            return;
-        }
-
-        // An extension `ui/ask` prompt owns the keyboard even mid-turn, since
-        // the server typically asks while a tool is running.
-        if self.pending_ask.is_some() {
+        router.target_fn(routing::HISTORY_SEARCH, |_| {
+            self.handle_search_key(key);
+            InputOutcome::Consumed
+        });
+        router.target_fn(routing::SANDBOX_APPROVAL, |_| {
+            self.handle_sandbox_approval_key(key);
+            InputOutcome::Consumed
+        });
+        router.target_fn(routing::BACKGROUND_PANEL, |_| {
+            deferred = Some(Deferred::BackgroundPanelKey(key));
+            InputOutcome::Consumed
+        });
+        router.target_fn(routing::ASK, |_| {
             self.handle_ask_key(key);
-            return;
-        }
-
-        if self.busy && key.code == KeyCode::Esc {
+            InputOutcome::Consumed
+        });
+        router.target_fn(routing::TURN_CANCEL, |_| {
             self.handle_busy_key(key);
-            return;
+            InputOutcome::Consumed
+        });
+        router.target_fn(routing::SETUP, |_| {
+            deferred = Some(Deferred::SetupKey(key));
+            InputOutcome::Consumed
+        });
+        router.target_fn(routing::COMPOSER, |_| {
+            deferred = self.composer_key(key);
+            InputOutcome::Consumed
+        });
+        router.finish();
+
+        match deferred {
+            Some(Deferred::SetupKey(key)) => self.handle_setup_key(key).await,
+            Some(Deferred::BackgroundPanelKey(key)) => self.handle_background_panel_key(key).await,
+            Some(Deferred::SubmitInput) => self.submit_input().await,
+            Some(Deferred::ClipboardPaste) => self.try_paste_clipboard().await,
+            None => {}
         }
-        if self.setup.is_some() {
-            self.handle_setup_key(key).await;
-            return;
+    }
+
+    /// The modal state that decides input ownership, sampled for one event.
+    fn input_surfaces(&self) -> routing::InputSurfaces {
+        routing::InputSurfaces {
+            searching: self.history_search.is_some(),
+            awaiting_sandbox_approval: self.pending_sandbox_approval.is_some(),
+            // A manually opened/focused sidebar captures task navigation keys.
+            // An automatically opened sidebar is passive and leaves the
+            // composer live.
+            background_panel_focused: self.background_panel_focused,
+            // An extension `ui/ask` prompt owns the keyboard even mid-turn,
+            // since the server typically asks while a tool is running.
+            asking: self.pending_ask.is_some(),
+            busy: self.busy,
+            in_setup: self.setup.is_some(),
         }
+    }
+
+    /// Run one global chord action, naming any follow-up work that must await.
+    fn run_global_action(&mut self, action: GlobalAction) -> Option<Deferred> {
+        match action {
+            GlobalAction::ReverseSearch => self.history_search_start(),
+            GlobalAction::Interrupt => self.handle_ctrl_c(),
+            GlobalAction::Quit => {
+                self.abort_codex_login();
+                self.abort_openrouter_login();
+                self.abort_mcp_login();
+                self.should_quit = true;
+            }
+            GlobalAction::ToggleBackground => {
+                // This action returned before the shared grace reset in
+                // `handle_key`, so it clears the armed single-Ctrl+C exit itself.
+                self.disarm_ctrl_c_pending_exit();
+                self.toggle_background_panel();
+            }
+            GlobalAction::PasteImage => return Some(Deferred::ClipboardPaste),
+            GlobalAction::ToggleWorkDetails => self.toggle_compact_work_details(),
+        }
+        None
+    }
+
+    /// Keyboard handling for the y/a/n sandbox approval prompt.
+    fn handle_sandbox_approval_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                if let Some(pending) = self.pending_sandbox_approval.take() {
+                    let _ = pending
+                        .reply
+                        .send(crate::sandbox_approval::ApprovalDecision::ApproveOnce);
+                    self.push_system("approved".into());
+                }
+            }
+            KeyCode::Char('a') | KeyCode::Char('A') => {
+                if let Some(pending) = self.pending_sandbox_approval.take() {
+                    let _ = pending
+                        .reply
+                        .send(crate::sandbox_approval::ApprovalDecision::ApproveForSession);
+                    self.push_system("approved for this session".into());
+                }
+            }
+            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                self.deny_pending_sandbox_approval();
+            }
+            _ => {}
+        }
+    }
+
+    /// Keyboard handling for the composer, the surface under everything else.
+    fn composer_key(&mut self, key: KeyEvent) -> Option<Deferred> {
         match key.code {
             KeyCode::Enter => match self
                 .composer
                 .handle_enter(key.modifiers == KeyModifiers::SHIFT)
             {
-                InputOutcome::Submitted => self.submit_input().await,
+                InputOutcome::Submitted => return Some(Deferred::SubmitInput),
                 InputOutcome::Ignored
                 | InputOutcome::Consumed
                 | InputOutcome::Changed
@@ -2370,6 +2456,7 @@ impl App {
                 self.composer_edit_key(normalize_printable_key(key));
             }
         }
+        None
     }
 
     /// Resolve one crossterm key against the app-global [`keymap`](crate::tui::keymap),
@@ -2657,14 +2744,17 @@ impl App {
             .clamp(1, MAX_INPUT_HEIGHT)
     }
 
-    /// Route pasted text, from a bracketed paste or from Ctrl+V.
+    /// Deliver pasted text, from a bracketed paste or from Ctrl+V, to whichever
+    /// surface owns input.
     ///
-    /// The precedence mirrors [`handle_key`](Self::handle_key) deliberately:
-    /// whichever surface owns the keyboard owns pasted text too. Without that,
-    /// a paste aimed at an overlay lands in the composer behind it — which is
-    /// how a pasted credential ended up sitting in the input once an extension
-    /// prompt closed.
-    fn handle_paste(&mut self, pasted: String) {
+    /// Whoever owns the keyboard owns pasted text too. This chain used to
+    /// mirror [`handle_key`](Self::handle_key) by hand and drifted anyway,
+    /// twice: an overlay-bound paste landing in the composer behind it is how a
+    /// pasted credential ended up sitting in the input once an extension prompt
+    /// closed, and the chain never grew the sandbox-approval branch its
+    /// counterpart had. Both surfaces now come from one shared
+    /// [`routing::InputSurfaces`] table, so there is no second copy to drift.
+    async fn handle_paste(&mut self, pasted: String) {
         // Normalization and the size cap apply to every target: a single-line
         // overlay field has no placeholder machinery to fall back on, so an
         // oversized paste is refused before any surface stores or renders it.
@@ -2680,29 +2770,55 @@ impl App {
             return;
         }
 
-        if self.history_search.is_some() {
+        let event = tuika::Event::Paste(pasted.clone());
+        let focus = self.input_surfaces().focus(&event);
+        // The setup wizard's handler awaits, so its stage names the text and
+        // the paste is applied once the route is finished.
+        let mut deferred_setup = None;
+        let mut router = Router::new(&focus, &event);
+
+        router.target_fn(routing::HISTORY_SEARCH, |_| {
             self.handle_search_paste(&pasted);
-            return;
-        }
-        if self.pending_ask.is_some() {
+            InputOutcome::Consumed
+        });
+        // A prompt that reads single keystrokes has nowhere to put pasted text.
+        // It still owns the event, so the surface underneath never sees it.
+        router.target_fn(routing::SANDBOX_APPROVAL, |_| InputOutcome::Consumed);
+        router.target_fn(routing::BACKGROUND_PANEL, |_| InputOutcome::Consumed);
+        router.target_fn(routing::ASK, |_| {
             self.handle_ask_paste(&pasted);
-            return;
+            InputOutcome::Consumed
+        });
+        router.target_fn(routing::SETUP, |_| {
+            deferred_setup = Some(pasted.clone());
+            InputOutcome::Consumed
+        });
+        router.target_fn(routing::COMPOSER, |_| {
+            self.composer_paste(&pasted);
+            InputOutcome::Consumed
+        });
+        router.finish();
+
+        if let Some(pasted) = deferred_setup {
+            self.handle_setup_paste(pasted).await;
         }
-        if self.setup.is_some() || self.background_panel_focused {
-            return;
-        }
+    }
+
+    /// Insert a paste into the composer, attaching it as a placeholder when it
+    /// is large enough that inlining it would bury the prompt.
+    fn composer_paste(&mut self, pasted: &str) {
         self.esc_pending_cancel = false;
 
-        if crate::tui::input::paste_attachment::is_large_paste(&pasted) {
+        if crate::tui::input::paste_attachment::is_large_paste(pasted) {
             let char_count = pasted.chars().count();
             let placeholder = crate::tui::input::paste_attachment::next_large_paste_placeholder(
                 char_count,
                 &self.pending_pastes,
             );
             self.composer_insert_str(&placeholder);
-            self.pending_pastes.push((placeholder, pasted));
+            self.pending_pastes.push((placeholder, pasted.to_string()));
         } else {
-            self.composer_insert_str(&pasted);
+            self.composer_insert_str(pasted);
         }
     }
 
@@ -2711,20 +2827,23 @@ impl App {
         self.composer.insert_str(s);
     }
 
-    fn try_paste_clipboard(&mut self) {
-        // The ask overlay is a plain text field: Ctrl+V fills it from the
-        // clipboard's *text*, an image attachment has nowhere to go there.
-        if self.pending_ask.is_some() {
+    /// Fill the focused surface from the system clipboard (Ctrl+V).
+    ///
+    /// Resolves the target through the same ownership table as a terminal
+    /// paste, so this entry point cannot drift from it the way it did when
+    /// each one kept its own chain of modal guards.
+    async fn try_paste_clipboard(&mut self) {
+        // Only the composer can hold an image attachment. Every other surface
+        // is a text field, so Ctrl+V fills it from the clipboard's *text* and
+        // the result routes like any other paste.
+        if self.input_surfaces().paste_owner() != routing::COMPOSER {
             match crate::tui::input::clipboard_paste::paste_clipboard_text() {
-                Ok(text) => self.handle_ask_paste(&text),
+                Ok(text) => self.handle_paste(text).await,
                 Err(err) => {
                     tracing::debug!("clipboard text paste failed: {err}");
                     self.push_system(format!("clipboard paste failed: {err}"));
                 }
             }
-            return;
-        }
-        if self.setup.is_some() || self.background_panel_focused {
             return;
         }
         match crate::tui::input::clipboard_paste::paste_image_content_part() {
@@ -2738,7 +2857,7 @@ impl App {
             }
             Err(crate::tui::input::clipboard_paste::PasteImageError::NoImage(_)) => {
                 if let Ok(text) = crate::tui::input::clipboard_paste::paste_clipboard_text() {
-                    self.handle_paste(text);
+                    self.handle_paste(text).await;
                 }
             }
             Err(err) => {
@@ -8306,6 +8425,69 @@ mod tests {
         );
     }
 
+    /// The divergence that motivated routing every event kind through one
+    /// ownership table: the approval prompt captured keys but not pastes, so
+    /// pasted text landed in the composer behind an open dialog and went out
+    /// with the next prompt the user submitted.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn paste_does_not_reach_the_composer_behind_a_sandbox_approval() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+
+        app.handle_paste("harmless".to_string()).await;
+        assert_eq!(
+            app.input_text(),
+            "harmless",
+            "with nothing modal the composer owns the paste"
+        );
+        app.set_input_text(String::new());
+
+        let (reply, _answer_rx) = oneshot::channel();
+        app.pending_sandbox_approval = Some(PendingSandboxApproval { reply });
+
+        app.handle_paste("rm -rf /".to_string()).await;
+
+        assert!(
+            app.input_text().is_empty(),
+            "the approval prompt owns input, so the composer must stay empty: {:?}",
+            app.input_text()
+        );
+        assert!(
+            app.pending_sandbox_approval.is_some(),
+            "a paste must not answer the prompt either"
+        );
+    }
+
+    /// The setup wizard used to be checked for before routing, in the terminal
+    /// read loop, so it was the one surface a paste reached without passing the
+    /// shared normalization and size cap. It is a surface on the route now.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn paste_reaches_the_setup_wizard_through_the_route() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = Some(SetupStep::TokenInput {
+            provider: "openai".to_string(),
+            token: String::new(),
+            error: None,
+        });
+
+        app.handle_paste("sk-TOKEN\r\n".to_string()).await;
+
+        match app.setup.as_ref().expect("wizard still open") {
+            SetupStep::TokenInput { token, .. } => assert_eq!(
+                token, "sk-TOKEN\n",
+                "the wizard receives the paste, normalized like every other surface"
+            ),
+            other => panic!("unexpected setup step: {other:?}"),
+        }
+        assert!(
+            app.input_text().is_empty(),
+            "the composer behind the wizard must stay untouched: {:?}",
+            app.input_text()
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn paste_fills_the_open_ask_prompt_not_the_composer() {
         let mut fixture = app_with_llmsim().await;
@@ -8322,7 +8504,7 @@ mod tests {
             reply: Some(reply),
         });
 
-        app.handle_paste("pylf_v1_us_TOKEN\n".to_string());
+        app.handle_paste("pylf_v1_us_TOKEN\n".to_string()).await;
 
         assert_eq!(
             app.pending_ask.as_ref().expect("prompt open").value.text(),
@@ -8435,7 +8617,8 @@ mod tests {
             reply: Some(reply),
         });
 
-        app.handle_paste("x".repeat(MAX_PASTE_ATTACHMENT_BYTES + 1));
+        app.handle_paste("x".repeat(MAX_PASTE_ATTACHMENT_BYTES + 1))
+            .await;
 
         assert!(
             app.pending_ask
@@ -8462,7 +8645,7 @@ mod tests {
         app.history.record("an earlier prompt");
         app.history_search_start();
 
-        app.handle_paste("needle".to_string());
+        app.handle_paste("needle".to_string()).await;
 
         assert_eq!(
             app.history_search.as_ref().expect("search open").query,
@@ -8491,7 +8674,7 @@ mod tests {
             reply: Some(reply),
         });
 
-        app.handle_paste("pasted".to_string());
+        app.handle_paste("pasted".to_string()).await;
 
         assert!(
             app.pending_ask
@@ -8513,7 +8696,7 @@ mod tests {
         app.lines.clear();
 
         let payload = format!("paste-marker-{}", "x".repeat(LARGE_PASTE_CHAR_THRESHOLD));
-        app.handle_paste(payload.clone());
+        app.handle_paste(payload.clone()).await;
         let placeholder = app.input_text();
         assert!(
             placeholder.contains("[Pasted Content"),
