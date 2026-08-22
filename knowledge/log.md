@@ -1,5 +1,29 @@
 # Knowledge Log
 
+## 2026-08-21, The default binary stops carrying the inference engine
+
+- [Local inference](specs/local-inference.md): every release target now ships
+  twice. `yolop-<target>.tar.gz` is built with default features and is what the
+  Homebrew formula points at; `yolop-<target>-metal.tar.gz` and
+  `yolop-<target>-cuda.tar.gz` carry the engine with the backend that target can
+  use.
+- The default asset is the portable one because it is the only build that runs
+  wherever the target does: a `cuda` binary needs an NVIDIA driver present, and
+  that is not a thing to hand someone who typed `brew install`. Through v0.17.0
+  the single shipped binary carried the engine, CPU-only, at +41.3 MiB.
+- No CPU-only engine build is offered for download. An unaccelerated engine
+  measures the wrong thing, so shipping one would only spread that mistake; the
+  feature stays available to anyone building from source.
+- [Release](specs/release.md): the accelerated builds are their own job, kept
+  out of the Homebrew job's `needs`. `cuda` is the least proven build in the
+  release, and a failure there must not hold back the tap. It now at least
+  compiles in CI, against Ubuntu's own `nvidia-cuda-toolkit` (nvcc 12.0) with
+  its compute capability pinned to 8.0, because no runner has a GPU to
+  interrogate. 8.0 is candle's floor, not a preference: its kernels call
+  `__hmax_nan`/`__hmin_nan`, which nvcc defines only for `__CUDA_ARCH__ >= 800`,
+  so pre-Ampere cards are out of reach of the shipped build. Evidence that it
+  *runs* still needs a CUDA host.
+
 ## 2026-08-21, A green release workflow can still ship half the binaries
 
 - [Release](specs/release.md): `cli-binaries.yml` built the extension servers

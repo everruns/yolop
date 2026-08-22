@@ -99,6 +99,12 @@ jobs:
             "$ARCHIVE.sha256" \
             --clobber
 
+  # The portable build: default features, no `local-inference`. This is the
+  # artifact `yolop-<target>.tar.gz` names and the one the Homebrew formula
+  # points at, because it is the only one that runs anywhere the target does.
+  # An engine build is ~28 MB against a few MB here, and the accelerated ones
+  # below additionally need a vendor runtime present on the machine, which is
+  # not a thing to hand someone who typed `brew install`.
   build:
     name: Build CLI (${{ matrix.target }})
     runs-on: ${{ matrix.runner }}
@@ -130,15 +136,9 @@ jobs:
         with:
           shared-key: "cli-${{ matrix.target }}"
 
-      # `local-inference` is off in the crate's default features so
-      # `cargo install yolop` and the contributor loop stay fast. The shipped
-      # artifacts are the opposite trade: they are built once here, so they
-      # carry the engine and the Homebrew formula (generated from these
-      # tarballs) gets it for free.
       - name: Build release binary
         run: |
-          cargo build --release --target ${{ matrix.target }} -p yolop --locked \
-            --features local-inference
+          cargo build --release --target ${{ matrix.target }} -p yolop --locked
 
       - name: Package binary
         env:
@@ -151,6 +151,108 @@ jobs:
           # macOS ships shasum but not sha256sum by default; Linux is the
           # opposite. Pick the one that exists so the workflow doesn't break
           # if a runner image drops the other.
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$ARCHIVE" > "$ARCHIVE.sha256"
+          else
+            shasum -a 256 "$ARCHIVE" > "$ARCHIVE.sha256"
+          fi
+
+      - name: Upload to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag }}
+          ARCHIVE: ${{ matrix.archive }}
+        run: |
+          gh release upload "$TAG" \
+            "$ARCHIVE" \
+            "$ARCHIVE.sha256" \
+            --clobber
+
+  # The accelerated builds: `local-inference` plus the GPU backend the target
+  # can actually use. Kept out of `build` on purpose. They are a separate
+  # download, not the default, because each carries a runtime requirement the
+  # portable build does not: a `cuda` binary needs an NVIDIA driver on the
+  # machine, and neither is worth ~28 MB to someone who will never run
+  # `--provider local`. Kept out of `update-homebrew`'s `needs` for the same
+  # reason: `cuda` is the least proven build in the release, and it must not be
+  # able to hold back the formula.
+  build-accelerated:
+    name: Build CLI (${{ matrix.target }}, ${{ matrix.backend }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            runner: macos-latest
+            backend: metal
+            archive: yolop-aarch64-apple-darwin-metal.tar.gz
+          - target: x86_64-apple-darwin
+            runner: macos-latest
+            backend: metal
+            archive: yolop-x86_64-apple-darwin-metal.tar.gz
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+            backend: cuda
+            archive: yolop-x86_64-unknown-linux-gnu-cuda.tar.gz
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag }}
+
+      # The engine plus the CUDA toolkit does not fit next to the runner's
+      # preinstalled SDKs. These are the four largest and nothing here uses
+      # them.
+      - name: Free disk space
+        if: matrix.backend == 'cuda'
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet \
+                      /opt/ghc /usr/local/share/boost
+          df -h /
+
+      # `nvcc` is what `cudarc`'s build script looks for; without it the build
+      # panics rather than degrading. Ubuntu's own package is used instead of a
+      # third-party action so the release depends on one less external repo.
+      - name: Install the CUDA toolkit
+        if: matrix.backend == 'cuda'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends nvidia-cuda-toolkit
+          nvcc --version
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.94.0
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "cli-${{ matrix.target }}-${{ matrix.backend }}"
+
+      - name: Build release binary
+        env:
+          # The kernels are compiled for one compute capability, and the usual
+          # way that is chosen is by asking `nvidia-smi` what the build machine
+          # has. No runner has a GPU, so it has to be named. 8.0 is the floor
+          # candle compiles at, not a preference: its kernels call `__hmax_nan`
+          # and `__hmin_nan`, which nvcc only defines for `__CUDA_ARCH__ >= 800`,
+          # so 7.5 fails outright in `compatibility.cuh`. Anything newer than
+          # Ampere reaches the binary through PTX.
+          CUDA_COMPUTE_CAP: 80
+        run: |
+          cargo build --release --target ${{ matrix.target }} -p yolop --locked \
+            --features ${{ matrix.backend }}
+
+      - name: Package binary
+        env:
+          TARGET: ${{ matrix.target }}
+          ARCHIVE: ${{ matrix.archive }}
+        run: |
+          cd "target/$TARGET/release"
+          tar czf "$GITHUB_WORKSPACE/$ARCHIVE" yolop
+          cd "$GITHUB_WORKSPACE"
           if command -v sha256sum >/dev/null 2>&1; then
             sha256sum "$ARCHIVE" > "$ARCHIVE.sha256"
           else

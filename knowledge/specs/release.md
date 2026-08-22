@@ -61,11 +61,17 @@ first; see [`tuika.md`](./tuika.md).
 
 Prebuilt CLI binaries are produced for:
 
-| OS    | Target                       | Runner          |
-|-------|------------------------------|-----------------|
-| macOS | `aarch64-apple-darwin`       | `macos-latest`  |
-| macOS | `x86_64-apple-darwin`        | `macos-latest`  |
-| Linux | `x86_64-unknown-linux-gnu`   | `ubuntu-latest` |
+| OS    | Target                       | Runner          | Accelerated build |
+|-------|------------------------------|-----------------|-------------------|
+| macOS | `aarch64-apple-darwin`       | `macos-latest`  | `metal`           |
+| macOS | `x86_64-apple-darwin`        | `macos-latest`  | `metal`           |
+| Linux | `x86_64-unknown-linux-gnu`   | `ubuntu-latest` | `cuda`            |
+
+Every target ships twice: `yolop-<target>.tar.gz` built with default features,
+and `yolop-<target>-<backend>.tar.gz` carrying the local-inference engine and
+that backend. The plain one is what the Homebrew formula points at, because it
+is the only build that runs wherever the target does; see
+[Local inference](local-inference.md#distribution) for why the split exists.
 
 ## Release Flow
 
@@ -166,7 +172,10 @@ after it goes live.
   release binaries for the three CLI targets, packages them as
   `yolop-<target>.tar.gz`, uploads tarballs and `.sha256` files to the GitHub
   Release, and regenerates the Homebrew formula and pushes it to
-  `everruns/homebrew-tap`.
+  `everruns/homebrew-tap`. A separate `build-accelerated` job uploads the
+  engine builds (`yolop-<target>-<backend>.tar.gz`) beside them. It is
+  deliberately not in the formula job's `needs`: `cuda` is the least proven
+  build in the release, and a failure there must not hold back the tap.
 - **Secret**: `DOPPLER_TOKEN`. The Doppler config holds
   `HOMEBREW_TAP_GITHUB_TOKEN`, a fine-grained PAT scoped to
   `everruns/homebrew-tap` only.

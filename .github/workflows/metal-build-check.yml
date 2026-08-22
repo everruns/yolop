@@ -6,10 +6,10 @@
 # targets still upload — a partial release, which is worse than a clean
 # failure. This job moves that discovery to review time.
 #
-# It also guards against bitrot: the accelerated backends are compiled nowhere
-# else in CI, so a dependency bump can break them silently. The `pull_request`
-# trigger is filtered to the files that can plausibly do it, because macOS
-# runner minutes bill at a multiple of Linux.
+# It also guards against bitrot: the only other place CI compiles an accelerated
+# backend is that release job, which is far too late to learn a dependency bump
+# broke it. The `pull_request` trigger is filtered to the files that can
+# plausibly do it, because macOS runner minutes bill at a multiple of Linux.
 #
 # Debug, not release: the failures this is built to catch are the compile and
 # link steps (`objc2` is Apple-only, and the Metal frameworks have to resolve),

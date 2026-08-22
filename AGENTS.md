@@ -91,6 +91,16 @@ CARGO_TARGET_DIR=target-local-inference \
   cargo clippy --workspace --all-targets --features local-inference -- -D warnings
 ```
 
+The release ships an accelerated build per target (`metal` on macOS, `cuda` on
+Linux), so a change there wants the backend compiled too. `cuda` needs `nvcc`
+(`apt-get install nvidia-cuda-toolkit`) and `CUDA_COMPUTE_CAP` set, since the
+kernels are compiled for one capability and there is no GPU here to ask:
+
+```bash
+CARGO_TARGET_DIR=target-cuda CUDA_COMPUTE_CAP=80 \
+  cargo check -p yolop --locked --features cuda
+```
+
 ## Where things live
 
 - [`knowledge/`](knowledge/index.md), the OKF bundle and durable development

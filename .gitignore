@@ -1,8 +1,10 @@
 # Rust
 /target/
 **/target/
-# Separate target dir for the `local-inference` engine build (see AGENTS.md).
+# Separate target dirs for the engine builds, which resolve a different feature
+# graph and would otherwise recompile the tree in the routine one (see AGENTS.md).
 /target-local-inference/
+/target-cuda/
 **/*.rs.bk
 Cargo.lock.bak
 

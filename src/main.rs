@@ -441,8 +441,9 @@ enum ProviderArg {
     Google,
     Openrouter,
     Ollama,
-    /// In-process inference — no external server. Requires a build with the
-    /// `local-inference` feature (the release binaries and Homebrew formula).
+    /// In-process inference, no external server. Requires a build with the
+    /// `local-inference` feature: the accelerated release binaries
+    /// (`yolop-<target>-metal` / `-cuda`), not the default one or Homebrew.
     Local,
     /// Generic OpenAI-compatible endpoint (CUSTOM_BASE_URL / saved base URL).
     Custom,
@@ -479,8 +480,9 @@ fn ensure_provider_is_built_in(provider: &ProviderChoice) -> Result<()> {
     if matches!(provider, ProviderChoice::Local { .. }) && !cfg!(feature = "local-inference") {
         anyhow::bail!(
             "this build has no local inference engine, so `--provider local` cannot run. \
-             Install a release build (`brew install everruns/tap/yolop`) or build with \
-             `--features local-inference`."
+             Download an accelerated build (`yolop-<target>-metal` or `-cuda`) from \
+             https://github.com/everruns/yolop/releases/latest, or build with \
+             `--features metal` / `--features cuda`."
         );
     }
     Ok(())
@@ -1019,6 +1021,23 @@ fn resolve_workspace_root(
     std::env::current_dir().context("resolve current workspace directory")
 }
 
+/// What to tell someone whose weights store is empty.
+///
+/// `list` and `rm` compile into every build, so one that dropped the engine can
+/// still clean up after one that had it. Pulling does not, and the default
+/// release binary is now the engine-less one, so the obvious hint would
+/// dead-end most of the people who read it.
+fn empty_weights_store_hint() -> String {
+    if cfg!(feature = "local-inference") {
+        format!("Pull one with `yolop weights pull {DEFAULT_LOCAL_MODEL}`.")
+    } else {
+        "This build has no local inference engine, so there is nothing here to run weights. \
+         Download an accelerated build (`yolop-<target>-metal` or `-cuda`) from \
+         https://github.com/everruns/yolop/releases/latest to pull them."
+            .to_string()
+    }
+}
+
 async fn run_weights_command(command: WeightsCommand) -> Result<()> {
     match command {
         WeightsCommand::List => {
@@ -1028,7 +1047,7 @@ async fn run_weights_command(command: WeightsCommand) -> Result<()> {
                     .map(|root| root.display().to_string())
                     .unwrap_or_else(|| "<no data directory>".to_string());
                 println!("No models downloaded. Store: {location}");
-                println!("Pull one with `yolop weights pull {DEFAULT_LOCAL_MODEL}`.");
+                println!("{}", empty_weights_store_hint());
                 return Ok(());
             }
             let total: u64 = models.iter().map(|model| model.bytes).sum();
@@ -1089,7 +1108,9 @@ async fn run_models_pull(spec: &str) -> Result<()> {
 async fn run_models_pull(_spec: &str) -> Result<()> {
     Err(anyhow::anyhow!(
         "this build has no local inference engine, so downloaded weights could not be run. \
-         Install a release build (Homebrew) or build with `--features local-inference`."
+         Download an accelerated build (`yolop-<target>-metal` or `-cuda`) from \
+         https://github.com/everruns/yolop/releases/latest, or build with \
+         `--features metal` / `--features cuda`."
     ))
 }
 
@@ -2596,8 +2617,26 @@ mod tests {
             // internal driver id and offers the user no way forward.
             let err = result.expect_err("a build without the engine must reject `local`");
             let message = err.to_string();
-            assert!(message.contains("--features local-inference"), "{message}");
-            assert!(message.contains("brew install"), "{message}");
+            // The default release binary and Homebrew both ship without the
+            // engine, so pointing there would send the user in a circle. The
+            // accelerated download is the only prebuilt answer.
+            assert!(message.contains("releases/latest"), "{message}");
+            assert!(message.contains("--features metal"), "{message}");
+            assert!(!message.contains("brew install"), "{message}");
+        }
+    }
+
+    #[test]
+    fn an_empty_weights_store_only_suggests_pulling_when_something_could_run_it() {
+        let hint = empty_weights_store_hint();
+
+        if cfg!(feature = "local-inference") {
+            assert!(hint.contains("yolop weights pull"), "{hint}");
+        } else {
+            // `weights pull` is compiled out here, so suggesting it would send
+            // the reader to a command that only errors.
+            assert!(!hint.contains("yolop weights pull"), "{hint}");
+            assert!(hint.contains("releases/latest"), "{hint}");
         }
     }
 
