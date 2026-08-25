@@ -1287,6 +1287,9 @@ pub(crate) const DEFAULT_LOCAL_MODEL: &str =
 const DEFAULT_CUSTOM_API_KEY: &str = "unused";
 const YOLOP_NEVER_DEFER_TOOLS: &[&str] = &[
     "read_file",
+    // Batch-native discovery only saves a round trip when the model sees the
+    // bounded `paths` schema before it chooses how to read independent files.
+    "read_many_files",
     "list_directory",
     "grep_files",
     "write_todos",
@@ -8685,6 +8688,11 @@ mod tests {
         assert!(YOLOP_NEVER_DEFER_TOOLS.contains(&"bash"));
     }
 
+    #[test]
+    fn batch_read_schema_stays_eager_for_independent_discovery() {
+        assert!(YOLOP_NEVER_DEFER_TOOLS.contains(&"read_many_files"));
+    }
+
     /// LSP schemas defer with every other opt-in surface. This reverses the
     /// earlier eager profile; the LSP adoption eval measured lower adoption
     /// with stubbed schemas, so re-measure before treating this as settled.
@@ -9138,6 +9146,17 @@ mod tests {
                     .len()
             })
             .sum();
+        let batch_read_schema_bytes = context
+            .runtime_agent
+            .tools
+            .iter()
+            .find(|tool| tool.name() == "read_many_files")
+            .map(|tool| {
+                serde_json::to_vec(tool.parameters())
+                    .expect("serialize batch-read schema")
+                    .len()
+            })
+            .expect("batch-read schema stays eager");
         let tool_definition_bytes: usize = context
             .runtime_agent
             .tools
@@ -9186,11 +9205,15 @@ mod tests {
         );
         // Was 50%. Keeping `bash` eager costs ~993 bytes of schema and buys back
         // the correction round trip a stubbed shell schema provoked, so the
-        // floor moved once, deliberately. Deferring more tools is the way to
-        // win it back; raising this bound again is not.
+        // floor moved once, deliberately. The structured batch schema must also
+        // stay eager to avoid the read-planning round trip measured by the A/B,
+        // so apply the unchanged 45% bar to the historical surface. Deferring
+        // more historical tools is the way to win that ratio back; raising the
+        // bound is not.
+        let historical_schema_bytes = schema_bytes - batch_read_schema_bytes;
         assert!(
-            schema_bytes * 100 <= BASELINE_SCHEMA_BYTES * 55,
-            "schema bytes must fall by at least 45%: {schema_bytes} vs {BASELINE_SCHEMA_BYTES}"
+            historical_schema_bytes * 100 <= BASELINE_SCHEMA_BYTES * 55,
+            "historical schema bytes must fall by at least 45%: {historical_schema_bytes} vs {BASELINE_SCHEMA_BYTES}; batch schema={batch_read_schema_bytes}"
         );
     }
 

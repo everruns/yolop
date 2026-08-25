@@ -182,7 +182,7 @@ everruns-host = { version = "0.20.2", features = ["mcp-stdio"] }
 # #3182 completed the library boundary cleanup: driver/model/provider types
 # and the built-in capabilities left everruns-core for their own crates.
 everruns-provider = "0.19.0"
-everruns-builtins = "0.18.3"
+everruns-builtins = "0.18.4"
 everruns-capability = "0.18.0"
 everruns-http = "0.18.0"
 # Yolop ships `--provider llmsim` as a user-facing offline mode, not just a test
@@ -193,7 +193,7 @@ everruns-http = "0.18.0"
 everruns-llmsim = { version = "0.18.3", features = ["host"] }
 # Filesystem and web-fetch capability implementations moved out of
 # everruns-core into their own integration crates (#3119).
-everruns-integrations-filesystem = "0.18.1"
+everruns-integrations-filesystem = "0.18.2"
 everruns-integrations-web-fetch = "0.18.1"
 everruns-integrations-duckduckgo = "0.18.1"
 everruns-integrations-parallel = "0.18.1"

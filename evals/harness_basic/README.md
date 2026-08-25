@@ -155,7 +155,9 @@ the shared owner, unchanged-reuse responses, session useful-match recall/extra
 matches, and session-search result bytes. Orchestration cases additionally report
 `tool_emitting_model_calls`, `single_tool_model_calls`,
 `batched_tool_model_calls`, `mean_tool_batch_width`, `max_tool_batch_width`,
-`max_read_file_batch_width`, `bookkeeping_tool_calls`,
+`batch_native_read_calls`, `max_read_file_batch_width` (logical files across
+parallel and structured batches), `dependency_safe_read_sequence` for controls
+with an exact ordered path contract, `bookkeeping_tool_calls`,
 `standalone_bookkeeping_rounds`, `task_tool_calls`, and `task_llm_calls`. The
 task counters exclude bookkeeping tools and bookkeeping-only model rounds so
 automatic title and status maintenance do not consume focused task budgets.
@@ -267,6 +269,14 @@ HARNESS_BASIC_POLICY_ONLY_BIN=/path/to/policy-only/yolop \
 HARNESS_BASIC_CANDIDATE_BIN=/path/to/combined/yolop \
   doppler run -- mira run --preset orchestration-efficiency --trials 3 --group-by binary
 
+# Isolate structured multi-file reads from other Yolop changes. The dependent
+# case is the sequencing control. For round-trip evidence, build both arms with
+# the same provider preference set to `parallel_tool_calls(false)`; this makes
+# the study independent of provider support for parallel tool emission.
+HARNESS_BASIC_DEPENDENCY_BASELINE_BIN=/path/to/yolop-before-batch-read \
+HARNESS_BASIC_CANDIDATE_BIN=/path/to/yolop-with-batch-read \
+  doppler run -- mira run --preset batch-native-discovery --trials 3 --group-by binary
+
 # Isolate output persistence from other yolop/runtime changes. The complete
 # result must not trigger a read, while explicit normal output retains its head.
 HARNESS_BASIC_DEPENDENCY_BASELINE_BIN=/path/to/yolop-with-everruns-main \
@@ -311,6 +321,7 @@ doppler run -- mira run --targets 'anthropic/*' --axis harness=no-ast-grep --sam
 | `failure-repair-controls` | expected diagnostic and distinct-failure controls, 5 trials | two failure-repair controls | gpt-5.5 | baseline + candidate, harness=default, effort=default |
 | `owner-selection` | first-mutation owner selection plus local-edit controls, 3 trials | two owner fixtures + `add-fn` + `implement-todo` | gpt-5.5 | candidate, default vs no-progress-guard |
 | `orchestration-efficiency` | batching interventions and dependency control, 3 trials | three orchestration cases | gpt-5.5 | baseline + parallel-only + policy-only + candidate |
+| `batch-native-discovery` | dependency-isolated structured read proof under single-tool emission, 3 trials | independent read + dependent control | gpt-5.5 | dependency baseline + candidate |
 | `output-persistence` | dependency-isolated output proof, 3 trials | head preservation + complete-output no-reread | gpt-5.5 | dependency baseline + candidate |
 | `persisted-output-reading` | bounded limited-output recovery proof, 3 trials | small read + large contextual search | gpt-5.5 | dependency baseline + candidate |
 | `output-persistence-controls` | ordinary dependency-isolated controls, 3 trials | `add-fn`, `find-constant` | gpt-5.5 | dependency baseline + candidate |

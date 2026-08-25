@@ -79,6 +79,9 @@ workspace-state and normalized command. A different read/search scope resets
 only repetition for that scope; it does not erase the session-wide exploration
 budget. Different result bytes reset the unchanged-evidence state for that
 fingerprint, covering external writers without requiring a filesystem watcher.
+`read_many_files` counts as one exploration tool call, and its semantic
+signature preserves the requested path order because its result follows that
+same order.
 
 State is bounded per session and across live sessions. The active session's
 bounded state is owner-only beside its event log and is restored only when its

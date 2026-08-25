@@ -2174,9 +2174,9 @@ dependencies = [
 
 [[package]]
 name = "everruns-builtins"
-version = "0.18.3"
+version = "0.18.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "98ec8fe4c97177f9c355568b07456e412086a7e172341123460a3ba48528f654"
+checksum = "6fbc8f16b615cc88c74d687311be07e46593617442a8fed6032374d9eaa16593"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2335,9 +2335,9 @@ dependencies = [
 
 [[package]]
 name = "everruns-integrations-filesystem"
-version = "0.18.1"
+version = "0.18.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d3ed657a44a28a53367618ff5bb3c98afca2b2713429d6bd2d3e4c3c351c0501"
+checksum = "9dc7c5828aab6a15686711afe88ca3d6b8681da2471882f49860ca3031c7bdae"
 dependencies = [
  "anyhow",
  "async-trait",
