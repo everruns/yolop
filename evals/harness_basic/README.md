@@ -47,7 +47,7 @@ search/refactor, and read-only code navigation.
 | `capability-disclosure-exact-reply` [`capability-disclosure`] | empty workdir | Return one exact token without tools | exact response and one model call | trivial first-request baseline |
 | `capability-disclosure-release-control` [`capability-disclosure`] | repository-local release skill | Activate release instructions without mutation | exact response, `activate_skill` called, no mutation tool called | deferred release/control discovery |
 | `progress-guard-sequential-read` [`progress-guard`] | 24 numbered notes; answer in `notes/24.txt` | Read notes sequentially and answer the final code | final response contains `KITE-7429` | long exploration streak that should trigger `progress_guard` |
-| `progress-guard-checkpoint-read` [`progress-guard`] | 50 numbered notes; answer in `checkpoint/50.txt` | Read notes sequentially and answer the final code | final response contains `WREN-5081` | escalation from first warning to checkpoint warnings |
+| `progress-guard-checkpoint-read` [`progress-guard`, `progress-efficiency`] | 50 numbered notes; answer in `checkpoint/50.txt` | Read notes sequentially and answer the final code | one checkpoint-required warning, one accepted checkpoint, no failed tool calls, and at most two later non-bookkeeping calls | low-churn checkpoint transition after legitimate long diagnosis |
 | `background-callback-bridge` [`progress-guard`] | Rust crate where `spawn_background` completions land in `SessionTaskRegistry`, but app wake only drains legacy background state | Fix the callback bridge while keeping the legacy wake test passing | source drains session-task completions and keeps focused regression tests | realistic investigation based on the background-callback failure mode |
 | `owner-selection-runtime-guard` [`owner-selection`] | Rust client adapter with a tempting workaround two layers above the shared mount resolver | Fix prefix normalization starting from the adapter | first applied mutation is in the shared owner; adapters stay workaround-free | existing runtime-guard comparison, first-mutation correctness, and investigation cost |
 | `owner-selection-prompt-policy` [`owner-selection`] | Same fixture plus an `AGENTS.md` owner-first instruction | Fix prefix normalization starting from the adapter | same owner/cost checks | prompt-only comparison arm |
@@ -286,7 +286,7 @@ doppler run -- mira run --targets 'anthropic/*' --axis harness=no-ast-grep --sam
 | `search-efficiency` | baseline/candidate session/search proof, 3 trials | 5 focused cases | gpt-5.5 | baseline + candidate, harness=default, effort=default |
 | `search-controls` | ordinary regression controls, 5 trials | `add-fn`, `find-constant` | gpt-5.5 | baseline + candidate, harness=default, effort=default |
 | `capability-disclosure` | first-request token and reveal-path proof, 5 trials | exact reply, read-only search, simple edit, complex coding, release/control, deferred history | gpt-5.5 + claude-sonnet-4-5 | baseline + candidate, harness=default, effort=default |
-| `progress-efficiency` | baseline/candidate state-progress proof, 3 trials | dependency oscillation + redundant validation | gpt-5.5 | baseline + candidate, harness=default, effort=default |
+| `progress-efficiency` | baseline/candidate state-progress proof, 3 trials | checkpoint transition + dependency oscillation + redundant validation | gpt-5.5 | baseline + candidate, harness=default, effort=default |
 | `progress-controls` | ordinary regression controls, 5 trials | `add-fn`, `find-constant` | gpt-5.5 | baseline + candidate, harness=default, effort=default |
 | `owner-selection` | first-mutation owner selection plus local-edit controls, 3 trials | two owner fixtures + `add-fn` + `implement-todo` | gpt-5.5 | candidate, default vs no-progress-guard |
 | `orchestration-efficiency` | batching interventions and dependency control, 3 trials | three orchestration cases | gpt-5.5 | baseline + parallel-only + policy-only + candidate |
@@ -353,7 +353,10 @@ that do run in pull-request CI.
 
 For progress-efficiency, the distribution gate additionally requires fewer
 workspace-state revisits in the dependency case and fewer redundant validation
-calls in both focused cases. Ordinary-task token and cost regressions are gated
+calls in both focused cases. The checkpoint case measures calls after the
+required warning separately from earlier advisory warnings, requires exactly
+one transition warning and one accepted checkpoint, and rejects a failed tool
+round before the transition. Ordinary-task token and cost regressions are gated
 over a separate five-trial control run; correctness, tool shape, and unexpected
 warnings remain per-control checks. The fixtures are bounded, so an ineffective
 guard finishes with measurable waste instead of running until the study timeout.

@@ -44,9 +44,14 @@ defined by [tool-call shape enforcement](tool-calling.md).
 An accepted checkpoint resets the exploration tranche and re-enables exploration.
 Submitting the same checkpoint again on unchanged state is rejected. Mutation
 or validation clears the gate directly, so the guard cannot trap a decisive
-action behind its own checkpoint. Other tools remain available, allowing the
-agent to report a complete read-only diagnosis instead of manufacturing a
-change.
+action behind its own checkpoint. On the next reasoning step, the host removes
+the statically blocked exploration and waiting tools from the provider-visible
+list, including `tool_search`. `progress_checkpoint` remains fully visible,
+while mutation tools and argument-dependent `bash` remain available for a
+decisive mutation or validation. The pre-tool hook remains the enforcement
+backstop for a stale or provider-invented call. A final answer needs no tool, so
+the agent can still report a complete read-only diagnosis instead of
+manufacturing a change.
 
 ## State and reset boundaries
 
@@ -67,13 +72,16 @@ state instead of applying it to an earlier trajectory.
 ## Ownership
 
 This is Yolop host behavior: the capability composes Everruns' existing
-pre-tool and post-tool hooks and does not require a competing runtime loop or an
-`everruns-*` dependency change.
+per-reason tool-definition transform with its pre-tool and post-tool hooks. The
+runtime already rebuilds that provider-visible list on every reasoning step, so
+the transition needs no competing runtime loop or `everruns-*` dependency
+change.
 
 ## Evidence
 
-The feature test drives the registered hooks through a real llmsim turn,
-including unchanged payload compaction, a blocked post-budget read, checkpoint
+The feature tests drive the registered hooks through a real llmsim turn and the
+provider-visible tool transform, including unchanged payload compaction,
+warning-once behavior, checkpoint-only gating of blocked paths, checkpoint
 acceptance, and resumed exploration. A deterministic advisory-only
 baseline/candidate study requires at least 50% fewer calls and result bytes with
 the same completed diagnosis. Mutation, validation, long read-only diagnosis,

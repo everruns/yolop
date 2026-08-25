@@ -9,7 +9,7 @@ use everruns_core::ToolContext;
 use everruns_core::tool_hooks::{
     PostToolExecHook, PostToolExecHookPriority, PreToolUseDecision, PreToolUseHook,
 };
-use everruns_core::{Capability, CapabilityStatus};
+use everruns_core::{Capability, CapabilityStatus, SystemPromptContext, ToolDefinitionHook};
 use everruns_core::{Tool, ToolExecutionResult};
 use everruns_provider::typed_id::SessionId;
 use everruns_provider::{DeferrablePolicy, ToolCall, ToolDefinition, ToolResult};
@@ -114,6 +114,17 @@ impl Capability for ProgressGuardCapability {
     fn pre_tool_use_hooks(&self) -> Vec<Arc<dyn PreToolUseHook>> {
         vec![Arc::new(ProgressGuardGate {
             state: self.state.clone(),
+        })]
+    }
+
+    fn tool_definition_hooks_with_context(
+        &self,
+        context: &SystemPromptContext,
+        _config: &Value,
+    ) -> Vec<Arc<dyn ToolDefinitionHook>> {
+        vec![Arc::new(ProgressGuardToolGate {
+            state: self.state.clone(),
+            session_id: context.session_id.to_string(),
         })]
     }
 
@@ -592,7 +603,7 @@ impl SessionProgress {
             self.checkpoint_required = true;
             self.warning_count += 1;
             return Some(format!(
-                "progress_guard: checkpoint required after {count} investigation tools without an edit or validation. Further exploration is host-blocked until you call progress_checkpoint with bounded facts, hypothesis, missing evidence, and one next decisive action (mutation, validation, or no-change diagnosis). If its schema is deferred, load it with tool_search first.",
+                "progress_guard: checkpoint required after {count} investigation tools without an edit or validation. Further exploration is host-blocked until you call progress_checkpoint with bounded facts, hypothesis, missing evidence, and one next decisive action (mutation, validation, or no-change diagnosis).",
                 count = self.exploration_since_progress
             ));
         }
@@ -661,6 +672,35 @@ impl PostToolExecHook for ProgressGuardHook {
 
 struct ProgressGuardGate {
     state: Arc<Mutex<ProgressGuardState>>,
+}
+
+struct ProgressGuardToolGate {
+    state: Arc<Mutex<ProgressGuardState>>,
+    session_id: String,
+}
+
+impl ToolDefinitionHook for ProgressGuardToolGate {
+    fn transform(&self, tools: Vec<ToolDefinition>) -> Vec<ToolDefinition> {
+        let checkpoint_required = self
+            .state
+            .lock()
+            .expect("progress guard state poisoned")
+            .sessions
+            .get(&self.session_id)
+            .is_some_and(|progress| progress.checkpoint_required);
+        if !checkpoint_required {
+            return tools;
+        }
+        tools
+            .into_iter()
+            .filter(|tool| {
+                !matches!(
+                    static_tool_class(tool.name()),
+                    Some(ToolClass::Exploration | ToolClass::Waiting)
+                )
+            })
+            .collect()
+    }
 }
 
 #[async_trait]
@@ -980,11 +1020,10 @@ enum ToolClass {
 }
 
 fn classify_tool_call(tool_call: &ToolCall) -> ToolClass {
+    if let Some(class) = static_tool_class(&tool_call.name) {
+        return class;
+    }
     match tool_call.name.as_str() {
-        "read_file" | "grep_files" | "repo_map" | "search_sessions" | "ast_grep"
-        | "list_directory" | "stat_file" => ToolClass::Exploration,
-        "write_file" | "edit_file" | "delete_file" | "ast_edit" => ToolClass::Mutation,
-        "get_task" | "list_tasks" => ToolClass::Waiting,
         "bash" => classify_bash_command(
             tool_call
                 .arguments
@@ -993,6 +1032,16 @@ fn classify_tool_call(tool_call: &ToolCall) -> ToolClass {
                 .unwrap_or_default(),
         ),
         _ => ToolClass::Other,
+    }
+}
+
+fn static_tool_class(name: &str) -> Option<ToolClass> {
+    match name {
+        "read_file" | "grep_files" | "repo_map" | "search_sessions" | "ast_grep"
+        | "list_directory" | "stat_file" | "tool_search" => Some(ToolClass::Exploration),
+        "write_file" | "edit_file" | "delete_file" | "ast_edit" => Some(ToolClass::Mutation),
+        "get_task" | "list_tasks" => Some(ToolClass::Waiting),
+        _ => None,
     }
 }
 
@@ -1396,10 +1445,15 @@ mod tests {
     #[tokio::test]
     async fn checkpoint_gate_blocks_exploration_then_accepts_a_bounded_transition() {
         let state = Arc::new(Mutex::new(ProgressGuardState::default()));
+        let capability = ProgressGuardCapability {
+            state: state.clone(),
+        };
         let hook = ProgressGuardHook {
             state: state.clone(),
         };
-        let gate = ProgressGuardGate { state };
+        let gate = ProgressGuardGate {
+            state: state.clone(),
+        };
         let context = ToolContext::new(SessionId::new());
 
         for i in 0..CHECKPOINT_WITHOUT_PROGRESS_THRESHOLD {
@@ -1442,6 +1496,103 @@ mod tests {
             )
             .await;
         assert!(matches!(resumed, PreToolUseDecision::Continue(_)));
+
+        let prompt_context = SystemPromptContext::without_file_store(context.session_id);
+        let visible = capability.tool_definition_hooks_with_context(&prompt_context, &json!({}))[0]
+            .transform(vec![
+                tool_def("read_file"),
+                tool_def(PROGRESS_CHECKPOINT_TOOL),
+            ]);
+        assert_eq!(
+            visible.iter().map(|tool| tool.name()).collect::<Vec<_>>(),
+            vec!["read_file", PROGRESS_CHECKPOINT_TOOL],
+            "an accepted checkpoint should restore ordinary exploration"
+        );
+    }
+
+    #[test]
+    fn checkpoint_gate_leaves_ordinary_tool_surface_unchanged() {
+        let capability = ProgressGuardCapability {
+            state: Arc::new(Mutex::new(ProgressGuardState::default())),
+        };
+        let session_id = SessionId::new();
+        let prompt_context = SystemPromptContext::without_file_store(session_id);
+        let tools = vec![
+            tool_def("read_file"),
+            tool_def("tool_search"),
+            tool_def("edit_file"),
+            tool_def(PROGRESS_CHECKPOINT_TOOL),
+        ];
+
+        let visible = capability.tool_definition_hooks_with_context(&prompt_context, &json!({}))[0]
+            .transform(tools.clone());
+
+        assert_eq!(
+            visible.iter().map(|tool| tool.name()).collect::<Vec<_>>(),
+            tools.iter().map(|tool| tool.name()).collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test]
+    async fn checkpoint_gate_removes_blocked_paths_from_the_next_model_round() {
+        let state = Arc::new(Mutex::new(ProgressGuardState::default()));
+        let capability = ProgressGuardCapability {
+            state: state.clone(),
+        };
+        let hook = ProgressGuardHook { state };
+        let context = ToolContext::new(SessionId::new());
+
+        for i in 0..CHECKPOINT_WITHOUT_PROGRESS_THRESHOLD {
+            hook.after_exec(
+                &call("read_file", json!({ "path": format!("/src/{i}.rs") })),
+                &tool_def("read_file"),
+                &mut result(),
+                &context,
+            )
+            .await;
+        }
+
+        let tools = [
+            "read_file",
+            "grep_files",
+            "tool_search",
+            "get_task",
+            "bash",
+            "edit_file",
+            PROGRESS_CHECKPOINT_TOOL,
+            "write_todos",
+        ]
+        .into_iter()
+        .map(tool_def)
+        .collect::<Vec<_>>();
+        let prompt_context = SystemPromptContext::without_file_store(context.session_id);
+        let visible = capability
+            .tool_definition_hooks_with_context(&prompt_context, &json!({}))
+            .into_iter()
+            .fold(tools, |tools, hook| hook.transform(tools))
+            .into_iter()
+            .map(|tool| tool.name().to_string())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            visible,
+            vec!["bash", "edit_file", PROGRESS_CHECKPOINT_TOOL, "write_todos"],
+            "the gated model round should not advertise paths the pre-tool hook will reject"
+        );
+
+        let other_session = SystemPromptContext::without_file_store(SessionId::new());
+        let other_visible =
+            capability.tool_definition_hooks_with_context(&other_session, &json!({}))[0].transform(
+                vec![tool_def("read_file"), tool_def(PROGRESS_CHECKPOINT_TOOL)],
+            );
+        assert_eq!(
+            other_visible
+                .iter()
+                .map(|tool| tool.name())
+                .collect::<Vec<_>>(),
+            vec!["read_file", PROGRESS_CHECKPOINT_TOOL],
+            "one session's checkpoint gate must not alter another session's tools"
+        );
     }
 
     #[tokio::test]
@@ -1773,6 +1924,7 @@ mod tests {
         };
         let context = ToolContext::new(SessionId::new());
         let mut warning_count = 0;
+        let mut checkpoint_warning = String::new();
 
         for i in 0..(CHECKPOINT_WITHOUT_PROGRESS_THRESHOLD + 12) {
             let mut out = result();
@@ -1783,16 +1935,23 @@ mod tests {
                 &context,
             )
             .await;
-            warning_count += usize::from(
-                out.result
-                    .as_ref()
-                    .and_then(|value| value.get("progress_guard_warning"))
-                    .and_then(Value::as_str)
-                    .is_some_and(|warning| warning.contains("checkpoint required")),
-            );
+            if let Some(warning) = out
+                .result
+                .as_ref()
+                .and_then(|value| value.get("progress_guard_warning"))
+                .and_then(Value::as_str)
+                .filter(|warning| warning.contains("checkpoint required"))
+            {
+                warning_count += 1;
+                checkpoint_warning = warning.to_string();
+            }
         }
 
         assert_eq!(warning_count, 1);
+        assert!(
+            !checkpoint_warning.contains("tool_search"),
+            "progress_checkpoint is always eager, so the warning must not prescribe a reveal round"
+        );
         assert!(
             state
                 .lock()
