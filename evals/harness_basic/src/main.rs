@@ -873,13 +873,51 @@ fn normal_output_preservation_sample() -> Sample {
             "tool_called": ["bash"],
             "metric_equals": {
                 "bash_tool_calls": 1.0,
+                "persisted_output_recovery_calls": 0.0,
                 "read_file_tool_calls": 0.0,
                 "leading_marker_in_bash_result": 1.0
             },
             "metric_at_most": {
                 "tool_calls": 1.0,
                 "llm_calls": 2.0,
+                "bash_result_bytes": 40000.0,
+                "persisted_output_recovery_result_bytes": 0.0,
                 "total_tool_result_bytes": 40000.0
+            }
+        }]),
+    )
+}
+
+fn complete_output_no_reread_sample() -> Sample {
+    Sample::new(
+        "complete-output-no-reread",
+        "Run bash exactly once with command `cat complete.log && rm complete.log`, using the \
+         default output mode. Reply with only the COMPLETE_RESULT value.",
+    )
+    .file(
+        "complete.log",
+        "build finished successfully\nCOMPLETE_RESULT=READY-6137\nall checks passed\n",
+    )
+    .tag("output-persistence")
+    .meta("kind", "complete-output-no-reread")
+    .meta(
+        "checks",
+        json!([{
+            "response_contains": ["READY-6137"],
+            "tool_called": ["bash"],
+            "metric_equals": {
+                "bash_tool_calls": 1.0,
+                "persisted_output_recovery_calls": 0.0,
+                "read_file_tool_calls": 0.0,
+                "grep_files_tool_calls": 0.0,
+                "tool_calls_failed": 0.0
+            },
+            "metric_at_most": {
+                "tool_calls": 1.0,
+                "llm_calls": 2.0,
+                "bash_result_bytes": 2000.0,
+                "persisted_output_recovery_result_bytes": 0.0,
+                "total_tool_result_bytes": 2000.0
             }
         }]),
     )
@@ -921,10 +959,13 @@ fn persisted_output_small_read_sample() -> Sample {
                 "tool_calls_failed": 0.0
             },
             "metric_at_most": {
+                "persisted_output_recovery_calls": 1.0,
                 "read_file_tool_calls": 1.0,
                 "grep_files_tool_calls": 1.0,
                 "tool_calls": 2.0,
                 "llm_calls": 3.0,
+                "bash_result_bytes": 40000.0,
+                "persisted_output_recovery_result_bytes": 40000.0,
                 "total_tool_result_bytes": 70000.0
             }
         }]),
@@ -948,8 +989,9 @@ fn persisted_output_context_search_sample() -> Sample {
     Sample::new(
         "persisted-output-context-search",
         "Run bash exactly once with command `cat ci.log && rm ci.log`, using the default \
-         output mode. Diagnose the failed check from the persisted command output and \
-         reply with only the ROOT_CAUSE value.",
+         output mode. Diagnose the failed check with exactly one grep_files recovery call \
+         that requests before and after context from the persisted command output. Do not \
+         read the full file. Reply with only the ROOT_CAUSE value.",
     )
     .file("ci.log", log)
     .tag("persisted-output-reading")
@@ -966,8 +1008,11 @@ fn persisted_output_context_search_sample() -> Sample {
                 "tool_calls_failed": 0.0
             },
             "metric_at_most": {
+                "persisted_output_recovery_calls": 1.0,
                 "tool_calls": 2.0,
                 "llm_calls": 3.0,
+                "bash_result_bytes": 20000.0,
+                "persisted_output_recovery_result_bytes": 20000.0,
                 "total_tool_result_bytes": 30000.0
             }
         }]),
@@ -1465,6 +1510,7 @@ fn dataset() -> Dataset {
         zero_result_search_sample(),
         bounded_repo_map_sample(),
         normal_output_preservation_sample(),
+        complete_output_no_reread_sample(),
         persisted_output_small_read_sample(),
         persisted_output_context_search_sample(),
         dependency_release_oscillation_sample(),
@@ -1929,6 +1975,9 @@ struct Mined {
     ast_edit_tool_calls_failed: u64,
     max_tool_result_bytes: u64,
     total_tool_result_bytes: u64,
+    bash_result_bytes: u64,
+    persisted_output_recovery_calls: u64,
+    persisted_output_recovery_result_bytes: u64,
     repo_map_max_result_bytes: u64,
     repo_map_narrowed_after_truncation: u64,
     repo_map_targeted_recovery_after_truncation: u64,
@@ -2055,6 +2104,25 @@ fn tool_command(data: &Value) -> String {
     tool_result_value(data)
         .and_then(|v| v.get("command").and_then(Value::as_str).map(str::to_string))
         .unwrap_or_default()
+}
+
+fn result_references_persisted_output(data: &Value) -> bool {
+    fn contains_output_path(value: &Value) -> bool {
+        match value {
+            Value::Object(fields) => fields.iter().any(|(key, value)| {
+                (key == "path"
+                    && value.as_str().is_some_and(|path| {
+                        path.contains("/outputs/")
+                            && (path.ends_with(".stdout") || path.ends_with(".stderr"))
+                    }))
+                    || contains_output_path(value)
+            }),
+            Value::Array(values) => values.iter().any(contains_output_path),
+            _ => false,
+        }
+    }
+
+    tool_result_value(data).is_some_and(|result| contains_output_path(&result))
 }
 
 fn command_mutation_path(data: &Value) -> Option<String> {
@@ -2408,6 +2476,12 @@ fn parse_events(jsonl: &str) -> Mined {
                     .unwrap_or_default();
                 m.max_tool_result_bytes = m.max_tool_result_bytes.max(result_bytes);
                 m.total_tool_result_bytes += result_bytes;
+                if matches!(name, "read_file" | "grep_files")
+                    && result_references_persisted_output(&data)
+                {
+                    m.persisted_output_recovery_calls += 1;
+                    m.persisted_output_recovery_result_bytes += result_bytes;
+                }
                 if repo_map_recovery_pending && is_targeted_repo_map_recovery(name, &data) {
                     m.repo_map_targeted_recovery_after_truncation += 1;
                     repo_map_recovery_pending = false;
@@ -2450,6 +2524,7 @@ fn parse_events(jsonl: &str) -> Mined {
                 }
                 if name == "bash" {
                     m.bash_tool_calls += 1;
+                    m.bash_result_bytes += result_bytes;
                     let command = normalized_command(&tool_command(&data));
                     if command.starts_with("git grep") {
                         m.git_grep_calls += 1;
@@ -2937,6 +3012,16 @@ async fn run_yolop(sample: Sample, cx: RunCx) -> Transcript {
         "total_tool_result_bytes".into(),
         mined.total_tool_result_bytes as f64,
     );
+    t.metrics
+        .insert("bash_result_bytes".into(), mined.bash_result_bytes as f64);
+    t.metrics.insert(
+        "persisted_output_recovery_calls".into(),
+        mined.persisted_output_recovery_calls as f64,
+    );
+    t.metrics.insert(
+        "persisted_output_recovery_result_bytes".into(),
+        mined.persisted_output_recovery_result_bytes as f64,
+    );
     t.metrics.insert(
         "repo_map_max_result_bytes".into(),
         mined.repo_map_max_result_bytes as f64,
@@ -3166,6 +3251,8 @@ mod tests {
         let mined = parse_events(jsonl);
         assert_eq!(mined.grep_files_tool_calls, 1);
         assert_eq!(mined.contextual_grep_files_tool_calls, 1);
+        assert_eq!(mined.persisted_output_recovery_calls, 1);
+        assert!(mined.persisted_output_recovery_result_bytes > 0);
     }
 
     #[test]
@@ -3280,7 +3367,7 @@ mod tests {
 {"type":"tool.completed","data":{"tool_name":"repo_map","success":true,"tool_call_fingerprint":"map-broad","result":[{"type":"text","text":"{\"query\":null,\"truncated\":true,\"progress_guard_warning\":\"narrow\"}"}]}}
 {"type":"tool.completed","data":{"tool_name":"repo_map","success":true,"tool_call_fingerprint":"map-narrow","result":[{"type":"text","text":"{\"query\":\"answer\",\"truncated\":false}"}]}}
 {"type":"tool.completed","data":{"tool_name":"bash","success":true,"tool_call_fingerprint":"bash-rg","result":[{"type":"text","text":"{\"command\":\"rg answer .\",\"exit_code\":127,\"success\":false,\"stdout\":\"PRESERVE-8841\"}"}]}}
-{"type":"tool.completed","data":{"tool_name":"read_file","success":true,"tool_call_fingerprint":"read-1"}}
+{"type":"tool.completed","data":{"tool_name":"read_file","success":true,"tool_call_fingerprint":"read-1","result":[{"type":"text","text":"{\"path\":\"/workspace/outputs/call.stdout\",\"content\":\"recovered context\"}"}]}}
 "#;
         let m = parse_events(jsonl);
         assert_eq!(m.search_sessions_tool_calls, 1);
@@ -3294,7 +3381,14 @@ mod tests {
         assert_eq!(m.tool_calls_failed, 1);
         assert_eq!(m.bash_tool_calls, 1);
         assert_eq!(m.read_file_tool_calls, 1);
+        assert_eq!(m.persisted_output_recovery_calls, 1);
         assert_eq!(m.leading_marker_in_bash_result, 1);
+        assert!(m.bash_result_bytes > 0);
+        assert!(m.persisted_output_recovery_result_bytes > 0);
+        assert!(
+            m.bash_result_bytes + m.persisted_output_recovery_result_bytes
+                <= m.total_tool_result_bytes
+        );
         assert!(m.total_tool_result_bytes >= m.max_tool_result_bytes);
     }
 
@@ -3757,17 +3851,29 @@ mod tests {
             .unwrap();
         assert!(output_section.contains("dependency-baseline"));
         assert!(output_section.contains("\"normal-output-preserves-head\""));
+        assert!(output_section.contains("\"complete-output-no-reread\""));
 
         let reading_section = config
             .split("[presets.persisted-output-reading]")
             .nth(1)
             .expect("persisted-output-reading preset")
-            .split("[presets.ast-edit-compare]")
+            .split("[presets.output-persistence-controls]")
             .next()
             .unwrap();
         assert!(reading_section.contains("dependency-baseline"));
         assert!(reading_section.contains("\"persisted-output-small-read\""));
         assert!(reading_section.contains("\"persisted-output-context-search\""));
+
+        let controls_section = config
+            .split("[presets.output-persistence-controls]")
+            .nth(1)
+            .expect("output-persistence-controls preset")
+            .split("[presets.ast-edit-compare]")
+            .next()
+            .unwrap();
+        assert!(controls_section.contains("dependency-baseline"));
+        assert!(controls_section.contains("\"add-fn\""));
+        assert!(controls_section.contains("\"find-constant\""));
     }
 
     #[test]

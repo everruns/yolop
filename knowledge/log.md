@@ -1,5 +1,15 @@
 # Knowledge Log
 
+## 2026-08-24, Retention is not a recovery affordance
+
+- [Tool output](specs/tool-output.md): full command output can remain available
+  in the session filesystem without advertising a recovery path to the model.
+  Complete inline results need no second tool round; only limited stream content
+  receives a bounded path, with leading evidence preserved.
+- `everruns-builtins::PersistOutputHook` owns the policy. Yolop verifies the
+  installed boundary and compares dependency-isolated binaries for correctness,
+  recovery calls, model calls, and result bytes.
+
 ## 2026-08-24, Equivalent failures require a different action
 
 - [Progress guard](specs/progress-guard.md): rewritten invocations no longer
