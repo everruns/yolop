@@ -5563,7 +5563,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn real_tool_hooks_compact_runaway_reads_and_enforce_one_checkpoint() {
+    async fn real_tool_hooks_compact_runaway_reads_and_transition_through_one_checkpoint() {
         use everruns_core::EventData;
         use everruns_llmsim::{SimToolCall, SimTurn};
 
@@ -5601,11 +5601,6 @@ mod tests {
         let options = BuildOptions {
             llmsim_override: Some(LlmSimConfig::scripted(vec![
                 SimTurn::ToolCalls(runaway),
-                SimTurn::ToolCalls(vec![SimToolCall {
-                    name: "read_file".to_string(),
-                    arguments: serde_json::json!({ "path": "decisive.txt" }),
-                    id: None,
-                }]),
                 SimTurn::ToolCalls(vec![SimToolCall {
                     name: "progress_checkpoint".to_string(),
                     arguments: serde_json::json!({
@@ -5733,14 +5728,12 @@ mod tests {
                 .count(),
             1
         );
-        assert!(completed.iter().any(|data| {
-            data.tool_name == "read_file"
-                && !data.success
-                && data
-                    .error
-                    .as_deref()
-                    .is_some_and(|error| error.contains("progress checkpoint required"))
-        }));
+        assert!(
+            !completed
+                .iter()
+                .any(|data| data.tool_name == "read_file" && !data.success),
+            "the checkpoint transition must not produce a blocked-read error round"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

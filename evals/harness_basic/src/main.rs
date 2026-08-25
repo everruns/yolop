@@ -173,9 +173,24 @@ fn progress_guard_checkpoint_sample() -> Sample {
          Reply with only the FINAL_CODE value from checkpoint/50.txt.",
     )
     .tag("progress-guard")
+    .tag("progress-efficiency")
     .meta("kind", "guardrail")
     .meta("max_turns", 64)
-    .meta("checks", json!([{"response_contains": ["WREN-5081"]}]));
+    .meta(
+        "checks",
+        json!([
+            {"response_contains": ["WREN-5081"]},
+            {
+                "when_binary": "candidate",
+                "metric_equals": {
+                    "checkpoint_required_warnings": 1.0,
+                    "successful_progress_checkpoints": 1.0,
+                    "tool_calls_failed": 0.0
+                },
+                "metric_at_most": {"calls_after_checkpoint_required": 2.0}
+            }
+        ]),
+    );
 
     for i in 1..50 {
         sample = sample.file(
@@ -1790,6 +1805,8 @@ struct Mined {
     exploration_tools_before_first_mutation: u64,
     max_exploration_tools_without_progress: u64,
     progress_guard_warnings: u64,
+    checkpoint_required_warnings: u64,
+    successful_progress_checkpoints: u64,
     ast_edit_tool_calls: u64,
     ast_edit_tool_calls_failed: u64,
     max_tool_result_bytes: u64,
@@ -1801,6 +1818,7 @@ struct Mined {
     search_sessions_first_exploration: u64,
     duplicate_exploration_calls: u64,
     calls_after_progress_warning: u64,
+    calls_after_checkpoint_required: u64,
     bash_tool_calls: u64,
     read_file_tool_calls: u64,
     grep_files_tool_calls: u64,
@@ -1957,16 +1975,20 @@ fn validation_command(data: &Value) -> Option<String> {
         .then_some(command)
 }
 
-fn has_progress_guard_warning(data: &Value) -> bool {
+fn progress_guard_warning(data: &Value) -> Option<String> {
     match tool_result_value(data) {
         Some(Value::Object(obj)) => obj
             .get("progress_guard_warning")
             .and_then(Value::as_str)
-            .is_some_and(|s| !s.is_empty()),
-        Some(Value::String(text)) => {
-            text.contains("progress_guard_warning") || text.starts_with("progress_guard:")
+            .filter(|warning| !warning.is_empty())
+            .map(str::to_string),
+        Some(Value::String(text))
+            if text.contains("progress_guard_warning")
+                || text.starts_with("progress_guard:") =>
+        {
+            Some(text)
         }
-        _ => false,
+        _ => None,
     }
 }
 
@@ -2152,6 +2174,7 @@ fn parse_events(jsonl: &str) -> Mined {
     let mut saw_mutation = false;
     let mut saw_exploration = false;
     let mut saw_progress_warning = false;
+    let mut saw_checkpoint_required = false;
     let mut saw_truncated_repo_map = false;
     let mut repo_map_recovery_pending = false;
     let mut exploration_fingerprints = BTreeSet::new();
@@ -2258,6 +2281,9 @@ fn parse_events(jsonl: &str) -> Mined {
                 if saw_progress_warning && !is_bookkeeping_tool(name) {
                     m.calls_after_progress_warning += 1;
                 }
+                if saw_checkpoint_required && !is_bookkeeping_tool(name) {
+                    m.calls_after_checkpoint_required += 1;
+                }
                 let result_bytes = data
                     .get("result")
                     .map(Value::to_string)
@@ -2336,6 +2362,14 @@ fn parse_events(jsonl: &str) -> Mined {
                         m.contextual_grep_files_tool_calls += 1;
                     }
                 }
+                if name == "progress_checkpoint"
+                    && data.get("success") == Some(&Value::Bool(true))
+                    && tool_result_value(&data).is_some_and(|result| {
+                        result.get("accepted") == Some(&Value::Bool(true))
+                    })
+                {
+                    m.successful_progress_checkpoints += 1;
+                }
                 if workspace.observe_mutation(&data) {
                     m.workspace_state_revisits += 1;
                 }
@@ -2360,10 +2394,13 @@ fn parse_events(jsonl: &str) -> Mined {
                 if outer_failed || inner_failed {
                     m.tool_calls_failed += 1;
                 }
-                let progress_warning = has_progress_guard_warning(&data);
-                if progress_warning {
+                if let Some(progress_warning) = progress_guard_warning(&data) {
                     m.progress_guard_warnings += 1;
                     saw_progress_warning = true;
+                    if progress_warning.contains("checkpoint required") {
+                        m.checkpoint_required_warnings += 1;
+                        saw_checkpoint_required = true;
+                    }
                 }
                 if name == "ast_edit" {
                     m.ast_edit_tool_calls += 1;
@@ -2736,6 +2773,14 @@ async fn run_yolop(sample: Sample, cx: RunCx) -> Transcript {
         mined.progress_guard_warnings as f64,
     );
     t.metrics.insert(
+        "checkpoint_required_warnings".into(),
+        mined.checkpoint_required_warnings as f64,
+    );
+    t.metrics.insert(
+        "successful_progress_checkpoints".into(),
+        mined.successful_progress_checkpoints as f64,
+    );
+    t.metrics.insert(
         "ast_edit_tool_calls".into(),
         mined.ast_edit_tool_calls as f64,
     );
@@ -2778,6 +2823,10 @@ async fn run_yolop(sample: Sample, cx: RunCx) -> Transcript {
     t.metrics.insert(
         "calls_after_progress_warning".into(),
         mined.calls_after_progress_warning as f64,
+    );
+    t.metrics.insert(
+        "calls_after_checkpoint_required".into(),
+        mined.calls_after_checkpoint_required as f64,
     );
     t.metrics
         .insert("bash_tool_calls".into(), mined.bash_tool_calls as f64);
@@ -3055,6 +3104,9 @@ mod tests {
         assert_eq!(m.exploration_tools_before_first_mutation, 3);
         assert_eq!(m.max_exploration_tools_without_progress, 3);
         assert_eq!(m.progress_guard_warnings, 2);
+        assert_eq!(m.checkpoint_required_warnings, 1);
+        assert_eq!(m.calls_after_checkpoint_required, 2);
+        assert_eq!(m.successful_progress_checkpoints, 0);
         assert_eq!(m.tool_emitting_model_calls, 2);
         assert_eq!(m.single_tool_model_calls, 1);
         assert_eq!(m.batched_tool_model_calls, 1);
@@ -3103,6 +3155,22 @@ mod tests {
         assert_eq!(m.read_file_tool_calls, 1);
         assert_eq!(m.leading_marker_in_bash_result, 1);
         assert!(m.total_tool_result_bytes >= m.max_tool_result_bytes);
+    }
+
+    #[test]
+    fn parse_events_measures_the_required_checkpoint_transition() {
+        let jsonl = r#"
+{"type":"tool.completed","data":{"tool_name":"read_file","success":true,"result":[{"type":"text","text":"{\"progress_guard_warning\":\"progress_guard: checkpoint required\"}"}]}}
+{"type":"tool.completed","data":{"tool_name":"progress_checkpoint","success":true,"result":[{"type":"text","text":"{\"accepted\":true,\"exploration_resumed\":true}"}]}}
+{"type":"tool.completed","data":{"tool_name":"read_file","success":true}}
+{"type":"tool.completed","data":{"tool_name":"read_file","success":true}}
+"#;
+
+        let mined = parse_events(jsonl);
+
+        assert_eq!(mined.checkpoint_required_warnings, 1);
+        assert_eq!(mined.successful_progress_checkpoints, 1);
+        assert_eq!(mined.calls_after_checkpoint_required, 2);
     }
 
     #[test]
@@ -3556,6 +3624,7 @@ mod tests {
             .next()
             .unwrap();
         assert!(section.contains("binary = [\"baseline\", \"candidate\"]"));
+        assert!(section.contains("\"progress-guard-checkpoint-read\""));
         assert!(section.contains("\"dependency-release-oscillation\""));
         assert!(section.contains("\"redundant-validation\""));
         assert!(!section.contains("\"add-fn\""));

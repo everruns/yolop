@@ -1,5 +1,19 @@
 # Knowledge Log
 
+## 2026-08-24, A required checkpoint changes the next tool surface
+
+- [Progress guard](specs/progress-guard.md): the checkpoint-required warning is
+  now a real provider-visible transition. The next reasoning step omits the
+  statically classified read, search, and waiting tools that the pre-tool gate
+  would reject, while the eager checkpoint schema and decisive mutation or
+  validation paths stay available.
+- `tool_search` is part of the blocked exploration set during that transition.
+  The warning no longer suggests revealing `progress_checkpoint`, because that
+  tool has always been in Yolop's eager schema profile.
+- Everruns already reapplies capability tool-definition transforms on every
+  reasoning step. Yolop owns the policy and shared guard state, so no upstream
+  runtime fork or dependency release is required.
+
 ## 2026-08-22, One route for every input event
 
 - [Tuika](specs/tuika.md): input ownership is now one ordered table of surfaces,

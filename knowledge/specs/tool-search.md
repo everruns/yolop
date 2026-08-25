@@ -60,6 +60,11 @@ vendor was deleted and yolop now consumes upstream directly:
    explicitly marked `never_defer` retain their manifest contract. Yolop does not own the built-in definitions, so it sets this policy
    by name rather than changing each tool's `DeferrablePolicy`.
 
+   When `progress_guard` requires its checkpoint, the guard removes
+   `tool_search` and other statically blocked exploration paths from the next
+   provider-visible tool list. No reveal round is needed or advertised because
+   `progress_checkpoint` is already in this eager profile.
+
    **MCP server tools defer on the same footing**: with many configured servers
    their schemas are the largest, least-used part of the surface, so only names
    and descriptions ride each turn until `tool_search` loads a schema (execution
