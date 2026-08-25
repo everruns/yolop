@@ -53,7 +53,7 @@ axes = { binary = ["candidate"], effort = ["default"], harness = ["default", "no
 # Requires HARNESS_BASIC_BASELINE_BIN and HARNESS_BASIC_CANDIDATE_BIN.
 #   doppler run -- mira run --preset search-efficiency --trials 3 --group-by binary
 [presets.search-efficiency]
-samples = ["prior-session-reference", "overlapping-recent-work", "unchanged-repeated-discovery", "grep-files-nested-glob", "missing-rg-recovery", "zero-result-search-recovery", "repo-map-bounded"]
+samples = ["prior-session-reference", "overlapping-recent-work", "unchanged-repeated-discovery", "grep-files-nested-glob", "missing-rg-recovery", "equivalent-failure-recovery", "zero-result-search-recovery", "repo-map-bounded"]
 targets = ["openai/gpt-5.5"]
 axes = { binary = ["baseline", "candidate"], effort = ["default"], harness = ["default"] }
 
@@ -71,7 +71,7 @@ axes = { binary = ["baseline", "candidate"], effort = ["default"], harness = ["d
 # Requires HARNESS_BASIC_BASELINE_BIN and HARNESS_BASIC_CANDIDATE_BIN.
 #   doppler run -- mira run --preset search-controls --trials 5 --group-by binary
 [presets.search-controls]
-samples = ["add-fn", "find-constant"]
+samples = ["add-fn", "find-constant", "expected-diagnostic-failure-control", "distinct-failures-control"]
 targets = ["openai/gpt-5.5"]
 axes = { binary = ["baseline", "candidate"], effort = ["default"], harness = ["default"] }
 
@@ -92,7 +92,7 @@ axes = { binary = ["baseline", "candidate"], effort = ["default"], harness = ["d
 # Requires HARNESS_BASIC_BASELINE_BIN and HARNESS_BASIC_CANDIDATE_BIN.
 #   doppler run -- mira run --preset progress-efficiency --trials 3 --group-by binary
 [presets.progress-efficiency]
-samples = ["progress-guard-checkpoint-read", "dependency-release-oscillation", "redundant-validation"]
+samples = ["progress-guard-checkpoint-read", "dependency-release-oscillation", "redundant-validation", "equivalent-failure-recovery"]
 targets = ["openai/gpt-5.5"]
 axes = { binary = ["baseline", "candidate"], effort = ["default"], harness = ["default"] }
 
@@ -101,7 +101,19 @@ axes = { binary = ["baseline", "candidate"], effort = ["default"], harness = ["d
 # Requires HARNESS_BASIC_BASELINE_BIN and HARNESS_BASIC_CANDIDATE_BIN.
 #   doppler run -- mira run --preset progress-controls --trials 5 --group-by binary
 [presets.progress-controls]
-samples = ["add-fn", "find-constant"]
+samples = ["add-fn", "find-constant", "expected-diagnostic-failure-control", "distinct-failures-control"]
+targets = ["openai/gpt-5.5"]
+axes = { binary = ["baseline", "candidate"], effort = ["default"], harness = ["default"] }
+
+# FAILURE-REPAIR, smallest baseline/candidate proof for semantic failure-loop
+# detection. Three trials expose model variance; controls below use five.
+[presets.failure-repair]
+tag = "failure-repair"
+targets = ["openai/gpt-5.5"]
+axes = { binary = ["baseline", "candidate"], effort = ["default"], harness = ["default"] }
+
+[presets.failure-repair-controls]
+tag = "failure-repair-control"
 targets = ["openai/gpt-5.5"]
 axes = { binary = ["baseline", "candidate"], effort = ["default"], harness = ["default"] }
 

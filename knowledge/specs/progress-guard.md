@@ -14,13 +14,23 @@ Long read/search trajectories remain legitimate when each call answers a new
 question. The guard intervenes when the trajectory stops changing state: exact
 evidence repeats, validations rerun against the same workspace, investigation
 crosses its budget without mutation or validation, or external-event probes
-become polling.
+become polling. It also classifies bounded command and tool diagnostics for
+invocation, missing-command, wrong-path, and usage failures. Two consecutive
+equivalent failures on unchanged workspace state trigger a transition away from
+the same tool path, even when the command text or target path was rewritten.
 
 Warnings are transition notices, not recurring reminders. Each warning fires
 once for its relevant unchanged state. An exact repeated read or search still
 returns a compact content-addressed freshness marker on every repeat, but only
 the first marker for those bytes carries the warning. New result bytes create a
 new evidence state.
+
+Failure classification is deliberately narrow. The guard retains the original
+result and adds its transition warning beside it, so evidence is never hidden.
+Arbitrary nonzero exits are not classified as misuse. In particular, an
+initially failing test is useful diagnostic evidence and remains available for
+the normal edit and validation loop. A success, a different failure class, or a
+workspace mutation breaks the consecutive-failure streak.
 
 ## Checkpoint transition
 
@@ -53,6 +63,13 @@ backstop for a stale or provider-invented call. A final answer needs no tool, so
 the agent can still report a complete read-only diagnosis instead of
 manufacturing a change.
 
+After an equivalent failure warning, the pre-tool gate rejects another call
+through the same tool, and the next provider-visible tool list omits that tool,
+until the agent takes a different tool/action or submits `progress_checkpoint`.
+A failure-recovery checkpoint is accepted even when the long-exploration
+checkpoint is not active. This makes the transition enforceable without
+replaying, suppressing, or changing the failed invocation.
+
 ## State and reset boundaries
 
 Mutation resets exploration, repeated-evidence reuse, checkpoint, and
@@ -73,9 +90,10 @@ state instead of applying it to an earlier trajectory.
 
 This is Yolop host behavior: the capability composes Everruns' existing
 per-reason tool-definition transform with its pre-tool and post-tool hooks. The
-runtime already rebuilds that provider-visible list on every reasoning step, so
-the transition needs no competing runtime loop or `everruns-*` dependency
-change.
+runtime rebuilds the provider-visible list on every reasoning step, and the
+hooks expose the authoritative call and structured result before the next
+invocation. Both transitions therefore stay in the host capability without a
+competing runtime loop or `everruns-*` dependency change.
 
 ## Evidence
 
@@ -85,4 +103,7 @@ warning-once behavior, checkpoint-only gating of blocked paths, checkpoint
 acceptance, and resumed exploration. A deterministic advisory-only
 baseline/candidate study requires at least 50% fewer calls and result bytes with
 the same completed diagnosis. Mutation, validation, long read-only diagnosis,
-and persisted-session boundaries have focused negative-path tests.
+persisted-session boundaries, expected diagnostic failures, distinct failure
+classes, forced recovery, and checkpoint recovery have focused negative-path
+tests. The harness study compares the equivalent-failure loop over three trials
+per binary and runs five-trial diagnostic and distinct-failure controls.

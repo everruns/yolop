@@ -10,11 +10,17 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-CONTROLS = {"add-fn", "find-constant"}
+CONTROLS = {
+    "add-fn",
+    "find-constant",
+    "expected-diagnostic-failure-control",
+    "distinct-failures-control",
+}
 FOCUSED = {
     "prior-session-reference",
     "grep-files-nested-glob",
     "missing-rg-recovery",
+    "equivalent-failure-recovery",
     "zero-result-search-recovery",
     "repo-map-bounded",
 }
@@ -266,6 +272,8 @@ def analyze_reports(reports: list[dict]) -> tuple[list[str], list[str], list[str
         if sample in CONTROLS:
             if base_pass < 1 or cand_pass < 1:
                 failures.append(f"{sample}: ordinary control did not pass every trial")
+            if sum(value(case, "equivalent_failure_warnings") for case in candidate):
+                failures.append(f"{sample}: semantic failure repair warned on a control")
             for metric in ("tool_calls", "llm_calls", "input_tokens", "cost_usd"):
                 base = medians[("baseline", metric)]
                 candidate_value = medians[("candidate", metric)]
@@ -275,6 +283,25 @@ def analyze_reports(reports: list[dict]) -> tuple[list[str], list[str], list[str
                         f"{sample}: control {metric} regressed >10% "
                         f"({base:g} -> {candidate_value:g})"
                     )
+        if sample == "equivalent-failure-recovery":
+            if statistics.median(
+                value(case, "equivalent_failure_warnings") for case in candidate
+            ) < 1:
+                failures.append(
+                    f"{sample}: candidate emitted no equivalent-failure warning"
+                )
+            if statistics.median(
+                value(case, "calls_after_progress_warning") for case in candidate
+            ) > 1:
+                failures.append(
+                    f"{sample}: candidate continued for more than one call after warning"
+                )
+        if sample in FOCUSED and (
+            medians[("candidate", "tool_calls")] < medians[("baseline", "tool_calls")]
+            or medians[("candidate", "tool_calls_failed")]
+            < medians[("baseline", "tool_calls_failed")]
+        ):
+            improved += 1
         rows.append(
             f"{sample}: pass {base_pass:.0%}->{cand_pass:.0%}; "
             f"tools {medians[('baseline', 'tool_calls')]:g}->"
