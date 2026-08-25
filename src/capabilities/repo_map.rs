@@ -135,13 +135,13 @@ impl Tool for RepoMapTool {
 
     fn description(&self) -> &str {
         "Build a compact, grouped multi-language symbol map for the workspace or a subpath. \
-         Use this for broad orientation before targeted grep/read."
+         All arguments are optional; omit unused fields and omit `limit` for compact output. \
+         The limit defaults to 50 without `query` and 200 with it; `max_file_bytes` defaults \
+         to 524288. Use this for broad orientation before targeted grep/read."
     }
 
     fn parameters_schema(&self) -> Value {
-        scan_schema(
-            "Optional space-separated terms. Symbols matching any term (in name, path, kind, parent, or signature) are returned, ranked by relevance with the strongest matches first.",
-        )
+        compact_scan_schema()
     }
 
     async fn execute(&self, arguments: Value) -> ToolExecutionResult {
@@ -241,6 +241,32 @@ impl Tool for RepoSymbolsTool {
 
 fn scan_narration_query(arguments: &serde_json::Value) -> Option<String> {
     arg_str(arguments, &["query", "path"]).map(|v| truncate(v, 48))
+}
+
+// repo_map is eager because models need its real argument names on the first
+// turn. Keep the always-on schema to authoritative types and bounds; the tool
+// descriptions own when and why to use the map, while result metadata owns
+// truncation recovery.
+fn compact_scan_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "path": { "type": "string" },
+            "query": { "type": "string" },
+            "language": { "type": "string" },
+            "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": MAX_LIMIT
+            },
+            "max_file_bytes": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": MAX_FILE_BYTES
+            }
+        },
+        "additionalProperties": false
+    })
 }
 
 fn scan_schema(query_description: &str) -> Value {
@@ -1423,6 +1449,62 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
+    #[test]
+    fn eager_repo_map_schema_stays_compact_and_bounded() {
+        let schema = compact_scan_schema();
+        let properties = schema["properties"].as_object().expect("properties");
+        assert_eq!(
+            properties.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["path", "query", "language", "limit", "max_file_bytes"]
+        );
+        assert_eq!(schema["additionalProperties"], json!(false));
+        assert_eq!(schema["properties"]["limit"]["maximum"], json!(MAX_LIMIT));
+        assert_eq!(
+            schema["properties"]["max_file_bytes"]["maximum"],
+            json!(MAX_FILE_BYTES)
+        );
+        let bytes = serde_json::to_vec(&schema).expect("serialize schema").len();
+        assert_eq!(bytes, 261, "eager repo_map schema cost changed");
+    }
+
+    #[test]
+    fn deferred_repo_symbols_keeps_its_descriptive_reveal_schema() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workspace = host(dir.path());
+        let map_schema = RepoMapTool {
+            workspace: workspace.clone(),
+        }
+        .parameters_schema();
+        let symbols_schema = RepoSymbolsTool { workspace }.parameters_schema();
+
+        assert!(
+            symbols_schema["properties"]["query"]["description"]
+                .as_str()
+                .is_some_and(|description| description.contains("ranked by relevance"))
+        );
+        assert!(
+            serde_json::to_vec(&symbols_schema)
+                .expect("serialize symbols schema")
+                .len()
+                > serde_json::to_vec(&map_schema)
+                    .expect("serialize map schema")
+                    .len()
+        );
+    }
+
+    #[test]
+    fn eager_repo_map_description_explains_optional_defaults() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let tool = RepoMapTool {
+            workspace: host(dir.path()),
+        };
+        let description = tool.description();
+
+        assert!(description.contains("All arguments are optional"));
+        assert!(description.contains("omit `limit`"));
+        assert!(description.contains("defaults to 50"));
+    }
+
     fn host(path: &Path) -> Arc<WorkspaceHost> {
         Arc::new(
             WorkspaceHost::new(
@@ -1962,6 +2044,48 @@ trait Named {
         };
         assert_eq!(sub["count"], json!(1));
         assert_eq!(sub["files"][0]["symbols"][0]["name"], json!("pkg_fn"));
+    }
+
+    #[tokio::test]
+    async fn repo_map_scans_nested_repository_in_linked_worktree_layout() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // A linked Git worktree identifies its repository with a .git file,
+        // not a .git directory. The scanner must treat that as metadata while
+        // still accepting the model-facing alias for a nested repository.
+        write(
+            &dir.path().join(".git"),
+            "gitdir: /tmp/repo/.git/worktrees/fixture\n",
+        );
+        write(
+            &dir.path().join("REPOS/nested/src/lib.rs"),
+            "pub fn nested_owner() {}\n",
+        );
+        write(
+            &dir.path().join("outside.rs"),
+            "pub fn outside_scope() {}\n",
+        );
+
+        let capability = RepoMapCapability::new(host(dir.path()));
+        let tools = capability.tools();
+        let tool = tools
+            .iter()
+            .find(|tool| tool.name() == "repo_map")
+            .expect("repo_map tool");
+
+        for path in ["/workspace/REPOS/nested", "REPOS/nested"] {
+            let ToolExecutionResult::Success(result) = tool
+                .execute(json!({ "path": path, "language": "rust" }))
+                .await
+            else {
+                panic!("expected success scanning {path}");
+            };
+            assert_eq!(result["count"], json!(1), "scope {path}");
+            assert_eq!(
+                result["files"][0]["symbols"][0]["name"],
+                json!("nested_owner"),
+                "scope {path}"
+            );
+        }
     }
 
     #[test]

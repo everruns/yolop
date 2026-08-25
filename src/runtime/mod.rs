@@ -1292,6 +1292,10 @@ const YOLOP_NEVER_DEFER_TOOLS: &[&str] = &[
     "read_many_files",
     "list_directory",
     "grep_files",
+    // A deferred stub exposes no argument names. Recent sessions consequently
+    // invented depth/max_depth/max_symbols for repo_map and were rejected by
+    // the authoritative schema before the valid workspace scope was resolved.
+    "repo_map",
     "write_todos",
     "write_session_title",
     // The most-called tool in the harness, and the one a deferred stub hurts
@@ -8812,6 +8816,10 @@ mod tests {
             "read_file",
             "list_directory",
             "grep_files",
+            // Real-session regression: a deferred repo_map stub exposed no
+            // parameter names, so models invented depth/max_depth and the
+            // authoritative schema rejected the call before path resolution.
+            "repo_map",
             "write_todos",
             "write_session_title",
             "progress_checkpoint",
@@ -8822,6 +8830,7 @@ mod tests {
         let deferred = [
             "write_file",
             "edit_file",
+            "repo_symbols",
             // Opt-in surfaces defer, LSP included.
             "lsp_definition",
             "lsp_hover",

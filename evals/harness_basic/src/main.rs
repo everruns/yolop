@@ -37,6 +37,8 @@ const EFFORTS: &[&str] = &["default", "low", "high"];
 const BINARIES: &[&str] = &[
     "candidate",
     "baseline",
+    "repo-map-only",
+    "repo-map-symbols",
     "parallel-only",
     "policy-only",
     "dependency-baseline",
@@ -819,6 +821,7 @@ fn bounded_repo_map_sample() -> Sample {
     )
     .file("src/lib.rs", source)
     .tag("search-efficiency")
+    .tag("repo-map-profile")
     .meta("kind", "bounded-repo-map")
     .meta(
         "checks",
@@ -828,13 +831,52 @@ fn bounded_repo_map_sample() -> Sample {
             "metric_equals": {"duplicate_exploration_calls": 0.0},
             "metric_at_most": {"repo_map_max_result_bytes": 20000.0},
         }, {
+            // Recovery is correctness and truncation discipline, not a
+            // candidate-only efficiency preference. Apply it to every binary;
+            // the miner accepts only a successful queried tool with a match.
+            "metric_at_least": {"repo_map_targeted_recovery_after_truncation": 1.0}
+        }, {
             "when_binary": "candidate",
-            "metric_at_least": {"repo_map_targeted_recovery_after_truncation": 1.0},
             "metric_at_most": {
                 "tool_calls": 3.0,
                 "llm_calls": 4.0,
                 "total_tool_result_bytes": 30000.0
             }
+        }]),
+    )
+}
+
+fn scoped_repo_map_sample() -> Sample {
+    Sample::new(
+        "repo-map-scoped",
+        "This checkout is a linked Git worktree with a nested repository at \
+         `/workspace/REPOS/service`. Use repo_map to orient within that nested \
+         repository, then reply with only the string returned by scoped_answer. \
+         Do not use bash.",
+    )
+    .file(
+        ".git",
+        "gitdir: /tmp/source/.git/worktrees/harness-fixture\n",
+    )
+    .file(
+        "REPOS/service/src/lib.rs",
+        "pub fn scoped_answer() -> &'static str { \"SCOPE-7319\" }\n",
+    )
+    .file(
+        "outside.rs",
+        "pub fn outside_scope() -> &'static str { \"WRONG\" }\n",
+    )
+    .tag("repo-map-profile")
+    .meta("kind", "scoped-repo-map")
+    .meta(
+        "checks",
+        json!([{
+            "response_contains": ["SCOPE-7319"],
+            "response_lacks": ["WRONG"],
+            "tool_called": ["repo_map"],
+            "tool_not_called": ["bash"],
+            "metric_at_least": {"repo_map_tool_calls": 1.0},
+            "metric_equals": {"repo_map_tool_calls_failed": 0.0}
         }]),
     )
 }
@@ -1521,6 +1563,7 @@ fn dataset() -> Dataset {
         expected_diagnostic_failure_control_sample(),
         distinct_failures_control_sample(),
         zero_result_search_sample(),
+        scoped_repo_map_sample(),
         bounded_repo_map_sample(),
         normal_output_preservation_sample(),
         complete_output_no_reread_sample(),
@@ -1888,6 +1931,8 @@ fn yolop_bin(binary: &str) -> Result<PathBuf, String> {
     let axis_override = match binary {
         "candidate" => "HARNESS_BASIC_CANDIDATE_BIN",
         "baseline" => "HARNESS_BASIC_BASELINE_BIN",
+        "repo-map-only" => "HARNESS_BASIC_REPO_MAP_ONLY_BIN",
+        "repo-map-symbols" => "HARNESS_BASIC_REPO_MAP_SYMBOLS_BIN",
         "parallel-only" => "HARNESS_BASIC_PARALLEL_ONLY_BIN",
         "policy-only" => "HARNESS_BASIC_POLICY_ONLY_BIN",
         "dependency-baseline" => "HARNESS_BASIC_DEPENDENCY_BASELINE_BIN",
@@ -1994,6 +2039,10 @@ struct Mined {
     persisted_output_recovery_calls: u64,
     persisted_output_recovery_result_bytes: u64,
     repo_map_max_result_bytes: u64,
+    repo_map_tool_calls: u64,
+    repo_map_tool_calls_failed: u64,
+    repo_symbols_tool_calls: u64,
+    repo_symbols_tool_calls_failed: u64,
     repo_map_narrowed_after_truncation: u64,
     repo_map_targeted_recovery_after_truncation: u64,
     search_sessions_tool_calls: u64,
@@ -2273,6 +2322,7 @@ fn is_targeted_repo_map_recovery(tool_name: &str, data: &Value) -> bool {
     }
     match tool_name {
         "repo_map" => result_has_query(data),
+        "repo_symbols" => result_has_query(data) && result_has_positive_u64(data, "count"),
         "grep_files" => {
             result_has_nonempty_string(data, "pattern")
                 && result_has_positive_u64(data, "match_count")
@@ -2521,6 +2571,22 @@ fn parse_events(jsonl: &str) -> Mined {
                     .and_then(Value::as_str)
                     .unwrap_or("unknown");
                 m.tool_calls.push(name.to_string());
+                let tool_succeeded = data.get("success").and_then(Value::as_bool) == Some(true);
+                match name {
+                    "repo_map" => {
+                        m.repo_map_tool_calls += 1;
+                        if !tool_succeeded {
+                            m.repo_map_tool_calls_failed += 1;
+                        }
+                    }
+                    "repo_symbols" => {
+                        m.repo_symbols_tool_calls += 1;
+                        if !tool_succeeded {
+                            m.repo_symbols_tool_calls_failed += 1;
+                        }
+                    }
+                    _ => {}
+                }
                 // The mandatory checkpoint lands after the warning by definition;
                 // counting it here would consume the whole post-warning allowance
                 // before the agent can make its recovery call.
@@ -3110,6 +3176,22 @@ async fn run_yolop(sample: Sample, cx: RunCx) -> Transcript {
         mined.repo_map_max_result_bytes as f64,
     );
     t.metrics.insert(
+        "repo_map_tool_calls".into(),
+        mined.repo_map_tool_calls as f64,
+    );
+    t.metrics.insert(
+        "repo_map_tool_calls_failed".into(),
+        mined.repo_map_tool_calls_failed as f64,
+    );
+    t.metrics.insert(
+        "repo_symbols_tool_calls".into(),
+        mined.repo_symbols_tool_calls as f64,
+    );
+    t.metrics.insert(
+        "repo_symbols_tool_calls_failed".into(),
+        mined.repo_symbols_tool_calls_failed as f64,
+    );
+    t.metrics.insert(
         "repo_map_narrowed_after_truncation".into(),
         mined.repo_map_narrowed_after_truncation as f64,
     );
@@ -3460,6 +3542,9 @@ mod tests {
         assert_eq!(m.duplicate_exploration_calls, 1);
         assert_eq!(m.repo_map_narrowed_after_truncation, 1);
         assert_eq!(m.repo_map_targeted_recovery_after_truncation, 1);
+        assert_eq!(m.repo_map_tool_calls, 3);
+        assert_eq!(m.repo_map_tool_calls_failed, 0);
+        assert_eq!(m.repo_symbols_tool_calls, 0);
         assert_eq!(m.progress_guard_warnings, 1);
         assert_eq!(m.calls_after_progress_warning, 3);
         assert_eq!(m.inner_tool_failures, 1);
@@ -3567,6 +3652,23 @@ mod tests {
         let m = parse_events(jsonl);
         assert_eq!(m.repo_map_narrowed_after_truncation, 0);
         assert_eq!(m.repo_map_targeted_recovery_after_truncation, 1);
+        assert_eq!(m.repo_symbols_tool_calls, 0);
+    }
+
+    #[test]
+    fn parse_events_counts_only_successful_matching_repo_symbols_as_recovery() {
+        let jsonl = r#"
+{"type":"tool.completed","data":{"tool_name":"repo_map","success":true,"result":[{"type":"text","text":"{\"query\":null,\"truncated\":true}"}]}}
+{"type":"tool.completed","data":{"tool_name":"repo_symbols","success":false,"result":[{"type":"text","text":"{\"query\":\"bounded_map_answer\",\"count\":1}"}]}}
+{"type":"tool.completed","data":{"tool_name":"repo_symbols","success":true,"result":[{"type":"text","text":"{\"query\":null,\"count\":1}"}]}}
+{"type":"tool.completed","data":{"tool_name":"repo_symbols","success":true,"result":[{"type":"text","text":"{\"query\":\"wrong_name\",\"count\":0,\"symbols\":[]}"}]}}
+{"type":"tool.completed","data":{"tool_name":"repo_symbols","success":true,"result":[{"type":"text","text":"{\"query\":\"bounded_map_answer\",\"count\":1,\"symbols\":[{\"path\":\"src/lib.rs\"}]}"}]}}
+"#;
+        let m = parse_events(jsonl);
+        assert_eq!(m.repo_map_narrowed_after_truncation, 0);
+        assert_eq!(m.repo_map_targeted_recovery_after_truncation, 1);
+        assert_eq!(m.repo_symbols_tool_calls, 4);
+        assert_eq!(m.repo_symbols_tool_calls_failed, 1);
     }
 
     #[test]
@@ -3919,7 +4021,7 @@ mod tests {
             .split("[presets.search-controls]")
             .nth(1)
             .expect("search-controls preset")
-            .split("[presets.output-persistence]")
+            .split("[presets.repo-map-profile]")
             .next()
             .unwrap();
         assert!(controls_section.contains("binary = [\"baseline\", \"candidate\"]"));
@@ -3959,6 +4061,33 @@ mod tests {
         assert!(controls_section.contains("dependency-baseline"));
         assert!(controls_section.contains("\"add-fn\""));
         assert!(controls_section.contains("\"find-constant\""));
+    }
+
+    #[test]
+    fn repo_map_profile_preset_compares_both_eager_candidates() {
+        let config = include_str!("../mira.toml");
+        let section = config
+            .split("[presets.repo-map-profile]")
+            .nth(1)
+            .expect("repo-map-profile preset")
+            .split("[presets.repo-map-controls]")
+            .next()
+            .unwrap();
+        assert!(section.contains(
+            "binary = [\"baseline\", \"repo-map-only\", \"repo-map-symbols\"]"
+        ));
+        assert!(section.contains("\"repo-map-scoped\""));
+        assert!(section.contains("\"repo-map-bounded\""));
+
+        let controls = config
+            .split("[presets.repo-map-controls]")
+            .nth(1)
+            .expect("repo-map-controls preset")
+            .split("[presets.capability-disclosure]")
+            .next()
+            .unwrap();
+        assert!(controls.contains("\"add-fn\""));
+        assert!(controls.contains("\"find-constant\""));
     }
 
     #[test]

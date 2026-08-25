@@ -1,0 +1,120 @@
+{
+  "schema_version": 1,
+  "baseline": {
+    "git_commit": "5a3fde105f935eb3d7469f5badc4e4119efbb1b8",
+    "description": "Deferred repo_map and repo_symbols schemas before the profile change."
+  },
+  "diagnosis": {
+    "recent_discovery_heavy_sessions": 18,
+    "sessions_using_repo_map": 6,
+    "repo_map_calls": 10,
+    "repo_map_calls_failed": 6,
+    "failure_stage": "Yolop pre-tool argument validation, before path resolution",
+    "invented_arguments": [
+      "depth",
+      "max_depth",
+      "max_symbols"
+    ],
+    "affected_valid_scopes": [
+      "/workspace",
+      "linked worktree paths",
+      "nested repository subpaths"
+    ],
+    "resolver_control": "Valid repo_symbols calls succeeded against the same linked-worktree scopes, and focused repo_map tests accept /workspace plus relative nested-repository paths.",
+    "upstream_owner_check": {
+      "everruns_main_commit": "5fe85ffd67edf62f77d1d29e7fb827b8bc8ffdf1",
+      "decision": "No upstream change or release is required. The observed calls never reached Everruns path resolution; Yolop owns the eager/deferred disclosure profile and pre-tool validation wiring."
+    }
+  },
+  "deterministic_cold_start": {
+    "undeferred_reference": {
+      "provider_visible_tool_definition_bytes": 30836,
+      "parameter_schema_bytes": 14719
+    },
+    "deferred_baseline": {
+      "provider_visible_tool_definition_bytes": 22786,
+      "parameter_schema_bytes": 8704,
+      "note": "Current main totals include the independently measured 828-byte eager read_many_files schema."
+    },
+    "repo_map_only": {
+      "repo_map_schema_bytes": 261,
+      "provider_visible_tool_definition_bytes": 23181,
+      "parameter_schema_bytes": 8920,
+      "historical_parameter_schema_bytes": 8092,
+      "definition_reduction_from_undeferred_percent": 24.8,
+      "historical_schema_reduction_from_undeferred_percent": 45.0
+    },
+    "repo_map_and_symbols": {
+      "provider_visible_tool_definition_bytes": 23397,
+      "parameter_schema_bytes": 9136,
+      "historical_parameter_schema_bytes": 8308,
+      "historical_schema_reduction_from_undeferred_percent": 43.6,
+      "control_result": "fails the unchanged 45 percent schema-reduction floor"
+    }
+  },
+  "live_ab": {
+    "provider": "openai/gpt-5.5",
+    "profile_run": {
+      "run_id": "20260825T031434Z-f2f8",
+      "preset": "repo-map-profile",
+      "trials": 5,
+      "cases": 30,
+      "correct_answers": "30/30",
+      "scored_passes": "28/30",
+      "strict_efficiency_failures": "one repeated queried repo_map recovery in repo-map-only and one in repo-map-symbols",
+      "scoped_task_tool_calls": {
+        "baseline": [2, 1, 1, 2, 1],
+        "repo_map_only": [1, 1, 1, 1, 1],
+        "repo_map_and_symbols": [1, 1, 1, 1, 1]
+      },
+      "scoped_repo_map_failures": {
+        "baseline": 0,
+        "repo_map_only": 0,
+        "repo_map_and_symbols": 0
+      },
+      "bounded_targeted_recoveries": {
+        "baseline": "5/5",
+        "repo_map_only": "5/5",
+        "repo_map_and_symbols": "5/5"
+      },
+      "first_request_token_median": {
+        "baseline": 7198,
+        "repo_map_only": 7283,
+        "repo_map_and_symbols": 7322
+      }
+    },
+    "corrected_schema_guidance_confirmation": {
+      "run_id": "20260825T031243Z-f1a6",
+      "result": "30/30 passed after the tool description made optional defaults explicit"
+    },
+    "ordinary_controls": {
+      "run_id": "20260825T031545Z-e7ef",
+      "preset": "repo-map-controls",
+      "trials": 5,
+      "cases": 30,
+      "result": "30/30 passed",
+      "samples": [
+        "add-fn",
+        "find-constant"
+      ]
+    },
+    "focused_smoke": {
+      "run_id": "20260825T031646Z-5205",
+      "result": "1/1 passed",
+      "tool_calls": [
+        "write_session_title",
+        "repo_map"
+      ],
+      "repo_map_failures": 0
+    }
+  },
+  "decision": {
+    "never_deferred": [
+      "repo_map"
+    ],
+    "still_deferred": [
+      "repo_symbols"
+    ],
+    "reason": "The real repo_map schema removes the historical validation failures and eliminated extra scoped discovery calls in the focused A/B. Eager repo_symbols produced no recovery or call-count benefit, added first-request tokens, and broke the unchanged schema-cost floor."
+  }
+}
