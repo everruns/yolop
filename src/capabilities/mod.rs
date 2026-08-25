@@ -32,6 +32,7 @@ pub(crate) mod session_history;
 pub(crate) mod session_tasks_override;
 pub(crate) mod skill_registry;
 pub mod skills;
+pub(crate) mod subagents_override;
 pub(crate) mod tool_approval;
 pub(crate) mod tool_argument_validation;
 pub(crate) mod tool_reveal;

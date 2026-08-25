@@ -65,6 +65,46 @@ pub fn narrate_cancel_task(tool_call: &ToolCall, phase: ToolNarrationPhase) -> S
     stable_labeled("Cancel task", detail, phase)
 }
 
+/// Everruns `spawn_agent` otherwise falls back to "Running Spawn Agent", which
+/// says nothing about the agent being spawned. Name the run, the target kind,
+/// and the blueprint or configured target id when one is set.
+pub fn narrate_spawn_agent(tool_call: &ToolCall, phase: ToolNarrationPhase) -> String {
+    let arguments = &tool_call.arguments;
+    let name = arg_str(arguments, &["name"]).map(|name| truncate(name, 40));
+    let kind = match arguments
+        .get("target")
+        .and_then(|target| arg_str(target, &["type"]))
+        .unwrap_or("subagent")
+    {
+        "agent" => "agent",
+        "external_a2a" => "external agent",
+        _ => "subagent",
+    };
+    let identity = arg_str(arguments, &["blueprint"])
+        .map(|blueprint| truncate(blueprint, 40))
+        .or_else(|| {
+            arguments
+                .get("target")
+                .and_then(|target| arg_str(target, &["id", "external_agent_id"]))
+                .map(|id| truncate(id, 40))
+        });
+
+    let mut target = match &name {
+        Some(name) => format!("{name} {kind}"),
+        None => kind.to_string(),
+    };
+    if let Some(identity) = identity.filter(|identity| Some(identity) != name.as_ref()) {
+        target.push_str(&format!(" ({identity})"));
+    }
+
+    let verb = match phase {
+        ToolNarrationPhase::Started | ToolNarrationPhase::Waiting => "Launching",
+        ToolNarrationPhase::Completed => "Launched",
+        ToolNarrationPhase::Failed => "Failed to launch",
+    };
+    format!("{verb} {target}")
+}
+
 /// Everruns `spawn_background` otherwise falls back to "Running Spawn Background".
 pub fn narrate_spawn_background(tool_call: &ToolCall, phase: ToolNarrationPhase) -> String {
     stable_labeled(
@@ -258,5 +298,68 @@ mod tests {
             arguments: json!({}),
         };
         assert!(narrate_session_task_tool(&unknown, ToolNarrationPhase::Started).is_none());
+    }
+
+    #[test]
+    fn spawn_agent_narration_names_the_spawned_agent() {
+        let plain = ToolCall {
+            id: "call-1".to_owned(),
+            name: "spawn_agent".to_owned(),
+            arguments: json!({
+                "name": "Orbit Scout",
+                "instructions": "Inspect the orbit subsystem.",
+                "target": { "type": "subagent" }
+            }),
+        };
+        assert_eq!(
+            narrate_spawn_agent(&plain, ToolNarrationPhase::Started),
+            "Launching Orbit Scout subagent"
+        );
+        assert_eq!(
+            narrate_spawn_agent(&plain, ToolNarrationPhase::Completed),
+            "Launched Orbit Scout subagent"
+        );
+
+        let blueprint = ToolCall {
+            id: "call-2".to_owned(),
+            name: "spawn_agent".to_owned(),
+            arguments: json!({
+                "name": "Orbit Scout",
+                "target": { "type": "subagent" },
+                "blueprint": "github_scout"
+            }),
+        };
+        assert_eq!(
+            narrate_spawn_agent(&blueprint, ToolNarrationPhase::Started),
+            "Launching Orbit Scout subagent (github_scout)"
+        );
+
+        let handoff = ToolCall {
+            id: "call-3".to_owned(),
+            name: "spawn_agent".to_owned(),
+            arguments: json!({
+                "name": "Release check",
+                "target": { "type": "agent", "id": "release-reviewer" }
+            }),
+        };
+        assert_eq!(
+            narrate_spawn_agent(&handoff, ToolNarrationPhase::Failed),
+            "Failed to launch Release check agent (release-reviewer)"
+        );
+    }
+
+    /// Arguments that are still streaming carry no target yet; the line must
+    /// stay a spawn line rather than the generic tool-name fallback.
+    #[test]
+    fn spawn_agent_narration_tolerates_missing_arguments() {
+        let bare = ToolCall {
+            id: "call-1".to_owned(),
+            name: "spawn_agent".to_owned(),
+            arguments: json!({}),
+        };
+        assert_eq!(
+            narrate_spawn_agent(&bare, ToolNarrationPhase::Started),
+            "Launching subagent"
+        );
     }
 }

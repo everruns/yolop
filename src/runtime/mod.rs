@@ -97,8 +97,8 @@ use everruns_llmsim::LlmSimConfig;
 use everruns_llmsim::LlmSimRuntimeExt;
 use everruns_mcp::{McpAuthProvider, McpAuthRequest, McpCredential};
 use everruns_platform::capabilities::{
-    SESSION_TASKS_CAPABILITY_ID, SUBAGENTS_CAPABILITY_ID, SubagentCapability,
-    USER_HOOKS_CAPABILITY_ID, UserHooksCapability,
+    SESSION_TASKS_CAPABILITY_ID, SUBAGENTS_CAPABILITY_ID, USER_HOOKS_CAPABILITY_ID,
+    UserHooksCapability,
 };
 use everruns_provider::AgentLoopError;
 use everruns_provider::model_profiles::get_model_profile;
@@ -4055,7 +4055,8 @@ pub async fn build_with_options(
     capabilities.register(
         crate::capabilities::session_tasks_override::TruthfulSessionTasksCapability::new(),
     );
-    capabilities.register(SubagentCapability);
+    capabilities
+        .register(crate::capabilities::subagents_override::NarratedSubagentCapability::new());
     capabilities.register(crate::capabilities::NarratedBackgroundExecutionCapability::new());
     capabilities.register(SessionStorageCapability);
     capabilities.register(DaytonaCapability);
@@ -6003,6 +6004,32 @@ mod tests {
             message.role == MessageRole::Agent
                 && message.text() == Some("Orbit subsystem inspected.")
         }));
+
+        // The transcript line must name the spawned agent, not read
+        // "Running Spawn Agent" (the generic display-name fallback).
+        let events = built
+            .handles
+            .runtime
+            .events()
+            .await
+            .expect("runtime events");
+        let narrations = events
+            .iter()
+            .filter_map(|event| match &event.data {
+                everruns_core::EventData::ToolStarted(data)
+                    if data.tool_call.name == "spawn_agent" =>
+                {
+                    data.narration.clone()
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            narrations
+                .iter()
+                .any(|narration| narration == "Launching Orbit Scout subagent"),
+            "spawn_agent narration should name the agent: {narrations:?}"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
