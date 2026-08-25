@@ -1161,6 +1161,7 @@ fn done_event(
         model: Some(model.to_string()),
         finish_reason: Some(finish),
         retry_metadata: None,
+        cache_diagnostics: None,
         response_id: response
             .get("id")
             .and_then(Value::as_str)

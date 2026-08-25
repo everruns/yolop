@@ -64,6 +64,7 @@ search/refactor, and read-only code navigation.
 | `zero-result-search-recovery` [`search-efficiency`] | Three absent terms plus a real target | Recover after repeated empty searches | response finds the target and records a progress warning | result-aware progress guard |
 | `repo-map-bounded` [`search-efficiency`] | Rust file with 260+ symbols | Use an unqueried repo map | answer is found, output stays bounded, and truncation is followed by a targeted map or grep | output-size and recovery discipline |
 | `normal-output-preserves-head` [`search-efficiency`] | leading match followed by 600 `Error` lines | Run one bash search with explicit `output: normal` | leading match remains visible without reading persisted output | successful-output compaction |
+| `complete-output-no-reread` [`output-persistence`] | complete three-line build result | Read and remove the source log with one bash call | correct value, no recovery call, one model round after the tool | retention without a redundant recovery affordance |
 | `persisted-output-small-read` [`persisted-output-reading`] | 81-line, roughly 11 KiB CI log with a failure in the middle | Diagnose a persisted successful command result | one recovery read at most, correct root cause | small-output single-read policy |
 | `persisted-output-context-search` [`persisted-output-reading`] | 1,200-line CI log with the root cause outside the default log tail | Diagnose a persisted successful command result | one contextual grep, no follow-up read, correct root cause | large-output contextual-search policy |
 | `dependency-release-oscillation` [`progress-efficiency`] | bounded partial-release verifier with recurring manifest states and interleaved lockfile updates | Follow the release checklist until the runtime interrupts the cycle | coherent 0.17.6 manifest with few state revisits and validations | mutation oscillation from the costly version-bump session |
@@ -266,16 +267,22 @@ HARNESS_BASIC_POLICY_ONLY_BIN=/path/to/policy-only/yolop \
 HARNESS_BASIC_CANDIDATE_BIN=/path/to/combined/yolop \
   doppler run -- mira run --preset orchestration-efficiency --trials 3 --group-by binary
 
-# Isolate output persistence from other yolop/runtime changes.
+# Isolate output persistence from other yolop/runtime changes. The complete
+# result must not trigger a read, while explicit normal output retains its head.
 HARNESS_BASIC_DEPENDENCY_BASELINE_BIN=/path/to/yolop-with-everruns-main \
 HARNESS_BASIC_CANDIDATE_BIN=/path/to/yolop-with-output-fix \
   doppler run -- mira run --preset output-persistence --trials 3 --group-by binary
 
-# Compare persisted-output recovery: one complete read when small, one
-# contextual grep when large.
+# Compare limited-output recovery: at most one read when small and one
+# contextual grep when large. Both cases record bash and recovery result bytes.
 HARNESS_BASIC_DEPENDENCY_BASELINE_BIN=/path/to/yolop-before-context-grep-fix \
 HARNESS_BASIC_CANDIDATE_BIN=/path/to/yolop-with-context-grep-fix \
   doppler run -- mira run --preset persisted-output-reading --trials 3 --group-by binary
+
+# Run ordinary coding controls against the same dependency-isolated binaries.
+HARNESS_BASIC_DEPENDENCY_BASELINE_BIN=/path/to/yolop-before-output-fix \
+HARNESS_BASIC_CANDIDATE_BIN=/path/to/yolop-with-output-fix \
+  doppler run -- mira run --preset output-persistence-controls --trials 3 --group-by binary
 
 # Structural-rewrite A/B: default vs with-ast-edit on ast-edit-tagged cases.
 doppler run -- mira run --preset ast-edit-compare --group-by harness
@@ -304,8 +311,9 @@ doppler run -- mira run --targets 'anthropic/*' --axis harness=no-ast-grep --sam
 | `failure-repair-controls` | expected diagnostic and distinct-failure controls, 5 trials | two failure-repair controls | gpt-5.5 | baseline + candidate, harness=default, effort=default |
 | `owner-selection` | first-mutation owner selection plus local-edit controls, 3 trials | two owner fixtures + `add-fn` + `implement-todo` | gpt-5.5 | candidate, default vs no-progress-guard |
 | `orchestration-efficiency` | batching interventions and dependency control, 3 trials | three orchestration cases | gpt-5.5 | baseline + parallel-only + policy-only + candidate |
-| `output-persistence` | dependency-isolated output proof, 3 trials | `normal-output-preserves-head` | gpt-5.5 | dependency baseline + candidate |
-| `persisted-output-reading` | small-read and large-context-search proof, 3 trials | two persisted-output recovery cases | gpt-5.5 | dependency baseline + candidate |
+| `output-persistence` | dependency-isolated output proof, 3 trials | head preservation + complete-output no-reread | gpt-5.5 | dependency baseline + candidate |
+| `persisted-output-reading` | bounded limited-output recovery proof, 3 trials | small read + large contextual search | gpt-5.5 | dependency baseline + candidate |
+| `output-persistence-controls` | ordinary dependency-isolated controls, 3 trials | `add-fn`, `find-constant` | gpt-5.5 | dependency baseline + candidate |
 | `ast-edit-compare` | **A/B ast_edit capability** | tag `ast-edit` | claude-sonnet-4-5 | candidate, effort=default, default vs with-ast-edit |
 | `effort-compare` | effort sweep | all | gpt-5.5 | candidate, harness=default, all efforts |
 | `models` | model sweep, out-of-the-box yolop | all | all | candidate, harness=default, effort=default |

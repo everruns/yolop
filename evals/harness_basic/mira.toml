@@ -141,7 +141,7 @@ axes = { binary = ["baseline", "parallel-only", "policy-only", "candidate"], eff
 # Requires HARNESS_BASIC_DEPENDENCY_BASELINE_BIN and HARNESS_BASIC_CANDIDATE_BIN.
 #   doppler run -- mira run --preset output-persistence --trials 3 --group-by binary
 [presets.output-persistence]
-samples = ["normal-output-preserves-head"]
+samples = ["normal-output-preserves-head", "complete-output-no-reread"]
 targets = ["openai/gpt-5.5"]
 axes = { binary = ["dependency-baseline", "candidate"], effort = ["default"], harness = ["default"] }
 
@@ -151,6 +151,15 @@ axes = { binary = ["dependency-baseline", "candidate"], effort = ["default"], ha
 #   doppler run -- mira run --preset persisted-output-reading --trials 3 --group-by binary
 [presets.persisted-output-reading]
 samples = ["persisted-output-small-read", "persisted-output-context-search"]
+targets = ["openai/gpt-5.5"]
+axes = { binary = ["dependency-baseline", "candidate"], effort = ["default"], harness = ["default"] }
+
+# OUTPUT-PERSISTENCE-CONTROLS: ordinary coding controls against the same
+# dependency-isolated binaries used by the two output studies.
+# Requires HARNESS_BASIC_DEPENDENCY_BASELINE_BIN and HARNESS_BASIC_CANDIDATE_BIN.
+#   doppler run -- mira run --preset output-persistence-controls --trials 3 --group-by binary
+[presets.output-persistence-controls]
+samples = ["add-fn", "find-constant"]
 targets = ["openai/gpt-5.5"]
 axes = { binary = ["dependency-baseline", "candidate"], effort = ["default"], harness = ["default"] }
 

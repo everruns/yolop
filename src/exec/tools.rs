@@ -1358,6 +1358,43 @@ mod tests {
         assert!(saved.contains("saved-line-3000"));
     }
 
+    #[tokio::test]
+    async fn bash_complete_output_is_retained_without_recovery_affordance() {
+        let dir = tempfile::tempdir().unwrap();
+        let tool = BashTool::new(Workspace::from_path(dir.path().to_path_buf()));
+        let call = ToolCall {
+            id: "call-complete".to_string(),
+            name: "bash".to_string(),
+            arguments: json!({
+                "command": "echo build-complete",
+                "output": "normal"
+            }),
+        };
+        let mut result = tool
+            .execute(call.arguments.clone())
+            .await
+            .into_tool_result(&call.id, &call.name);
+        let file_store = Arc::new(RealDiskFileStore::new(dir.path()).unwrap());
+        let context = ToolContext::with_file_store(Default::default(), file_store);
+        let tool_def = tool.to_definition();
+
+        for hook in ToolOutputPersistenceCapability.post_tool_exec_hooks() {
+            hook.after_exec(&call, &tool_def, &mut result, &context)
+                .await;
+        }
+
+        let value = result.result.as_ref().expect("structured bash result");
+        assert_eq!(value["stdout"], json!("build-complete\n"));
+        assert!(value.get("full_output").is_none());
+        assert!(value.get("output_files").is_none());
+        assert_eq!(
+            tokio::fs::read_to_string(dir.path().join("outputs/call-complete.stdout"))
+                .await
+                .expect("complete output should still be retained"),
+            "build-complete\n"
+        );
+    }
+
     // ====================================================================
     // EVE-489: persistence-first `auto` output mode
     // ====================================================================
