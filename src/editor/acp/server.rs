@@ -1476,6 +1476,7 @@ async fn run_prompt(
     mut prompt: String,
     mut input: InputMessage,
 ) -> StopReason {
+    let mut provider_stall_followups = 0usize;
     loop {
         let (stop, result) = run_prompt_once(peer.clone(), session.clone(), prompt, input).await;
         if stop == StopReason::Cancelled {
@@ -1498,8 +1499,14 @@ async fn run_prompt(
             }
             return stop;
         };
-        let Some(next) = completion_followup(&peer, &session, &result).await else {
-            return stop;
+        let next = if let Some(next) = provider_stall_followup(&result, provider_stall_followups) {
+            provider_stall_followups = provider_stall_followups.saturating_add(1);
+            next
+        } else {
+            let Some(next) = completion_followup(&peer, &session, &result).await else {
+                return stop;
+            };
+            next
         };
         prompt = next;
         input = crate::session_state::task_completion::tag_continuation(
@@ -1609,6 +1616,25 @@ async fn run_prompt_once(
             (StopReason::EndTurn, None)
         }
         Err(_) => (StopReason::Cancelled, None),
+    }
+}
+
+const PROVIDER_STALL_CONTINUATION: &str = "The provider stopped responding during the previous model step. Continue the current task from the durable conversation state. Do not repeat completed tool calls or settled work.";
+
+fn provider_stall_followup(
+    turn_result: &everruns_host::TurnResult,
+    followups: usize,
+) -> Option<String> {
+    if followups == 0
+        && !turn_result.success
+        && turn_result
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("provider stream stall"))
+    {
+        Some(PROVIDER_STALL_CONTINUATION.to_string())
+    } else {
+        None
     }
 }
 
@@ -1797,6 +1823,45 @@ mod tests {
         assert_eq!(
             select_setup_auth_method(&methods, None, "openrouter").unwrap(),
             Some("openrouter_browser".to_string())
+        );
+    }
+
+    fn turn_result(success: bool, error: Option<&str>) -> everruns_host::TurnResult {
+        everruns_host::TurnResult {
+            response: String::new(),
+            iterations: 1,
+            tool_calls_count: 0,
+            success,
+            error: error.map(str::to_string),
+            stop_reason: if success {
+                everruns_core::turn::TurnStopReason::EndTurn
+            } else {
+                everruns_core::turn::TurnStopReason::Error
+            },
+            turn_id: everruns_provider::typed_id::TurnId::new(),
+        }
+    }
+
+    #[test]
+    fn provider_stall_gets_one_fresh_continuation() {
+        let stalled = turn_result(
+            false,
+            Some("LLM error: provider stream stall: no tokens for 120s"),
+        );
+
+        assert_eq!(
+            provider_stall_followup(&stalled, 0).as_deref(),
+            Some(PROVIDER_STALL_CONTINUATION)
+        );
+        assert_eq!(provider_stall_followup(&stalled, 1), None);
+    }
+
+    #[test]
+    fn provider_stall_followup_ignores_other_turn_results() {
+        assert_eq!(provider_stall_followup(&turn_result(true, None), 0), None);
+        assert_eq!(
+            provider_stall_followup(&turn_result(false, Some("permanent provider error")), 0),
+            None
         );
     }
 
