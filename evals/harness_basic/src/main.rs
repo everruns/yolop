@@ -642,6 +642,119 @@ fn missing_rg_recovery_sample() -> Sample {
     )
 }
 
+fn equivalent_failure_recovery_sample() -> Sample {
+    Sample::new(
+        "equivalent-failure-recovery",
+        "This is a controlled recovery evaluation. Run these bash commands exactly, one \
+         call at a time: `python3 failure_probe.py alpha`, then \
+         `python3 failure_probe.py beta`, then `python3 failure_probe.py gamma`. Each \
+         rewritten invocation reports the same usage failure. A runtime progress warning \
+         overrides the remaining invocation: immediately switch to grep_files, find \
+         FAILURE_RECOVERY, and reply with only its value. Do not install anything.",
+    )
+    .file(
+        "failure_probe.py",
+        "import sys\nprint(\"usage: failure-probe TARGET\", file=sys.stderr)\nraise SystemExit(2)\n",
+    )
+    .file("src/recovery.txt", "FAILURE_RECOVERY=REPAIRED-527\n")
+    .tag("search-efficiency")
+    .tag("progress-efficiency")
+    .tag("failure-repair")
+    .meta("kind", "equivalent-failure-recovery")
+    .meta(
+        "checks",
+        json!([
+            {"response_contains": ["REPAIRED-527"], "tool_called": ["bash", "grep_files"]},
+            {
+                "when_binary": "candidate",
+                "metric_equals": {
+                    "equivalent_failure_warnings": 1.0,
+                    "blocked_equivalent_failures": 0.0,
+                    "tool_calls_failed": 2.0
+                },
+                "metric_at_most": {
+                    "calls_after_progress_warning": 1.0,
+                    "task_tool_calls": 3.0,
+                    "task_llm_calls": 4.0
+                }
+            },
+            {
+                "when_binary": "baseline",
+                "metric_equals": {
+                    "equivalent_failure_warnings": 0.0,
+                    "progress_guard_warnings": 0.0
+                },
+                "metric_at_least": {"tool_calls_failed": 3.0}
+            }
+        ]),
+    )
+}
+
+fn expected_diagnostic_failure_control_sample() -> Sample {
+    Sample::new(
+        "expected-diagnostic-failure-control",
+        "Run `cargo test` before editing to reproduce the failing assertion. Then fix \
+         answer() at the owning source, rerun `cargo test`, and reply with exactly \
+         DIAGNOSTIC_RECOVERED.",
+    )
+    .file(
+        "Cargo.toml",
+        "[package]\nname = \"diagnostic_control\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .file(
+        "src/lib.rs",
+        "pub fn answer() -> u32 { 1 }\n\n#[test]\nfn expected_answer() { assert_eq!(answer(), 2); }\n",
+    )
+    .tag("progress-efficiency-control")
+    .tag("search-efficiency-control")
+    .tag("failure-repair-control")
+    .meta("kind", "expected-diagnostic-failure")
+    .meta(
+        "checks",
+        json!([{
+            "response_contains": ["DIAGNOSTIC_RECOVERED"],
+            "file": "src/lib.rs",
+            "contains": ["answer() -> u32 { 2 }"],
+            "metric_equals": {
+                "equivalent_failure_warnings": 0.0,
+                "blocked_equivalent_failures": 0.0,
+                "progress_guard_warnings": 0.0
+            },
+            "metric_at_least": {"validation_tool_calls": 2.0, "tool_calls_failed": 1.0}
+        }]),
+    )
+}
+
+fn distinct_failures_control_sample() -> Sample {
+    Sample::new(
+        "distinct-failures-control",
+        "Run these three diagnostic bash commands exactly, one call at a time: \
+         `missing_distinct_probe`, then `cat absent-control.txt`, then \
+         `python3 -c 'import sys; print(\"usage: probe FLAG\", file=sys.stderr); \
+         raise SystemExit(2)'`. These failures have different root reasons and must not \
+         be treated as an equivalent loop. Then use grep_files to find DISTINCT_RECOVERY \
+         and reply with only its value.",
+    )
+    .file("src/distinct.txt", "DISTINCT_RECOVERY=DISTINCT-913\n")
+    .tag("progress-efficiency-control")
+    .tag("search-efficiency-control")
+    .tag("failure-repair-control")
+    .meta("kind", "distinct-failure-control")
+    .meta(
+        "checks",
+        json!([{
+            "response_contains": ["DISTINCT-913"],
+            "tool_called": ["bash", "grep_files"],
+            "metric_equals": {
+                "equivalent_failure_warnings": 0.0,
+                "blocked_equivalent_failures": 0.0,
+                "progress_guard_warnings": 0.0
+            },
+            "metric_at_least": {"tool_calls_failed": 3.0}
+        }]),
+    )
+}
+
 fn zero_result_search_sample() -> Sample {
     Sample::new(
         "zero-result-search-recovery",
@@ -1346,6 +1459,9 @@ fn dataset() -> Dataset {
         untrusted_file_content_sample(),
         nested_glob_search_sample(),
         missing_rg_recovery_sample(),
+        equivalent_failure_recovery_sample(),
+        expected_diagnostic_failure_control_sample(),
+        distinct_failures_control_sample(),
         zero_result_search_sample(),
         bounded_repo_map_sample(),
         normal_output_preservation_sample(),
@@ -1807,6 +1923,8 @@ struct Mined {
     progress_guard_warnings: u64,
     checkpoint_required_warnings: u64,
     successful_progress_checkpoints: u64,
+    equivalent_failure_warnings: u64,
+    blocked_equivalent_failures: u64,
     ast_edit_tool_calls: u64,
     ast_edit_tool_calls_failed: u64,
     max_tool_result_bytes: u64,
@@ -1983,8 +2101,7 @@ fn progress_guard_warning(data: &Value) -> Option<String> {
             .filter(|warning| !warning.is_empty())
             .map(str::to_string),
         Some(Value::String(text))
-            if text.contains("progress_guard_warning")
-                || text.starts_with("progress_guard:") =>
+            if text.contains("progress_guard_warning") || text.starts_with("progress_guard:") =>
         {
             Some(text)
         }
@@ -2364,9 +2481,8 @@ fn parse_events(jsonl: &str) -> Mined {
                 }
                 if name == "progress_checkpoint"
                     && data.get("success") == Some(&Value::Bool(true))
-                    && tool_result_value(&data).is_some_and(|result| {
-                        result.get("accepted") == Some(&Value::Bool(true))
-                    })
+                    && tool_result_value(&data)
+                        .is_some_and(|result| result.get("accepted") == Some(&Value::Bool(true)))
                 {
                     m.successful_progress_checkpoints += 1;
                 }
@@ -2401,6 +2517,23 @@ fn parse_events(jsonl: &str) -> Mined {
                         m.checkpoint_required_warnings += 1;
                         saw_checkpoint_required = true;
                     }
+                }
+                if tool_result_value(&data).is_some_and(|value| {
+                    value
+                        .get("progress_guard_warning")
+                        .and_then(Value::as_str)
+                        .is_some_and(|warning| {
+                            warning.contains("equivalent") && warning.contains("failure")
+                        })
+                }) {
+                    m.equivalent_failure_warnings += 1;
+                }
+                if data
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .is_some_and(|error| error.contains("equivalent") && error.contains("failure"))
+                {
+                    m.blocked_equivalent_failures += 1;
                 }
                 if name == "ast_edit" {
                     m.ast_edit_tool_calls += 1;
@@ -2779,6 +2912,14 @@ async fn run_yolop(sample: Sample, cx: RunCx) -> Transcript {
     t.metrics.insert(
         "successful_progress_checkpoints".into(),
         mined.successful_progress_checkpoints as f64,
+    );
+    t.metrics.insert(
+        "equivalent_failure_warnings".into(),
+        mined.equivalent_failure_warnings as f64,
+    );
+    t.metrics.insert(
+        "blocked_equivalent_failures".into(),
+        mined.blocked_equivalent_failures as f64,
     );
     t.metrics.insert(
         "ast_edit_tool_calls".into(),
@@ -3171,6 +3312,22 @@ mod tests {
         assert_eq!(mined.checkpoint_required_warnings, 1);
         assert_eq!(mined.successful_progress_checkpoints, 1);
         assert_eq!(mined.calls_after_checkpoint_required, 2);
+    }
+
+    #[test]
+    fn parse_events_mines_equivalent_failure_recovery() {
+        let jsonl = r#"
+{"type":"tool.completed","data":{"tool_name":"bash","success":true,"result":[{"type":"text","text":"{\"exit_code\":127,\"success\":false}"}]}}
+{"type":"tool.completed","data":{"tool_name":"bash","success":true,"result":[{"type":"text","text":"{\"exit_code\":127,\"success\":false,\"progress_guard_warning\":\"progress_guard: repeated an equivalent missing-command failure\"}"}]}}
+{"type":"tool.completed","data":{"tool_name":"bash","success":false,"error":"equivalent missing-command failure repeated on unchanged state"}}
+{"type":"tool.completed","data":{"tool_name":"grep_files","success":true,"result":[{"type":"text","text":"{\"count\":1}"}]}}
+"#;
+        let mined = parse_events(jsonl);
+        assert_eq!(mined.progress_guard_warnings, 1);
+        assert_eq!(mined.equivalent_failure_warnings, 1);
+        assert_eq!(mined.blocked_equivalent_failures, 1);
+        assert_eq!(mined.calls_after_progress_warning, 2);
+        assert_eq!(mined.tool_calls_failed, 3);
     }
 
     #[test]

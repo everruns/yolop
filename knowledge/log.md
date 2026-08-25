@@ -1,5 +1,20 @@
 # Knowledge Log
 
+## 2026-08-24, Equivalent failures require a different action
+
+- [Progress guard](specs/progress-guard.md): rewritten invocations no longer
+  count as progress when structured diagnostics show the same missing command,
+  wrong path, usage mistake, or invocation failure on unchanged workspace
+  state. The second equivalent failure warns, and the next call through the
+  same tool is removed from the model-visible surface and blocked until a
+  different tool/action or checkpoint is used.
+- Failure evidence stays intact and the classifier is narrow. A nonzero exit is
+  not itself misuse, and an initially failing test remains normal diagnostic
+  evidence for a fix and revalidation cycle.
+- Everruns already exposes the authoritative call and structured result to
+  Yolop's pre-tool and post-tool hooks, so ownership remains in the Yolop host
+  capability and no runtime dependency change is needed.
+
 ## 2026-08-24, A required checkpoint changes the next tool surface
 
 - [Progress guard](specs/progress-guard.md): the checkpoint-required warning is

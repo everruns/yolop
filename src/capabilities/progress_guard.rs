@@ -37,6 +37,7 @@ const WAITING_WINDOW_THRESHOLD: usize = 4;
 const SEMANTIC_HISTORY_LIMIT: usize = 512;
 const TRACKED_PATH_LIMIT: usize = 1024;
 const MIN_REUSABLE_RESULT_BYTES: usize = 512;
+const FAILURE_DIAGNOSTIC_LIMIT: usize = 4096;
 const SESSION_STATE_LIMIT: usize = 32;
 const STORED_STATE_VERSION: u8 = 1;
 
@@ -78,7 +79,7 @@ impl Capability for ProgressGuardCapability {
     }
 
     fn description(&self) -> &str {
-        "Compacts unchanged evidence and requires a structured checkpoint when investigation stops making progress."
+        "Compacts unchanged evidence and forces a different action or checkpoint when investigation or equivalent failures stop making progress."
     }
 
     fn status(&self) -> CapabilityStatus {
@@ -100,7 +101,7 @@ impl Capability for ProgressGuardCapability {
 
     fn system_prompt_preview(&self) -> Option<String> {
         Some(
-            "<capability id=\"progress_guard\">\nWarns on investigation without progress.\n</capability>"
+            "<capability id=\"progress_guard\">\nWarns and gates investigation or equivalent failures without progress.\n</capability>"
                 .to_string(),
         )
     }
@@ -155,6 +156,7 @@ impl ProgressGuardState {
 }
 
 #[derive(Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
 struct SessionProgress {
     tool_count: usize,
     exploration_since_progress: usize,
@@ -191,6 +193,11 @@ struct SessionProgress {
     warned_status_commands: HashSet<String>,
     recent_checkpoints: VecDeque<String>,
     seen_checkpoints: HashSet<String>,
+    last_failure: Option<FailureFingerprint>,
+    consecutive_equivalent_failures: usize,
+    failure_gate: Option<FailureGate>,
+    recent_warned_failures: VecDeque<FailureFingerprint>,
+    warned_failures: HashSet<FailureFingerprint>,
 }
 
 impl SessionProgress {
@@ -200,6 +207,10 @@ impl SessionProgress {
             self.observe_checkpoint(tool_call, result);
             return None;
         }
+        if let Some(class) = classify_semantic_failure(result) {
+            return self.observe_failure(tool_call, class);
+        }
+        self.reset_failure_streak();
         let class = classify_tool_call(tool_call);
 
         match class {
@@ -299,7 +310,8 @@ impl SessionProgress {
         if result.error.is_some() {
             return;
         }
-        if !self.checkpoint_required {
+        let failure_recovery = self.failure_gate.is_some();
+        if !self.checkpoint_required && !failure_recovery {
             reject_checkpoint(result, "no progress checkpoint is currently required");
             return;
         }
@@ -318,12 +330,61 @@ impl SessionProgress {
         );
         self.checkpoint_count += 1;
         self.checkpoint_required = false;
+        self.failure_gate = None;
+        self.reset_failure_streak();
         self.reset_activity_streaks();
         result.result = Some(json!({
             "accepted": true,
             "exploration_resumed": true,
-            "message": "checkpoint accepted; execute the stated decisive action or gather only evidence that tests it"
+            "message": if failure_recovery {
+                "failure-recovery checkpoint accepted; execute a materially different action that addresses the classified root failure"
+            } else {
+                "checkpoint accepted; execute the stated decisive action or gather only evidence that tests it"
+            }
         }));
+    }
+
+    fn observe_failure(
+        &mut self,
+        tool_call: &ToolCall,
+        class: SemanticFailureClass,
+    ) -> Option<String> {
+        let fingerprint = FailureFingerprint {
+            workspace_state: self.validation_state_signature(),
+            class,
+        };
+        if self.last_failure.as_ref() == Some(&fingerprint) {
+            self.consecutive_equivalent_failures += 1;
+        } else {
+            self.last_failure = Some(fingerprint.clone());
+            self.consecutive_equivalent_failures = 1;
+        }
+        if self.consecutive_equivalent_failures < 2 {
+            return None;
+        }
+
+        self.failure_gate = Some(FailureGate {
+            source_tool: tool_call.name.clone(),
+            fingerprint: fingerprint.clone(),
+        });
+        if self.warned_failures.contains(&fingerprint) {
+            return None;
+        }
+        remember_bounded(
+            &mut self.warned_failures,
+            &mut self.recent_warned_failures,
+            fingerprint,
+        );
+        self.warning_count += 1;
+        Some(format!(
+            "progress_guard: repeated an equivalent {} failure on an unchanged workspace state. The full failure evidence remains above. Do not rewrite and retry the same invocation path: use a materially different tool/action that addresses the root cause, or call progress_checkpoint before another attempt.",
+            class.label()
+        ))
+    }
+
+    fn reset_failure_streak(&mut self) {
+        self.last_failure = None;
+        self.consecutive_equivalent_failures = 0;
     }
 
     fn observe_mutation(&mut self, tool_call: &ToolCall, result: &ToolResult) -> Option<String> {
@@ -341,6 +402,10 @@ impl SessionProgress {
         self.warned_observation_hashes.clear();
         self.seen_checkpoints.clear();
         self.recent_checkpoints.clear();
+        self.failure_gate = None;
+        self.reset_failure_streak();
+        self.warned_failures.clear();
+        self.recent_warned_failures.clear();
 
         let Some(transition) = mutation_hash_transition(tool_call, result) else {
             // Shell, delete, and structural edits can touch an unknown set of
@@ -681,23 +746,34 @@ struct ProgressGuardToolGate {
 
 impl ToolDefinitionHook for ProgressGuardToolGate {
     fn transform(&self, tools: Vec<ToolDefinition>) -> Vec<ToolDefinition> {
-        let checkpoint_required = self
+        let (checkpoint_required, failed_tool) = self
             .state
             .lock()
             .expect("progress guard state poisoned")
             .sessions
             .get(&self.session_id)
-            .is_some_and(|progress| progress.checkpoint_required);
-        if !checkpoint_required {
+            .map(|progress| {
+                (
+                    progress.checkpoint_required,
+                    progress
+                        .failure_gate
+                        .as_ref()
+                        .map(|gate| gate.source_tool.clone()),
+                )
+            })
+            .unwrap_or_default();
+        if !checkpoint_required && failed_tool.is_none() {
             return tools;
         }
         tools
             .into_iter()
             .filter(|tool| {
-                !matches!(
-                    static_tool_class(tool.name()),
-                    Some(ToolClass::Exploration | ToolClass::Waiting)
-                )
+                failed_tool.as_deref() != Some(tool.name())
+                    && (!checkpoint_required
+                        || !matches!(
+                            static_tool_class(tool.name()),
+                            Some(ToolClass::Exploration | ToolClass::Waiting)
+                        ))
             })
             .collect()
     }
@@ -714,19 +790,29 @@ impl PreToolUseHook for ProgressGuardGate {
         if tool_call.name == PROGRESS_CHECKPOINT_TOOL {
             return PreToolUseDecision::Continue(tool_call);
         }
-        let blocked = self
-            .state
-            .lock()
-            .expect("progress guard state poisoned")
-            .sessions
-            .get(&context.session_id.to_string())
-            .is_some_and(|progress| {
-                progress.checkpoint_required
-                    && matches!(
-                        classify_tool_call(&tool_call),
-                        ToolClass::Exploration | ToolClass::Status(_) | ToolClass::Waiting
-                    )
-            });
+        let mut state = self.state.lock().expect("progress guard state poisoned");
+        let Some(progress) = state.sessions.get_mut(&context.session_id.to_string()) else {
+            return PreToolUseDecision::Continue(tool_call);
+        };
+        if let Some(failure_gate) = &progress.failure_gate {
+            if failure_gate.source_tool == tool_call.name {
+                return PreToolUseDecision::Block {
+                    reason: format!(
+                        "equivalent {} failure repeated on unchanged state: use a different tool/action or call progress_checkpoint before retrying {}",
+                        failure_gate.fingerprint.class.label(),
+                        tool_call.name
+                    ),
+                    user_message: None,
+                    tool_call,
+                };
+            }
+            progress.failure_gate = None;
+        }
+        let blocked = progress.checkpoint_required
+            && matches!(
+                classify_tool_call(&tool_call),
+                ToolClass::Exploration | ToolClass::Status(_) | ToolClass::Waiting
+            );
         if blocked {
             PreToolUseDecision::Block {
                 reason: "progress checkpoint required: call progress_checkpoint with facts, hypothesis, missing_evidence, and next_decisive_action before more exploration"
@@ -1006,6 +1092,135 @@ fn exploration_evidence(tool_call: &ToolCall, result: &ToolResult) -> Option<Exp
     })
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum SemanticFailureClass {
+    Invocation,
+    MissingCommand,
+    WrongPath,
+    Usage,
+}
+
+impl SemanticFailureClass {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Invocation => "invocation",
+            Self::MissingCommand => "missing-command",
+            Self::WrongPath => "wrong-path",
+            Self::Usage => "usage",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+struct FailureFingerprint {
+    workspace_state: u64,
+    class: SemanticFailureClass,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct FailureGate {
+    source_tool: String,
+    fingerprint: FailureFingerprint,
+}
+
+fn classify_semantic_failure(result: &ToolResult) -> Option<SemanticFailureClass> {
+    let value = result.result.as_ref();
+    let structured_failure = value
+        .and_then(|value| value.get("success"))
+        .and_then(Value::as_bool)
+        == Some(false);
+    if result.error.is_none() && !structured_failure {
+        return None;
+    }
+
+    let diagnostic = bounded_failure_diagnostic(result).to_ascii_lowercase();
+    let exit_code = value
+        .and_then(|value| value.get("exit_code"))
+        .and_then(Value::as_i64);
+    if diagnostic.contains("command not found")
+        || diagnostic.contains("not recognized as an internal or external command")
+        || (exit_code == Some(127) && diagnostic.contains("not found"))
+    {
+        return Some(SemanticFailureClass::MissingCommand);
+    }
+    if [
+        "no such file or directory",
+        "cannot find the path specified",
+        "could not find a part of the path",
+        "can't cd to",
+        "cannot cd to",
+    ]
+    .iter()
+    .any(|pattern| diagnostic.contains(pattern))
+    {
+        return Some(SemanticFailureClass::WrongPath);
+    }
+    if [
+        "usage:",
+        "unknown option",
+        "unrecognized option",
+        "unexpected argument",
+        "invalid option",
+        "requires an argument",
+        "missing required argument",
+        "the following required arguments were not provided",
+    ]
+    .iter()
+    .any(|pattern| diagnostic.contains(pattern))
+    {
+        return Some(SemanticFailureClass::Usage);
+    }
+    if exit_code == Some(126)
+        || [
+            "spawn failed",
+            "sandbox setup failed",
+            "failed to execute",
+            "could not execute",
+            "exec format error",
+        ]
+        .iter()
+        .any(|pattern| diagnostic.contains(pattern))
+    {
+        return Some(SemanticFailureClass::Invocation);
+    }
+    None
+}
+
+fn bounded_failure_diagnostic(result: &ToolResult) -> String {
+    let mut diagnostic = String::new();
+    if let Some(error) = &result.error {
+        append_bounded_diagnostic(&mut diagnostic, error);
+    }
+    for field in ["stderr", "stdout", "message"] {
+        let Some(text) = result
+            .result
+            .as_ref()
+            .and_then(|value| value.get(field))
+            .and_then(Value::as_str)
+        else {
+            continue;
+        };
+        if !diagnostic.is_empty() {
+            append_bounded_diagnostic(&mut diagnostic, "\n");
+        }
+        append_bounded_diagnostic(&mut diagnostic, text);
+    }
+    diagnostic
+}
+
+fn append_bounded_diagnostic(diagnostic: &mut String, text: &str) {
+    let remaining = FAILURE_DIAGNOSTIC_LIMIT.saturating_sub(diagnostic.len());
+    if remaining == 0 {
+        return;
+    }
+    let mut end = remaining.min(text.len());
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    diagnostic.push_str(&text[..end]);
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum ToolClass {
     Exploration,
@@ -1102,6 +1317,15 @@ fn mutation_hash_transition(
 }
 
 fn mutation_was_applied(tool_call: &ToolCall, result: &ToolResult) -> bool {
+    if result
+        .result
+        .as_ref()
+        .and_then(|value| value.get("success"))
+        .and_then(Value::as_bool)
+        == Some(false)
+    {
+        return false;
+    }
     if tool_call.name == "ast_edit" {
         return result
             .result
@@ -1331,6 +1555,23 @@ mod tests {
     fn result_value(value: Value) -> ToolResult {
         ToolResult {
             result: Some(value),
+            ..result()
+        }
+    }
+
+    fn failed_bash_result(exit_code: i32, stderr: &str) -> ToolResult {
+        result_value(json!({
+            "exit_code": exit_code,
+            "success": false,
+            "stdout": "",
+            "stderr": stderr,
+        }))
+    }
+
+    fn tool_error_result(error: &str) -> ToolResult {
+        ToolResult {
+            result: None,
+            error: Some(error.to_string()),
             ..result()
         }
     }
@@ -1783,6 +2024,22 @@ mod tests {
         }
         assert_eq!(progress.observation_hashes.len(), SEMANTIC_HISTORY_LIMIT);
         assert_eq!(progress.recent_observations.len(), SEMANTIC_HISTORY_LIMIT);
+
+        for index in 0..(SEMANTIC_HISTORY_LIMIT * 2) {
+            remember_bounded(
+                &mut progress.warned_failures,
+                &mut progress.recent_warned_failures,
+                FailureFingerprint {
+                    workspace_state: index as u64,
+                    class: SemanticFailureClass::WrongPath,
+                },
+            );
+        }
+        assert_eq!(progress.warned_failures.len(), SEMANTIC_HISTORY_LIMIT);
+        assert_eq!(
+            progress.recent_warned_failures.len(),
+            SEMANTIC_HISTORY_LIMIT
+        );
     }
 
     #[tokio::test]
@@ -1860,6 +2117,324 @@ mod tests {
         );
         // `sleepwalk` must not parse as a sleep prefix.
         assert_eq!(classify_bash_command("sleepwalk"), ToolClass::Other);
+    }
+
+    #[tokio::test]
+    async fn repeated_equivalent_missing_commands_force_a_different_action() {
+        let state = Arc::new(Mutex::new(ProgressGuardState::default()));
+        let hook = ProgressGuardHook {
+            state: state.clone(),
+        };
+        let gate = ProgressGuardGate {
+            state: state.clone(),
+        };
+        let context = ToolContext::new(SessionId::new());
+        let tool_gate = ProgressGuardToolGate {
+            state,
+            session_id: context.session_id.to_string(),
+        };
+
+        for (command, executable) in [("rg needle .", "rg"), ("ag needle .", "ag")] {
+            let mut failed = result_value(json!({
+                "command": command,
+                "exit_code": 127,
+                "success": false,
+                "stdout": "",
+                "stderr": format!("bash: {executable}: command not found"),
+            }));
+            hook.after_exec(
+                &call("bash", json!({ "command": command })),
+                &tool_def("bash"),
+                &mut failed,
+                &context,
+            )
+            .await;
+
+            if executable == "ag" {
+                assert!(
+                    failed
+                        .result
+                        .as_ref()
+                        .and_then(|value| value.get("progress_guard_warning"))
+                        .and_then(Value::as_str)
+                        .is_some_and(|warning| {
+                            warning.contains("equivalent missing-command failure")
+                        }),
+                    "the rewritten command should be recognized as the same root failure: {failed:?}"
+                );
+            }
+        }
+
+        let visible_tools = tool_gate.transform(vec![
+            tool_def("bash"),
+            tool_def("grep_files"),
+            tool_def(PROGRESS_CHECKPOINT_TOOL),
+        ]);
+        assert_eq!(
+            visible_tools
+                .iter()
+                .map(|tool| tool.name())
+                .collect::<Vec<_>>(),
+            ["grep_files", PROGRESS_CHECKPOINT_TOOL],
+            "the next model round should expose recovery paths but not the failed tool"
+        );
+        assert!(matches!(
+            gate.before_exec(
+                call("bash", json!({ "command": "grep -R needle ." })),
+                &tool_def("bash"),
+                &context,
+            )
+            .await,
+            PreToolUseDecision::Block { .. }
+        ));
+        assert!(matches!(
+            gate.before_exec(
+                call("grep_files", json!({ "pattern": "needle" })),
+                &tool_def("grep_files"),
+                &context,
+            )
+            .await,
+            PreToolUseDecision::Continue(_)
+        ));
+    }
+
+    #[test]
+    fn semantic_failure_classification_is_structured_and_conservative() {
+        let cases = [
+            (
+                failed_bash_result(127, "bash: rg: command not found"),
+                Some(SemanticFailureClass::MissingCommand),
+            ),
+            (
+                failed_bash_result(1, "cat: src/missing.rs: No such file or directory"),
+                Some(SemanticFailureClass::WrongPath),
+            ),
+            (
+                failed_bash_result(2, "error: unexpected argument '--bogus'\nUsage: cargo test"),
+                Some(SemanticFailureClass::Usage),
+            ),
+            (
+                tool_error_result("spawn failed: exec format error"),
+                Some(SemanticFailureClass::Invocation),
+            ),
+            (
+                failed_bash_result(101, "test result: FAILED. 1 failed; 3 passed"),
+                None,
+            ),
+            (
+                failed_bash_result(1, "assertion failed: expected 2, received 3"),
+                None,
+            ),
+        ];
+
+        for (result, expected) in cases {
+            assert_eq!(classify_semantic_failure(&result), expected, "{result:?}");
+        }
+    }
+
+    #[test]
+    fn failure_diagnostics_are_bounded_without_splitting_utf8() {
+        let oversized = "é".repeat(FAILURE_DIAGNOSTIC_LIMIT);
+        let diagnostic = bounded_failure_diagnostic(&ToolResult {
+            result: Some(json!({ "stderr": oversized })),
+            error: Some("x".repeat(FAILURE_DIAGNOSTIC_LIMIT)),
+            ..result()
+        });
+        assert_eq!(diagnostic.len(), FAILURE_DIAGNOSTIC_LIMIT);
+        assert!(diagnostic.chars().all(|character| character == 'x'));
+
+        let unicode_only = bounded_failure_diagnostic(&failed_bash_result(2, &oversized));
+        assert!(unicode_only.len() <= FAILURE_DIAGNOSTIC_LIMIT);
+        assert!(unicode_only.is_char_boundary(unicode_only.len()));
+    }
+
+    #[test]
+    fn every_supported_failure_class_fingerprints_equivalent_rewrites() {
+        let cases = [
+            (
+                failed_bash_result(126, "failed to execute probe-one"),
+                failed_bash_result(126, "failed to execute probe-two"),
+                "invocation",
+            ),
+            (
+                failed_bash_result(127, "bash: rg: command not found"),
+                failed_bash_result(127, "bash: ag: command not found"),
+                "missing-command",
+            ),
+            (
+                tool_error_result("read failed for old/a: No such file or directory"),
+                tool_error_result("read failed for old/b: No such file or directory"),
+                "wrong-path",
+            ),
+            (
+                failed_bash_result(2, "usage: probe-one ARG"),
+                failed_bash_result(2, "usage: probe-two ARG"),
+                "usage",
+            ),
+        ];
+
+        for (mut first, mut second, label) in cases {
+            let mut progress = SessionProgress::default();
+            let first_warning = progress.observe(
+                &call("bash", json!({ "command": format!("{label}-one") })),
+                &mut first,
+            );
+            let second_warning = progress.observe(
+                &call("bash", json!({ "command": format!("{label}-two") })),
+                &mut second,
+            );
+            assert!(first_warning.is_none());
+            assert!(
+                second_warning.is_some_and(|warning| warning.contains(label)),
+                "{label} rewrites should share one semantic fingerprint"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn expected_diagnostic_test_failures_do_not_warn_or_gate_validation() {
+        let state = Arc::new(Mutex::new(ProgressGuardState::default()));
+        let hook = ProgressGuardHook {
+            state: state.clone(),
+        };
+        let gate = ProgressGuardGate { state };
+        let context = ToolContext::new(SessionId::new());
+        let test = call("bash", json!({ "command": "cargo test" }));
+
+        let mut failed = failed_bash_result(
+            101,
+            "failures:\n    tests::reproduces_bug\ntest result: FAILED. 1 failed",
+        );
+        hook.after_exec(&test, &tool_def("bash"), &mut failed, &context)
+            .await;
+        assert!(
+            failed
+                .result
+                .as_ref()
+                .and_then(|value| value.get("progress_guard_warning"))
+                .is_none(),
+            "an initially failing test is code evidence, not command misuse"
+        );
+        assert!(matches!(
+            gate.before_exec(test.clone(), &tool_def("bash"), &context)
+                .await,
+            PreToolUseDecision::Continue(_)
+        ));
+
+        let mut edit = result_value(json!({
+            "path": "/workspace/src/lib.rs",
+            "previous_content_hash": "before",
+            "content_hash": "after",
+        }));
+        hook.after_exec(
+            &call("edit_file", json!({ "path": "/workspace/src/lib.rs" })),
+            &tool_def("edit_file"),
+            &mut edit,
+            &context,
+        )
+        .await;
+        let mut diagnostic_after_edit = failed_bash_result(
+            101,
+            "failures:\n    tests::another_bug\ntest result: FAILED. 1 failed",
+        );
+        hook.after_exec(
+            &test,
+            &tool_def("bash"),
+            &mut diagnostic_after_edit,
+            &context,
+        )
+        .await;
+        assert!(
+            diagnostic_after_edit
+                .result
+                .as_ref()
+                .and_then(|value| value.get("progress_guard_warning"))
+                .is_none(),
+            "a new failing test after mutation is fresh diagnostic evidence"
+        );
+    }
+
+    #[tokio::test]
+    async fn distinct_failure_classes_and_success_break_the_equivalence_streak() {
+        let state = Arc::new(Mutex::new(ProgressGuardState::default()));
+        let hook = ProgressGuardHook { state };
+        let context = ToolContext::new(SessionId::new());
+        let observations = [
+            failed_bash_result(127, "bash: rg: command not found"),
+            failed_bash_result(1, "cat: absent: No such file or directory"),
+            result(),
+            failed_bash_result(127, "bash: ag: command not found"),
+        ];
+
+        for (index, mut observed) in observations.into_iter().enumerate() {
+            hook.after_exec(
+                &call("bash", json!({ "command": format!("probe-{index}") })),
+                &tool_def("bash"),
+                &mut observed,
+                &context,
+            )
+            .await;
+            assert!(
+                observed
+                    .result
+                    .as_ref()
+                    .and_then(|value| value.get("progress_guard_warning"))
+                    .is_none(),
+                "different evidence must not create an equivalent-failure warning"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn repeated_wrong_path_can_recover_through_a_checkpoint() {
+        let state = Arc::new(Mutex::new(ProgressGuardState::default()));
+        let hook = ProgressGuardHook {
+            state: state.clone(),
+        };
+        let gate = ProgressGuardGate { state };
+        let context = ToolContext::new(SessionId::new());
+
+        for path in ["src/old.rs", "lib/old.rs"] {
+            let mut failed = tool_error_result(&format!(
+                "read failed for {path}: No such file or directory"
+            ));
+            hook.after_exec(
+                &call("read_file", json!({ "path": path })),
+                &tool_def("read_file"),
+                &mut failed,
+                &context,
+            )
+            .await;
+        }
+        assert!(matches!(
+            gate.before_exec(
+                call("read_file", json!({ "path": "src/third.rs" })),
+                &tool_def("read_file"),
+                &context,
+            )
+            .await,
+            PreToolUseDecision::Block { .. }
+        ));
+
+        let arguments = checkpoint_arguments("wrong path recovery");
+        let mut checkpoint = result_value(json!({ "submitted": true }));
+        hook.after_exec(
+            &call(PROGRESS_CHECKPOINT_TOOL, arguments),
+            &tool_def(PROGRESS_CHECKPOINT_TOOL),
+            &mut checkpoint,
+            &context,
+        )
+        .await;
+        assert_eq!(checkpoint.result.unwrap()["accepted"], true);
+        assert!(matches!(
+            gate.before_exec(
+                call("read_file", json!({ "path": "src/verified.rs" })),
+                &tool_def("read_file"),
+                &context,
+            )
+            .await,
+            PreToolUseDecision::Continue(_)
+        ));
     }
 
     #[tokio::test]

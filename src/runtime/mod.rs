@@ -5737,6 +5737,116 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn real_tool_hooks_repair_an_equivalent_failure_loop() {
+        use everruns_core::EventData;
+        use everruns_llmsim::{SimToolCall, SimTurn};
+
+        let workspace = tempfile::tempdir().expect("workspace");
+        std::fs::create_dir_all(workspace.path().join("src")).expect("create src");
+        std::fs::write(
+            workspace.path().join("src/answer.txt"),
+            "SEMANTIC_RECOVERY=FOUND\n",
+        )
+        .expect("seed answer");
+        let sessions = tempfile::tempdir().expect("sessions");
+        let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
+        let scripted_call = |name: &str, arguments| {
+            SimTurn::ToolCalls(vec![SimToolCall {
+                name: name.to_string(),
+                arguments,
+                id: None,
+            }])
+        };
+        let options = BuildOptions {
+            llmsim_override: Some(LlmSimConfig::scripted(vec![
+                scripted_call(
+                    "bash",
+                    serde_json::json!({ "command": "missing_search_one SEMANTIC_RECOVERY ." }),
+                ),
+                scripted_call(
+                    "bash",
+                    serde_json::json!({ "command": "missing_search_two SEMANTIC_RECOVERY ." }),
+                ),
+                scripted_call(
+                    "bash",
+                    serde_json::json!({ "command": "grep -R SEMANTIC_RECOVERY ." }),
+                ),
+                scripted_call(
+                    "grep_files",
+                    serde_json::json!({ "pattern": "SEMANTIC_RECOVERY", "path_pattern": "src/**" }),
+                ),
+                SimTurn::Assistant("FOUND".to_string()),
+            ])),
+            ..BuildOptions::default()
+        };
+        let built = build_with_options(
+            workspace.path().to_path_buf(),
+            ProviderChoice::Sim,
+            None,
+            sessions.path().to_path_buf(),
+            settings,
+            options,
+        )
+        .await
+        .expect("build runtime");
+
+        let result = built
+            .handles
+            .run_checkpointed_turn(
+                "Recover from equivalent missing search commands.",
+                built
+                    .model
+                    .input_message("Recover from equivalent missing search commands."),
+            )
+            .await
+            .expect("run guarded trajectory");
+        assert!(result.success, "guarded trajectory: {result:?}");
+
+        let events = built
+            .handles
+            .runtime
+            .events()
+            .await
+            .expect("runtime events");
+        let completed = events
+            .iter()
+            .filter_map(|event| match &event.data {
+                EventData::ToolCompleted(data) => Some(data),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(completed.iter().any(|data| {
+            data.tool_name == "bash"
+                && crate::tui::transcript::result_value(data).is_some_and(|value| {
+                    value
+                        .get("progress_guard_warning")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|warning| warning.contains("equivalent missing-command"))
+                })
+        }));
+        let bash_results = completed
+            .iter()
+            .filter(|data| data.tool_name == "bash")
+            .collect::<Vec<_>>();
+        assert!(
+            bash_results.last().is_some_and(|data| {
+                !data.success
+                    && data
+                        .error
+                        .as_deref()
+                        .is_some_and(|error| error == "Tool definition not found: bash")
+            }),
+            "the scripted stale retry should prove bash was absent from the next model-visible surface: {bash_results:?}"
+        );
+        assert!(completed.iter().any(|data| {
+            data.tool_name == "grep_files"
+                && data.success
+                && crate::tui::transcript::result_value(data)
+                    .is_some_and(|value| value.to_string().contains("SEMANTIC_RECOVERY"))
+        }));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn real_turn_exposes_model_runtime_context_without_persisting_it() {
         let workspace = tempfile::tempdir().expect("workspace");
         let sessions = tempfile::tempdir().expect("sessions");

@@ -64,6 +64,23 @@ class AnalyzeProgressEfficiencyTests(unittest.TestCase):
                 "progress_guard_warnings": 1,
             },
         )
+        focused += trials(
+            "equivalent-failure-recovery",
+            "baseline",
+            metrics={"tool_calls_failed": 3},
+            tools=4,
+        )
+        focused += trials(
+            "equivalent-failure-recovery",
+            "candidate",
+            metrics={
+                "tool_calls_failed": 2,
+                "progress_guard_warnings": 1,
+                "equivalent_failure_warnings": 1,
+                "calls_after_progress_warning": 1,
+            },
+            tools=3,
+        )
         return {"cases": focused}, {"cases": controls}
 
     def test_accepts_split_reports_with_five_trial_controls(self):
@@ -98,6 +115,19 @@ class AnalyzeProgressEfficiencyTests(unittest.TestCase):
         _, failures = MODULE.analyze_reports([focused, controls])
         self.assertTrue(any("warned on an ordinary control" in failure for failure in failures))
 
+    def test_rejects_equivalent_failure_warning_on_diagnostic_control(self):
+        focused, controls = self.passing_reports()
+        for item in controls["cases"]:
+            if (
+                item["sample"] == "expected-diagnostic-failure-control"
+                and item["params"]["binary"] == "candidate"
+            ):
+                item["transcript"]["metrics"]["equivalent_failure_warnings"] = 1
+        _, failures = MODULE.analyze_reports([focused, controls])
+        self.assertTrue(
+            any("semantic failure repair warned on a control" in failure for failure in failures)
+        )
+
     def test_rejects_ignored_warning_distribution(self):
         focused, controls = self.passing_reports()
         for item in focused["cases"]:
@@ -108,6 +138,19 @@ class AnalyzeProgressEfficiencyTests(unittest.TestCase):
                 item["transcript"]["metrics"]["calls_after_progress_warning"] = 3
         _, failures = MODULE.analyze_reports([focused, controls])
         self.assertTrue(any("median calls after warning" in failure for failure in failures))
+
+    def test_rejects_missing_equivalent_failure_warning(self):
+        focused, controls = self.passing_reports()
+        for item in focused["cases"]:
+            if (
+                item["sample"] == "equivalent-failure-recovery"
+                and item["params"]["binary"] == "candidate"
+            ):
+                item["transcript"]["metrics"]["equivalent_failure_warnings"] = 0
+        _, failures = MODULE.analyze_reports([focused, controls])
+        self.assertTrue(
+            any("no equivalent-failure warning" in failure for failure in failures)
+        )
 
     def test_rejects_three_trial_controls(self):
         focused, controls = self.passing_reports()

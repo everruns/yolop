@@ -10,10 +10,16 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-CONTROLS = {"add-fn", "find-constant"}
+CONTROLS = {
+    "add-fn",
+    "find-constant",
+    "expected-diagnostic-failure-control",
+    "distinct-failures-control",
+}
 FOCUSED = {
     "dependency-release-oscillation": ("workspace_state_revisits", 1.0),
     "redundant-validation": ("redundant_validation_calls", 1.0),
+    "equivalent-failure-recovery": ("tool_calls_failed", 2.0),
 }
 EXPECTED_SAMPLES = CONTROLS | set(FOCUSED)
 FOCUSED_TRIALS = 3
@@ -71,6 +77,8 @@ def analyze_reports(reports: list[dict]) -> tuple[list[str], list[str]]:
                 failures.append(f"{sample}: ordinary control did not pass every trial")
             if sum(value(case, "progress_guard_warnings") for case in candidate):
                 failures.append(f"{sample}: progress guard warned on an ordinary control")
+            if sum(value(case, "equivalent_failure_warnings") for case in candidate):
+                failures.append(f"{sample}: semantic failure repair warned on a control")
             for metric in CONTROL_METRICS:
                 before = median(baseline, metric)
                 after = median(candidate, metric)
@@ -105,6 +113,16 @@ def analyze_reports(reports: list[dict]) -> tuple[list[str], list[str]]:
                 f"{sample}: candidate median calls after warning "
                 f"{calls_after_warning:g} > 2"
             )
+        if sample == "equivalent-failure-recovery":
+            equivalent_warnings = median(candidate, "equivalent_failure_warnings")
+            if equivalent_warnings < 1:
+                failures.append(
+                    f"{sample}: candidate emitted no equivalent-failure warning"
+                )
+            if median(candidate, "blocked_equivalent_failures") > 0:
+                failures.append(
+                    f"{sample}: candidate kept invoking the blocked failure path"
+                )
         rows.append(
             f"{sample}: pass {base_pass:.0%}->{cand_pass:.0%}; "
             f"{metric} {before:g}->{after:g}; warnings {warnings:g}; "
