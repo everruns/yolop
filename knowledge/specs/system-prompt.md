@@ -196,6 +196,18 @@ Deterministic host-side title or todo handling is not the shortcut: it would
 create a second owner for behavior currently recorded as runtime tool calls and
 would make session replay diverge from live execution.
 
+Independent file discovery also has a structured path that does not depend on
+parallel tool emission. The filesystem capability owns `read_many_files`, a
+bounded ordered read for paths known before the call. Yolop keeps that schema
+eager beside `read_file`; a derived path remains a dependency and is read in a
+later round.
+
+The `batch-native-discovery` study isolates the dependency bump with matched
+serial-emission binaries. Across three trials, one batch read reduced mean task
+LLM calls from 4 to 2 and cumulative input including cache reads from 53,412 to
+27,583 tokens. All six dependent controls kept the route and derived path in
+separate rounds with logical read width 1.
+
 ### Tool schemas follow the task without rewriting the prefix
 
 The stable prompt and tool catalogue always disclose every capability name and
@@ -215,9 +227,10 @@ providers that require registered structured-call schemas.
 The composition regression records the undeferred baseline and candidate
 through the assembled runtime entry point. On the current default surface, the
 stable prompt remains capped at 12,888 bytes, provider-visible tool definitions
-must fall by at least 24%, and parameter schemas by at least 50%. Keeping the
-mandatory checkpoint schema eager intentionally spends part of the schema
-savings so a host-required transition can never depend on schema discovery.
+must fall by at least 24%, and the historical parameter-schema surface by at
+least 45%. Keeping the mandatory checkpoint and bounded batch-read schemas eager
+intentionally spends schema bytes so neither a host-required transition nor an
+independent-read plan depends on another schema-discovery round.
 
 ### The budget is a test
 
@@ -242,6 +255,10 @@ because it is a capability toggle on one binary.
 Tool-round orchestration uses the four binary arms in the
 `orchestration-efficiency` preset: unchanged baseline, provider preference
 only, prompt policy only, and the combined candidate.
+
+Batch-native discovery uses the dependency baseline and candidate arms in the
+`batch-native-discovery` preset. Both eval binaries disable provider parallel
+tool emission so task LLM calls measure the structured batch itself.
 
 ### A profile may add a standing job
 

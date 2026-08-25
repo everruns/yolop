@@ -39,6 +39,18 @@
   reasoning step. Yolop owns the policy and shared guard state, so no upstream
   runtime fork or dependency release is required.
 
+## 2026-08-24, Independent file reads have a batch owner
+
+- [System prompt](specs/system-prompt.md): `read_many_files` belongs to the
+  filesystem capability and stays schema-eager in Yolop. It batches only paths
+  known before the call; a path learned from content remains sequential.
+- [Progress guard](specs/progress-guard.md): a batch read is exploration and
+  its repeated-evidence signature retains the result-bearing path order.
+- A matched serial-emission A/B measured the owning API rather than provider
+  parallelism: three independent reads fell from 4 to 2 task LLM calls and from
+  53,412 to 27,583 cumulative input tokens, while every dependent control kept
+  logical read width 1.
+
 ## 2026-08-22, One route for every input event
 
 - [Tuika](specs/tuika.md): input ownership is now one ordered table of surfaces,

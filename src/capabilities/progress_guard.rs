@@ -1252,8 +1252,10 @@ fn classify_tool_call(tool_call: &ToolCall) -> ToolClass {
 
 fn static_tool_class(name: &str) -> Option<ToolClass> {
     match name {
-        "read_file" | "grep_files" | "repo_map" | "search_sessions" | "ast_grep"
-        | "list_directory" | "stat_file" | "tool_search" => Some(ToolClass::Exploration),
+        "read_file" | "read_many_files" | "grep_files" | "repo_map" | "search_sessions"
+        | "ast_grep" | "list_directory" | "stat_file" | "tool_search" => {
+            Some(ToolClass::Exploration)
+        }
         "write_file" | "edit_file" | "delete_file" | "ast_edit" => Some(ToolClass::Mutation),
         "get_task" | "list_tasks" => Some(ToolClass::Waiting),
         _ => None,
@@ -1395,13 +1397,12 @@ fn exploration_signature(tool_call: &ToolCall) -> Option<String> {
                 .unwrap_or_default();
             Some(format!("grep_files:{path_pattern}:{pattern}"))
         }
-        "repo_map" | "search_sessions" | "ast_grep" | "list_directory" | "stat_file" => {
-            Some(format!(
-                "{}:{}",
-                tool_call.name,
-                normalize_value(&tool_call.arguments)
-            ))
-        }
+        "read_many_files" | "repo_map" | "search_sessions" | "ast_grep" | "list_directory"
+        | "stat_file" => Some(format!(
+            "{}:{}",
+            tool_call.name,
+            normalize_value(&tool_call.arguments)
+        )),
         "bash" => {
             let command = tool_call
                 .arguments
@@ -1609,6 +1610,30 @@ mod tests {
         assert_eq!(
             schema["properties"]["missing_evidence"]["items"]["type"],
             "string"
+        );
+    }
+
+    #[test]
+    fn batch_reads_are_exploration_with_order_sensitive_signatures() {
+        let first = call(
+            "read_many_files",
+            json!({ "paths": ["a.rs", "b.rs"], "offset": 4 }),
+        );
+        let same = call(
+            "read_many_files",
+            json!({ "paths": ["a.rs", "b.rs"], "offset": 4 }),
+        );
+        let reordered = call(
+            "read_many_files",
+            json!({ "paths": ["b.rs", "a.rs"], "offset": 4 }),
+        );
+
+        assert_eq!(classify_tool_call(&first), ToolClass::Exploration);
+        assert_eq!(exploration_signature(&first), exploration_signature(&same));
+        assert_ne!(
+            exploration_signature(&first),
+            exploration_signature(&reordered),
+            "the batch result follows request order, so signatures must too"
         );
     }
 

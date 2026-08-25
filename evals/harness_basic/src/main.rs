@@ -1246,9 +1246,14 @@ fn independent_investigation_sample() -> Sample {
     .meta("kind", "independent-investigation")
     .meta(
         "checks",
-        json!([{
-            "response_contains": ["ALPHA-17", "BETA-28", "GAMMA-39"]
-        }]),
+        json!([
+            {"response_contains": ["ALPHA-17", "BETA-28", "GAMMA-39"]},
+            {
+                "when_binary": "candidate",
+                "metric_at_least": {"batch_native_read_calls": 1.0},
+                "metric_at_most": {"task_llm_calls": 2.0}
+            }
+        ]),
     )
 }
 
@@ -1287,10 +1292,18 @@ fn dependent_read_control_sample() -> Sample {
     .tag("orchestration-control")
     .meta("kind", "dependent-investigation")
     .meta(
+        "expected_read_paths",
+        json!(["route.txt", "payload/answer-63.txt"]),
+    )
+    .meta(
         "checks",
         json!([{
             "response_contains": ["DEPEND-6307"],
-            "metric_at_most": {"max_read_file_batch_width": 1.0}
+            "metric_equals": {"dependency_safe_read_sequence": 1.0},
+            "metric_at_most": {
+                "batch_native_read_calls": 0.0,
+                "max_read_file_batch_width": 1.0
+            }
         }]),
     )
 }
@@ -1950,6 +1963,8 @@ struct Mined {
     tool_emitting_model_calls: u64,
     single_tool_model_calls: u64,
     batched_tool_model_calls: u64,
+    batch_native_read_calls: u64,
+    read_path_sequence: Vec<String>,
     total_model_emitted_tool_calls: u64,
     max_tool_batch_width: u64,
     max_read_file_batch_width: u64,
@@ -2016,6 +2031,19 @@ fn is_bookkeeping_tool(name: &str) -> bool {
         name,
         "write_session_title" | "write_todos" | "set_status" | "progress_checkpoint"
     )
+}
+
+fn read_file_operation_width(tool_call: &Value) -> u64 {
+    match tool_call.get("name").and_then(Value::as_str) {
+        Some("read_file") => 1,
+        Some("read_many_files") => tool_call
+            .get("arguments")
+            .and_then(|arguments| arguments.get("paths"))
+            .and_then(Value::as_array)
+            .map(|paths| paths.len() as u64)
+            .unwrap_or(0),
+        _ => 0,
+    }
 }
 
 fn task_tool_calls(mined: &Mined) -> u64 {
@@ -2398,7 +2426,7 @@ fn parse_events(jsonl: &str) -> Mined {
                         .unwrap_or(0.0);
                 }
                 if let Some(message) = data.get("message") {
-                    let tool_names = message
+                    let tool_calls = message
                         .get("content")
                         .and_then(Value::as_array)
                         .into_iter()
@@ -2406,8 +2434,37 @@ fn parse_events(jsonl: &str) -> Mined {
                         .filter(|part| {
                             part.get("type").and_then(Value::as_str) == Some("tool_call")
                         })
+                        .collect::<Vec<_>>();
+                    let tool_names = tool_calls
+                        .iter()
                         .filter_map(|part| part.get("name").and_then(Value::as_str))
                         .collect::<Vec<_>>();
+                    for tool_call in &tool_calls {
+                        match tool_call.get("name").and_then(Value::as_str) {
+                            Some("read_file") => {
+                                if let Some(path) = tool_call
+                                    .get("arguments")
+                                    .and_then(|arguments| arguments.get("path"))
+                                    .and_then(Value::as_str)
+                                {
+                                    m.read_path_sequence.push(path.to_string());
+                                }
+                            }
+                            Some("read_many_files") => {
+                                m.read_path_sequence.extend(
+                                    tool_call
+                                        .get("arguments")
+                                        .and_then(|arguments| arguments.get("paths"))
+                                        .and_then(Value::as_array)
+                                        .into_iter()
+                                        .flatten()
+                                        .filter_map(Value::as_str)
+                                        .map(str::to_string),
+                                );
+                            }
+                            _ => {}
+                        }
+                    }
                     if !tool_names.is_empty() {
                         let width = tool_names.len() as u64;
                         m.tool_emitting_model_calls += 1;
@@ -2418,11 +2475,15 @@ fn parse_events(jsonl: &str) -> Mined {
                         } else {
                             m.batched_tool_model_calls += 1;
                         }
-                        let read_width = tool_names
+                        let read_width = tool_calls
                             .iter()
-                            .filter(|name| **name == "read_file")
-                            .count() as u64;
+                            .map(|call| read_file_operation_width(call))
+                            .sum();
                         m.max_read_file_batch_width = m.max_read_file_batch_width.max(read_width);
+                        m.batch_native_read_calls += tool_calls
+                            .iter()
+                            .filter(|call| read_file_operation_width(call) > 1)
+                            .count() as u64;
                         let bookkeeping = tool_names
                             .iter()
                             .filter(|name| is_bookkeeping_tool(name))
@@ -2890,6 +2951,18 @@ async fn run_yolop(sample: Sample, cx: RunCx) -> Transcript {
     }
     let task_tool_calls = task_tool_calls(&mined);
     let task_llm_calls = task_llm_calls(&mined);
+    let dependency_safe_read_sequence = sample
+        .metadata
+        .get("expected_read_paths")
+        .and_then(Value::as_array)
+        .map(|paths| {
+            paths.iter().filter_map(Value::as_str).eq(
+                mined
+                    .read_path_sequence
+                    .iter()
+                    .map(String::as_str),
+            ) && mined.batch_native_read_calls == 0
+        });
 
     t.final_response = mined.final_response;
     t.iterations = mined.iterations as usize;
@@ -2923,6 +2996,16 @@ async fn run_yolop(sample: Sample, cx: RunCx) -> Transcript {
         "batched_tool_model_calls".into(),
         mined.batched_tool_model_calls as f64,
     );
+    t.metrics.insert(
+        "batch_native_read_calls".into(),
+        mined.batch_native_read_calls as f64,
+    );
+    if let Some(safe) = dependency_safe_read_sequence {
+        t.metrics.insert(
+            "dependency_safe_read_sequence".into(),
+            u64::from(safe) as f64,
+        );
+    }
     t.metrics.insert(
         "mean_tool_batch_width".into(),
         if mined.tool_emitting_model_calls == 0 {
@@ -3299,7 +3382,7 @@ mod tests {
 {"type":"tool.completed","data":{"tool_name":"read_file","success":true,"result":[{"type":"text","text":"{\"progress_guard_warning\":\"progress_guard: checkpoint required\"}"}]}}
 {"type":"tool.completed","data":{"tool_name":"bash","success":true,"result":[{"type":"text","text":"{\"command\":\"cargo test --all-features\"}"}]}}
 {"type":"tool.completed","data":{"tool_name":"edit_file","success":false}}
-{"type":"output.message.completed","data":{"message":{"role":"agent","content":[{"type":"tool_call","name":"write_session_title","arguments":{},"id":"title"},{"type":"tool_call","name":"read_file","arguments":{},"id":"read-a"},{"type":"tool_call","name":"read_file","arguments":{},"id":"read-b"}],"metadata":{"reasoning_effort":"high"}},"usage":{"input_tokens":100,"output_tokens":10,"cache_read_tokens":40,"cache_creation_tokens":5,"estimated_cost_usd":0.02}}}
+{"type":"output.message.completed","data":{"message":{"role":"agent","content":[{"type":"tool_call","name":"write_session_title","arguments":{},"id":"title"},{"type":"tool_call","name":"read_file","arguments":{},"id":"read-a"},{"type":"tool_call","name":"read_many_files","arguments":{"paths":["a.txt","b.txt"]},"id":"read-b"}],"metadata":{"reasoning_effort":"high"}},"usage":{"input_tokens":100,"output_tokens":10,"cache_read_tokens":40,"cache_creation_tokens":5,"estimated_cost_usd":0.02}}}
 {"type":"output.message.completed","data":{"message":{"role":"agent","content":[{"type":"tool_call","name":"write_todos","arguments":{},"id":"todos"}]}},"usage":{}}
 {"type":"reason.completed","data":{"success":true,"duration_ms":900,"usage":{"input_tokens":100,"output_tokens":10,"estimated_cost_usd":0.02}}}
 {"type":"output.message.completed","data":{"message":{"role":"agent","content":[{"type":"text","text":"All finished."}]},"usage":{"input_tokens":200,"output_tokens":20,"actual_cost_usd":0.05,"estimated_cost_usd":0.99}}}
@@ -3339,7 +3422,9 @@ mod tests {
         assert_eq!(m.single_tool_model_calls, 1);
         assert_eq!(m.batched_tool_model_calls, 1);
         assert_eq!(m.max_tool_batch_width, 3);
-        assert_eq!(m.max_read_file_batch_width, 2);
+        assert_eq!(m.max_read_file_batch_width, 3);
+        assert_eq!(m.batch_native_read_calls, 1);
+        assert_eq!(m.read_path_sequence, ["a.txt", "b.txt"]);
         assert_eq!(m.bookkeeping_tool_calls, 2);
         assert_eq!(m.standalone_bookkeeping_rounds, 1);
         assert_eq!(task_tool_calls(&m), 2);
