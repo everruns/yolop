@@ -217,6 +217,12 @@ that is distinct from Yolop's narrated title.
 To avoid duplicating streamed text, a completed assistant message is only
 emitted as a chunk when no deltas streamed for it during the turn.
 
+When the provider exhausts its transparent stream-stall retries, the ACP prompt
+loop submits one fresh continuation against the durable session transcript. The
+continuation tells the model not to repeat completed tools or settled work. It
+is bounded to one attempt per client prompt, so a persistently stalled provider
+still terminates instead of entering an automatic recovery loop.
+
 After `session/new`, yolop sends `available_commands_update` with
 capability-sourced slash commands such as `/setup` and user-invocable skill
 commands. ACP clients run commands by sending their literal text in
