@@ -75,6 +75,20 @@ samples = ["add-fn", "find-constant", "expected-diagnostic-failure-control", "di
 targets = ["openai/gpt-5.5"]
 axes = { binary = ["baseline", "candidate"], effort = ["default"], harness = ["default"] }
 
+# REPO-MAP-PROFILE compares the current deferred profile, repo_map eager alone,
+# and both repo tools eager. Five trials are required when making the profile
+# decision so one stochastic trajectory cannot dominate the result.
+[presets.repo-map-profile]
+samples = ["repo-map-scoped", "repo-map-bounded"]
+targets = ["openai/gpt-5.5"]
+axes = { binary = ["baseline", "repo-map-only", "repo-map-symbols"], effort = ["default"], harness = ["default"] }
+
+# Ordinary controls for the same three schema profiles.
+[presets.repo-map-controls]
+samples = ["add-fn", "find-constant"]
+targets = ["openai/gpt-5.5"]
+axes = { binary = ["baseline", "repo-map-only", "repo-map-symbols"], effort = ["default"], harness = ["default"] }
+
 # CAPABILITY-DISCLOSURE — first-turn context and success proof across exact
 # reply, read-only discovery, simple edit, complex coding, release/control, and
 # an explicitly deferred tool. Compare first_request_*_tokens and cumulative

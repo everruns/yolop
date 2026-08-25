@@ -212,11 +212,12 @@ separate rounds with logical read width 1.
 
 The stable prompt and tool catalogue always disclose every capability name and
 description. Only parameter schemas are progressive: the first-turn profile
-keeps repository discovery, bookkeeping, and the mandatory progress-checkpoint
-transition eager, while mutation, background, release/control, and specialized
+keeps repository discovery, including the compact `repo_map` schema,
+bookkeeping, and the mandatory progress-checkpoint transition eager, while
+mutation, background, release/control, `repo_symbols`, and other specialized
 schemas load through `tool_search`. An explicitly enabled host profile may add
-eager schemas (LSP is the measured case), and extension manifests may opt
-individual tools out of deferral.
+eager schemas, and extension manifests may opt individual tools out of
+deferral.
 
 This policy is static for a host/session. A model classifier must not rewrite
 the system prefix from the wording of each new task; that would make cache
@@ -230,7 +231,12 @@ stable prompt remains capped at 12,888 bytes, provider-visible tool definitions
 must fall by at least 24%, and the historical parameter-schema surface by at
 least 45%. Keeping the mandatory checkpoint and bounded batch-read schemas eager
 intentionally spends schema bytes so neither a host-required transition nor an
-independent-read plan depends on another schema-discovery round.
+independent-read plan depends on another schema-discovery round. The compact
+`repo_map` schema spends another 261 bytes so the first broad repository
+orientation has its real argument contract. Its tool description states that
+fields are optional and records the compact defaults. Making `repo_symbols`
+eager offered no recovery benefit and exceeded the unchanged schema floor, so
+it stays deferred.
 
 ### The budget is a test
 

@@ -1,5 +1,23 @@
 # Knowledge Log
 
+## 2026-08-24, Repository mapping starts with its real contract
+
+- [Tool search](specs/tool-search.md): `repo_map` keeps its compact parameter
+  schema in the first-turn profile, while `repo_symbols` remains deferred.
+  Recent apparent `/workspace`, linked-worktree, and nested-repository path
+  failures were rejected before path resolution because a deferred stub hid
+  every argument name and models invented foreign depth controls.
+- A five-trial, three-arm OpenAI study kept all 30 answers correct. On the
+  uncoached linked-worktree case, map-only used one task tool in every trial;
+  the deferred baseline needed an extra discovery/control tool in two of five.
+  Making `repo_symbols` eager bought no recovery or call-count improvement and
+  exceeded the unchanged cold-start schema floor.
+- The eager map schema stays at 261 bytes. Its tool description carries the
+  optional defaults that strict providers need, after the first live pass
+  showed that types and bounds alone encouraged an explicit 200-symbol limit.
+  The map-only cold start retains the required tool-definition and schema
+  reductions from the undeferred surface.
+
 ## 2026-08-24, Retention is not a recovery affordance
 
 - [Tool output](specs/tool-output.md): full command output can remain available

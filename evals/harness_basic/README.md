@@ -62,7 +62,8 @@ search/refactor, and read-only code navigation.
 | `expected-diagnostic-failure-control` [`search-efficiency-control`] [`progress-efficiency-control`] | Rust crate with one intentionally failing test | Reproduce, fix, and pass the test | source fixed with no semantic-failure warning | expected diagnostic failure control |
 | `distinct-failures-control` [`search-efficiency-control`] [`progress-efficiency-control`] | Missing command, wrong path, and usage failure in sequence | Finish through a built-in search without a warning | correct value and no equivalent-failure warning | false-positive guard across different root reasons |
 | `zero-result-search-recovery` [`search-efficiency`] | Three absent terms plus a real target | Recover after repeated empty searches | response finds the target and records a progress warning | result-aware progress guard |
-| `repo-map-bounded` [`search-efficiency`] | Rust file with 260+ symbols | Use an unqueried repo map | answer is found, output stays bounded, and truncation is followed by a targeted map or grep | output-size and recovery discipline |
+| `repo-map-bounded` [`search-efficiency`] | Rust file with 260+ symbols | Use an unqueried repo map | answer is found, output stays bounded, and truncation is followed by a queried map, queried symbols, or matching grep | output-size and recovery discipline |
+| `repo-map-scoped` [`repo-map-profile`] | Linked-worktree marker plus a nested repository | Map `/workspace/REPOS/service` without shell fallback | scoped answer is found with no failed repo-map call | alias, linked-worktree, nested-repository scope, and eager-schema adoption |
 | `normal-output-preserves-head` [`search-efficiency`] | leading match followed by 600 `Error` lines | Run one bash search with explicit `output: normal` | leading match remains visible without reading persisted output | successful-output compaction |
 | `complete-output-no-reread` [`output-persistence`] | complete three-line build result | Read and remove the source log with one bash call | correct value, no recovery call, one model round after the tool | retention without a redundant recovery affordance |
 | `persisted-output-small-read` [`persisted-output-reading`] | 81-line, roughly 11 KiB CI log with a failure in the middle | Diagnose a persisted successful command result | one recovery read at most, correct root cause | small-output single-read policy |
@@ -147,7 +148,8 @@ cost, `llm_calls`, `turns`, `tool_calls_failed`, `agent_reported_ms`,
 `progress_guard_warnings`, `calls_after_progress_warning`, structured inner
 `tool_calls_failed`, equivalent-failure warnings and blocked retries, duplicate
 exploration, total/maximum tool-result bytes,
-repo-map narrowing and targeted recovery (a narrower map or `grep_files` fallback),
+repo-map narrowing and targeted recovery (a queried `repo_map` or
+`repo_symbols`, or a matching `grep_files` fallback),
 session-search ordering, `ast_edit_tool_calls`, and
 `ast_edit_tool_calls_failed`, validation calls, redundant validations, and
 workspace-state revisits, first-mutation correctness, adapter mutations before
@@ -216,6 +218,17 @@ HARNESS_BASIC_CANDIDATE_BIN=/path/to/change/yolop \
 HARNESS_BASIC_BASELINE_BIN=/path/to/main/yolop \
 HARNESS_BASIC_CANDIDATE_BIN=/path/to/change/yolop \
   doppler run -- mira run --preset search-controls --trials 5 --group-by binary
+
+# Decide the eager repo-tool profile, then check ordinary controls. The two
+# candidate paths may point at binaries from temporary comparison worktrees.
+HARNESS_BASIC_BASELINE_BIN=/path/to/main/yolop \
+HARNESS_BASIC_REPO_MAP_ONLY_BIN=/path/to/repo-map-only/yolop \
+HARNESS_BASIC_REPO_MAP_SYMBOLS_BIN=/path/to/repo-map-symbols/yolop \
+  doppler run -- mira run --preset repo-map-profile --trials 5 --group-by binary
+HARNESS_BASIC_BASELINE_BIN=/path/to/main/yolop \
+HARNESS_BASIC_REPO_MAP_ONLY_BIN=/path/to/repo-map-only/yolop \
+HARNESS_BASIC_REPO_MAP_SYMBOLS_BIN=/path/to/repo-map-symbols/yolop \
+  doppler run -- mira run --preset repo-map-controls --trials 5 --group-by binary
 
 # Cold-start disclosure A/B across both structured-call provider families and
 # all six required task shapes.
@@ -314,6 +327,8 @@ doppler run -- mira run --targets 'anthropic/*' --axis harness=no-ast-grep --sam
 | `progress-guard` | focused warning-behavior check | tag `progress-guard` | claude-sonnet-4-5 | candidate, effort=default, default vs no-progress-guard |
 | `search-efficiency` | baseline/candidate session/search proof, 3 trials | 8 focused cases | gpt-5.5 | baseline + candidate, harness=default, effort=default |
 | `search-controls` | ordinary and semantic-failure controls, 5 trials | 4 controls | gpt-5.5 | baseline + candidate, harness=default, effort=default |
+| `repo-map-profile` | eager-schema adoption and recovery decision, 5 trials | scoped + bounded repo maps | gpt-5.5 | deferred baseline + map-only + map-and-symbols |
+| `repo-map-controls` | ordinary controls for the eager-schema decision, 5 trials | `add-fn`, `find-constant` | gpt-5.5 | deferred baseline + map-only + map-and-symbols |
 | `capability-disclosure` | first-request token and reveal-path proof, 5 trials | exact reply, read-only search, simple edit, complex coding, release/control, deferred history | gpt-5.5 + claude-sonnet-4-5 | baseline + candidate, harness=default, effort=default |
 | `progress-efficiency` | baseline/candidate state-progress proof, 3 trials | checkpoint transition, state cycle, redundant validation, equivalent failure | gpt-5.5 | baseline + candidate, harness=default, effort=default |
 | `progress-controls` | ordinary and semantic-failure controls, 5 trials | 4 controls | gpt-5.5 | baseline + candidate, harness=default, effort=default |
@@ -419,6 +434,16 @@ rates**, when a sample applies `when_binary` checks: `repo-map-bounded` holds
 `candidate` to bounds `baseline` never faces, so raw pass counts across binaries
 are not comparable there.
 
+## Repository-map profile
+
+[`repo_map_profile_baseline.json`](repo_map_profile_baseline.json) records the
+real-session failure counts, upstream ownership check, deterministic schema
+cost, three-arm OpenAI study, ordinary controls, and focused live smoke. The
+measured policy keeps `repo_map` eager and `repo_symbols` deferred. Compare the
+scoped task-tool trajectory and targeted recovery metrics, not only aggregate
+pass rate: the bounded case deliberately fails a run that repeats a queried
+recovery even when its final answer is correct.
+
 ## Layout
 
 ```
@@ -428,6 +453,7 @@ evals/harness_basic/
   analyze_search_efficiency.py  # baseline/candidate distribution gates
   search_efficiency_baseline.json  # immutable pre-fix revision + evidence
   prompt_composition_baseline.json # immutable pre-trim revision + evidence
+  repo_map_profile_baseline.json   # eager repo-tool decision + evidence
   capability_disclosure_baseline.json # cold-start byte baseline + A/B contract
   analyze_progress_efficiency.py  # state-progress distribution gates
   failure_repair_baseline.json # semantic failure A/B contract and evidence

@@ -41,7 +41,7 @@ vendor was deleted and yolop now consumes upstream directly:
    always uses the real tools; only the advertised schema changes.
 
 2. **Static host-shaped eager profile.** Yolop passes first-turn repository
-   discovery (`read_file`, `list_directory`, `grep_files`), bookkeeping
+   discovery (`read_file`, `list_directory`, `grep_files`, `repo_map`), bookkeeping
    (`write_todos`, `write_session_title`), the shell (`bash`), and the mandatory
    progress-guard transition (`progress_checkpoint`) to
    `ToolSearchCapability::new().with_never_defer([...])`. Mutation,
@@ -53,12 +53,25 @@ vendor was deleted and yolop now consumes upstream directly:
    deferred stub names no parameters while allowing extras, so a model fills the
    gap from other harnesses' shell schemas and yolop's
    `additionalProperties: false` schema then rejects the call: the most-used
-   tool in the harness spent a round trip on a correction. LSP tools defer with
-   every other opt-in surface; this reverses an earlier eager profile justified
-   by an LSP adoption eval that measured lower adoption with stubbed schemas, so
-   re-measure before treating the current profile as settled. Extension tools
-   explicitly marked `never_defer` retain their manifest contract. Yolop does not own the built-in definitions, so it sets this policy
-   by name rather than changing each tool's `DeferrablePolicy`.
+   tool in the harness spent a round trip on a correction. `repo_map` is eager
+   for the same contract reason: its deferred stub exposed no argument names,
+   so models supplied foreign `depth`, `max_depth`, or `max_symbols` controls
+   and validation rejected otherwise valid `/workspace`, linked-worktree, and
+   nested-repository scopes before execution. Its authoritative schema keeps
+   only types and bounds, 261 bytes instead of 966, so adding it preserves the
+   cold-start schema-reduction gate. Optional defaults live in the tool
+   description: a strict-provider A/B showed that types and bounds alone led
+   the model to supply every optional field and expand an unqueried map to 200
+   symbols. `repo_symbols` remains deferred: across five trials per arm, making
+   it eager added 39 median first-request tokens over map-only without reducing
+   recovery calls, and its schema would lower the cold-start reduction from
+   45.0% to 43.6%. LSP tools
+   defer with every other opt-in surface; this reverses an earlier eager profile
+   justified by an LSP adoption eval that measured lower adoption with stubbed
+   schemas, so re-measure before treating the current profile as settled.
+   Extension tools explicitly marked `never_defer` retain their manifest
+   contract. Yolop does not own the built-in definitions, so it sets this
+   policy by name rather than changing each tool's `DeferrablePolicy`.
 
    When `progress_guard` requires its checkpoint, the guard removes
    `tool_search` and other statically blocked exploration paths from the next
