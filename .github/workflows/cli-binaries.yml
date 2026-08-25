@@ -323,7 +323,7 @@ jobs:
           # frozen_string_literal: true
 
           class Yolop < Formula
-            desc "Minimal terminal coding agent built on everruns-runtime"
+            desc "Minimal terminal coding agent built on everruns-host"
             homepage "${HOMEPAGE}"
             # No explicit `version` — Homebrew scans it from the download URL
             # (the release tag in the path). Setting it again trips

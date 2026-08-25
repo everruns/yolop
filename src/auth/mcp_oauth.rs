@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use everruns_core::{
     EgressRequest, EgressResponse, EgressResult, EgressService, EgressStreamResponse,
 };
-use everruns_http::DirectEgressService;
+use everruns_host::DirectEgressService;
 use everruns_mcp::oauth::McpTokenStore;
 use std::collections::BTreeMap;
 use std::sync::Arc;

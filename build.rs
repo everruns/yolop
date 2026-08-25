@@ -15,10 +15,12 @@ fn main() {
         .unwrap_or_else(|| git_short_sha().unwrap_or_else(|| "unknown".to_string()));
     println!("cargo:rustc-env=YOLOP_GIT_SHA={git_sha}");
 
-    let runtime_version = cargo_lock_package_version("everruns-runtime")
-        .or_else(|| cargo_toml_dependency_version("everruns-runtime"))
+    // everruns-host is what everruns-runtime became when upstream deleted the
+    // latter in 0.18; the version line names the crate that actually ships.
+    let host_version = cargo_lock_package_version("everruns-host")
+        .or_else(|| cargo_toml_dependency_version("everruns-host"))
         .unwrap_or_else(|| "unknown".to_string());
-    println!("cargo:rustc-env=YOLOP_EVERRUNS_RUNTIME_VERSION={runtime_version}");
+    println!("cargo:rustc-env=YOLOP_EVERRUNS_HOST_VERSION={host_version}");
 
     // The host's Rust target triple. Needed at runtime to pick the right
     // prebuilt extension binary; `std::env::consts` gives OS and arch but
@@ -86,14 +88,23 @@ fn cargo_toml_dependency_version(package_name: &str) -> Option<String> {
         if !line.starts_with(package_name) {
             continue;
         }
-        if let Some((_, raw_version)) = line.split_once('=') {
-            let version = raw_version.trim().trim_matches('"');
-            if !version.is_empty() {
-                return Some(version.to_string());
-            }
+        // Both `dep = "1.2.3"` and `dep = { version = "1.2.3", ... }` appear in
+        // the manifest, so read the first quoted value rather than the rest of
+        // the line.
+        if let Some((_, raw_value)) = line.split_once('=')
+            && let Some(version) = quoted_version(raw_value)
+            && !version.is_empty()
+        {
+            return Some(version.to_string());
         }
     }
     None
+}
+
+fn quoted_version(raw_value: &str) -> Option<&str> {
+    let (_, rest) = raw_value.split_once('"')?;
+    let (version, _) = rest.split_once('"')?;
+    Some(version)
 }
 
 fn quoted_value<'a>(line: &'a str, key: &str) -> Option<&'a str> {

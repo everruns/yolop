@@ -10,7 +10,7 @@ version = "0.17.0"
 edition = "2024"
 authors = ["Everruns <support@everruns.com>"]
 license = "MIT"
-description = "Yolop — a terminal coding agent built on everruns-runtime"
+description = "Yolop — a terminal coding agent built on everruns-host"
 homepage = "https://github.com/everruns/yolop"
 repository = "https://github.com/everruns/yolop"
 readme = "README.md"
@@ -177,14 +177,15 @@ everruns-mcp = { version = "0.19.1", features = ["stdio"] }
 # 0.18 breaking change. Every host symbol yolop used moved here unchanged except
 # EventBus, which the canonical event log replaces.
 everruns-host = { version = "0.20.2", features = ["mcp-stdio"] }
-# The direct egress implementation moved out of everruns-core into its own
-# crate; yolop uses it for MCP OAuth discovery.
+# DirectEgressService, which yolop uses for MCP OAuth discovery, is host's own
+# `direct-egress` module; `mcp-stdio` already turns that feature on. The
+# standalone everruns-http crate that used to carry it is yanked on crates.io,
+# and a yanked dependency would make yolop unpublishable.
 # #3182 completed the library boundary cleanup: driver/model/provider types
 # and the built-in capabilities left everruns-core for their own crates.
 everruns-provider = "0.19.0"
 everruns-builtins = "0.18.4"
 everruns-capability = "0.18.0"
-everruns-http = "0.18.0"
 # Yolop ships `--provider llmsim` as a user-facing offline mode, not just a test
 # fixture, so the simulator is a production dependency. 0.18 split it into the
 # production-safe `everruns-llmsim`; `everruns-test-support` documents itself as

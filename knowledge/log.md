@@ -1,5 +1,25 @@
 # Knowledge Log
 
+## 2026-08-25, The runtime crate yolop names is everruns-host
+
+- [Maintenance](specs/maintenance.md): `everruns-runtime` has not existed since
+  upstream deleted it in 0.18, but yolop kept naming it. `yolop --version` and
+  the harness telemetry key both resolved their version from a package no
+  lockfile contains, so both had been reporting `unknown` since the 0.18 bump.
+  A clean compile hid it: `env!` on a build-script variable still expands when
+  the lookup fell back to a literal.
+- The dependency vector list, README, `AGENTS.md`, and the MCP, extensions,
+  checkpointing, and conversational-control specs now name `everruns-host`.
+  Historical references to the deleted crate stay as history.
+- `everruns-http` is yanked on crates.io and its `DirectEgressService` now
+  lives in `everruns-host` behind `direct-egress`, which `mcp-stdio` already
+  enables. Dropping the yanked dependency also collapsed a duplicate
+  `everruns-provider`, so the family is back to one version per crate.
+- The upstream `everruns-core` 0.19 / `everruns-provider` 0.20 wave is not
+  adoptable yet: the `everruns` facade and the five integration crates are
+  still published against `everruns-core ^0.18.1`, so the bump resolves two
+  cores and fails to compile.
+
 ## 2026-08-24, Repository mapping starts with its real contract
 
 - [Tool search](specs/tool-search.md): `repo_map` keeps its compact parameter

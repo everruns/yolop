@@ -2140,7 +2140,7 @@ dependencies = [
  "everruns-host",
  "everruns-llmsim",
  "everruns-platform",
- "everruns-provider 0.19.0",
+ "everruns-provider",
  "futures",
  "libc",
  "parking_lot",
@@ -2163,7 +2163,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "eventsource-stream",
- "everruns-provider 0.19.0",
+ "everruns-provider",
  "futures",
  "reqwest 0.13.4",
  "serde",
@@ -2182,7 +2182,7 @@ dependencies = [
  "chrono",
  "everruns-capability",
  "everruns-core",
- "everruns-provider 0.19.0",
+ "everruns-provider",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -2215,7 +2215,7 @@ dependencies = [
  "chrono",
  "cron",
  "everruns-capability",
- "everruns-provider 0.19.0",
+ "everruns-provider",
  "futures",
  "globset",
  "inventory",
@@ -2245,7 +2245,7 @@ dependencies = [
  "chrono",
  "everruns-capability",
  "everruns-core",
- "everruns-provider 0.19.0",
+ "everruns-provider",
  "futures",
  "serde",
  "serde_json",
@@ -2268,7 +2268,7 @@ dependencies = [
  "everruns-core",
  "everruns-engine",
  "everruns-mcp",
- "everruns-provider 0.19.0",
+ "everruns-provider",
  "futures",
  "ignore",
  "regex",
@@ -2283,20 +2283,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "everruns-http"
-version = "0.18.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e38b07ac8e30d11181c9da9e1ba92757558c136453753e8cd64283b26800e064"
-dependencies = [
- "async-trait",
- "everruns-core",
- "everruns-provider 0.18.0",
- "futures",
- "reqwest 0.13.4",
- "serde_json",
-]
-
-[[package]]
 name = "everruns-integrations-daytona"
 version = "0.18.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2306,7 +2292,7 @@ dependencies = [
  "chrono",
  "everruns-core",
  "everruns-platform",
- "everruns-provider 0.19.0",
+ "everruns-provider",
  "inventory",
  "reqwest 0.13.4",
  "serde",
@@ -2324,7 +2310,7 @@ dependencies = [
  "async-trait",
  "everruns-capability",
  "everruns-core",
- "everruns-provider 0.19.0",
+ "everruns-provider",
  "inventory",
  "reqwest 0.13.4",
  "serde",
@@ -2344,7 +2330,7 @@ dependencies = [
  "base64 0.23.1",
  "everruns-capability",
  "everruns-core",
- "everruns-provider 0.19.0",
+ "everruns-provider",
  "hex",
  "serde_json",
  "sha2 0.11.0",
@@ -2360,7 +2346,7 @@ dependencies = [
  "async-trait",
  "everruns-core",
  "everruns-platform",
- "everruns-provider 0.19.0",
+ "everruns-provider",
  "inventory",
  "reqwest 0.13.4",
  "serde",
@@ -2379,7 +2365,7 @@ dependencies = [
  "ed25519-dalek 3.0.0",
  "everruns-capability",
  "everruns-core",
- "everruns-provider 0.19.0",
+ "everruns-provider",
  "fetchkit",
  "futures",
  "serde_json",
@@ -2396,7 +2382,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "everruns-host",
- "everruns-provider 0.19.0",
+ "everruns-provider",
  "futures",
  "llmsim",
  "serde_json",
@@ -2415,7 +2401,7 @@ dependencies = [
  "chrono",
  "everruns-capability",
  "everruns-core",
- "everruns-provider 0.19.0",
+ "everruns-provider",
  "rand 0.10.2",
  "serde",
  "serde_json",
@@ -2436,7 +2422,7 @@ checksum = "6c9f2e2f7adedadbbcaa367a90350e74a1aac72008f5784e481cf59c45a902b1"
 dependencies = [
  "async-trait",
  "chrono",
- "everruns-provider 0.19.0",
+ "everruns-provider",
  "reqwest 0.13.4",
  "serde",
 ]
@@ -2449,7 +2435,7 @@ checksum = "c6a5217c92a0413fdc7853f598dc3797c72d5932e80b64191249c83483848630"
 dependencies = [
  "async-trait",
  "chrono",
- "everruns-provider 0.19.0",
+ "everruns-provider",
  "reqwest 0.13.4",
  "serde",
  "serde_json",
@@ -2465,7 +2451,7 @@ checksum = "17c287f4c574905b290bcc3dcb50aa9f5dfff7de4aef22c03afae9da88b1ef6a"
 dependencies = [
  "async-trait",
  "chrono",
- "everruns-provider 0.19.0",
+ "everruns-provider",
  "reqwest 0.13.4",
  "serde",
  "serde_json",
@@ -2484,7 +2470,7 @@ dependencies = [
  "everruns-capability",
  "everruns-core",
  "everruns-host",
- "everruns-provider 0.19.0",
+ "everruns-provider",
  "inventory",
  "jsonschema",
  "serde",
@@ -2492,30 +2478,6 @@ dependencies = [
  "thiserror 2.0.19",
  "tokio",
  "tracing",
- "uuid 1.24.0",
-]
-
-[[package]]
-name = "everruns-provider"
-version = "0.18.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "680827ffb10dd7e12a078cbababeea099ad791b9206918b6edf77e8d090defc3"
-dependencies = [
- "anyhow",
- "async-trait",
- "base64 0.23.1",
- "chrono",
- "futures",
- "hex",
- "rand 0.10.2",
- "regex",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "thiserror 2.0.19",
- "tokio",
- "tracing",
- "url",
  "uuid 1.24.0",
 ]
 
@@ -10020,7 +9982,6 @@ dependencies = [
  "everruns-capability",
  "everruns-core",
  "everruns-host",
- "everruns-http",
  "everruns-integrations-daytona",
  "everruns-integrations-duckduckgo",
  "everruns-integrations-filesystem",
@@ -10032,7 +9993,7 @@ dependencies = [
  "everruns-openai",
  "everruns-openrouter",
  "everruns-platform",
- "everruns-provider 0.19.0",
+ "everruns-provider",
  "flate2",
  "futures",
  "hf-hub",
