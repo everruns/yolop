@@ -14,11 +14,11 @@ the failing run linked and report the pass blocked.
 
 ## Dependency health
 
-The `everruns-*` family (`-runtime`, `-core`, `-anthropic`, `-openai`,
+The `everruns-*` family (`-host`, `-core`, `-anthropic`, `-openai`,
 `-integrations-duckduckgo`) moves in lockstep at one minor version.
 
 ```bash
-cargo search everruns-runtime --limit 1
+cargo search everruns-host --limit 1
 cargo update                    # transitive drift
 cargo tree --duplicates         # split transitive versions: fix or explain
 cargo audit                     # when available; otherwise Dependabot alerts

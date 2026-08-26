@@ -103,7 +103,7 @@ Notes:
 ## Known gap
 
 - **Mid-turn reasoning-effort change** (within a single `run_turn`, not just at the
-  next turn boundary) requires upstream `everruns-runtime` support and is tracked in
+  next turn boundary) requires upstream `everruns-host` support and is tracked in
   **EVE-595**. `set_reasoning_effort` delivers turn-boundary escalation today.
 
 ## Ownership boundary

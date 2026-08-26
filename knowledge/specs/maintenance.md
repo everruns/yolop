@@ -80,7 +80,7 @@ generic "tech debt" note.
 
 The `everruns-*` family is yolop's single most consequential dependency vector:
 
-- `everruns-runtime`
+- `everruns-host`
 - `everruns-core`
 - `everruns-platform`
 - `everruns-openai`
@@ -92,6 +92,11 @@ These crates ship together from one upstream workspace and are designed to be us
 Beyond the everruns family, dependency hygiene means:
 
 - no known CVEs in the tree (`cargo audit` when available, plus the repo's Dependabot alerts)
+- no yanked versions in `Cargo.lock`. A yanked dependency keeps building from
+  the committed lockfile, so nothing fails locally, while `cargo install yolop`
+  re-resolves and cannot pick it: yolop is unpublishable until the dependency
+  moves. Upstream yanks a crate when its contents move elsewhere, so the fix is
+  to find the new home, not to pin harder.
 - duplicate transitive versions reviewed (`cargo tree --duplicates`), fix or note why unfixable
 - no unused direct dependencies; prefer narrow sub-crates over umbrella crates when only a slice is used
 

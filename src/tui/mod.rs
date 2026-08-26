@@ -5187,7 +5187,6 @@ mod tests {
                 provider: "openai".to_string(),
                 model: Some("gpt-5".to_string()),
                 item_id: "rs_abc".to_string(),
-                encrypted_content: Some("opaque".to_string()),
                 summary: vec![
                     "Considering file layout".to_string(),
                     "".to_string(),
@@ -5206,7 +5205,9 @@ mod tests {
     }
 
     #[test]
-    fn lines_for_event_hides_output_message_thinking() {
+    fn lines_for_event_hides_output_message_reasoning() {
+        use everruns_provider::reasoning::{ReasoningContentPart, ReasoningText};
+
         let mut message = everruns_core::Message::assistant_with_tools(
             "",
             vec![ToolCall {
@@ -5215,8 +5216,15 @@ mod tests {
                 arguments: serde_json::json!({ "path": "/repo/Cargo.toml" }),
             }],
         );
-        message.thinking = Some(
-            "**Inspecting package files**\n\nI should read the package manifest first.".to_string(),
+        message.content.insert(
+            0,
+            everruns_core::ContentPart::reasoning(
+                ReasoningContentPart::opaque("openai").with_text(ReasoningText::Plain {
+                    text: "**Inspecting package files**\n\nI should read the package manifest \
+                           first."
+                        .to_string(),
+                }),
+            ),
         );
         let event = RuntimeEvent::new(
             SessionId::new(),
@@ -5226,7 +5234,10 @@ mod tests {
 
         let lines = lines_for_event(&event);
 
-        assert!(lines.is_empty(), "thinking must not be rendered: {lines:?}");
+        assert!(
+            lines.is_empty(),
+            "reasoning must not be rendered: {lines:?}"
+        );
     }
 
     #[test]
@@ -5683,7 +5694,6 @@ mod tests {
                 provider: "openai".to_string(),
                 model: Some("gpt-5".to_string()),
                 item_id: "rs_tokens".to_string(),
-                encrypted_content: None,
                 summary: Vec::new(),
                 token_count: Some(120),
             },

@@ -173,7 +173,7 @@ On a new turn, Yolop:
 6. advances the active head.
 
 A failed model preflight does not create a checkpoint or append the ask. Once a
-provider request begins, everruns-runtime owns bounded transient recovery inside
+provider request begins, everruns-host owns bounded transient recovery inside
 the active reason phase. Yolop installs a stall liveness window and a recovery
 elapsed budget large enough to absorb full stall retries (upstream's default
 elapsed budget is shorter than one stall window). Retries reuse the persisted ask

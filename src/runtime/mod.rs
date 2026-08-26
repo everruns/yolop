@@ -103,7 +103,9 @@ use everruns_platform::capabilities::{
 use everruns_provider::AgentLoopError;
 use everruns_provider::model_profiles::get_model_profile;
 use everruns_provider::typed_id::SessionId;
-use everruns_provider::{DriverId, ModelProfile, ReasoningEffortConfig, ReasoningEffortValue};
+use everruns_provider::{
+    DriverId, ModelProfile, ReasoningEffort, ReasoningEffortConfig, ReasoningEffortValue,
+};
 use everruns_provider::{DriverRegistry, ProviderMetadata};
 use ignore::WalkBuilder;
 use regex::RegexBuilder;
@@ -320,7 +322,7 @@ pub(crate) async fn discover_mcp_tool_names(
         return Vec::new();
     }
     let client = everruns_mcp::McpClient::new(
-        Arc::new(everruns_http::DirectEgressService::default()),
+        Arc::new(everruns_host::DirectEgressService::default()),
         Arc::new(StoredMcpAuthProvider::new(connections.clone())),
     );
     let mut names = Vec::new();
@@ -2327,10 +2329,15 @@ impl ProviderChoice {
             metadata: None,
             tags: vec![],
         };
-        if let Some(effort) = self.reasoning_effort() {
+        // 0.19 typed `ReasoningConfig::effort`, so the closed taxonomy is parsed
+        // once here instead of by each driver. Yolop's own value is a string
+        // because it comes from model profiles and env; an unrecognized one is
+        // dropped rather than sent, which is what the drivers used to do
+        // silently and inconsistently.
+        if let Some(effort) = self.reasoning_effort().and_then(ReasoningEffort::parse) {
             input.controls = Some(Controls {
                 reasoning: Some(ReasoningConfig {
-                    effort: Some(effort.to_string()),
+                    effort: Some(effort),
                 }),
                 ..Default::default()
             });
@@ -2448,10 +2455,8 @@ fn reasoning_effort_option(value: &ReasoningEffortValue) -> ReasoningEffortOptio
     }
 }
 
-fn reasoning_effort_value(value: &everruns_provider::model::ReasoningEffort) -> Option<String> {
-    serde_json::to_value(value)
-        .ok()
-        .and_then(|value| value.as_str().map(str::to_string))
+fn reasoning_effort_value(value: &ReasoningEffort) -> Option<String> {
+    Some(value.as_str().to_string())
 }
 
 // Integration capabilities whose crates do not export an id constant
@@ -4369,10 +4374,7 @@ pub async fn build_with_options(
     let mut harness_builder = HarnessBuilder::new("yolop", harness_prompt)
         .metadata_entry("app", "yolop")
         .metadata_entry("yolop_version", env!("CARGO_PKG_VERSION"))
-        .metadata_entry(
-            "everruns_runtime_version",
-            env!("YOLOP_EVERRUNS_RUNTIME_VERSION"),
-        )
+        .metadata_entry("everruns_host_version", env!("YOLOP_EVERRUNS_HOST_VERSION"))
         // Attribute LLM calls routed through OpenRouter so they show up under
         // Yolop on OpenRouter's app dashboards. The driver forwards these as
         // the `HTTP-Referer` and `X-Title` headers (everruns 0.14+).
@@ -6121,9 +6123,9 @@ mod tests {
         assert_eq!(
             context
                 .embedder_metadata
-                .get("everruns_runtime_version")
+                .get("everruns_host_version")
                 .map(String::as_str),
-            Some(env!("YOLOP_EVERRUNS_RUNTIME_VERSION"))
+            Some(env!("YOLOP_EVERRUNS_HOST_VERSION"))
         );
         // OpenRouter attribution headers flow through embedder metadata.
         use everruns_provider::driver_registry::{
@@ -8657,7 +8659,7 @@ mod tests {
                 .controls
                 .and_then(|controls| controls.reasoning)
                 .and_then(|reasoning| reasoning.effort),
-            Some("medium".to_string())
+            Some(ReasoningEffort::Medium)
         );
     }
 
@@ -8676,7 +8678,7 @@ mod tests {
                 .controls
                 .and_then(|controls| controls.reasoning)
                 .and_then(|reasoning| reasoning.effort),
-            Some("high".to_string())
+            Some(ReasoningEffort::High)
         );
     }
 

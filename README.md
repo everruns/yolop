@@ -7,7 +7,7 @@
 [![Repo: Agent Friendly](https://img.shields.io/badge/Repo-Agent%20Friendly-blue)](AGENTS.md)
 
 A terminal coding agent built on
-[`everruns-runtime`](https://crates.io/crates/everruns-runtime). One binary
+[`everruns-host`](https://crates.io/crates/everruns-host). One binary
 that plans, edits, runs, and verifies code in your repository, autonomous by
 default, with persistent sessions, agent skills, MCP servers, and editor
 integration over the Agent Client Protocol.

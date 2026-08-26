@@ -623,8 +623,12 @@ fn assert_version_output(stdout: &str) {
         "version output missing commit SHA: {stdout}"
     );
     assert!(
-        stdout.contains("everruns-runtime "),
-        "version output missing runtime version: {stdout}"
+        stdout.contains("everruns-host "),
+        "version output missing host version: {stdout}"
+    );
+    assert!(
+        !stdout.contains("everruns-host unknown"),
+        "version output could not resolve the host version: {stdout}"
     );
 }
 
