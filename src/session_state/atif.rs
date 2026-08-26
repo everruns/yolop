@@ -180,10 +180,12 @@ pub fn trajectory_from_events(
                 if data.message.role != MessageRole::Agent {
                     continue;
                 }
+                // 0.19 moved reasoning onto ordered content parts, and only the
+                // readable half is exposed: `reasoning_display_text` joins the
+                // parts a provider is willing to show and skips redacted ones.
                 let reasoning_content = data
                     .message
-                    .thinking
-                    .clone()
+                    .reasoning_display_text()
                     .filter(|t| !t.trim().is_empty())
                     .or_else(|| {
                         (!pending_reasoning.is_empty()).then(|| pending_reasoning.join("\n\n"))
@@ -384,7 +386,16 @@ mod tests {
                 arguments: serde_json::json!({ "path": "src/lib.rs" }),
             }],
         );
-        with_tools.thinking = Some("The user wants the file contents.".to_string());
+        with_tools.content.insert(
+            0,
+            everruns_core::ContentPart::reasoning(
+                everruns_provider::reasoning::ReasoningContentPart::opaque("sim").with_text(
+                    everruns_provider::reasoning::ReasoningText::Plain {
+                        text: "The user wants the file contents.".to_string(),
+                    },
+                ),
+            ),
+        );
         vec![
             event(EventData::InputMessage(InputMessageData::new(
                 Message::user("fix the bug"),
@@ -394,7 +405,6 @@ mod tests {
                 provider: "sim".to_string(),
                 model: None,
                 item_id: "ri_1".to_string(),
-                encrypted_content: None,
                 summary: vec!["Looking at the bug report.".to_string()],
                 token_count: Some(5),
             })),
@@ -490,7 +500,6 @@ mod tests {
                 provider: "sim".to_string(),
                 model: None,
                 item_id: "ri_2".to_string(),
-                encrypted_content: None,
                 summary: vec!["First thought.".to_string(), "Second thought.".to_string()],
                 token_count: None,
             })),

@@ -530,7 +530,6 @@ mod tests {
             provider: "openai".into(),
             model: Some("gpt-5".into()),
             item_id: "reason_1".into(),
-            encrypted_content: Some("opaque".into()),
             summary: vec![
                 "**Investigating event semantics**".into(),
                 " **Comparing ACP projections** ".into(),

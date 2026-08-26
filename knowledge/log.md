@@ -1,5 +1,28 @@
 # Knowledge Log
 
+## 2026-08-26, Reasoning is ordered content, not a message field
+
+- everruns 0.19 / provider 0.20 replaced the flat `Message.thinking` and
+  `thinking_signature` pair with `ContentPart::Reasoning(ReasoningContentPart)`:
+  an ordered list of artifacts, each carrying its own provider, id, signature,
+  encrypted payload, and readable text. Ordering is the contract, every current
+  provider replays artifacts in the position it issued them, which one flattened
+  field per message could not express.
+- Readable reasoning is now typed by what the provider actually exposes:
+  verbatim chain-of-thought, a curated summary, or redacted. The stream carries
+  the same distinction on `LlmStreamEvent::ReasoningDelta { summary }`, so the
+  Codex driver reads it off the wire instead of downstream code guessing.
+- `ReasonItemData` no longer carries `encrypted_content`. Opaque replay state
+  lives on the message part and stays out of the event stream.
+- [Checkpointing](specs/checkpointing.md): the Codex driver replays the
+  provider's own `item_id` per artifact. It previously synthesized sequential
+  `rs_%08x` ids because the flat field carried none, which Codex could not key
+  replay against.
+- `ReasoningConfig::effort` is typed. Yolop still holds the effort as a string,
+  since model profiles and env are its sources, and parses once at the message
+  boundary; an unrecognized value is dropped rather than sent, which is what the
+  drivers used to do silently and inconsistently.
+
 ## 2026-08-25, The runtime crate yolop names is everruns-host
 
 - [Maintenance](specs/maintenance.md): `everruns-runtime` has not existed since

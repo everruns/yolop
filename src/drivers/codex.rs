@@ -359,13 +359,10 @@ impl ChatDriver for CodexChatDriver {
             max_output_tokens: config.max_tokens,
             stream: true,
             tools: (!config.tools.is_empty()).then(|| convert_tools(&config.tools)),
-            reasoning: config
-                .reasoning_effort
-                .clone()
-                .map(|effort| CodexReasoning {
-                    effort,
-                    summary: "auto".to_string(),
-                }),
+            reasoning: config.reasoning_effort.map(|effort| CodexReasoning {
+                effort: effort.as_str().to_string(),
+                summary: "auto".to_string(),
+            }),
         };
 
         let headers = codex_headers(&tokens, config.metadata.get("session_id"));
@@ -608,21 +605,26 @@ struct ToolCallAccumulator {
 fn build_input(messages: &[LlmMessage]) -> (Option<String>, Vec<CodexInputItem>) {
     let mut instructions = Vec::new();
     let mut input = Vec::new();
-    let mut reasoning_counter = 0usize;
     for message in messages {
         if message.role == LlmMessageRole::System {
             instructions.push(message.content.to_text());
             continue;
         }
-        if message.role == LlmMessageRole::Assistant
-            && let Some(encrypted_content) = &message.thinking_signature
-        {
-            reasoning_counter += 1;
-            input.push(CodexInputItem::Reasoning {
-                r#type: "reasoning".to_string(),
-                id: format!("rs_{reasoning_counter:08x}"),
-                encrypted_content: encrypted_content.clone(),
-            });
+        if message.role == LlmMessageRole::Assistant {
+            // 0.19 replaced the single flat `thinking_signature` with an ordered
+            // list of reasoning parts, each carrying the id the provider issued.
+            // Codex keys replay by that id, so send the real one; a part with no
+            // encrypted payload has nothing to replay and is skipped.
+            for part in &message.reasoning {
+                let (Some(item_id), Some(encrypted)) = (&part.item_id, &part.encrypted) else {
+                    continue;
+                };
+                input.push(CodexInputItem::Reasoning {
+                    r#type: "reasoning".to_string(),
+                    id: item_id.clone(),
+                    encrypted_content: encrypted.clone(),
+                });
+            }
         }
         if message.role == LlmMessageRole::Assistant
             && message
@@ -984,16 +986,24 @@ fn handle_event(
             .and_then(Value::as_str)
             .map(|delta| LlmStreamEvent::TextDelta(delta.to_string()))
             .unwrap_or_else(|| LlmStreamEvent::TextDelta(String::new())),
-        Some("response.reasoning_summary_text.delta")
-        | Some("response.reasoning_text.delta")
-        | Some("response.reasoning.delta") => json
-            .get("delta")
-            .and_then(Value::as_str)
-            .map(|delta| match strip_reasoning_placeholder(delta) {
-                cleaned if cleaned.is_empty() => LlmStreamEvent::TextDelta(String::new()),
-                cleaned => LlmStreamEvent::ThinkingDelta(cleaned),
-            })
-            .unwrap_or_else(|| LlmStreamEvent::TextDelta(String::new())),
+        // `summary` separates a provider-curated gloss from raw chain-of-thought.
+        // Codex sends both on distinct event types, so the distinction is read
+        // off the wire rather than guessed downstream.
+        Some(event @ "response.reasoning_summary_text.delta")
+        | Some(event @ "response.reasoning_text.delta")
+        | Some(event @ "response.reasoning.delta") => {
+            let summary = event == "response.reasoning_summary_text.delta";
+            json.get("delta")
+                .and_then(Value::as_str)
+                .map(|delta| match strip_reasoning_placeholder(delta) {
+                    cleaned if cleaned.is_empty() => LlmStreamEvent::TextDelta(String::new()),
+                    cleaned => LlmStreamEvent::ReasoningDelta {
+                        delta: cleaned,
+                        summary,
+                    },
+                })
+                .unwrap_or_else(|| LlmStreamEvent::TextDelta(String::new()))
+        }
         Some("response.function_call_arguments.delta") => {
             if let (Some(item_id), Some(delta)) = (
                 json.get("item_id").and_then(Value::as_str),
@@ -1770,8 +1780,7 @@ mod tests {
                 }]),
                 tool_call_id: None,
                 phase: None,
-                thinking: None,
-                thinking_signature: None,
+                reasoning: Vec::new(),
             },
             message,
         ]);
@@ -1779,6 +1788,54 @@ mod tests {
             input.last(),
             Some(CodexInputItem::FunctionCallOutput { call_id, .. }) if call_id == "call_1"
         ));
+    }
+
+    #[test]
+    fn build_input_replays_provider_reasoning_ids_in_order() {
+        use everruns_provider::reasoning::ReasoningContentPart;
+
+        let mut assistant = LlmMessage::text(LlmMessageRole::Assistant, "");
+        assistant.reasoning = vec![
+            ReasoningContentPart::opaque("openai")
+                .with_item_id("rs_first")
+                .with_encrypted("blob-1"),
+            // No encrypted payload: nothing to replay, so Codex must not be
+            // sent a reasoning item it cannot key.
+            ReasoningContentPart::opaque("openai").with_item_id("rs_summary_only"),
+            ReasoningContentPart::opaque("openai")
+                .with_item_id("rs_second")
+                .with_encrypted("blob-2"),
+        ];
+
+        let (_, input) = build_input(&[assistant]);
+
+        let replayed: Vec<(&str, &str)> = input
+            .iter()
+            .filter_map(|item| match item {
+                CodexInputItem::Reasoning {
+                    id,
+                    encrypted_content,
+                    ..
+                } => Some((id.as_str(), encrypted_content.as_str())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            replayed,
+            vec![("rs_first", "blob-1"), ("rs_second", "blob-2")],
+            "reasoning must replay with the provider's own ids, in emission order"
+        );
+    }
+
+    #[test]
+    fn raw_reasoning_text_is_not_flagged_as_a_summary() {
+        // `response.reasoning_text.delta` is the model's own words, not a
+        // curated gloss, so consumers must be able to label it correctly.
+        let event =
+            reasoning_event(r#"{"type":"response.reasoning_text.delta","delta":"raw thought"}"#);
+        assert!(
+            matches!(event, LlmStreamEvent::ReasoningDelta { delta, summary } if delta == "raw thought" && !summary)
+        );
     }
 
     #[test]
@@ -1805,8 +1862,7 @@ mod tests {
                 ]),
                 tool_call_id: None,
                 phase: None,
-                thinking: None,
-                thinking_signature: None,
+                reasoning: Vec::new(),
             },
             paired_result,
             orphaned_result,
@@ -1924,7 +1980,7 @@ mod tests {
             r#"{"type":"response.reasoning_summary_text.delta","delta":"**Planning** real prose"}"#,
         );
         assert!(
-            matches!(event, LlmStreamEvent::ThinkingDelta(text) if text == "**Planning** real prose")
+            matches!(event, LlmStreamEvent::ReasoningDelta { delta, summary } if delta == "**Planning** real prose" && summary)
         );
     }
 
@@ -1944,7 +2000,9 @@ mod tests {
         let event = reasoning_event(
             r#"{"type":"response.reasoning_summary_text.delta","delta":"**Header**\n\n<!-- -->"}"#,
         );
-        assert!(matches!(event, LlmStreamEvent::ThinkingDelta(text) if text == "**Header**\n\n"));
+        assert!(
+            matches!(event, LlmStreamEvent::ReasoningDelta { delta, .. } if delta == "**Header**\n\n")
+        );
     }
 
     #[test]

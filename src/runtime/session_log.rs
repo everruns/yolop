@@ -29,14 +29,14 @@
 //   title can repair the `workspace.json` projection after interruption.
 //   Streaming `*.delta` events have no replay value and would otherwise
 //   inflate the log O(n²) for long streamed responses.
-// * Assistant `thinking` / `thinking_signature` fields ARE persisted in
-//   yolop's per-session JSONL. The per-session folder is the local
-//   private session store (owner-only on Unix, see above) and provider
-//   continuation on resume requires the signature/encrypted_content
-//   (e.g. OpenAI Responses threads the encrypted reasoning context back
-//   via `thinking_signature`). The contract is local-store, not
-//   user-facing transcript export — see the yolop README for the
-//   public/private distinction.
+// * Assistant reasoning content parts ARE persisted whole in yolop's
+//   per-session JSONL, opaque signature and encrypted payload included.
+//   The per-session folder is the local private session store (owner-only
+//   on Unix, see above) and provider continuation on resume requires that
+//   state replayed verbatim, in the position the provider issued it (e.g.
+//   OpenAI Responses threads the encrypted reasoning context back). The
+//   contract is local-store, not user-facing transcript export — see the
+//   yolop README for the public/private distinction.
 // * Replay rejects events whose `session_id` doesn't match the resumed
 //   session — guards against accidentally merging logs across sessions.
 // * On open, if the file does not end with `\n` (previous run crashed
@@ -1560,11 +1560,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn output_message_thinking_is_persisted_for_provider_continuation() {
-        // yolop's per-session JSONL is the local session store: thinking
-        // and thinking_signature must round-trip so providers that thread
-        // encrypted reasoning context back (e.g. OpenAI Responses via
-        // `thinking_signature`) can continue across `--session <id>` resume.
+    async fn output_message_reasoning_is_persisted_for_provider_continuation() {
+        // yolop's per-session JSONL is the local session store: every reasoning
+        // artifact must round-trip whole, readable text and the opaque replay
+        // state alike, so providers that thread encrypted reasoning context back
+        // (e.g. OpenAI Responses) can continue across `--session <id>` resume.
+        // 0.19 made these ordered content parts, so position survives too.
+        use everruns_core::ContentPart;
+        use everruns_provider::reasoning::{ReasoningContentPart, ReasoningText};
+
         let dir = tempfile::tempdir().expect("tempdir");
         let session_id = SessionId::from_seed(4821);
         let session_dir = session_dir_path(dir.path(), session_id);
@@ -1572,8 +1576,17 @@ mod tests {
         let emitter = JsonlEventEmitter::open(&path, 1).expect("open");
 
         let mut message = Message::assistant("I will inspect the files.");
-        message.thinking = Some("private model reasoning".to_string());
-        message.thinking_signature = Some("encrypted-thinking-token".to_string());
+        message.content.insert(
+            0,
+            ContentPart::reasoning(
+                ReasoningContentPart::opaque("openai")
+                    .with_item_id("rs_abc123")
+                    .with_encrypted("encrypted-thinking-token")
+                    .with_text(ReasoningText::Plain {
+                        text: "private model reasoning".to_string(),
+                    }),
+            ),
+        );
         let req = EventRequest::new(
             session_id,
             EventContext::default(),
@@ -1585,22 +1598,28 @@ mod tests {
         let on_disk = std::fs::read_to_string(&path).expect("read");
         assert!(
             on_disk.contains("private model reasoning"),
-            "session log must persist assistant thinking for restore: {on_disk}"
+            "session log must persist assistant reasoning for restore: {on_disk}"
         );
         assert!(
             on_disk.contains("encrypted-thinking-token"),
-            "session log must persist thinking_signature for provider continuation: {on_disk}"
+            "session log must persist the encrypted payload for provider continuation: {on_disk}"
         );
 
         let replayed = replay(&path, session_id).expect("replay");
         let replayed_message = replayed.messages.first().expect("message replayed");
+        let part = replayed_message
+            .reasoning_parts()
+            .next()
+            .expect("reasoning part replayed");
+        assert_eq!(part.item_id.as_deref(), Some("rs_abc123"));
+        assert_eq!(part.encrypted.as_deref(), Some("encrypted-thinking-token"));
         assert_eq!(
-            replayed_message.thinking.as_deref(),
+            part.display_text().as_deref(),
             Some("private model reasoning")
         );
-        assert_eq!(
-            replayed_message.thinking_signature.as_deref(),
-            Some("encrypted-thinking-token")
+        assert!(
+            replayed_message.content[0].is_reasoning(),
+            "reasoning must replay in the position the provider issued it"
         );
     }
 
@@ -1668,7 +1687,6 @@ mod tests {
                 provider: "openai".to_string(),
                 model: Some("gpt-5".to_string()),
                 item_id: "rs_abc123".to_string(),
-                encrypted_content: Some("opaque-encrypted-blob".to_string()),
                 summary: vec!["Considered file structure.".to_string()],
                 token_count: Some(42),
             },
@@ -1680,21 +1698,12 @@ mod tests {
             on_disk.contains("\"reason.item\""),
             "reason.item should be persisted: {on_disk}"
         );
-        assert!(
-            on_disk.contains("opaque-encrypted-blob"),
-            "encrypted_content must round-trip for provider continuation: {on_disk}"
-        );
-
         let replayed = replay(&path, session_id).expect("replay");
         assert_eq!(replayed.events.len(), 1);
         match &replayed.events[0].data {
             EventData::ReasonItem(data) => {
                 assert_eq!(data.provider, "openai");
                 assert_eq!(data.item_id, "rs_abc123");
-                assert_eq!(
-                    data.encrypted_content.as_deref(),
-                    Some("opaque-encrypted-blob")
-                );
                 assert_eq!(data.summary, vec!["Considered file structure.".to_string()]);
             }
             other => panic!("expected ReasonItem, got {other:?}"),

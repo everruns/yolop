@@ -103,7 +103,9 @@ use everruns_platform::capabilities::{
 use everruns_provider::AgentLoopError;
 use everruns_provider::model_profiles::get_model_profile;
 use everruns_provider::typed_id::SessionId;
-use everruns_provider::{DriverId, ModelProfile, ReasoningEffortConfig, ReasoningEffortValue};
+use everruns_provider::{
+    DriverId, ModelProfile, ReasoningEffort, ReasoningEffortConfig, ReasoningEffortValue,
+};
 use everruns_provider::{DriverRegistry, ProviderMetadata};
 use ignore::WalkBuilder;
 use regex::RegexBuilder;
@@ -2327,10 +2329,15 @@ impl ProviderChoice {
             metadata: None,
             tags: vec![],
         };
-        if let Some(effort) = self.reasoning_effort() {
+        // 0.19 typed `ReasoningConfig::effort`, so the closed taxonomy is parsed
+        // once here instead of by each driver. Yolop's own value is a string
+        // because it comes from model profiles and env; an unrecognized one is
+        // dropped rather than sent, which is what the drivers used to do
+        // silently and inconsistently.
+        if let Some(effort) = self.reasoning_effort().and_then(ReasoningEffort::parse) {
             input.controls = Some(Controls {
                 reasoning: Some(ReasoningConfig {
-                    effort: Some(effort.to_string()),
+                    effort: Some(effort),
                 }),
                 ..Default::default()
             });
@@ -2448,10 +2455,8 @@ fn reasoning_effort_option(value: &ReasoningEffortValue) -> ReasoningEffortOptio
     }
 }
 
-fn reasoning_effort_value(value: &everruns_provider::model::ReasoningEffort) -> Option<String> {
-    serde_json::to_value(value)
-        .ok()
-        .and_then(|value| value.as_str().map(str::to_string))
+fn reasoning_effort_value(value: &ReasoningEffort) -> Option<String> {
+    Some(value.as_str().to_string())
 }
 
 // Integration capabilities whose crates do not export an id constant
@@ -8654,7 +8659,7 @@ mod tests {
                 .controls
                 .and_then(|controls| controls.reasoning)
                 .and_then(|reasoning| reasoning.effort),
-            Some("medium".to_string())
+            Some(ReasoningEffort::Medium)
         );
     }
 
@@ -8673,7 +8678,7 @@ mod tests {
                 .controls
                 .and_then(|controls| controls.reasoning)
                 .and_then(|reasoning| reasoning.effort),
-            Some("high".to_string())
+            Some(ReasoningEffort::High)
         );
     }
 
