@@ -10,6 +10,36 @@ mechanical `### What's Changed` list of merged PRs.
 Releases are cut via [`/release`](./.agents/skills/release/SKILL.md), which
 tags the version and publishes to crates.io and the Homebrew tap.
 
+## [0.17.1] - 2026-08-27
+
+### Highlights
+
+- Releases ship two binaries per target. `yolop-<target>.tar.gz` is the default-features build the Homebrew formula points at, and no longer carries the local-inference engine; `yolop-<target>-metal.tar.gz` and `yolop-x86_64-unknown-linux-gnu-cuda.tar.gz` carry the engine with the backend that target can use. The Linux tarball drops from 29.9 MB to 18.2 MB. Extension servers are now built for every target too, not just the last one the matrix collapsed onto.
+- The runtime recovers from failure loops instead of repeating them: consecutive equivalent invocation, missing-command, wrong-path, and usage failures on an unchanged workspace now require a different action or a bounded progress checkpoint, and a checkpoint is a real trajectory transition rather than a hook-only backstop.
+- File discovery is batch-native. `read_many_files` is advertised eagerly, so a model can read independent known paths in one call even when the provider emits one tool call per turn, and `repo_map` keeps its compact parameter schema in the first-turn profile.
+- Input routing is one ordered ownership table, so a paste while the sandbox-approval prompt owns the screen no longer lands in the composer behind it.
+- ACP prompts continue once after the provider exhausts its stream-stall retries, replaying from the durable transcript so settled tools are not re-run.
+- The everruns family moves to core 0.19 and provider 0.20, where reasoning is ordered `ContentPart::Reasoning` artifacts rather than a flat message field, and tuika to 0.11.0.
+
+### What's Changed
+
+* fix(ci): build extension servers for every target, not just the last ([#622](https://github.com/everruns/yolop/pull/622)) by @chaliy
+* feat(release): ship a portable binary and an accelerated one per target ([#623](https://github.com/everruns/yolop/pull/623)) by @chaliy
+* chore(deps): bump tuika to 0.11.0 and its companion crates ([#624](https://github.com/everruns/yolop/pull/624)) by @chaliy
+* refactor(tui): route every input event through one ownership table ([#625](https://github.com/everruns/yolop/pull/625)) by @chaliy
+* fix(runtime): make checkpoints a tool transition ([#626](https://github.com/everruns/yolop/pull/626)) by @chaliy
+* fix(runtime): repair equivalent failure loops ([#627](https://github.com/everruns/yolop/pull/627)) by @chaliy
+* fix(exec): avoid redundant output recovery ([#628](https://github.com/everruns/yolop/pull/628)) by @chaliy
+* feat(runtime): add batch-native file discovery ([#629](https://github.com/everruns/yolop/pull/629)) by @chaliy
+* fix(runtime): keep repo map schema eager ([#630](https://github.com/everruns/yolop/pull/630)) by @chaliy
+* fix(acp): continue after provider stream stalls ([#631](https://github.com/everruns/yolop/pull/631)) by @chaliy
+* fix(narration): name the agent spawn_agent spawns ([#632](https://github.com/everruns/yolop/pull/632)) by @chaliy
+* feat(deps): adopt everruns 0.19 core and 0.20 provider ([#633](https://github.com/everruns/yolop/pull/633)) by @chaliy
+* chore(deps): bump the cargo-minor-and-patch group with 3 updates ([#635](https://github.com/everruns/yolop/pull/635)) by @dependabot
+* chore(deps): bump jsonschema from 0.49.9 to 0.51.0 ([#636](https://github.com/everruns/yolop/pull/636)) by @dependabot
+
+**Full Changelog**: https://github.com/everruns/yolop/compare/v0.17.0...v0.17.1
+
 ## [0.17.0] - 2026-08-21
 
 ### Highlights

@@ -6,7 +6,7 @@ members = [
 
 [package]
 name = "yolop"
-version = "0.17.0"
+version = "0.17.1"
 edition = "2024"
 authors = ["Everruns <support@everruns.com>"]
 license = "MIT"
