@@ -144,6 +144,8 @@ not evidence.
 
 ### Investigation earns an owner before mutation
 
+For code work, the model uses `repo_map` or `repo_symbols` for broad orientation
+before paging through large files and uses `ast_grep` for structural searches.
 For a non-obvious bug, the model identifies the root cause and the abstraction
 that owns it from repository evidence before its first mutation. This is a
 semantic threshold, not a read counter: an explicit local edit can proceed after

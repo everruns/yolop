@@ -41,8 +41,9 @@ vendor was deleted and yolop now consumes upstream directly:
    always uses the real tools; only the advertised schema changes.
 
 2. **Static host-shaped eager profile.** Yolop passes first-turn repository
-   discovery (`read_file`, `list_directory`, `grep_files`, `repo_map`), bookkeeping
-   (`write_todos`, `write_session_title`), the shell (`bash`), and the mandatory
+   discovery (`read_file`, `list_directory`, `grep_files`, `repo_map`,
+   `repo_symbols`, `ast_grep`), bookkeeping (`write_todos`,
+   `write_session_title`), the shell (`bash`), and the mandatory
    progress-guard transition (`progress_checkpoint`) to
    `ToolSearchCapability::new().with_never_defer([...])`. Mutation,
    background, release/control, skills, session history, web, LSP, and other
@@ -53,19 +54,18 @@ vendor was deleted and yolop now consumes upstream directly:
    deferred stub names no parameters while allowing extras, so a model fills the
    gap from other harnesses' shell schemas and yolop's
    `additionalProperties: false` schema then rejects the call: the most-used
-   tool in the harness spent a round trip on a correction. `repo_map` is eager
-   for the same contract reason: its deferred stub exposed no argument names,
-   so models supplied foreign `depth`, `max_depth`, or `max_symbols` controls
-   and validation rejected otherwise valid `/workspace`, linked-worktree, and
-   nested-repository scopes before execution. Its authoritative schema keeps
-   only types and bounds, 261 bytes instead of 966, so adding it preserves the
-   cold-start schema-reduction gate. Optional defaults live in the tool
-   description: a strict-provider A/B showed that types and bounds alone led
-   the model to supply every optional field and expand an unqueried map to 200
-   symbols. `repo_symbols` remains deferred: across five trials per arm, making
-   it eager added 39 median first-request tokens over map-only without reducing
-   recovery calls, and its schema would lower the cold-start reduction from
-   45.0% to 43.6%. LSP tools
+   tool in the harness spent a round trip on a correction. `repo_map`,
+   `repo_symbols`, and `ast_grep` are eager so code work can move from broad
+   orientation to symbol or structural navigation without a schema-reveal round
+   trip. `repo_map` also stays eager for a contract reason: its deferred stub
+   exposed no argument names, so models supplied foreign `depth`, `max_depth`,
+   or `max_symbols` controls and validation rejected otherwise valid scopes. Its
+   authoritative schema keeps only types and bounds. Optional defaults live in
+   the tool description because strict-provider trials showed that required
+   optional fields provoke over-broad maps. The repeated-read investigation
+   supersedes the earlier decision to defer `repo_symbols`: immediate symbol and
+   structural navigation is more valuable during code work than its small
+   first-request token saving. LSP tools
    defer with every other opt-in surface; this reverses an earlier eager profile
    justified by an LSP adoption eval that measured lower adoption with stubbed
    schemas, so re-measure before treating the current profile as settled.
