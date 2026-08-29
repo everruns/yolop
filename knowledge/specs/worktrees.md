@@ -21,7 +21,7 @@ main checkout stays untouched.
 
 | Value | Behavior |
 |-------|----------|
-| `auto` (default) | Provision a worktree when a user prompt looks like implementation work |
+| `auto` (default) | Start in the resolved cwd; the model initializes a session worktree before the first repository mutation |
 | `always` | Provision at session start inside git repositories |
 | `off` | Never create worktrees; operate in the resolved cwd |
 
@@ -60,17 +60,26 @@ config/secrets.json
 - `repo_root` is the git toplevel of the user's checkout; git identity/remote context comes from there.
 - Sub-agents inherit the parent session's active worktree.
 - Resume reattaches to a saved worktree or recreates it when tmp was cleared.
+- In `auto`, the system prompt instructs the model to run `yolop worktree init`
+  before its first repository mutation. Read-only investigation does not create
+  a worktree. The host does not infer intent from prompt keywords.
+- Initialization is idempotent and serialized. The attached command asks the
+  running session to create or reuse its owned worktree, then updates the shared
+  active root. A standalone process never creates a disconnected worktree.
 - The TUI compact status bar shows `wt <slug>` when a worktree is active; expand
   the status bar for branch and path. Mid-session activation posts a light
   `Switched to worktree · <branch>` system line instead of the raw path.
 
 ### Commands
 
-- `/worktree`, show active worktree, branch, and path (or mode when inactive)
-- `/worktree off`, disable auto-activation for future turns in this session
-- `yolop worktree list`, list worktree directories on disk
-- `yolop worktree prune`, remove worktrees not referenced by any saved session (`--dry-run` to preview)
-
+- `/worktree` and `/worktree init`, initialize the running session worktree
+- `/worktree status`, show mode, state, branch, and active root
+- `yolop worktree init`, attach to the running session and initialize its worktree
+- `yolop worktree status`, inspect the running session's worktree state
+- Worktree mode changes use the config subsystem. `init` refuses when mode is
+  `off`; it does not silently change persistent configuration.
+- Generic listing, switching, removal, and pruning remain Git operations. Yolop
+  does not present registered Git worktrees as live sessions.
 
 Harness and `<environment_context>` tell the model to edit and commit only in
 the session worktree and never change git state in `repo_root`.

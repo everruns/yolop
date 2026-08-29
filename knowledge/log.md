@@ -1,5 +1,14 @@
 # Knowledge Log
 
+## 2026-08-28, Auto worktrees are model-initialized
+
+- [Git worktrees](specs/worktrees.md): `auto` no longer classifies prompt text
+  with implementation-verb heuristics. The system prompt directs the model to
+  run the attached `yolop worktree init` command before repository mutation.
+- `/worktree` uses the same idempotent session initializer, while persistent mode
+  changes remain owned by the config subsystem. Generic Git worktree lifecycle
+  operations are not duplicated as Yolop session commands.
+
 ## 2026-08-26, Reasoning is ordered content, not a message field
 
 - everruns 0.19 / provider 0.20 replaced the flat `Message.thinking` and

@@ -3534,7 +3534,7 @@ pub async fn build_with_options(
         Some(metadata)
     };
     if worktrees_mode == crate::config::WorktreesMode::Always {
-        let _ = worktree.ensure_always();
+        let _ = worktree.ensure_initialized(None);
     }
 
     let shared_workspace_root = worktree.shared_active_root();
@@ -3913,6 +3913,9 @@ pub async fn build_with_options(
     session_control_registry.register(model_list.clone())?;
     // ConfigCapability owns the attached `config` CLI; the model list remains
     // registered only as the `models` control route it delegates to.
+    let worktree_capability = Arc::new(WorktreeCapability::new(worktree.clone()));
+    session_control_registry.register(worktree_capability.clone())?;
+    capabilities.register_arc(worktree_capability);
     // Per-extension secrets ride the shared credential store (`connections.toml`,
     // 0600), keyed `ext:<name>` — never `settings.toml`. Injected as env at
     // spawn; never surfaced to the agent.
@@ -4105,9 +4108,6 @@ pub async fn build_with_options(
     capabilities.register(UserAskCapability {
         store: user_ask_store.clone(),
         session_id,
-    });
-    capabilities.register(WorktreeCapability {
-        manager: worktree.clone(),
     });
     capabilities.register(CheckpointCapability {
         manager: checkpoints.clone(),
@@ -9162,7 +9162,8 @@ mod tests {
     /// stable composition components so prompt/tool budget changes are explicit.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cold_start_prompt_composition_is_measured_by_component() {
-        const BASELINE_PROMPT_BYTES: usize = 14_138;
+        // Auto mode teaches the model to initialize its session worktree before mutation.
+        const BASELINE_PROMPT_BYTES: usize = 14_204;
         // The tool baselines model what today's surface would cost undeferred,
         // so enabling a capability raises them by exactly that capability's
         // undeferred cost — otherwise the ratio guards below would read a
