@@ -108,8 +108,8 @@ pub fn schema() -> &'static [ConfigField] {
                           means the built-in default list.",
             kind: ValueKind::List,
             default: Some(
-                "openai/gpt-5.6-sol, openai/gpt-5.4-mini, anthropic/claude-opus-4-8, \
-                           anthropic/claude-sonnet-4-5, codex/gpt-5.6-sol",
+                "openai/gpt-5.6-sol, openai/gpt-5.6-terra, openai/gpt-5.6-luna, \
+                           codex/gpt-5.6-sol, codex/gpt-5.6-terra, codex/gpt-5.6-luna",
             ),
             examples: &["yolop config models add openrouter anthropic/claude-opus-4-8"],
             provider_scoped: false,
