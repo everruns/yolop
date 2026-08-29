@@ -1,5 +1,16 @@
 # Knowledge Log
 
+## 2026-08-29, Skills and repository tools use physical paths
+
+- [Skills](specs/skills.md): every skill scope now points at a real directory.
+  Built-in skills remain materialized under the data directory, extension skills
+  use their installed package directories, and generated environment skills are
+  materialized beneath the session directory.
+- File tools read physical skill directories through an explicit read-only route.
+  Yolop no longer creates virtual skill mounts or a `/workspace` repository alias.
+- Host-backed repository scanners accept repository-relative paths and contained
+  real absolute paths. Unrelated or synthetic absolute paths are rejected.
+
 ## 2026-08-29, Semantic navigation stays ready during code work
 
 Code sessions now receive `repo_map`, `repo_symbols`, and `ast_grep` with their

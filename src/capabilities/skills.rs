@@ -8,14 +8,11 @@
 //
 //   * the scope set and where each maps on the *host* disk,
 //   * a `SkillDirResolver` so `${SKILL_DIR}` expands to a real host path the
-//     `bash` tool can read (the core default keeps it in the VFS),
+//     `bash` tool can read,
 //   * the system skills pre-packed in the binary and materialized once.
 //
-// The capability discovers/reads/writes strictly through the session
-// `SessionFileSystem`. yolop's file store (`CodingCliSessionFileStore`) maps the
-// disk-backed scope VFS roots onto the real directories below, so the capability never
-// touches a host path directly — the host mapping lives behind the file store,
-// not in the capability's configuration.
+// The capability discovers and reads through the session `SessionFileSystem`.
+// Yolop registers each physical skill directory as a read-only file-tool root.
 //
 // Scopes (precedence: workspace > profile > global > system; the core capability
 // de-dups by skill directory name, so a nearer scope shadows a farther one):
@@ -43,32 +40,6 @@ const LEGACY_GLOBAL_SKILLS_DIR_ENV: &str = "YOLOP_LEGACY_GLOBAL_SKILLS_DIR";
 /// Env override for the system skills directory (skips materialization).
 const SYSTEM_SKILLS_DIR_ENV: &str = "YOLOP_SYSTEM_SKILLS_DIR";
 
-/// VFS root for the workspace scope. Routes through the workspace file store to
-/// `<workspace>/.agents/skills` like any other workspace path.
-pub const WORKSPACE_SKILLS_VFS: &str = "/.agents/skills";
-/// Synthetic VFS root for the global scope, routed by the file store to the
-/// user's global skills directory (outside the workspace).
-pub const GLOBAL_SKILLS_VFS: &str = "/.yolop/global-skills";
-/// Synthetic VFS root for the active profile's skills directory, routed by the
-/// file store to `profiles/<name>/skills` (or the profile's `skills_dir`).
-pub const PROFILE_SKILLS_VFS: &str = "/.yolop/profile-skills";
-/// Synthetic VFS root for the system scope, routed by the file store to the
-/// materialized system skills directory.
-pub const SYSTEM_SKILLS_VFS: &str = "/.yolop/system-skills";
-/// Read-only, session-local skills contributed by the active host environment.
-/// Unlike global/system skills this root has no disk backing; a capability
-/// mount (currently Herdr) serves it through `MountFs`.
-pub const ENVIRONMENT_SKILLS_VFS: &str = "/.yolop/environment-skills";
-/// VFS prefix for read-only skills contributed by installed extensions. Each
-/// enabled extension declaring `skills` mounts its `skills/` dir at
-/// `<prefix>/<name>`, served from real disk (like global/system).
-pub const EXTENSION_SKILLS_VFS_PREFIX: &str = "/.yolop/extension-skills";
-
-/// VFS root for one extension's contributed skills.
-pub fn extension_skills_vfs(name: &str) -> String {
-    format!("{EXTENSION_SKILLS_VFS_PREFIX}/{name}")
-}
-
 /// Scope label for one extension's contributed skills.
 pub fn extension_skills_label(name: &str) -> String {
     format!("ext:{name}")
@@ -90,6 +61,8 @@ pub struct SkillDirs {
     pub profile: Option<PathBuf>,
     /// Materialized system skills directory, or `None` when unavailable.
     pub system: Option<PathBuf>,
+    /// Materialized environment skills directory for this session.
+    pub environment: Option<PathBuf>,
 }
 
 impl SkillDirs {
@@ -113,12 +86,13 @@ impl SkillDirs {
             global,
             profile,
             system: system_skills_dir(),
+            environment: None,
         }
     }
 }
 
-/// Strip a VFS root prefix, returning the remainder as an absolute path under
-/// that root (`/` for the root itself). Shared with the file-store router.
+/// Strip a physical root prefix, returning the remainder as an absolute path
+/// under that root (`/` for the root itself). Shared with the file-store router.
 pub fn relative_under(path: &str, root: &str) -> Option<String> {
     if path == root {
         return Some("/".to_string());
@@ -131,35 +105,35 @@ pub fn relative_under(path: &str, root: &str) -> Option<String> {
 /// Only disk-backed scopes whose directory resolved are included. System and
 /// environment scopes are read-only; workspace/global are writable.
 /// `${SKILL_DIR}` and display paths resolve through [`HostSkillDirResolver`].
-pub fn skills_config(
-    dirs: &SkillDirs,
-    environment_active: bool,
-    extensions: &[(String, PathBuf)],
-) -> SkillsConfig {
-    let mut scopes = vec![SkillScope::new("workspace", WORKSPACE_SKILLS_VFS, true)];
+pub fn skills_config(dirs: &SkillDirs, extensions: &[(String, PathBuf)]) -> SkillsConfig {
+    let mut scopes = vec![SkillScope::new(
+        "workspace",
+        dirs.workspace.display().to_string(),
+        true,
+    )];
     // Between workspace and global: a profile is chosen per run, so its skills
     // should win over the user's global set but never over the repo's own.
-    if dirs.profile.is_some() {
-        scopes.push(SkillScope::new("profile", PROFILE_SKILLS_VFS, true));
+    if let Some(path) = &dirs.profile {
+        scopes.push(SkillScope::new("profile", path.display().to_string(), true));
     }
-    if dirs.global.is_some() {
-        scopes.push(SkillScope::new("global", GLOBAL_SKILLS_VFS, true));
+    if let Some(path) = &dirs.global {
+        scopes.push(SkillScope::new("global", path.display().to_string(), true));
     }
-    if environment_active {
+    if let Some(path) = &dirs.environment {
         scopes.push(SkillScope::new(
             "environment",
-            ENVIRONMENT_SKILLS_VFS,
+            path.display().to_string(),
             false,
         ));
     }
-    if dirs.system.is_some() {
-        scopes.push(SkillScope::new("system", SYSTEM_SKILLS_VFS, false));
+    if let Some(path) = &dirs.system {
+        scopes.push(SkillScope::new("system", path.display().to_string(), false));
     }
     // Read-only skills contributed by enabled extensions.
     for (name, _dir) in extensions {
         scopes.push(SkillScope::new(
             extension_skills_label(name),
-            extension_skills_vfs(name),
+            _dir.display().to_string(),
             false,
         ));
     }
@@ -194,10 +168,7 @@ impl HostSkillDirResolver {
         match label {
             "global" => self.dirs.global.clone(),
             "profile" => self.dirs.profile.clone(),
-            // Environment skills are VFS-only and contain no shell-side assets.
-            // Keep their display/substitution path honest instead of pretending
-            // they exist in a writable workspace or global directory.
-            "environment" => Some(PathBuf::from(ENVIRONMENT_SKILLS_VFS)),
+            "environment" => self.dirs.environment.clone(),
             "system" => self.dirs.system.clone(),
             _ => Some(self.dirs.workspace.clone()),
         }
@@ -306,6 +277,18 @@ pub fn system_skills_dir() -> Option<PathBuf> {
 fn materialize_system_skills(dest: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dest)?;
     extract_dir(&SYSTEM_SKILLS, dest)
+}
+
+pub fn materialize_environment_skill(
+    session_dir: &Path,
+    name: &str,
+    source: &str,
+) -> std::io::Result<PathBuf> {
+    let root = session_dir.join("skills").join("environment");
+    let skill_dir = root.join(name);
+    std::fs::create_dir_all(&skill_dir)?;
+    write_if_changed(&skill_dir.join("SKILL.md"), source.as_bytes())?;
+    Ok(root)
 }
 
 /// Recursively write an embedded `Dir` under `dest`. `include_dir` entry paths
@@ -577,19 +560,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn relative_under_strips_vfs_roots() {
+    fn relative_under_strips_physical_roots() {
         assert_eq!(
-            relative_under("/.yolop/global-skills/foo/SKILL.md", GLOBAL_SKILLS_VFS),
+            relative_under(
+                "/home/me/.agents/skills/foo/SKILL.md",
+                "/home/me/.agents/skills"
+            ),
             Some("/foo/SKILL.md".to_string())
         );
         assert_eq!(
-            relative_under("/.yolop/system-skills", SYSTEM_SKILLS_VFS),
+            relative_under("/data/system-skills", "/data/system-skills"),
             Some("/".to_string())
         );
-        assert_eq!(relative_under("/src/main.rs", GLOBAL_SKILLS_VFS), None);
-        // A different root must not match.
         assert_eq!(
-            relative_under("/.agents/skills/foo", GLOBAL_SKILLS_VFS),
+            relative_under("/src/main.rs", "/home/me/.agents/skills"),
             None
         );
     }
@@ -632,8 +616,9 @@ mod tests {
             global: None,
             profile: None,
             system: Some(PathBuf::from("/data/sys")),
+            environment: None,
         };
-        let cfg = skills_config(&dirs, false, &[]);
+        let cfg = skills_config(&dirs, &[]);
         let labels: Vec<&str> = cfg.scopes.iter().map(|s| s.label.as_str()).collect();
         assert_eq!(labels, vec!["workspace", "system"]);
         assert!(cfg.manage_tools);
@@ -661,8 +646,9 @@ mod tests {
             global: Some(PathBuf::from("/home/.agents/skills")),
             profile: Some(PathBuf::from("/cfg/yolop/profiles/triage/skills")),
             system: Some(PathBuf::from("/data/sys")),
+            environment: None,
         };
-        let cfg = skills_config(&dirs, false, &[]);
+        let cfg = skills_config(&dirs, &[]);
         let labels: Vec<&str> = cfg.scopes.iter().map(|s| s.label.as_str()).collect();
         assert_eq!(labels, vec!["workspace", "profile", "global", "system"]);
         let scope = cfg
@@ -671,7 +657,7 @@ mod tests {
             .find(|s| s.label == "profile")
             .expect("profile scope");
         assert!(scope.writable, "a profile owns its skills");
-        assert_eq!(scope.vfs_root, PROFILE_SKILLS_VFS);
+        assert_eq!(scope.vfs_root, "/cfg/yolop/profiles/triage/skills");
         assert_eq!(
             PathBuf::from(cfg.resolver.skill_dir(scope, "triage-intake")),
             PathBuf::from("/cfg/yolop/profiles/triage/skills").join("triage-intake")
@@ -685,19 +671,20 @@ mod tests {
             global: None,
             profile: None,
             system: None,
+            environment: None,
         };
         let ext = vec![(
             "git-guard".to_string(),
             PathBuf::from("/ext/git-guard/skills"),
         )];
-        let cfg = skills_config(&dirs, false, &ext);
+        let cfg = skills_config(&dirs, &ext);
         let scope = cfg
             .scopes
             .iter()
             .find(|s| s.label == "ext:git-guard")
             .expect("extension scope present");
         assert!(!scope.writable, "extension skills are read-only");
-        assert_eq!(scope.vfs_root, extension_skills_vfs("git-guard"));
+        assert_eq!(scope.vfs_root, "/ext/git-guard/skills");
         // The resolver maps the scope back to the real on-disk dir.
         assert_eq!(
             cfg.resolver.skill_dir(scope, "my-skill"),
@@ -712,6 +699,7 @@ mod tests {
             global: Some(PathBuf::from("/cfg/yolop/skills")),
             profile: None,
             system: Some(PathBuf::from("/data/sys")),
+            environment: None,
         };
         let r = HostSkillDirResolver {
             dirs,
@@ -719,12 +707,14 @@ mod tests {
         };
         // Compare as paths so separators are platform-correct.
         assert_eq!(
-            PathBuf::from(r.skill_dir(&SkillScope::new("global", GLOBAL_SKILLS_VFS, true), "foo")),
+            PathBuf::from(
+                r.skill_dir(&SkillScope::new("global", "/cfg/yolop/skills", true), "foo")
+            ),
             PathBuf::from("/cfg/yolop/skills").join("foo")
         );
         assert_eq!(
             PathBuf::from(r.skill_dir(
-                &SkillScope::new("workspace", WORKSPACE_SKILLS_VFS, true),
+                &SkillScope::new("workspace", "/ws/.agents/skills", true),
                 "bar"
             )),
             PathBuf::from("/ws/.agents/skills").join("bar")
@@ -823,6 +813,7 @@ mod tests {
             global: None,
             profile: None,
             system: None,
+            environment: None,
         };
         let capability = SkillManagementCapability::new(dirs);
         let names: Vec<String> = capability
@@ -864,6 +855,7 @@ mod tests {
                 global: global.map(Path::to_path_buf),
                 profile: None,
                 system: None,
+                environment: None,
             },
         }
     }

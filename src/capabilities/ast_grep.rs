@@ -1259,9 +1259,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ast_grep_tool_accepts_workspace_alias_scope() {
-        // Like repo_map, ast_grep resolves its `path` through resolve_host_scope,
-        // so the `/workspace` display alias must scope correctly here too.
+    async fn ast_grep_tool_accepts_repository_relative_path_scope() {
+        // Like repo_map, ast_grep resolves repository-relative paths through
+        // resolve_host_scope.
         let dir = tempfile::tempdir().expect("tempdir");
         write(&dir.path().join("src/lib.rs"), "fn target() {}\n");
         write(&dir.path().join("other/lib.rs"), "fn other() {}\n");
@@ -1276,7 +1276,7 @@ mod tests {
             .execute(json!({
                 "pattern": "fn $NAME() {}",
                 "language": "rust",
-                "path": "/workspace/src",
+                "path": "src",
                 "limit": 10
             }))
             .await;
