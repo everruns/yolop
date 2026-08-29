@@ -1482,7 +1482,6 @@ fn detached_cli_registry() -> Result<control::CliRegistry> {
     let connections_path =
         connectors::default_connections_path().unwrap_or_else(|| fallback.join("connections.toml"));
     let settings = Arc::new(SettingsStore::open(settings_path));
-    let model_list_settings = settings.clone();
     let secrets = extensions::ExtensionSecrets::new(Arc::new(connectors::ConnectionStore::open(
         connections_path,
     )));
@@ -1491,7 +1490,7 @@ fn detached_cli_registry() -> Result<control::CliRegistry> {
         extensions::ExtensionsCapability::new(
             extensions_dir,
             workspace,
-            settings,
+            settings.clone(),
             extensions::LiveProcessRegistry::default(),
             None,
         )
@@ -1500,12 +1499,17 @@ fn detached_cli_registry() -> Result<control::CliRegistry> {
     );
     let mut registry = control::CliRegistry::default();
     registry.register(capability)?;
-    // `yolop models` edits the model list. Detached it writes global settings
-    // like any other CLI invocation; `use` needs a session and says so.
-    registry.register(Arc::new(capabilities::ModelListCapability::new(
-        model_list_settings,
+    let model_list = Arc::new(capabilities::ModelListCapability::new(
+        settings.clone(),
         None,
-    )))?;
+    ));
+    let mut catalog = config::capability_settings::CapabilityCatalog::new();
+    catalog.register_arc(Arc::new(everruns_builtins::MessageMetadataCapability));
+    registry.register(Arc::new(capabilities::ConfigCapability {
+        settings: settings.clone(),
+        catalog: Arc::new(catalog),
+        model_list,
+    }))?;
     let coordination_store = match runtime::session_log::default_sessions_dir()
         .ok()
         .and_then(|dir| capabilities::CoordinationStore::open(&dir).ok())
@@ -2415,6 +2419,25 @@ mod tests {
         assert!(uses_interactive_renderer(&gallery));
         assert!(!uses_interactive_renderer(&print));
         assert!(!uses_interactive_renderer(&command));
+    }
+
+    #[test]
+    fn attached_config_is_nested_and_top_level_models_is_absent() {
+        let registry = detached_cli_registry().expect("build detached CLI registry");
+        let root = registry
+            .augment(Cli::command())
+            .expect("augment root command");
+
+        root.clone()
+            .try_get_matches_from(["yolop", "config", "models", "list"])
+            .expect("parse nested model-list command");
+        root.clone()
+            .try_get_matches_from(["yolop", "config", "model", "set", "openai/gpt-5.6"])
+            .expect("parse configured model command");
+        assert!(
+            root.try_get_matches_from(["yolop", "models", "list"])
+                .is_err()
+        );
     }
 
     #[test]

@@ -10,22 +10,20 @@
 //!
 //! Administration follows the attached-CLI pattern extensions and session
 //! coordination use (`knowledge/specs/conversational-control.md`): `yolop
-//! models ...` rather than model tools, so the agent can edit the list on
-//! request without the schemas costing prompt budget every turn. `use` reaches
-//! the live session through [`SetupController::change_provider`], the same call
-//! `/setup provider <name> <model>` makes, so switching provider and model
-//! together is atomic and has one implementation.
+//! config models ...` rather than model tools, so the agent can edit the list
+//! on request without the schemas costing prompt budget every turn. `yolop
+//! The persistent `config` command delegates catalog operations here. Runtime switching
+//! remains on the existing `models` control route and uses
+//! [`SetupController::change_provider`], the same call `/setup provider <name> <model>` makes.
 
 use crate::capabilities::host::SetupController;
 use crate::capabilities::model_discovery::provider_is_usable;
 use crate::config::SettingsStore;
 use crate::config::model_list::{ModelEntry, default_models};
-use crate::control::{
-    CliCapability, ControlCapability, ControlRequest, ControlResponse, ControlRoute,
-};
+use crate::control::{ControlCapability, ControlRequest, ControlResponse, ControlRoute};
 use crate::runtime::SUPPORTED_PROVIDERS;
 use async_trait::async_trait;
-use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
+use clap::{Args, Subcommand};
 use everruns_core::{Capability, CapabilityStatus, ToolExecutionResult};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -37,23 +35,13 @@ pub(crate) const MODEL_LIST_CAPABILITY_ID: &str = "model_list";
 /// the always-on prompt budget without constructing a session.
 pub(crate) const MODEL_LIST_CONTROL_ROUTE: ControlRoute = ControlRoute {
     resource: "models",
-    cli_subcommand: "models",
+    cli_subcommand: "config",
     read_only_operations: &["list"],
     summary: "show, reorder, and edit the model list, and switch this session to one of its models",
 };
 
-#[derive(Parser, Debug)]
-#[command(
-    name = "models",
-    about = "Show and edit the model list yolop offers when switching models"
-)]
-struct ModelsCommandLine {
-    #[command(subcommand)]
-    command: ModelsCliCommand,
-}
-
 #[derive(Subcommand, Debug)]
-enum ModelsCliCommand {
+pub(crate) enum ModelsCliCommand {
     /// Show the model list.
     List {
         /// Emit the full machine-readable result.
@@ -77,17 +65,12 @@ enum ModelsCliCommand {
         /// New 1-based position.
         position: usize,
     },
-    /// Switch this session to a model on the list, provider included.
-    Use {
-        /// `provider/model`, `provider:model`, or a model id unique in the list.
-        model: String,
-    },
     /// Restore the built-in default list.
     Reset,
 }
 
 #[derive(Args, Debug)]
-struct AddArgs {
+pub(crate) struct AddArgs {
     /// Provider the model is reached through.
     provider: String,
     /// Provider-relative model id (`gpt-5.6-sol`, `anthropic/claude-opus-4-8`).
@@ -135,13 +118,6 @@ pub(crate) enum ModelListAction {
     Reset,
 }
 
-impl ModelListAction {
-    fn request(&self) -> ControlRequest {
-        ControlRequest::new(MODEL_LIST_CONTROL_ROUTE.resource, self)
-            .expect("model list action serializes")
-    }
-}
-
 impl From<ModelsCliCommand> for ModelListAction {
     fn from(command: ModelsCliCommand) -> Self {
         match command {
@@ -155,7 +131,6 @@ impl From<ModelsCliCommand> for ModelListAction {
             },
             ModelsCliCommand::Rm { model } => Self::Rm { model },
             ModelsCliCommand::Move { model, position } => Self::Move { model, position },
-            ModelsCliCommand::Use { model } => Self::Use { model },
             ModelsCliCommand::Reset => Self::Reset,
         }
     }
@@ -183,10 +158,10 @@ impl ModelListCapability {
     /// names exactly one entry — ambiguity is an error rather than a guess,
     /// because the whole point of the list is that one model can be reachable
     /// through more than one provider.
-    fn find(models: &[ModelEntry], reference: &str) -> Result<usize, String> {
+    pub(crate) fn find(models: &[ModelEntry], reference: &str) -> Result<usize, String> {
         let reference = reference.trim();
         if reference.is_empty() {
-            return Err("name a model from the list; run `yolop models list`".to_string());
+            return Err("name a model from the list; run `yolop config models list`".to_string());
         }
         let qualified = |entry: &ModelEntry| {
             let key = entry.key();
@@ -204,7 +179,7 @@ impl ModelListCapability {
         match matches.as_slice() {
             [index] => Ok(*index),
             [] => Err(format!(
-                "`{reference}` is not on the model list; run `yolop models list`, or add it with `yolop models add <provider> {reference}`"
+                "`{reference}` is not on the model list; run `yolop config models list`, or add it with `yolop config models add <provider> {reference}`"
             )),
             _ => {
                 let providers: Vec<&str> = matches
@@ -268,6 +243,23 @@ impl ModelListCapability {
         self.settings
             .set_models(models)
             .map_err(|err| format!("could not save the model list: {err}"))
+    }
+
+    pub(crate) async fn execute_cli_request(&self, request: &ControlRequest) -> anyhow::Result<()> {
+        let action = serde_json::from_value::<ModelListAction>(request.action.clone())?;
+        if matches!(action, ModelListAction::Use { .. }) {
+            anyhow::bail!(
+                "switching models requires a running Yolop session; invoke the command directly through that session's foreground Bash"
+            );
+        }
+        let response = ControlResponse::from_tool_result(self.execute_action(&action).await);
+        let rendered = self.render_control(&request.action, &response);
+        if response.ok {
+            println!("{rendered}");
+            Ok(())
+        } else {
+            anyhow::bail!(rendered)
+        }
     }
 
     pub(crate) async fn execute_action(&self, action: &ModelListAction) -> ToolExecutionResult {
@@ -362,7 +354,7 @@ impl ModelListCapability {
                 let entry = &models[index];
                 let Some(controller) = &self.controller else {
                     return ToolExecutionResult::tool_error(
-                        "switching models requires a running Yolop session; invoke `yolop models use` through that session's foreground Bash",
+                        "switching models requires a running Yolop session; invoke the existing `models use` control route through that session",
                     );
                 };
                 // One implementation: this is exactly what `/setup provider
@@ -432,38 +424,6 @@ impl ControlCapability for ModelListCapability {
     }
 }
 
-#[async_trait]
-impl CliCapability for ModelListCapability {
-    fn cli_command(&self) -> clap::Command {
-        ModelsCommandLine::command()
-    }
-    fn control_request_from_cli(
-        &self,
-        matches: &clap::ArgMatches,
-    ) -> anyhow::Result<ControlRequest> {
-        let parsed = ModelsCommandLine::from_arg_matches(matches)?;
-        Ok(ModelListAction::from(parsed.command).request())
-    }
-    async fn execute_cli(&self, request: &ControlRequest) -> anyhow::Result<()> {
-        let action = serde_json::from_value::<ModelListAction>(request.action.clone())?;
-        // Editing the list is a global-settings write and works detached;
-        // only switching the live session needs a session to switch.
-        if matches!(action, ModelListAction::Use { .. }) {
-            anyhow::bail!(
-                "switching models requires a running Yolop session; invoke the command directly through that session's foreground Bash"
-            );
-        }
-        let response = ControlResponse::from_tool_result(self.execute_action(&action).await);
-        let rendered = self.render_control(&request.action, &response);
-        if response.ok {
-            println!("{rendered}");
-            Ok(())
-        } else {
-            anyhow::bail!(rendered)
-        }
-    }
-}
-
 fn render_response(action: &ModelListAction, response: &ControlResponse) -> String {
     if !response.ok {
         return response.render_default();
@@ -498,7 +458,8 @@ fn render_response(action: &ModelListAction, response: &ControlResponse) -> Stri
     }
     if models.is_empty() {
         lines.push(
-            "No models listed. Add one with `yolop models add <provider> <model>`.".to_string(),
+            "No models listed. Add one with `yolop config models add <provider> <model>`."
+                .to_string(),
         );
         return lines.join("\n");
     }
@@ -522,8 +483,9 @@ fn render_response(action: &ModelListAction, response: &ControlResponse) -> Stri
     if let ModelListAction::List { .. } = action
         && !value["configured"].as_bool().unwrap_or(false)
     {
-        lines
-            .push("(built-in default list; `yolop models add|rm|move` makes it yours)".to_string());
+        lines.push(
+            "(built-in default list; `yolop config models add|rm|move` makes it yours)".to_string(),
+        );
     }
     lines.join("\n")
 }
@@ -707,7 +669,7 @@ mod tests {
 
     /// The core promise of pairing provider with model: one selection moves
     /// both. Drives the real `SetupController` an attached session holds, so
-    /// this covers `yolop models use` past the CLI envelope.
+    /// this covers the runtime `models use` control route.
     #[tokio::test]
     async fn using_a_listed_model_switches_provider_and_model_on_the_live_session() {
         use crate::capabilities::host::test_support::test_controller_with_settings;
@@ -840,7 +802,7 @@ mod tests {
     #[test]
     fn an_unknown_reference_says_how_to_add_it() {
         let error = ModelListCapability::find(&list(), "gpt-4").expect_err("unknown");
-        assert!(error.contains("yolop models add"), "{error}");
+        assert!(error.contains("yolop config models add"), "{error}");
     }
 
     #[test]

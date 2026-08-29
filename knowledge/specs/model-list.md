@@ -59,12 +59,13 @@ job".
 | `/model`, status-bar click | Opens the list. A trailing "Browse all models…" row falls through to the provider picker and that provider's catalog. |
 | `/model <id>` | Applies the entry directly when the id is on the list; otherwise the pre-list per-provider picker, as before. |
 | ACP `configOptions` | The `model` select option serves the list, filtered to entries whose provider is usable, plus the model in use. |
-| `yolop models …` | Shows and edits the list: `list`, `add`, `rm`, `move`, `use`, `reset`. |
+| `yolop config models …` | Shows and edits the list: bare `models` or `list`, plus `add`, `rm`, `move`, `edit`, `reset`. |
 
 Credential filtering differs by surface on purpose. ACP hides entries whose
 provider has no credential, because an editor cannot run a login wizard and an
-unusable option is a dead end there. The TUI picker and `yolop models list` show
-them marked instead: picking a model you have not signed in to yet is a
+unusable option is a dead end there. The TUI picker and both catalog-list forms,
+`yolop config models` and `yolop config models list`, show them marked instead:
+picking a model you have not signed in to yet is a
 legitimate way to start using it, and hiding rows from the command that edits
 them is how a user loses track of their own list.
 
@@ -78,18 +79,18 @@ Codex and OpenRouter browser login, custom endpoint) funnels through one hop for
 this, so authentication lands on the model the user picked rather than dropping
 them in a catalog.
 
-### Administration is an attached CLI, not a tool
+### Administration is a CLI, not a tool
 
-`yolop models` is a `CliCapability` on the attached control plane, the same
-pattern extensions and session coordination use, and for the same reason: the
-agent can edit the list on request without the schemas costing prompt budget
-every turn. `list` is read-only; every other operation is consequential. `use`
-requires a live session and says so when invoked detached; editing works either
-way, because it is an ordinary settings write.
+`yolop config` is a `CliCapability` available both detached and through the
+attached control plane. This lets the agent edit configuration on request without
+schemas costing prompt budget every turn. `models list` is read-only; every other
+catalog operation is consequential. `config model show|set|clear` reads and
+writes the persistent default model in either mode. Live session switching stays
+with `/model`, `/setup`, and the runtime model controls.
 
-Every mutation reads the resolved list, changes it, and writes the whole thing
-back, so ordering is explicit and there is one write path. `set_config` refuses
-`models` and points at the CLI rather than offering a second, weaker editor.
+Every list mutation reads the resolved list, changes it, and writes the whole thing
+back, so ordering is explicit and there is one write path. The capability does
+not expose a second agent-tool editor.
 
 A model reference resolves as `provider/model`, `provider:model`, or a bare
 model id when it names exactly one entry. Ambiguity is an error naming the
@@ -107,7 +108,7 @@ profile is still read as `default_models`.
 ## Ownership boundary
 
 - `crate::config::model_list` owns the entry type, defaults, and TOML parsing.
-- `crate::capabilities::model_list` owns the capability, the `yolop models` CLI,
+- `crate::capabilities::model_list` owns the capability, the `yolop config models` CLI,
   the credential filter (`offered_models`), and reference resolution.
 - `ModelState::model_options` (ACP) and `crate::tui::setup` (the picker) are
   consumers; neither keeps its own idea of what is offered.

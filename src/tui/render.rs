@@ -1147,7 +1147,7 @@ pub(crate) fn setup_overlay_content(app: &App) -> (Vec<Line<'static>>, Option<(u
             }
             push_setup_error(&mut lines, error.as_deref());
             lines.push(setup_footer(
-                "Enter confirm · ↑/↓ move · Esc cancel · `yolop models` to edit",
+                "Enter confirm · ↑/↓ move · Esc cancel · `yolop config models` to edit",
             ));
         }
         Some(SetupStep::PickEffort { selected, error }) => {
@@ -1329,7 +1329,7 @@ pub(crate) fn setup_picker(app: &App) -> Option<SetupPicker> {
             let mut footer = Vec::new();
             push_setup_error(&mut footer, error.as_deref());
             footer.push(setup_footer(
-                "Enter confirm · ↑/↓ move · Esc cancel · `yolop models` to edit",
+                "Enter confirm · ↑/↓ move · Esc cancel · `yolop config models` to edit",
             ));
             Some(SetupPicker {
                 header,

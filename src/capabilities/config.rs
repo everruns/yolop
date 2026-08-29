@@ -1,21 +1,12 @@
-// The `config` capability — schema-described, human-friendly editing of the
-// yolop settings file.
+// The `config` capability owns the attached model-selection command.
 //
-// `settings.toml` is loaded tolerantly (unknown keys are ignored, never
-// fatal). This capability layers *semantics* on top of that file via the
-// informational schema in `crate::config::schema`: it exposes `get_config` (read
-// the schema + current values) and `set_config` (validate + persist any known
-// key) so the agent can configure yolop the way a user describes it.
-//
-// Its prompt block is reveal-gated (see `capabilities::tool_reveal`): both tools
-// defer their schemas, and the block only tells you things — where the file is,
-// when an edit lands — that you can act on once you are actually calling them.
-//
-// Provider/model edits are persisted here and take effect on the next run; use
-// the interactive `/setup` command to switch the *live* model mid-session.
+// It delegates model-list actions to `ModelListCapability`, which keeps the
+// shared control route and persistence behavior without registering a separate
+// top-level CLI command. The legacy configuration tool implementations remain
+// internal for focused tests, but this capability advertises no agent tools.
 
+use crate::capabilities::model_list::{ModelListAction, ModelListCapability, ModelsCliCommand};
 use crate::capabilities::narration::{narrate_get_config, narrate_set_config};
-use crate::capabilities::tool_reveal::RevealedTools;
 use crate::config::capability_settings::{
     CapabilityCatalog, apply_capability_settings, build_capability_override,
     capability_catalog_json, capability_catalog_list, effective_harness_json, overrides_to_json,
@@ -24,21 +15,172 @@ use crate::config::capability_settings::{
 use crate::config::schema::{KeyTarget, ValueKind, known_keys, parse_key, schema};
 use crate::config::service::{ConfigService, current_value, scoped_current};
 use crate::config::{ApprovalMode, Settings, SettingsStore};
+use crate::control::{
+    CliCapability, ControlCapability, ControlRequest, ControlResponse, ControlRoute,
+};
 use crate::runtime::{SUPPORTED_PROVIDERS, coding_harness_defaults, resolve_for_settings};
 use async_trait::async_trait;
+use clap::{Args, Command, FromArgMatches, Subcommand};
 use everruns_core::tool_narration::ToolNarrationPhase;
 use everruns_core::{Capability, CapabilityStatus, SystemPromptContext};
 use everruns_core::{Tool, ToolExecutionResult};
 use everruns_provider::ToolCall;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::sync::Arc;
+
+#[derive(Debug, Args)]
+pub(crate) struct ConfigCommandLine {
+    #[command(subcommand)]
+    command: ConfigCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum ConfigCommand {
+    Get {
+        key: Option<String>,
+    },
+    Set {
+        key: String,
+        value: Option<String>,
+        #[arg(long, value_name = "OBJECT", conflicts_with = "value")]
+        json: Option<String>,
+    },
+    Clear {
+        key: String,
+    },
+    Model {
+        #[command(subcommand)]
+        command: ConfigModelCommand,
+    },
+    Models {
+        #[command(subcommand)]
+        command: Option<ModelsCliCommand>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ConfigModelCommand {
+    Show,
+    Set { model: String },
+    Clear,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+enum ConfigAction {
+    Get {
+        key: Option<String>,
+    },
+    Set {
+        key: String,
+        value: Option<String>,
+        json: Option<Value>,
+    },
+    Clear {
+        key: String,
+    },
+    ModelShow,
+    ModelSet {
+        model: String,
+    },
+    ModelClear,
+}
+
+impl ConfigCommandLine {
+    fn request(matches: &clap::ArgMatches) -> anyhow::Result<ControlRequest> {
+        let command = Self::from_arg_matches(matches)?.command;
+        let action = match command {
+            ConfigCommand::Get { key } => serde_json::to_value(ConfigAction::Get { key })?,
+            ConfigCommand::Set { key, value, json } => {
+                if value.is_none() && json.is_none() {
+                    anyhow::bail!("config set requires VALUE or --json OBJECT");
+                }
+                let json = json
+                    .map(|raw| {
+                        serde_json::from_str::<Value>(&raw)
+                            .map_err(|error| anyhow::anyhow!("invalid --json value: {error}"))
+                    })
+                    .transpose()?;
+                serde_json::to_value(ConfigAction::Set { key, value, json })?
+            }
+            ConfigCommand::Clear { key } => serde_json::to_value(ConfigAction::Clear { key })?,
+            ConfigCommand::Model { command } => match command {
+                ConfigModelCommand::Show => serde_json::to_value(ConfigAction::ModelShow)?,
+                ConfigModelCommand::Set { model } => {
+                    serde_json::to_value(ConfigAction::ModelSet { model })?
+                }
+                ConfigModelCommand::Clear => serde_json::to_value(ConfigAction::ModelClear)?,
+            },
+            ConfigCommand::Models { command } => serde_json::to_value(match command {
+                Some(command) => ModelListAction::from(command),
+                None => ModelListAction::List {
+                    json: false,
+                    connected: false,
+                },
+            })?,
+        };
+        Ok(ControlRequest::new("models", action)?)
+    }
+}
 
 pub(crate) const CONFIG_CAPABILITY_ID: &str = "yolop_config";
 
 pub(crate) struct ConfigCapability {
     pub(crate) settings: Arc<SettingsStore>,
     pub(crate) catalog: Arc<CapabilityCatalog>,
-    pub(crate) reveals: Arc<RevealedTools>,
+    pub(crate) model_list: Arc<ModelListCapability>,
+}
+
+#[async_trait]
+impl ControlCapability for ConfigCapability {
+    fn control_route(&self) -> ControlRoute {
+        self.model_list.control_route()
+    }
+
+    async fn execute_control(&self, action: &Value) -> ToolExecutionResult {
+        match serde_json::from_value::<ConfigAction>(action.clone()) {
+            Ok(action) => self.execute_config_action(action).await,
+            Err(_) => self.model_list.execute_control(action).await,
+        }
+    }
+
+    fn render_control(&self, action: &Value, response: &ControlResponse) -> String {
+        if serde_json::from_value::<ConfigAction>(action.clone()).is_ok() {
+            response.render_default()
+        } else {
+            self.model_list.render_control(action, response)
+        }
+    }
+}
+
+#[async_trait]
+impl CliCapability for ConfigCapability {
+    fn cli_command(&self) -> clap::Command {
+        ConfigCommandLine::augment_args(Command::new("config"))
+    }
+
+    fn control_request_from_cli(
+        &self,
+        matches: &clap::ArgMatches,
+    ) -> anyhow::Result<ControlRequest> {
+        ConfigCommandLine::request(matches)
+    }
+
+    async fn execute_cli(&self, request: &ControlRequest) -> anyhow::Result<()> {
+        if serde_json::from_value::<ConfigAction>(request.action.clone()).is_err() {
+            return self.model_list.execute_cli_request(request).await;
+        }
+        let response =
+            ControlResponse::from_tool_result(self.execute_control(&request.action).await);
+        let rendered = self.render_control(&request.action, &response);
+        if response.ok {
+            println!("{rendered}");
+            Ok(())
+        } else {
+            anyhow::bail!(rendered)
+        }
+    }
 }
 
 #[async_trait]
@@ -59,44 +201,22 @@ impl Capability for ConfigCapability {
         Some("Personalization")
     }
 
-    async fn system_prompt_contribution(&self, ctx: &SystemPromptContext) -> Option<String> {
-        // `get_config` / `set_config` describe the key space, the `capabilities`
-        // overrides, and the `json` argument. What is left is the file location
-        // and the two facts a caller cannot discover from a schema: edits are
-        // never fatal, and they land on the next run rather than immediately.
-        // Both are only actionable while editing config, so they wait until one
-        // of the tools has been revealed; the tool descriptions carry discovery.
-        if !self
-            .reveals
-            .any_revealed(ctx.session_id, &["get_config", "set_config"])
-        {
-            return None;
-        }
-        let profile = self
-            .settings
-            .active_profile_name()
-            .map(|name| format!(" Active profile: `{name}`."))
-            .unwrap_or_default();
-        Some(format!(
-            "<capability id=\"{}\">\nyolop's settings live at {}. Unknown keys are ignored, \
-             never fatal. Provider/model and capability edits apply on the next run; use \
-             `/setup` to switch the live model now.{}\n</capability>",
-            self.id(),
-            self.settings.path().display(),
-            profile,
-        ))
+    async fn system_prompt_contribution(&self, _ctx: &SystemPromptContext) -> Option<String> {
+        None
     }
 
     fn system_prompt_preview(&self) -> Option<String> {
-        Some(
-            "<capability id=\"yolop_config\">\nyolop's settings and harness capabilities are \
-             schema-described; use `get_config` / `set_config` or the `yolop-config` skill.\n\
-             </capability>"
-                .to_string(),
-        )
+        None
     }
 
     fn tools(&self) -> Vec<Box<dyn Tool>> {
+        Vec::new()
+    }
+}
+
+impl ConfigCapability {
+    #[allow(dead_code)]
+    fn legacy_tools(&self) -> Vec<Box<dyn Tool>> {
         vec![
             Box::new(GetConfigTool {
                 settings: self.settings.clone(),
@@ -108,6 +228,79 @@ impl Capability for ConfigCapability {
             }),
         ]
     }
+
+    async fn execute_config_action(&self, action: ConfigAction) -> ToolExecutionResult {
+        match action {
+            ConfigAction::Get { key } => {
+                GetConfigTool {
+                    settings: self.settings.clone(),
+                    catalog: self.catalog.clone(),
+                }
+                .execute(json!({ "key": key }))
+                .await
+            }
+            ConfigAction::Set { key, value, json } => {
+                let mut arguments = json!({ "key": key });
+                if let Some(value) = value {
+                    arguments["value"] = parse_cli_value(&value);
+                }
+                if let Some(json) = json {
+                    arguments["json"] = json;
+                }
+                SetConfigTool {
+                    settings: self.settings.clone(),
+                    catalog: self.catalog.clone(),
+                }
+                .execute(arguments)
+                .await
+            }
+            ConfigAction::Clear { key } => {
+                SetConfigTool {
+                    settings: self.settings.clone(),
+                    catalog: self.catalog.clone(),
+                }
+                .execute(json!({ "key": key, "value": "clear" }))
+                .await
+            }
+            ConfigAction::ModelShow => {
+                let settings = self.settings.snapshot();
+                let model = settings.default_provider.as_ref().and_then(|provider| {
+                    settings
+                        .default_models
+                        .get(provider)
+                        .map(|model| format!("{provider}/{model}"))
+                });
+                ToolExecutionResult::success(json!({ "model": model }))
+            }
+            ConfigAction::ModelSet { model } => {
+                let models = self.settings.snapshot().model_list();
+                let index = match ModelListCapability::find(&models, &model) {
+                    Ok(index) => index,
+                    Err(error) => return ToolExecutionResult::tool_error(error),
+                };
+                let entry = &models[index];
+                if let Err(error) = self
+                    .settings
+                    .set_configured_model(entry.provider.clone(), entry.model.clone())
+                {
+                    return ToolExecutionResult::tool_error(error.to_string());
+                }
+                ToolExecutionResult::success(
+                    json!({ "model": format!("{}/{}", entry.provider, entry.model) }),
+                )
+            }
+            ConfigAction::ModelClear => {
+                if let Err(error) = self.settings.clear_configured_model() {
+                    return ToolExecutionResult::tool_error(error.to_string());
+                }
+                ToolExecutionResult::success(json!({ "model": Value::Null }))
+            }
+        }
+    }
+}
+
+fn parse_cli_value(value: &str) -> Value {
+    serde_json::from_str(value).unwrap_or_else(|_| Value::String(value.to_string()))
 }
 
 // ---------- field rendering ----------
@@ -628,12 +821,12 @@ impl SetConfigTool {
                     "theme = {value}; applies to new interactive sessions"
                 )))
             }
-            // The list has one editor: `yolop models`, which validates
+            // The list has one editor: `yolop config models`, which validates
             // provider/model pairs and owns ordering. A key/value setter here
             // would be a second, weaker write path for the same file.
             KeyTarget::Models => Err(
-                "the model list is edited with `yolop models add|rm|move|use`, not `set_config`; \
-                 run `yolop models list` to see it"
+                "the model list is edited with `yolop config models add|rm|move` or configured with `yolop config model set MODEL`, not `set_config`; \
+                 run `yolop config models list` to see it"
                     .to_string(),
             ),
             KeyTarget::Model(provider) => {
@@ -714,6 +907,99 @@ mod tests {
     use everruns_core::tool_narration::ToolNarrationPhase;
     use everruns_provider::ToolCall;
 
+    fn cli_request(args: &[&str]) -> ControlRequest {
+        let command = ConfigCommandLine::augment_args(Command::new("config"));
+        let matches = command.try_get_matches_from(args).expect("parse config");
+        ConfigCommandLine::request(&matches).expect("config request")
+    }
+
+    #[test]
+    fn config_cli_parses_persistent_grammar() {
+        for args in [
+            &["config", "get"][..],
+            &["config", "get", "theme"][..],
+            &["config", "set", "theme", "blue"][..],
+            &["config", "clear", "theme"][..],
+            &["config", "model", "show"][..],
+            &["config", "model", "set", "openai/gpt-5.6"][..],
+            &["config", "model", "clear"][..],
+            &["config", "models"][..],
+        ] {
+            cli_request(args);
+        }
+    }
+
+    #[test]
+    fn config_commands_dispatch_to_config_actions() {
+        let cases = [
+            (["config", "get", "theme"].as_slice(), "get"),
+            (["config", "set", "theme", "blue"].as_slice(), "set"),
+            (["config", "clear", "theme"].as_slice(), "clear"),
+            (["config", "model", "show"].as_slice(), "model_show"),
+            (["config", "model", "clear"].as_slice(), "model_clear"),
+        ];
+        for (args, expected) in cases {
+            let action = cli_request(args).action;
+            assert_eq!(action.get("op").and_then(Value::as_str), Some(expected));
+        }
+    }
+
+    #[test]
+    fn set_json_dispatches_object_separately_from_scalar_value() {
+        let request = cli_request(&[
+            "config",
+            "set",
+            "capabilities",
+            "--json",
+            r#"{"ref":"web_fetch","enabled":false}"#,
+        ]);
+        assert!(matches!(
+            serde_json::from_value::<ConfigAction>(request.action).expect("config action"),
+            ConfigAction::Set { key, value: None, json: Some(Value::Object(_)) }
+                if key == "capabilities"
+        ));
+    }
+
+    #[test]
+    fn set_requires_exactly_one_value_form() {
+        let missing = ConfigCommandLine::augment_args(Command::new("config"))
+            .try_get_matches_from(["config", "set", "theme"])
+            .expect("clap accepts the optional positional before request validation");
+        assert!(
+            ConfigCommandLine::request(&missing)
+                .expect_err("missing value must fail")
+                .to_string()
+                .contains("requires VALUE or --json OBJECT")
+        );
+        assert!(
+            ConfigCommandLine::augment_args(Command::new("config"))
+                .try_get_matches_from(["config", "set", "theme", "blue", "--json", "{}",])
+                .is_err(),
+            "scalar and JSON forms must be mutually exclusive"
+        );
+    }
+
+    #[test]
+    fn singular_model_dispatches_to_persistent_action() {
+        let request = cli_request(&["config", "model", "set", "openai/gpt-5.6"]);
+        assert!(matches!(
+            serde_json::from_value::<ConfigAction>(request.action).expect("config action"),
+            ConfigAction::ModelSet { model } if model == "openai/gpt-5.6"
+        ));
+    }
+
+    #[test]
+    fn models_dispatches_to_existing_catalog_action() {
+        for args in [&["config", "models"][..], &["config", "models", "list"][..]] {
+            let request = cli_request(args);
+            assert!(matches!(
+                serde_json::from_value::<ModelListAction>(request.action)
+                    .expect("model-list action"),
+                ModelListAction::List { .. }
+            ));
+        }
+    }
+
     fn store() -> (tempfile::TempDir, Arc<SettingsStore>) {
         let tmp = tempfile::tempdir().expect("tmp");
         let store = Arc::new(SettingsStore::open(tmp.path().join("settings.toml")));
@@ -738,6 +1024,18 @@ mod tests {
             settings,
             catalog: catalog(),
         }
+    }
+
+    #[test]
+    fn config_capability_advertises_no_agent_tools() {
+        let (_tmp, settings) = store();
+        let capability = ConfigCapability {
+            model_list: Arc::new(ModelListCapability::new(settings.clone(), None)),
+            settings,
+            catalog: catalog(),
+        };
+
+        assert!(capability.tools().is_empty());
     }
 
     #[test]
@@ -1162,62 +1460,5 @@ mod tests {
         let snapshot = settings.snapshot();
         assert_eq!(snapshot.capabilities.len(), 2);
         assert!(snapshot.capabilities[1].is_remove());
-    }
-
-    /// The block is how-to for two deferred tools, so it stays out of the prompt
-    /// until `tool_search` has loaded one of them.
-    #[tokio::test]
-    async fn config_block_waits_for_a_tool_reveal() {
-        let (_tmp, settings) = store();
-        let reveals = Arc::new(RevealedTools::new());
-        let capability = ConfigCapability {
-            settings: settings.clone(),
-            catalog: catalog(),
-            reveals: reveals.clone(),
-        };
-        let session = everruns_provider::typed_id::SessionId::new();
-        let ctx = SystemPromptContext::without_file_store(session);
-
-        assert!(
-            capability.system_prompt_contribution(&ctx).await.is_none(),
-            "no reveal yet — `get_config`'s description carries discovery on its own"
-        );
-
-        reveals.record(session, ["get_config".to_string()]);
-
-        let block = capability
-            .system_prompt_contribution(&ctx)
-            .await
-            .expect("revealed tools bring the block back");
-        assert!(block.contains("settings live at"));
-        assert!(block.contains("apply on the next run"));
-    }
-
-    /// A reveal in one session must not unhide the block in another.
-    #[tokio::test]
-    async fn config_block_is_scoped_to_the_revealing_session() {
-        let (_tmp, settings) = store();
-        let reveals = Arc::new(RevealedTools::new());
-        let capability = ConfigCapability {
-            settings,
-            catalog: catalog(),
-            reveals: reveals.clone(),
-        };
-        let revealed = everruns_provider::typed_id::SessionId::new();
-        let other = everruns_provider::typed_id::SessionId::new();
-        reveals.record(revealed, ["set_config".to_string()]);
-
-        assert!(
-            capability
-                .system_prompt_contribution(&SystemPromptContext::without_file_store(revealed))
-                .await
-                .is_some()
-        );
-        assert!(
-            capability
-                .system_prompt_contribution(&SystemPromptContext::without_file_store(other))
-                .await
-                .is_none()
-        );
     }
 }

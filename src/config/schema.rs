@@ -6,8 +6,8 @@
 //! drop extra keys into the file without breaking yolop. What the schema adds
 //! is **semantics**: a title, description, type, default, and examples for
 //! every known configuration key. That lets the agent explain and edit
-//! configuration in a human-friendly way through the `get_config` /
-//! `set_config` tools and the `yolop-config` skill — the schema here is the
+//! configuration in a human-friendly way through the
+//! `config` command and the `yolop-config` skill. The schema here is the
 //! single source of truth those surfaces render.
 //!
 //! Keys are addressed the way a human would name them. Scalar keys are plain
@@ -104,14 +104,14 @@ pub fn schema() -> &'static [ConfigField] {
             description: "The ordered, cross-provider menu of models to switch between: what \
                           `/model`, the status bar, and ACP offer. Stored as `[[models]]` \
                           entries with `provider`, `model`, and optional `effort`/`label`. \
-                          Edit it with `yolop models add|rm|move`, not `set_config`. Unset \
+                          Edit it with `yolop config models add|rm|move`. Unset \
                           means the built-in default list.",
             kind: ValueKind::List,
             default: Some(
                 "openai/gpt-5.6-sol, openai/gpt-5.4-mini, anthropic/claude-opus-4-8, \
                            anthropic/claude-sonnet-4-5, codex/gpt-5.6-sol",
             ),
-            examples: &["yolop models add openrouter anthropic/claude-opus-4-8"],
+            examples: &["yolop config models add openrouter anthropic/claude-opus-4-8"],
             provider_scoped: false,
         },
         ConfigField {
@@ -252,17 +252,10 @@ pub fn schema() -> &'static [ConfigField] {
                           harness. Each entry has a `ref` (capability id), optional \
                           `enabled=false` to remove every instance with that ref, optional \
                           `append=true` to add a duplicate instance, and capability-specific \
-                          config keys validated via `config_schema` / `validate_config`. Use \
-                          `get_config key=capabilities` for the full registered catalog, or \
-                          `get_config key=capabilities.<ref>` for one capability's schema \
-                          metadata. Append entries with `set_config key=capabilities json=…`; \
-                          pass `value=clear` to drop all stored overrides.",
+                          config keys validated via `config_schema` / `validate_config`.",
             kind: ValueKind::List,
             default: None,
-            examples: &[
-                "capabilities.message_metadata",
-                "set_config key=capabilities json={\"ref\":\"message_metadata\",\"config\":{\"fields\":[\"timestamp\"]}}",
-            ],
+            examples: &["capabilities.message_metadata"],
             provider_scoped: true,
         },
         ConfigField {
@@ -301,7 +294,7 @@ pub enum KeyTarget {
     Theme,
     /// Per-provider model spec, for the named provider.
     Model(String),
-    /// The ordered `[[models]]` list, edited through `yolop models`.
+    /// The ordered `[[models]]` list, edited through `yolop config models`.
     Models,
     /// Per-provider API token.
     Token(String),

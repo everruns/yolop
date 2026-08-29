@@ -70,15 +70,17 @@ the list.
 Entries whose provider you have not signed in to are shown and marked; picking
 one runs that provider's sign-in first, then switches to the model you picked.
 
-Edit the list from a shell (it applies to the running session):
+Manage the persistent model catalog and future-session default from a shell:
 
 ```bash
-yolop models list
-yolop models add openrouter anthropic/claude-opus-4-8 --label "Opus (OpenRouter)"
-yolop models move claude-opus-4-8 1
-yolop models rm gpt-5.4-mini
-yolop models use gpt-5.6-sol
-yolop models reset          # back to the built-in default list
+yolop config models
+yolop config models add openrouter anthropic/claude-opus-4-8 --label "Opus (OpenRouter)"
+yolop config models move claude-opus-4-8 1
+yolop config models rm gpt-5.4-mini
+yolop config model show
+yolop config model set gpt-5.6-sol
+yolop config model clear
+yolop config models reset          # back to the built-in default list
 ```
 
 It is stored as `[[models]]` in `settings.toml`, so it can also be edited by
