@@ -831,10 +831,10 @@ mod tests {
         let offered = offer(
             vec![ModelEntry::new("openrouter", "some/model")],
             None,
-            |provider| provider == "anthropic",
+            |provider| provider == "codex",
         );
         assert!(
-            offered.iter().all(|entry| entry.provider == "anthropic"),
+            offered.iter().all(|entry| entry.provider == "codex"),
             "an unreachable list falls back to reachable defaults: {offered:?}"
         );
         assert!(!offered.is_empty(), "picker must never be empty");
