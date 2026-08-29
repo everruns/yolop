@@ -469,9 +469,9 @@ tokens (`~/.config/yolop/settings.toml` on Linux,
 
 You rarely edit it by hand: the TUI's `/setup`, `/model`, and `/effort` commands
 update the active provider, keys, model, and reasoning effort, and yolop can read
-and edit the file itself through the `get_config` / `set_config` tools or the
-`yolop-config` skill (e.g. "use anthropic by default", "store my OpenAI key").
-Unknown keys are ignored, so the format stays forward-compatible.
+and manage persistent model selection through
+`yolop config model show|set|clear` or the `yolop-config` skill. Unknown keys are
+ignored, so the format stays forward-compatible.
 
 Both global directories can be moved: `--config-dir <PATH>` (settings, profiles,
 hooks, extensions) and `--data-dir <PATH>` (sessions, logs, models, prompt
@@ -535,8 +535,8 @@ ones. Paths resolve relative to the profiles directory.
 CLI and ACP live model choices override the selected profile; the profile
 overrides `settings.toml`. Credentials, theme, attribution, and background-wake
 behavior remain global and are rejected in a profile. When a profile is active,
-`/setup`, `set_config`, and extension enable/disable persist back to that
-profile while credential changes still update the global settings file.
+`/setup` and extension enable/disable persist back to that profile while
+credential changes still update the global settings file.
 Workspace `.mcp.json` still overlays a profile's servers by name, and `yolop
 mcp` / `/mcp` writes stay scoped to global settings or the workspace file.
 

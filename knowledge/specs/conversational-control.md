@@ -64,14 +64,14 @@ command, an overlay confirmation, or a next-run-only settings write fail this ba
 |---|---|---|
 | Reasoning effort | `set_reasoning_effort` | `/effort` overlay, `/setup effort` |
 | Model | `search_models` / `set_model` | `/model` overlay, `/setup model` |
-| Model list (the menu `/model` and ACP offer) | `yolop models …` (attached CLI) | `/model` overlay, `[[models]]` in settings |
+| Model list (the menu `/model` and ACP offer) | `yolop config models …` (attached CLI) | `/model` overlay, `[[models]]` in settings |
 | Provider | `set_provider` | `/setup provider` |
 | Skills, list | `list_skills` (upstream) | system-prompt listing |
 | Skills, search (skills.sh) | `search_skills` |, |
 | Skills, install from registry | `install_skill` |, |
 | Skills, install/update by content | `write_skill` (upstream) |, |
 | Skills, uninstall | `delete_skill` |, |
-| Settings (provider/model/tokens/urls/capabilities, next-run) | `get_config` / `set_config` | `/setup`, `yolop-config` skill |
+| Model selection and model-list edits | `yolop config model` / `yolop config models` | `/setup`, `yolop-config` skill |
 | Any slash command the host's registry holds (`/setup`, `/background`, `/undo`, `/redo`, `/rewind`, `/goal`, plus the terminal ones in the TUI) | `run_command` (every host) | the slash commands themselves |
 
 Notes:
@@ -82,8 +82,9 @@ Notes:
 - `search_models` queries usable providers through the runtime driver registry and
   returns provider-qualified matches. `set_model` rejects a partial name when it
   matches discovered models but is not an exact ID for the current provider.
-- `set_config` is intentionally next-run for provider/model edits, it edits the
-  settings file. The *live* equivalents are the `set_*` tools above.
+- `yolop config model show|set|clear` owns persistent model selection, while
+  `yolop config models` edits the persisted ordered list. Attached list edits
+  also refresh the current session menu; neither command switches the live model.
 - **Attached administration is the deliberate exception to "a model-facing tool".**
   Extension, coordination, and model-list administration is reachable conversationally by
   running `yolop <subcommand> ...` in the foreground Bash tool, which the host
@@ -113,7 +114,8 @@ Notes:
 - `crate::capabilities::skills` owns `delete_skill`; `crate::capabilities::skill_registry`
   owns `search_skills` / `install_skill`; the upstream `ScopedSkillsCapability`
   owns `list_skills` / `write_skill` (see [`skills.md`](./skills.md)).
-- `crate::capabilities::config` owns `get_config` / `set_config` (see
+- `crate::capabilities::config` owns the attached `config` command and delegates
+  model-list actions to `ModelListCapability` (see
   [`configuration.md`](./configuration.md)).
 - The command registry and `run_command` are owned by [`commands.md`](./commands.md).
 

@@ -21,6 +21,7 @@
 
 mod support;
 
+use std::fs;
 use std::io::Write;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -3179,4 +3180,160 @@ fn openrouter_tool_call_executes_end_to_end() {
          its result reached the model): {stdout}"
     );
     assert!(!stdout.contains("success="), "unexpected footer: {stdout}");
+}
+
+#[test]
+fn config_model_entry_point_persists_show_set_and_clear() {
+    let temp = tempfile::tempdir().expect("temp config dir");
+    let config_dir = temp.path();
+
+    let run = |args: &[&str]| {
+        Command::new(yolop_binary())
+            .env("YOLOP_CONFIG_DIR", config_dir)
+            .args(args)
+            .output()
+            .expect("run config model command")
+    };
+
+    let output = run(&["config", "model", "show"]);
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("\"model\": null"),
+        "unexpected stdout: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+
+    let output = run(&["config", "model", "set", "gpt-5.4-mini"]);
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let output = run(&["config", "model", "show"]);
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("openai/gpt-5.4-mini"),
+        "unexpected stdout: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+
+    let settings =
+        fs::read_to_string(config_dir.join("settings.toml")).expect("read persisted settings");
+    assert!(settings.contains("default_provider = \"openai\""));
+    assert!(settings.contains("gpt-5.4-mini"));
+
+    let output = run(&["config", "models", "add", "custom", "qualified-model"]);
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let output = run(&["config", "model", "set", "custom/qualified-model"]);
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let output = run(&["config", "model", "show"]);
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("custom/qualified-model"),
+        "unexpected stdout: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+
+    let output = run(&["config", "model", "clear"]);
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let output = run(&["config", "model", "show"]);
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("\"model\": null"),
+        "unexpected stdout: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+
+    let settings =
+        fs::read_to_string(config_dir.join("settings.toml")).expect("read cleared settings");
+    assert!(!settings.contains("default_provider"));
+    assert!(!settings.contains("custom = \"qualified-model\""));
+    assert!(
+        settings.contains("qualified-model"),
+        "catalog entry was removed"
+    );
+}
+
+#[test]
+fn config_entry_point_get_set_json_and_clear() {
+    let temp = tempfile::tempdir().expect("temp config dir");
+    let config_dir = temp.path();
+
+    let run = |args: &[&str]| {
+        Command::new(yolop_binary())
+            .env("YOLOP_CONFIG_DIR", config_dir)
+            .args(args)
+            .output()
+            .expect("run config command")
+    };
+
+    let output = run(&["config", "set", "default_provider", "openai"]);
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let output = run(&["config", "get", "default_provider"]);
+    assert!(output.status.success());
+    let provider =
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).expect("provider JSON");
+    assert_eq!(provider["field"]["key"], "default_provider");
+    assert_eq!(provider["field"]["current"], "openai");
+
+    let output = run(&[
+        "config",
+        "set",
+        "capabilities",
+        "--json",
+        r#"{"ref":"message_metadata","enabled":false}"#,
+    ]);
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let output = run(&["config", "get", "capabilities"]);
+    assert!(output.status.success());
+    let capabilities =
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).expect("capabilities JSON");
+    let overrides = capabilities["stored_overrides"]
+        .as_array()
+        .expect("stored overrides array");
+    assert_eq!(overrides.len(), 1);
+    assert_eq!(overrides[0]["ref"], "message_metadata");
+    assert_eq!(overrides[0]["enabled"], false);
+
+    let output = run(&["config", "clear", "default_provider"]);
+    assert!(output.status.success());
+    let output = run(&["config", "get", "default_provider"]);
+    assert!(output.status.success());
+    let cleared =
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).expect("cleared provider JSON");
+    assert_eq!(cleared["field"]["key"], "default_provider");
+    assert!(cleared["field"]["current"].is_null());
 }

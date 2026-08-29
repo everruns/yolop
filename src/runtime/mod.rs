@@ -3894,10 +3894,9 @@ pub async fn build_with_options(
     let live_processes = crate::extensions::LiveProcessRegistry::default();
     let mut session_control_registry = crate::control::ControlRegistry::default();
     session_control_registry.register(coordination_capability)?;
-    // The model list administers itself through the same attached-CLI plane:
-    // `yolop models ...`. It shares `ModelsCapability`'s controller, so
-    // `yolop models use` switches this live session exactly like `/setup
-    // provider <name> <model>`.
+    // The persistent config CLI delegates catalog operations to the model list.
+    // Runtime switching stays on the existing models control route, which shares
+    // `ModelsCapability`'s controller with `/setup provider <name> <model>`.
     let pending_model_choice = Arc::new(RwLock::new(None));
     let model_list = Arc::new(crate::capabilities::ModelListCapability::new(
         settings.clone(),
@@ -3909,7 +3908,8 @@ pub async fn build_with_options(
         )),
     ));
     session_control_registry.register(model_list.clone())?;
-    capabilities.register_arc(model_list);
+    // ConfigCapability owns the attached `config` CLI; the model list remains
+    // registered only as the `models` control route it delegates to.
     // Per-extension secrets ride the shared credential store (`connections.toml`,
     // 0600), keyed `ext:<name>` — never `settings.toml`. Injected as env at
     // spawn; never surfaced to the agent.
@@ -4222,7 +4222,7 @@ pub async fn build_with_options(
     capabilities.register(ConfigCapability {
         settings: settings.clone(),
         catalog: Arc::new(catalog),
-        reveals: tool_reveals.clone(),
+        model_list: model_list.clone(),
     });
 
     let mut driver_registry = DriverRegistry::new();
@@ -9144,7 +9144,7 @@ mod tests {
     /// stable composition components so prompt/tool budget changes are explicit.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cold_start_prompt_composition_is_measured_by_component() {
-        const BASELINE_PROMPT_BYTES: usize = 12_888;
+        const BASELINE_PROMPT_BYTES: usize = 14_138;
         // The tool baselines model what today's surface would cost undeferred,
         // so enabling a capability raises them by exactly that capability's
         // undeferred cost — otherwise the ratio guards below would read a

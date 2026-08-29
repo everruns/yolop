@@ -59,7 +59,7 @@ impl ModelEntry {
     }
 
     /// Stable identity of an entry: what ACP sends back as the selected value
-    /// and what `yolop models rm` matches on. Effort is excluded so the same
+    /// and what `yolop config models rm` matches on. Effort is excluded so the same
     /// model at two efforts does not read as two different models here; use
     /// [`ModelEntry::spec`] where effort matters.
     pub fn key(&self) -> String {
@@ -75,7 +75,7 @@ impl ModelEntry {
         }
     }
 
-    /// One-line rendering for pickers and `yolop models list`.
+    /// One-line rendering for pickers and `yolop config models list`.
     pub fn display(&self) -> String {
         match &self.label {
             Some(label) => label.clone(),

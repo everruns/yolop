@@ -833,6 +833,51 @@ impl SettingsStore {
         )
     }
 
+    /// Set the configured provider and its default model in one persistent write.
+    pub fn set_configured_model(&self, provider: String, model: String) -> Result<()> {
+        let base_provider = provider.clone();
+        let base_model = model.clone();
+        self.update_profileable(
+            |settings| {
+                settings.default_provider = Some(base_provider.clone());
+                settings.default_models.insert(base_provider, base_model);
+            },
+            |profile| {
+                profile.default_provider = Some(Some(provider.clone()));
+                profile.default_models.insert(provider, Some(model));
+            },
+        )
+    }
+
+    /// Clear the configured provider and its provider-specific default model.
+    pub fn clear_configured_model(&self) -> Result<bool> {
+        let mut guard = self.inner.lock().expect("settings lock poisoned");
+        let base_provider = guard.base.default_provider.clone();
+        if let Some(active) = &mut guard.profile {
+            let provider = active
+                .overlay
+                .default_provider
+                .as_ref()
+                .and_then(Clone::clone)
+                .or(base_provider);
+            let existed = provider.is_some();
+            active.overlay.default_provider = Some(None);
+            if let Some(provider) = provider {
+                active.overlay.default_models.insert(provider, None);
+            }
+            save_profile_to(&active.path, &active.overlay)?;
+            Ok(existed)
+        } else {
+            let provider = guard.base.default_provider.take();
+            let existed = provider.is_some();
+            if let Some(provider) = provider {
+                guard.base.default_models.remove(&provider);
+            }
+            save_to(&self.path, &guard.base)?;
+            Ok(existed)
+        }
+    }
+
     pub fn set_attribution(&self, enabled: bool) -> Result<()> {
         let mut guard = self.inner.lock().expect("settings lock poisoned");
         guard.base.attribution = enabled;
@@ -955,7 +1000,7 @@ impl SettingsStore {
         Ok(existed)
     }
 
-    /// Replace the model list. Every `yolop models` edit reads the resolved
+    /// Replace the model list. Every `yolop config models` edit reads the resolved
     /// list, changes it, and writes the whole thing back, so ordering is
     /// explicit and there is one write path. Under an active profile this
     /// writes the profile's own `[[models]]`, which replaces the global menu.
@@ -1883,5 +1928,41 @@ Authorization = "Bearer ${LINEAR_API_KEY}"
 
         let mode = std::fs::metadata(&path).expect("meta").permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
+    }
+
+    #[test]
+    fn configured_model_set_and_clear_persist_as_one_setting() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("settings.toml");
+        let store = SettingsStore::open(path.clone());
+
+        store
+            .set_configured_model("openai".to_string(), "gpt-test".to_string())
+            .expect("set configured model");
+        let snapshot = store.snapshot();
+        assert_eq!(snapshot.default_provider.as_deref(), Some("openai"));
+        assert_eq!(
+            snapshot.default_models.get("openai").map(String::as_str),
+            Some("gpt-test")
+        );
+
+        assert!(
+            store
+                .clear_configured_model()
+                .expect("clear configured model")
+        );
+        let snapshot = store.snapshot();
+        assert_eq!(snapshot.default_provider, None);
+        assert_eq!(
+            snapshot.default_models.get("openai").map(String::as_str),
+            None
+        );
+
+        let reloaded = SettingsStore::open(path).snapshot();
+        assert_eq!(reloaded.default_provider, None);
+        assert_eq!(
+            reloaded.default_models.get("openai").map(String::as_str),
+            None
+        );
     }
 }

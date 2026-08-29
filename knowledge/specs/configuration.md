@@ -32,7 +32,7 @@ forcing slash-command syntax.
 carries a canonical `key`, `aliases`, `title`, `description`, value `kind`
 (`text` / `bool` / `secret`), effective `default`, `examples`, and whether it is
 `provider_scoped` (addressed as `<key>.<provider>`). This one registry feeds
-every configuration surface, the tools below and the `yolop-config` skill, so
+every configuration surface and the `yolop-config` skill, so
 there is no second place to keep in sync.
 
 Keys are addressed the way a human would name them:
@@ -40,7 +40,7 @@ Keys are addressed the way a human would name them:
 | Key                       | Type   | Meaning                                                        |
 |---------------------------|--------|----------------------------------------------------------------|
 | `default_provider`        | text   | Provider used when no `--provider` flag is given; takes precedence over env auto-detection. |
-| `models`                  | list   | The ordered, cross-provider `[[models]]` menu `/model` and ACP offer; edited with `yolop models` (see [Model list](model-list.md)). |
+| `models`                  | list   | The ordered, cross-provider `[[models]]` menu `/model` and ACP offer; edited with `yolop config models` (see [Model list](model-list.md)). |
 | `default_models.<provider>` | text | Per-provider model spec, survives provider switches. Remembered state, not the menu. |
 | `tokens.<provider>`       | secret | Provider API token (owner-only on disk; env vars override). OpenRouter PKCE browser login stores the minted key as `tokens.openrouter`. |
 | `base_urls.<provider>`    | text   | Endpoint base URL (used by the `custom` provider).             |
@@ -68,6 +68,20 @@ Meta Model API is a first-class `meta` provider backed by `everruns-meta`, not a
 generic compatible endpoint. It reads `MODEL_API_KEY`, defaults to
 `muse-spark-1.2`, and exposes both the standard and
 `muse-spark-1.2-contributor` published profiles.
+
+### Top-level config command
+
+`yolop config` is the persistent configuration surface in both attached and
+detached execution. `get [key]` returns the whole schema-backed view or one
+field, `set <key> <value>` applies scalar and provider-scoped values, and
+`clear <key>` removes a stored value. Structured capability overrides use
+`set capabilities --json '<object>'`; this keeps object input distinct from
+scalar values and appends through the same schema and settings service used by
+the other forms. `clear capabilities` removes all stored overrides.
+
+The same command also owns `model show|set|clear` and the `models` list editor.
+It replaces the former `get_config` and `set_config` agent tools, which are no
+longer registered.
 
 ### Where the global directories live
 
@@ -175,24 +189,15 @@ The active profile is printed at startup, returned by `get_config`, and
 included in the terminal-independent safety status. Missing or malformed
 profiles fail before session construction.
 
-### Tools
+### Attached command
 
-The `config` capability (`src/capabilities/config.rs`) exposes two tools backed
-by the schema:
-
-- **`get_config`**: with no argument, returns every key with its semantics and
-  current value; with a `key`, returns just that entry. Secrets are reported as
-  `stored` / `unset`, never echoed. Use `key=capabilities` for the registered
-  catalog plus stored overrides and effective harness, or `key=capabilities.<ref>`
-  for one capability's schema metadata (`config_schema`, `config_ui_schema`).
-- **`set_config`**: validates and persists scalar keys via `value` (`clear`
-  unsets). Harness overrides: `key=capabilities` with a `json` object appends one
-  `[[capabilities]]` entry; `value=clear` drops all stored overrides. Capability
-  config is validated through each capability's `validate_config`.
-
-Both honor aliases and validate provider segments against the supported-provider
-list. Provider/model and capability edits take effect on the next run; `/setup`
-remains the way to switch the *live* model mid-session.
+`ConfigCapability` owns the attached `config` CLI. `yolop config get [key]`,
+`set KEY VALUE`, and `clear KEY` manage settings, while
+`yolop config model show|set MODEL|clear` manages the persistent model selection.
+The plural `yolop config models ...` form delegates catalog reads and edits to
+`ModelListCapability`; bare `models` is shorthand for `models list`. The
+model-list capability keeps its `models` control route but does not register a
+separate top-level CLI command. The capability exposes no agent tools.
 
 ### Configuration as a service
 
@@ -216,32 +221,25 @@ through the service handle, writes through the concrete `SettingsStore`, so the
 read/write split is explicit at the type level. `AttributionCapability` reads
 whether attribution is enabled through the service; `ApprovalCapability` reads
 its soft-approval paranoia level through `ConfigService::approval_mode()` each
-turn; the `config` capability's `get_config` reads single values through
-`ConfigService::current`; and `ModelsCapability` reads provider/token/model state
-through its config handle while persisting `/setup` changes through the store.
-`approval_mode` is also a first-class schema key, so `get_config`/`set_config`
-manage it alongside everything else.
+turn; `SetupController` reads provider/token/model state through its config
+handle while persisting `/setup` changes through the store. `approval_mode`
+remains a first-class schema key for internal configuration consumers.
 
 The per-target read helpers (`current_value`, `scoped_current`) live in the
-service module so the `config` tools and any other consumer share one
-implementation; secret redaction and unsupported-provider filtering therefore
-apply uniformly wherever config is read.
+service module so internal configuration consumers share one implementation;
+secret redaction and unsupported-provider filtering therefore apply uniformly
+wherever config is read.
 
 ### Context delivery
 
-The schema reaches the agent two ways:
-
-1. An always-on pointer: `ConfigCapability::system_prompt_contribution` adds a
-   compact note (settings path + "use `get_config`/`set_config` or the
-   `yolop-config` skill") to every turn.
-2. The bundled `yolop-config` system skill is the
-   detailed, on-demand reference. It instructs the agent to read the live schema
-   via `get_config` rather than duplicating key lists, and points at the
-   adjacent surfaces (`memory`, `yolop-hooks`, `/setup`).
+The configuration capability does not add tools or an always-on system-prompt
+block. The bundled `yolop-config` skill is the on-demand reference for the
+attached model commands and adjacent configuration surfaces.
 
 ## Boundaries
 
 Configuration is distinct from the neighbouring personalization surfaces:
 durable preferences are **memory**, behavioral rules are **hooks**, and
-interactive live provider/model switching is **`/setup`**. All settings keys,
-including harness capabilities, go through `get_config` / `set_config`.
+guided provider setup is **`/setup`**. Model selection and model-list edits go
+through the attached `config` command; other settings retain their dedicated
+setup and control surfaces.
