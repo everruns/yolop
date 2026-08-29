@@ -40,7 +40,6 @@ use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 use crate::capabilities::{ApprovalDecision, ToolApprover};
 use crate::config::{ApprovalMode, SettingsStore};
-use crate::exec::worktree::WorktreeManager;
 use crate::runtime::background_wake::{WakeReceiver, coalesce_pending_wakes, frame_wake_prompt};
 use crate::runtime::{BuiltRuntime, ModelState, RuntimeHandles};
 use crate::session_state::task_completion::{CompletionBudget, GateDecision};
@@ -260,7 +259,6 @@ struct Session {
     acp_id: String,
     handles: RuntimeHandles,
     model: ModelState,
-    worktree: Arc<WorktreeManager>,
     commands: StdMutex<Vec<CommandDescriptor>>,
     cancel: StdMutex<Option<oneshot::Sender<()>>>,
     /// Settings source, read for the `proactive_wake` opt-out and the
@@ -702,7 +700,6 @@ fn register_session<F: RuntimeFactory>(
         acp_id: acp_id.clone(),
         handles: built.handles,
         model: built.model,
-        worktree: built.worktree,
         commands: StdMutex::new(commands.clone()),
         cancel: StdMutex::new(None),
         last_mode: StdMutex::new(built.settings.snapshot().approval_mode()),
@@ -1529,10 +1526,6 @@ async fn run_prompt_once(
     // broadcast only delivers events emitted after `subscribe`.
     let mut live = handles.events.subscribe();
     let events_before = handles.runtime.events().await.map(|e| e.len()).unwrap_or(0);
-
-    if let Err(err) = session.worktree.ensure_before_turn(&prompt) {
-        tracing::warn!(%err, "acp: worktree activation failed");
-    }
     let turn_handles = handles.clone();
     let turn =
         tokio::spawn(async move { turn_handles.run_checkpointed_turn(&prompt, input).await });

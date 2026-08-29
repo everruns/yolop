@@ -224,8 +224,6 @@ enum Commands {
     Version,
     /// Add yolop into supported editors.
     Into(IntoCommand),
-    /// Git worktree maintenance.
-    Worktree(WorktreeArgs),
     /// Manage MCP servers in global settings or workspace `.mcp.json`.
     Mcp(McpArgs),
     /// Manage downloaded weights for the `local` provider.
@@ -372,27 +370,6 @@ fn parse_key_value(value: &str) -> Result<(String, String), String> {
         return Err("header key cannot be empty".to_string());
     }
     Ok((key.trim().to_string(), val.to_string()))
-}
-
-#[derive(Args, Debug)]
-struct WorktreeArgs {
-    #[command(subcommand)]
-    command: WorktreeCommand,
-}
-
-#[derive(Subcommand, Debug)]
-enum WorktreeCommand {
-    /// List session worktree directories on disk.
-    List,
-    /// Remove worktrees not referenced by any saved session.
-    Prune {
-        /// Print what would be removed without deleting anything.
-        #[arg(long)]
-        dry_run: bool,
-        /// Session storage parent directory (default: platform data dir).
-        #[arg(long)]
-        session_dir: Option<PathBuf>,
-    },
 }
 
 #[derive(Args, Debug)]
@@ -1303,60 +1280,12 @@ fn parse_mcp_auth_mode(value: &str) -> Result<everruns_core::McpServerAuthMode> 
     }
 }
 
-fn run_worktree_command(command: WorktreeCommand) -> Result<()> {
-    match command {
-        WorktreeCommand::List => {
-            let paths = exec::worktree::list_worktree_paths_on_disk()?;
-            if paths.is_empty() {
-                println!("no yolop worktrees found on disk");
-            } else {
-                for path in paths {
-                    println!("{}", path.display());
-                }
-            }
-            Ok(())
-        }
-        WorktreeCommand::Prune {
-            dry_run,
-            session_dir,
-        } => {
-            let sessions_dir = match session_dir {
-                Some(path) => path,
-                None => runtime::session_log::default_sessions_dir()?,
-            };
-            let report = exec::worktree::prune_orphan_worktrees(&sessions_dir, dry_run)?;
-            let action = if dry_run { "would remove" } else { "removed" };
-            for path in &report.removed {
-                println!("{action}: {}", path.display());
-            }
-            let ref_action = if dry_run { "would detach" } else { "detached" };
-            for reference in &report.checkpoint_refs {
-                println!("{ref_action} checkpoint ref: {reference}");
-            }
-            println!(
-                "kept {} referenced worktree(s); {} orphan(s) {action}",
-                report.kept,
-                report.removed.len()
-            );
-            for err in &report.errors {
-                eprintln!("error: {err}");
-            }
-            if report.errors.is_empty() {
-                Ok(())
-            } else {
-                std::process::exit(1);
-            }
-        }
-    }
-}
-
 async fn run_command(command: Commands) -> Result<()> {
     match command {
         Commands::Version => {
             println!("{}", version::VERSION_LINE);
             Ok(())
         }
-        Commands::Worktree(args) => run_worktree_command(args.command),
         Commands::Mcp(args) => run_mcp_command(args.command),
         Commands::Weights(args) => run_weights_command(args.command).await,
         Commands::TuikaGallery => run_tuika_gallery(),
@@ -1510,6 +1439,7 @@ fn detached_cli_registry() -> Result<control::CliRegistry> {
         catalog: Arc::new(catalog),
         model_list,
     }))?;
+    registry.register(Arc::new(capabilities::WorktreeCapability::detached()))?;
     let coordination_store = match runtime::session_log::default_sessions_dir()
         .ok()
         .and_then(|dir| capabilities::CoordinationStore::open(&dir).ok())
@@ -2117,9 +2047,6 @@ async fn run_print_mode(
         ..
     } = runtime;
     let color = io::stdout().is_terminal();
-    if let Err(err) = worktree.ensure_before_turn(prompt.trim()) {
-        eprintln!("worktree: {err}");
-    }
     let _ = (&startup.session_dir, &startup.session_log_path);
 
     let trimmed = prompt.trim();
@@ -2334,15 +2261,12 @@ struct PrintTurn {
 
 async fn collect_print_turn(
     handles: &runtime::RuntimeHandles,
-    worktree: &crate::exec::worktree::WorktreeManager,
+    _worktree: &crate::exec::worktree::WorktreeManager,
     model: &runtime::ModelState,
     prompt: &str,
     images: Vec<ContentPart>,
     automatic: bool,
 ) -> Result<PrintTurn> {
-    if let Err(err) = worktree.ensure_before_turn(prompt) {
-        eprintln!("worktree: {err}");
-    }
     let before_msgs = handles
         .runtime
         .messages(handles.session_id)

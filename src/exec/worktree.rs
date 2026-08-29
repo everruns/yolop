@@ -15,8 +15,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 /// Patterns naming git-ignored paths to copy into freshly-created worktrees,
 /// `.gitignore`-style. Lives at the repo root.
@@ -25,36 +24,6 @@ const WORKTREE_INCLUDE_FILE: &str = ".worktreeinclude";
 /// Copied into managed worktrees automatically, without needing a
 /// `.worktreeinclude` entry (mirrors Codex). Only copied when git-ignored.
 const IMPLICIT_INCLUDE: &str = "AGENTS.override.md";
-
-const IMPLEMENT_VERBS: &[&str] = &[
-    "fix",
-    "implement",
-    "add",
-    "create",
-    "build",
-    "write",
-    "update",
-    "change",
-    "refactor",
-    "ship",
-    "debug",
-    "patch",
-    "remove",
-    "delete",
-    "migrate",
-    "replace",
-    "introduce",
-    "integrate",
-    "wire",
-    "hook",
-    "land",
-    "port",
-    "rewrite",
-    "repair",
-    "correct",
-    "extend",
-    "modify",
-];
 
 const STOP_WORDS: &[&str] = &[
     "a", "an", "the", "to", "for", "in", "on", "at", "of", "and", "or", "with", "from", "this",
@@ -76,9 +45,9 @@ pub struct WorktreeManager {
     repo_root: Option<PathBuf>,
     active_root: Arc<RwLock<PathBuf>>,
     worktree: RwLock<Option<WorktreeInfo>>,
+    initialize_lock: Mutex<()>,
     session_id: SessionId,
     session_dir: PathBuf,
-    auto_disabled: AtomicBool,
 }
 
 impl WorktreeManager {
@@ -99,9 +68,9 @@ impl WorktreeManager {
             repo_root,
             active_root: Arc::new(RwLock::new(active)),
             worktree: RwLock::new(restored),
+            initialize_lock: Mutex::new(()),
             session_id,
             session_dir,
-            auto_disabled: AtomicBool::new(false),
         }
     }
 
@@ -132,76 +101,47 @@ impl WorktreeManager {
         (worktree_path != main_path).then_some(info)
     }
 
-    pub fn disable_auto(&self) {
-        self.auto_disabled.store(true, Ordering::SeqCst);
-    }
-
-    pub fn auto_disabled(&self) -> bool {
-        self.auto_disabled.load(Ordering::SeqCst)
-    }
-
-    pub fn status_message(&self) -> String {
-        if let Some(info) = self.worktree_info() {
-            let repo = self
-                .repo_root
-                .as_ref()
-                .map(|p| p.display().to_string())
-                .unwrap_or_else(|| "unknown".to_string());
-            return format!(
-                "active worktree\nrepo: {repo}\nbranch: {}\npath: {}\nbase: {}",
-                info.branch,
-                info.path.display(),
-                info.base_ref,
+    /// Ensure this session has a Yolop-owned worktree and make it active.
+    ///
+    /// The operation is idempotent. Auto mode is explicit: callers decide when
+    /// repository mutation requires isolation, rather than inferring intent from text.
+    pub fn ensure_initialized(&self, slug_hint: Option<&str>) -> Result<bool> {
+        let _initialize = self
+            .initialize_lock
+            .lock()
+            .expect("worktree init lock poisoned");
+        if self
+            .worktree
+            .read()
+            .expect("worktree lock poisoned")
+            .is_some()
+        {
+            return Ok(false);
+        }
+        if self.mode == WorktreesMode::Off {
+            anyhow::bail!(
+                "worktrees mode is off; change it through the config subsystem before initializing"
             );
         }
-        if self.repo_root.is_none() {
-            return "worktrees: not in a git repository".to_string();
-        }
-        if self.auto_disabled() {
-            return "worktrees: auto activation disabled for this session (already-active \
-                    worktrees are unchanged)"
-                .to_string();
-        }
-        format!(
-            "worktrees: {} (inactive — activates on implementation prompts)",
-            self.mode.as_str()
-        )
-    }
-
-    /// Returns `true` when the active root changed (worktree was created or restored).
-    pub fn ensure_before_turn(&self, prompt: &str) -> Result<bool> {
-        if self.worktree.read().map(|g| g.is_some()).unwrap_or(false) {
-            return Ok(false);
-        }
-        if !self.should_activate(prompt) {
-            return Ok(false);
-        }
-        self.activate(Some(prompt))?;
-        Ok(true)
-    }
-
-    pub fn ensure_always(&self) -> Result<bool> {
-        if self.worktree.read().map(|g| g.is_some()).unwrap_or(false) {
-            return Ok(false);
-        }
         if !self.can_use_worktrees() {
-            return Ok(false);
+            anyhow::bail!("session worktrees are unavailable for this checkout");
         }
-        self.activate(None)?;
+        self.activate(slug_hint)?;
         Ok(true)
     }
 
-    fn should_activate(&self, prompt: &str) -> bool {
-        if self.auto_disabled.load(Ordering::SeqCst) {
-            return false;
-        }
-        match self.mode {
-            WorktreesMode::Off => false,
-            WorktreesMode::Always => self.can_use_worktrees(),
-            WorktreesMode::Auto => {
-                self.can_use_worktrees() && looks_like_implementation_intent(prompt)
-            }
-        }
+    pub fn mode(&self) -> WorktreesMode {
+        self.mode
+    }
+
+    pub fn needs_explicit_init(&self) -> bool {
+        self.mode == WorktreesMode::Auto
+            && self
+                .worktree
+                .read()
+                .expect("worktree lock poisoned")
+                .is_none()
+            && self.can_use_worktrees()
     }
 
     fn can_use_worktrees(&self) -> bool {
@@ -357,20 +297,6 @@ pub fn detect_repo_root(path: &Path) -> Option<PathBuf> {
     } else {
         std::fs::canonicalize(&text).ok()
     }
-}
-
-pub fn looks_like_implementation_intent(prompt: &str) -> bool {
-    let trimmed = prompt.trim();
-    if trimmed.is_empty() {
-        return false;
-    }
-    if trimmed.starts_with("/ship") {
-        return true;
-    }
-    let lower = format!(" {lower} ", lower = trimmed.to_ascii_lowercase());
-    IMPLEMENT_VERBS
-        .iter()
-        .any(|verb| lower.contains(&format!(" {verb} ")))
 }
 
 pub fn slug_from_prompt(prompt: &str) -> String {
@@ -995,14 +921,6 @@ mod tests {
     }
 
     #[test]
-    fn implementation_intent_matches_common_verbs() {
-        assert!(looks_like_implementation_intent("fix the auth bug"));
-        assert!(looks_like_implementation_intent("/ship this change"));
-        assert!(!looks_like_implementation_intent("how does auth work?"));
-        assert!(!looks_like_implementation_intent("explain the module"));
-    }
-
-    #[test]
     fn branch_name_uses_slug_and_session_suffix() {
         let id = SessionId::default();
         let branch = branch_name("fix-auth", id);
@@ -1093,7 +1011,7 @@ mod tests {
         );
 
         manager
-            .ensure_before_turn("fix the readme typo")
+            .ensure_initialized(Some("fix the readme typo"))
             .expect("activate worktree");
         let info = manager.worktree_info().expect("worktree info");
         assert!(info.path.exists());
@@ -1181,7 +1099,7 @@ mod tests {
     }
 
     #[test]
-    fn disable_auto_and_status_message() {
+    fn auto_mode_requires_explicit_initialization() {
         let manager = WorktreeManager::new(
             WorktreesMode::Auto,
             Some(PathBuf::from("/tmp/repo")),
@@ -1190,10 +1108,8 @@ mod tests {
             PathBuf::from("/tmp/session"),
             None,
         );
-        assert!(manager.status_message().contains("auto"));
-        manager.disable_auto();
-        assert!(manager.auto_disabled());
-        assert!(manager.status_message().contains("disabled"));
+        assert_eq!(manager.mode(), WorktreesMode::Auto);
+        assert!(manager.worktree_info().is_none());
     }
 
     #[test]

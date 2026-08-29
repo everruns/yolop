@@ -4167,18 +4167,10 @@ impl App {
         self.begin_turn(handle, None);
     }
 
-    fn prepare_turn(&mut self, prompt: &str) {
-        match self.worktree.ensure_before_turn(prompt) {
-            Ok(true) => {
-                self.startup.workspace_root = self.worktree.active_root();
-                if let Some(notice) = self.worktree.switch_notice() {
-                    self.push_system(notice);
-                }
-            }
-            Ok(false) => {
-                self.startup.workspace_root = self.worktree.active_root();
-            }
-            Err(err) => self.push_system(format!("worktree: {err}")),
+    fn prepare_turn(&mut self, _prompt: &str) {
+        self.startup.workspace_root = self.worktree.active_root();
+        if let Some(notice) = self.worktree.switch_notice() {
+            self.push_system(notice);
         }
     }
 }
