@@ -75,7 +75,7 @@ use everruns_core::command::{CommandDescriptor, CommandResult, ExecuteCommandReq
 use everruns_core::session_file::build_grep_search_result;
 use everruns_core::session_path::GrepPathPattern;
 use everruns_core::{
-    CapabilityRegistry, Controls, InputMessage, MountFs, ReasoningConfig, ScopedMcpServers,
+    CapabilityRegistry, Controls, InputMessage, ReasoningConfig, ScopedMcpServers,
     SessionFileSystem,
 };
 use everruns_core::{ContentPart, MessageRole};
@@ -84,9 +84,9 @@ use everruns_core::{
 };
 use everruns_host::RuntimeProviderStore;
 use everruns_host::{
-    AgentBuilder, CapabilityDelta, HarnessBuilder, HostBackends, InMemorySessionFileStore,
-    InProcessRuntime, InProcessRuntimeBuilder, RealDiskFileStore, RuntimeSessionStore,
-    SessionBuilder, WriteBlocklistFileStore,
+    AgentBuilder, CapabilityDelta, HarnessBuilder, HostBackends, InProcessRuntime,
+    InProcessRuntimeBuilder, RealDiskFileStore, RuntimeSessionStore, SessionBuilder,
+    WriteBlocklistFileStore,
 };
 use everruns_host::{SessionFileSystemFactory, SessionFileSystemFactoryContext};
 use everruns_integrations_daytona::DaytonaCapability;
@@ -119,7 +119,7 @@ use crate::runtime::session_log::{
     session_log_path, update_session_workspace_title,
 };
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex as StdMutex, RwLock};
 use std::time::Duration;
 use tokio::sync::{RwLock as AsyncRwLock, mpsc};
@@ -360,14 +360,11 @@ const AGENT_PROMPT: &str = "Follow the system and repository instructions.";
 struct CodingCliSessionFileSystemFactory {
     workspace: Arc<WorkspaceHost>,
     session_dir: PathBuf,
-    session_id: SessionId,
     materializer: Arc<session_log::SessionMaterializer>,
     skill_global: Option<PathBuf>,
     skill_profile: Option<PathBuf>,
     skill_system: Option<PathBuf>,
-    environment_skill: Option<&'static str>,
-    /// `(name, skills_dir)` for enabled extensions contributing skills; each is
-    /// mounted read-only at its `extension_skills_vfs(name)` root.
+    skill_environment: Option<PathBuf>,
     extension_skills: Vec<(String, PathBuf)>,
 }
 
@@ -388,6 +385,7 @@ impl SessionFileSystemFactory for CodingCliSessionFileSystemFactory {
             self.skill_global.as_ref(),
             self.skill_profile.as_ref(),
             self.skill_system.as_ref(),
+            self.skill_environment.as_ref(),
         ]
         .into_iter()
         .flatten()
@@ -396,65 +394,29 @@ impl SessionFileSystemFactory for CodingCliSessionFileSystemFactory {
                 AgentLoopError::config(format!("create skills dir {}: {e}", dir.display()))
             })?;
         }
+        let mut skill_roots = [
+            self.skill_global.clone(),
+            self.skill_profile.clone(),
+            self.skill_system.clone(),
+            self.skill_environment.clone(),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+        skill_roots.extend(self.extension_skills.iter().map(|(_, path)| path.clone()));
         let composite: Arc<dyn SessionFileSystem> =
             Arc::new(CodingCliSessionFileStore::new_with_materializer(
                 self.workspace.clone(),
                 self.session_dir.clone(),
-                self.skill_global.clone(),
-                self.skill_profile.clone(),
-                self.skill_system.clone(),
+                skill_roots,
                 self.materializer.clone(),
             )?);
-        // Present the real host checkout path to the model, not the `/workspace`
-        // alias (#258): yolop runs on the user's own machine, so the shell, file
-        // tools, and narration must all name the repo the same way. everruns
-        // 0.17.12's `scoped_prompt_file_store` preserves this backend-native
-        // policy into the system prompt too (via `wrap_if_needed`).
-        let mut mounted = MountFs::new(composite).with_backend_display();
-        if let Some(skill) = self.environment_skill {
-            let environment = Arc::new(InMemorySessionFileStore::new());
-            environment
-                .seed_initial_file(
-                    self.session_id,
-                    &InitialFile {
-                        path: "/herdr/SKILL.md".to_string(),
-                        content: skill.to_string(),
-                        encoding: "text".to_string(),
-                        is_readonly: true,
-                    },
-                )
-                .await?;
-            mounted = mounted.with_mount(
-                crate::capabilities::skills::ENVIRONMENT_SKILLS_VFS,
-                environment,
-                "/",
-            );
-        }
-        // Mount each contributing extension's `skills/` dir read-only. Seeded
-        // into an in-memory store (which honors `is_readonly`) rather than a
-        // live-disk mount, so an installed extension's skills can't be mutated
-        // through the VFS — the same read-only guarantee as environment skills.
-        for (name, dir) in &self.extension_skills {
-            let store = InMemorySessionFileStore::new();
-            if let Err(err) = seed_readonly_dir(&store, self.session_id, dir).await {
-                tracing::warn!(
-                    target: "yolop::ext",
-                    "skipping skills for extension `{name}`: {err}"
-                );
-                continue;
-            }
-            mounted = mounted.with_mount(
-                crate::capabilities::skills::extension_skills_vfs(name),
-                Arc::new(store),
-                "/",
-            );
-        }
-        let mounted: Arc<dyn SessionFileSystem> = Arc::new(mounted);
         let write_blocklist: Arc<dyn SessionFileSystem> =
-            Arc::new(WriteBlocklistFileStore::new(mounted.clone()));
+            Arc::new(WriteBlocklistFileStore::new(composite.clone()));
         Ok(Arc::new(GrepOptionsForwardingFileStore::new(
             write_blocklist,
-            mounted,
+            composite.clone(),
+            composite,
         )))
     }
 }
@@ -463,9 +425,10 @@ impl SessionFileSystemFactory for CodingCliSessionFileSystemFactory {
 // everruns-runtime release containing https://github.com/everruns/everruns/pull/2830.
 // Version 0.17.12's write-blocklist decorator drops `grep_files_with_options`;
 // all mutations must still pass through that decorator while contextual grep
-// can safely use the same mounted read backend directly.
+// can safely use the same read backend directly.
 struct GrepOptionsForwardingFileStore {
     policy: Arc<dyn SessionFileSystem>,
+    display: Arc<dyn SessionFileSystem>,
     grep_backend: Arc<dyn SessionFileSystem>,
 }
 
@@ -530,14 +493,7 @@ async fn grep_workspace_with_options(
                 if !entry.file_type().is_some_and(|kind| kind.is_file()) {
                     continue;
                 }
-                let Ok(relative) = entry.path().strip_prefix(&root) else {
-                    continue;
-                };
-                let Some(relative) = relative.to_str() else {
-                    continue;
-                };
-                let canonical_path =
-                    format!("/{}", relative.replace(std::path::MAIN_SEPARATOR, "/"));
+                let canonical_path = entry.path().display().to_string();
                 if path_matcher
                     .as_ref()
                     .is_some_and(|matcher| !matcher.is_match(&canonical_path))
@@ -607,9 +563,14 @@ async fn grep_workspace_with_options(
 }
 
 impl GrepOptionsForwardingFileStore {
-    fn new(policy: Arc<dyn SessionFileSystem>, grep_backend: Arc<dyn SessionFileSystem>) -> Self {
+    fn new(
+        policy: Arc<dyn SessionFileSystem>,
+        display: Arc<dyn SessionFileSystem>,
+        grep_backend: Arc<dyn SessionFileSystem>,
+    ) -> Self {
         Self {
             policy,
+            display,
             grep_backend,
         }
     }
@@ -618,19 +579,19 @@ impl GrepOptionsForwardingFileStore {
 #[async_trait]
 impl SessionFileSystem for GrepOptionsForwardingFileStore {
     fn display_root(&self) -> String {
-        self.policy.display_root()
+        self.display.display_root()
     }
 
     fn display_path(&self, path: &str) -> String {
-        self.policy.display_path(path)
+        self.display.display_path(path)
     }
 
     fn resolve_path(&self, input: &str) -> String {
-        self.policy.resolve_path(input)
+        self.display.resolve_path(input)
     }
 
     fn is_mount_resolver(&self) -> bool {
-        self.policy.is_mount_resolver()
+        self.display.is_mount_resolver()
     }
 
     async fn read_file(
@@ -738,52 +699,11 @@ impl SessionFileSystem for GrepOptionsForwardingFileStore {
     }
 }
 
-/// Seed every UTF-8 file under `root` into `store` read-only, keyed by its path
-/// relative to `root`. Used to mount an extension's on-disk `skills/` dir as a
-/// read-only VFS source. Non-UTF-8 files (rare in skills) are skipped.
-async fn seed_readonly_dir(
-    store: &InMemorySessionFileStore,
-    session_id: SessionId,
-    root: &std::path::Path,
-) -> everruns_provider::error::Result<()> {
-    let mut stack = vec![root.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        let entries = std::fs::read_dir(&dir)
-            .map_err(|e| AgentLoopError::config(format!("read {}: {e}", dir.display())))?;
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                stack.push(path);
-            } else if let Ok(text) = std::fs::read_to_string(&path)
-                && let Ok(rel) = path.strip_prefix(root)
-            {
-                let vfs = format!("/{}", rel.to_string_lossy().replace('\\', "/"));
-                store
-                    .seed_initial_file(
-                        session_id,
-                        &InitialFile {
-                            path: vfs,
-                            content: text,
-                            encoding: "text".to_string(),
-                            is_readonly: true,
-                        },
-                    )
-                    .await?;
-            }
-        }
-    }
-    Ok(())
-}
-
 struct CodingCliSessionFileStore {
     workspace: Arc<WorkspaceHost>,
     workspace_disk: RealDiskFileStore,
     session: StdMutex<Option<RealDiskFileStore>>,
-    // Backing stores for the global/system skill scope VFS roots, served from
-    // real directories outside the workspace (see `capabilities::skills`).
-    skill_global: Option<RealDiskFileStore>,
-    skill_profile: Option<RealDiskFileStore>,
-    skill_system: Option<RealDiskFileStore>,
+    skill_roots: Vec<(PathBuf, RealDiskFileStore)>,
     session_dir: PathBuf,
     materializer: Arc<session_log::SessionMaterializer>,
 }
@@ -804,9 +724,10 @@ impl CodingCliSessionFileStore {
         Self::new_with_materializer(
             workspace,
             session_dir,
-            skill_global,
-            skill_profile,
-            skill_system,
+            [skill_global, skill_profile, skill_system]
+                .into_iter()
+                .flatten()
+                .collect(),
             materializer,
         )
     }
@@ -814,22 +735,18 @@ impl CodingCliSessionFileStore {
     fn new_with_materializer(
         workspace: Arc<WorkspaceHost>,
         session_dir: PathBuf,
-        skill_global: Option<PathBuf>,
-        skill_profile: Option<PathBuf>,
-        skill_system: Option<PathBuf>,
+        skill_roots: Vec<PathBuf>,
         materializer: Arc<session_log::SessionMaterializer>,
     ) -> everruns_provider::error::Result<Self> {
-        let skill_store =
-            |dir: Option<PathBuf>| -> everruns_provider::error::Result<Option<RealDiskFileStore>> {
-                dir.map(RealDiskFileStore::new).transpose()
-            };
+        let skill_roots = skill_roots
+            .into_iter()
+            .map(|path| Ok((path.clone(), RealDiskFileStore::new(path)?)))
+            .collect::<everruns_provider::error::Result<Vec<_>>>()?;
         Ok(Self {
             workspace: workspace.clone(),
             workspace_disk: workspace.disk().as_ref().clone(),
             session: StdMutex::new(None),
-            skill_global: skill_store(skill_global)?,
-            skill_profile: skill_store(skill_profile)?,
-            skill_system: skill_store(skill_system)?,
+            skill_roots,
             session_dir,
             materializer,
         })
@@ -843,25 +760,15 @@ impl CodingCliSessionFileStore {
     }
 
     fn skill_route(&self, path: &str) -> Option<(&RealDiskFileStore, String)> {
-        use crate::capabilities::skills::{
-            GLOBAL_SKILLS_VFS, PROFILE_SKILLS_VFS, SYSTEM_SKILLS_VFS, relative_under,
-        };
-        if let Some(store) = &self.skill_global
-            && let Some(rest) = relative_under(path, GLOBAL_SKILLS_VFS)
-        {
-            return Some((store, rest));
-        }
-        if let Some(store) = &self.skill_profile
-            && let Some(rest) = relative_under(path, PROFILE_SKILLS_VFS)
-        {
-            return Some((store, rest));
-        }
-        if let Some(store) = &self.skill_system
-            && let Some(rest) = relative_under(path, SYSTEM_SKILLS_VFS)
-        {
-            return Some((store, rest));
-        }
-        None
+        use crate::capabilities::skills::relative_under;
+
+        self.skill_roots.iter().find_map(|(root, store)| {
+            relative_under(path, root.to_string_lossy().as_ref()).map(|rest| (store, rest))
+        })
+    }
+
+    fn readonly_skill_error(path: &str) -> AgentLoopError {
+        AgentLoopError::config(format!("skill files are read-only: {path}"))
     }
 
     // Keep project files rooted at the user's workspace, but route generated
@@ -981,13 +888,27 @@ impl SessionFileSystem for CodingCliSessionFileStore {
             .unwrap_or_else(|_| self.workspace_disk.display_root())
     }
 
+    fn resolve_path(&self, input: &str) -> String {
+        self.display_path(input)
+    }
+
     fn display_path(&self, path: &str) -> String {
-        if self.skill_route(path).is_some() || Self::session_artifact_path(path).is_some() {
-            return everruns_core::session_path::to_session_path(path);
+        if self.skill_route(path).is_some() {
+            return path.to_string();
         }
-        self.workspace_store()
-            .map(|store| store.display_path(path))
-            .unwrap_or_else(|_| path.to_string())
+        if let Some(relative) = Self::session_artifact_path(path) {
+            return self.session_dir.join(relative).display().to_string();
+        }
+        let Ok(root) = self.workspace.active_root() else {
+            return path.to_string();
+        };
+        let root = root.canonicalize().unwrap_or(root);
+        let candidate = Path::new(path);
+        if candidate.is_absolute() {
+            path.to_string()
+        } else {
+            root.join(candidate).display().to_string()
+        }
     }
 
     async fn read_file(
@@ -1014,8 +935,8 @@ impl SessionFileSystem for CodingCliSessionFileStore {
         content: &str,
         encoding: &str,
     ) -> everruns_provider::error::Result<SessionFile> {
-        if let Some((store, path)) = self.skill_route(path) {
-            return store.write_file(session_id, &path, content, encoding).await;
+        if self.skill_route(path).is_some() {
+            return Err(Self::readonly_skill_error(path));
         }
         if let Some(path) = Self::session_artifact_path(path) {
             let file = self
@@ -1042,17 +963,8 @@ impl SessionFileSystem for CodingCliSessionFileStore {
         content: &str,
         encoding: &str,
     ) -> everruns_provider::error::Result<Option<SessionFile>> {
-        if let Some((store, path)) = self.skill_route(path) {
-            return store
-                .write_file_if_content_matches(
-                    session_id,
-                    &path,
-                    expected_content,
-                    expected_encoding,
-                    content,
-                    encoding,
-                )
-                .await;
+        if self.skill_route(path).is_some() {
+            return Err(Self::readonly_skill_error(path));
         }
         if let Some(path) = Self::session_artifact_path(path) {
             return self
@@ -1086,8 +998,8 @@ impl SessionFileSystem for CodingCliSessionFileStore {
         path: &str,
         recursive: bool,
     ) -> everruns_provider::error::Result<bool> {
-        if let Some((store, path)) = self.skill_route(path) {
-            return store.delete_file(session_id, &path, recursive).await;
+        if self.skill_route(path).is_some() {
+            return Err(Self::readonly_skill_error(path));
         }
         if let Some(path) = Self::session_artifact_path(path) {
             return match self.session_store(false)? {
@@ -1205,8 +1117,8 @@ impl SessionFileSystem for CodingCliSessionFileStore {
         session_id: SessionId,
         path: &str,
     ) -> everruns_provider::error::Result<FileInfo> {
-        if let Some((store, path)) = self.skill_route(path) {
-            return store.create_directory(session_id, &path).await;
+        if self.skill_route(path).is_some() {
+            return Err(Self::readonly_skill_error(path));
         }
         if let Some(path) = Self::session_artifact_path(path) {
             return self
@@ -1225,10 +1137,8 @@ impl SessionFileSystem for CodingCliSessionFileStore {
         session_id: SessionId,
         file: &InitialFile,
     ) -> everruns_provider::error::Result<()> {
-        if let Some((store, path)) = self.skill_route(&file.path) {
-            let mut routed = file.clone();
-            routed.path = path;
-            return store.seed_initial_file(session_id, &routed).await;
+        if self.skill_route(&file.path).is_some() {
+            return Err(Self::readonly_skill_error(&file.path));
         }
         if let Some(path) = Self::session_artifact_path(&file.path) {
             let mut routed = file.clone();
@@ -3552,10 +3462,21 @@ pub async fn build_with_options(
     // materializes the embedded system skills). Shared by the skills capability
     // config and the file-store factory's scope routing.
     // The active profile may contribute a fourth, profile-scoped directory.
-    let skill_dirs = crate::capabilities::skills::SkillDirs::resolve(
+    let mut skill_dirs = crate::capabilities::skills::SkillDirs::resolve(
         &effective_root,
         settings.snapshot().skills_dir.clone(),
     );
+    if herdr.is_active() {
+        skill_dirs.environment = Some(
+            crate::capabilities::skills::materialize_environment_skill(
+                &session_dir,
+                "herdr",
+                crate::capabilities::herdr::HerdrCapability::skill_content(true)
+                    .expect("active Herdr skill content"),
+            )
+            .context("materialize Herdr environment skill")?,
+        );
+    }
 
     // Read-only skills contributed by enabled extensions (D4: only a declaring,
     // enabled extension's `skills/` loads). Computed here so it feeds both the
@@ -3792,15 +3713,10 @@ pub async fn build_with_options(
     capabilities.register(AgentInstructionsCapability);
     capabilities.register(FileSystemCapability);
     // Upstream multi-scope skills capability (everruns-core 0.12.0+),
-    // configured with yolop's workspace/global/environment/system scopes and a host-path
-    // resolver so `${SKILL_DIR}` reaches real files. The file store maps the
-    // scope VFS roots onto disk (see `capabilities::skills`).
+    // configured with yolop's physical workspace/global/environment/system
+    // directories so `${SKILL_DIR}` reaches real files.
     capabilities.register(ScopedSkillsCapability::new(
-        crate::capabilities::skills::skills_config(
-            &skill_dirs,
-            herdr.is_active(),
-            &extension_skill_scopes,
-        ),
+        crate::capabilities::skills::skills_config(&skill_dirs, &extension_skill_scopes),
     ));
     // Herdr contributes a conditional, read-only skill mount. Outside a Herdr
     // pane it has no mounts and the reporter is inert.
@@ -4332,12 +4248,11 @@ pub async fn build_with_options(
         .session_file_system_factory(Arc::new(CodingCliSessionFileSystemFactory {
             workspace: workspace_host.clone(),
             session_dir: session_dir.clone(),
-            session_id,
             materializer: materializer.clone(),
             skill_global: skill_dirs.global.clone(),
             skill_profile: skill_dirs.profile.clone(),
             skill_system: skill_dirs.system.clone(),
-            environment_skill: HerdrCapability::skill_content(herdr.is_active()),
+            skill_environment: skill_dirs.environment.clone(),
             extension_skills: extension_skill_scopes.clone(),
         }))
         .build();
@@ -4820,13 +4735,10 @@ mod tests {
             )
             .expect("workspace host"),
         );
-        let composite: Arc<dyn SessionFileSystem> = Arc::new(
+        Arc::new(
             CodingCliSessionFileStore::new(host, session.to_path_buf(), None, None, None)
                 .expect("store"),
-        );
-        // Match production (`build`): backend-native display so tests exercise the
-        // real host-path presentation (#258), not the `/workspace` alias.
-        Arc::new(MountFs::new(composite).with_backend_display())
+        )
     }
 
     #[test]
@@ -7919,17 +7831,8 @@ mod tests {
             WorkspaceHost::new(active_root.clone(), first.path().to_path_buf()).expect("host"),
         );
         let store: Arc<dyn SessionFileSystem> = Arc::new(
-            MountFs::new(Arc::new(
-                CodingCliSessionFileStore::new(
-                    host,
-                    session.path().to_path_buf(),
-                    None,
-                    None,
-                    None,
-                )
+            CodingCliSessionFileStore::new(host, session.path().to_path_buf(), None, None, None)
                 .expect("store"),
-            ))
-            .with_backend_display(),
         );
         let session_id = SessionId::from_seed(7);
         let first_root = std::fs::canonicalize(first.path()).expect("canonical first");
@@ -8139,7 +8042,6 @@ mod tests {
         let factory = CodingCliSessionFileSystemFactory {
             workspace: host,
             session_dir: session.path().to_path_buf(),
-            session_id,
             materializer: Arc::new(session_log::SessionMaterializer::new(
                 session.path().to_path_buf(),
                 None,
@@ -8147,7 +8049,7 @@ mod tests {
             skill_global: None,
             skill_profile: None,
             skill_system: None,
-            environment_skill: None,
+            skill_environment: None,
             extension_skills: Vec::new(),
         };
         let store = factory
@@ -8220,7 +8122,6 @@ mod tests {
         let factory = CodingCliSessionFileSystemFactory {
             workspace: host,
             session_dir: session.path().to_path_buf(),
-            session_id,
             materializer: Arc::new(session_log::SessionMaterializer::new(
                 session.path().to_path_buf(),
                 None,
@@ -8228,7 +8129,7 @@ mod tests {
             skill_global: None,
             skill_profile: None,
             skill_system: None,
-            environment_skill: None,
+            skill_environment: None,
             extension_skills: Vec::new(),
         };
         let store = factory
@@ -8269,7 +8170,14 @@ mod tests {
         };
 
         assert_eq!(result["total_matches"], 2);
-        assert_eq!(result["matches"][0]["path"], "/workspace/source_10.rs");
+        assert_eq!(
+            result["matches"][0]["path"],
+            std::fs::canonicalize(workspace.path())
+                .expect("canonical workspace")
+                .join("source_10.rs")
+                .display()
+                .to_string()
+        );
         assert_eq!(result["matches"][0]["line_number"], 2);
         assert_eq!(result["truncation"]["next_offset"], 1);
     }
@@ -8283,7 +8191,7 @@ mod tests {
 
         assert_eq!(store.display_root(), workspace_root.display().to_string());
         assert_eq!(
-            store.display_path("/src/lib.rs"),
+            store.display_path("src/lib.rs"),
             workspace_root.join("src/lib.rs").display().to_string()
         );
         assert_eq!(
@@ -8300,10 +8208,10 @@ mod tests {
 
         let workspace = tempfile::tempdir().expect("workspace");
         let session = tempfile::tempdir().expect("session");
-        let store = MountFs::wrap_if_needed(test_file_store(workspace.path(), session.path()));
+        let store = test_file_store(workspace.path(), session.path());
         let workspace_root = std::fs::canonicalize(workspace.path()).expect("canonical workspace");
         let narration = narrate_list_directory(
-            &serde_json::json!({ "path": "/workspace/src" }),
+            &serde_json::json!({ "path": workspace_root.join("src") }),
             ToolNarrationPhase::Completed,
             None,
             ToolNarrationContext::new(Some(store.as_ref())),
@@ -8318,7 +8226,6 @@ mod tests {
 
     #[tokio::test]
     async fn yolop_file_store_routes_skill_scope_roots_outside_workspace() {
-        use crate::capabilities::skills::{GLOBAL_SKILLS_VFS, SYSTEM_SKILLS_VFS};
         let workspace = tempfile::tempdir().expect("workspace");
         let session = tempfile::tempdir().expect("session");
         let global = tempfile::tempdir().expect("global");
@@ -8340,32 +8247,32 @@ mod tests {
         .expect("store");
         let session_id = SessionId::from_seed(7);
 
-        // write_skill into the global scope lands in the global dir, not the workspace.
-        store
-            .write_file(
-                session_id,
-                &format!("{GLOBAL_SKILLS_VFS}/greeter/SKILL.md"),
-                "global skill",
-                "text",
-            )
-            .await
-            .expect("write global skill");
-        assert_eq!(
-            std::fs::read_to_string(global.path().join("greeter/SKILL.md")).expect("global skill"),
-            "global skill"
+        let global_skill = global.path().join("greeter/SKILL.md");
+        assert!(
+            store
+                .write_file(
+                    session_id,
+                    &global_skill.display().to_string(),
+                    "global skill",
+                    "text",
+                )
+                .await
+                .is_err()
         );
-        assert!(!workspace.path().join(".yolop").exists());
 
-        // A skill placed in the system dir is discoverable via the system VFS root.
+        // A skill placed in the system dir is discoverable through its physical root.
         std::fs::create_dir_all(system.path().join("joke")).unwrap();
         std::fs::write(system.path().join("joke/SKILL.md"), "system skill").unwrap();
         let listed = store
-            .list_directory(session_id, SYSTEM_SKILLS_VFS)
+            .list_directory(session_id, &system.path().display().to_string())
             .await
             .expect("list system skills");
         assert!(listed.iter().any(|e| e.is_directory && e.name == "joke"));
         let read = store
-            .read_file(session_id, &format!("{SYSTEM_SKILLS_VFS}/joke/SKILL.md"))
+            .read_file(
+                session_id,
+                &system.path().join("joke/SKILL.md").display().to_string(),
+            )
             .await
             .expect("read system skill")
             .expect("system skill exists");
@@ -8397,6 +8304,7 @@ mod tests {
             global: None,
             profile: None,
             system: Some(system.path().to_path_buf()),
+            environment: None,
         };
         let host = Arc::new(
             WorkspaceHost::new(
@@ -8415,7 +8323,7 @@ mod tests {
             )
             .expect("store"),
         );
-        let cap = ScopedSkillsCapability::new(skills_config(&dirs, false, &[]));
+        let cap = ScopedSkillsCapability::new(skills_config(&dirs, &[]));
         let tools = cap.tools();
         let list = tools
             .iter()
@@ -8432,7 +8340,7 @@ mod tests {
                     .expect("joke discovered");
                 assert_eq!(joke["scope"], "system");
                 // The reported path is a real host path under the system dir,
-                // not a VFS path — that is what `${SKILL_DIR}`/bash needs.
+                // which is what `${SKILL_DIR}` and bash need.
                 // Compare as paths so separators are platform-correct.
                 let path = joke["path"].as_str().unwrap();
                 assert_eq!(
@@ -8448,8 +8356,6 @@ mod tests {
     #[tokio::test]
     async fn herdr_skill_is_visible_from_the_ephemeral_environment_scope() {
         use crate::capabilities::herdr::HerdrCapability;
-        use crate::capabilities::skills::ENVIRONMENT_SKILLS_VFS;
-
         let workspace = tempfile::tempdir().expect("workspace");
         let session = tempfile::tempdir().expect("session");
         let session_id = SessionId::from_seed(81);
@@ -8460,10 +8366,15 @@ mod tests {
             )
             .expect("host"),
         );
+        let environment_dir = crate::capabilities::skills::materialize_environment_skill(
+            session.path(),
+            "herdr",
+            HerdrCapability::skill_content(true).expect("Herdr skill"),
+        )
+        .expect("materialize environment skill");
         let factory = CodingCliSessionFileSystemFactory {
             workspace: host,
             session_dir: session.path().to_path_buf(),
-            session_id,
             materializer: Arc::new(session_log::SessionMaterializer::new(
                 session.path().to_path_buf(),
                 None,
@@ -8471,7 +8382,7 @@ mod tests {
             skill_global: None,
             skill_profile: None,
             skill_system: None,
-            environment_skill: HerdrCapability::skill_content(true),
+            skill_environment: Some(environment_dir.clone()),
             extension_skills: Vec::new(),
         };
 
@@ -8480,7 +8391,7 @@ mod tests {
             .await
             .expect("session file system");
         let entries = store
-            .list_directory(session_id, ENVIRONMENT_SKILLS_VFS)
+            .list_directory(session_id, &environment_dir.display().to_string())
             .await
             .expect("list environment skills");
         assert!(
@@ -8491,7 +8402,7 @@ mod tests {
         let skill = store
             .read_file(
                 session_id,
-                &format!("{ENVIRONMENT_SKILLS_VFS}/herdr/SKILL.md"),
+                &environment_dir.join("herdr/SKILL.md").display().to_string(),
             )
             .await
             .expect("read environment skill")
@@ -8501,7 +8412,7 @@ mod tests {
             store
                 .write_file(
                     session_id,
-                    &format!("{ENVIRONMENT_SKILLS_VFS}/herdr/SKILL.md"),
+                    &environment_dir.join("herdr/SKILL.md").display().to_string(),
                     "changed",
                     "text",
                 )
@@ -8513,8 +8424,6 @@ mod tests {
 
     #[tokio::test]
     async fn extension_contributed_skill_is_visible_and_read_only() {
-        use crate::capabilities::skills::extension_skills_vfs;
-
         let workspace = tempfile::tempdir().expect("workspace");
         let session = tempfile::tempdir().expect("session");
         let ext = tempfile::tempdir().expect("extension");
@@ -8539,7 +8448,6 @@ mod tests {
         let factory = CodingCliSessionFileSystemFactory {
             workspace: host,
             session_dir: session.path().to_path_buf(),
-            session_id,
             materializer: Arc::new(session_log::SessionMaterializer::new(
                 session.path().to_path_buf(),
                 None,
@@ -8547,7 +8455,7 @@ mod tests {
             skill_global: None,
             skill_profile: None,
             skill_system: None,
-            environment_skill: None,
+            skill_environment: None,
             extension_skills: vec![("demo".to_string(), skills_dir.clone())],
         };
         let store = factory
@@ -8555,7 +8463,7 @@ mod tests {
             .await
             .expect("session file system");
 
-        let vfs = extension_skills_vfs("demo");
+        let vfs = skills_dir.display().to_string();
         let entries = store
             .list_directory(session_id, &vfs)
             .await
@@ -9163,7 +9071,8 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cold_start_prompt_composition_is_measured_by_component() {
         // Auto mode teaches the model to initialize its session worktree before mutation.
-        const BASELINE_PROMPT_BYTES: usize = 14_204;
+        // Skill scopes now advertise physical directories instead of synthetic roots.
+        const BASELINE_PROMPT_BYTES: usize = 14_273;
         // The tool baselines model what today's surface would cost undeferred,
         // so enabling a capability raises them by exactly that capability's
         // undeferred cost — otherwise the ratio guards below would read a
