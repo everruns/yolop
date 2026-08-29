@@ -2008,10 +2008,8 @@ trait Named {
     }
 
     #[tokio::test]
-    async fn repo_map_tool_accepts_workspace_alias_scope() {
-        // The model often passes the `/workspace` display alias as `path`; the
-        // file tools honor it via MountFs, so repo_map must resolve it to the
-        // workspace root instead of erroring with "path not found: /workspace".
+    async fn repo_map_tool_accepts_repository_relative_path_scope() {
+        // Repository-relative paths resolve from the active repository root.
         let dir = tempfile::tempdir().expect("tempdir");
         write(&dir.path().join("pkg/inside.rs"), "pub fn pkg_fn() {}\n");
         write(
@@ -2026,21 +2024,21 @@ trait Named {
             .find(|tool| tool.name() == "repo_map")
             .expect("repo_map tool");
 
-        // Alias root scans the whole workspace.
+        // Repository root scans the whole workspace.
         let ToolExecutionResult::Success(root) = tool
-            .execute(json!({ "path": "/workspace", "language": "rust" }))
+            .execute(json!({ "path": ".", "language": "rust" }))
             .await
         else {
-            panic!("expected success scanning /workspace");
+            panic!("expected success scanning repository root");
         };
         assert_eq!(root["count"], json!(2));
 
-        // Alias subpath scopes to just that directory.
+        // Repository-relative subpath scopes to just that directory.
         let ToolExecutionResult::Success(sub) = tool
-            .execute(json!({ "path": "/workspace/pkg", "language": "rust" }))
+            .execute(json!({ "path": "pkg", "language": "rust" }))
             .await
         else {
-            panic!("expected success scanning /workspace/pkg");
+            panic!("expected success scanning pkg");
         };
         assert_eq!(sub["count"], json!(1));
         assert_eq!(sub["files"][0]["symbols"][0]["name"], json!("pkg_fn"));
@@ -2051,7 +2049,7 @@ trait Named {
         let dir = tempfile::tempdir().expect("tempdir");
         // A linked Git worktree identifies its repository with a .git file,
         // not a .git directory. The scanner must treat that as metadata while
-        // still accepting the model-facing alias for a nested repository.
+        // still accepting a repository-relative nested path.
         write(
             &dir.path().join(".git"),
             "gitdir: /tmp/repo/.git/worktrees/fixture\n",
@@ -2072,20 +2070,19 @@ trait Named {
             .find(|tool| tool.name() == "repo_map")
             .expect("repo_map tool");
 
-        for path in ["/workspace/REPOS/nested", "REPOS/nested"] {
-            let ToolExecutionResult::Success(result) = tool
-                .execute(json!({ "path": path, "language": "rust" }))
-                .await
-            else {
-                panic!("expected success scanning {path}");
-            };
-            assert_eq!(result["count"], json!(1), "scope {path}");
-            assert_eq!(
-                result["files"][0]["symbols"][0]["name"],
-                json!("nested_owner"),
-                "scope {path}"
-            );
-        }
+        let path = "REPOS/nested";
+        let ToolExecutionResult::Success(result) = tool
+            .execute(json!({ "path": path, "language": "rust" }))
+            .await
+        else {
+            panic!("expected success scanning {path}");
+        };
+        assert_eq!(result["count"], json!(1), "scope {path}");
+        assert_eq!(
+            result["files"][0]["symbols"][0]["name"],
+            json!("nested_owner"),
+            "scope {path}"
+        );
     }
 
     #[test]

@@ -989,6 +989,7 @@ mod tests {
                 global: None,
                 profile: None,
                 system: None,
+                environment: None,
             },
             registry,
         );
@@ -1019,6 +1020,7 @@ mod tests {
             global: None,
             profile: None,
             system: None,
+            environment: None,
         };
         let registry = SkillRegistryClient::with_base_url("http://127.0.0.1:9".into());
         assert_eq!(
@@ -1061,6 +1063,7 @@ mod tests {
                 global: None,
                 profile: None,
                 system: None,
+                environment: None,
             },
             registry,
         );
