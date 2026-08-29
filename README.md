@@ -207,7 +207,7 @@ yolop --provider llmsim -p "hi"         # offline demo, no API key required
 | ---------- | ------------------------------------- | ----------------- |
 | OpenAI     | `OPENAI_API_KEY`                      | `gpt-5.6-sol`     |
 | Codex subscription | browser/device ChatGPT login or `CODEX_ACCESS_TOKEN` | `gpt-5.6-sol` |
-| Anthropic  | `ANTHROPIC_API_KEY`                   | `claude-opus-4-8` |
+| Anthropic  | `ANTHROPIC_API_KEY`                   | `claude-opus-5`   |
 | Meta Model API | `MODEL_API_KEY`                   | `muse-spark-1.2`  |
 | OpenRouter | browser PKCE login or `OPENROUTER_API_KEY` | `openai/gpt-5.6-sol` |
 | Google     | `GEMINI_API_KEY` / `GOOGLE_API_KEY`   | `gemini-2.5-flash` |
