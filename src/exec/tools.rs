@@ -463,14 +463,15 @@ impl Tool for BashTool {
         }
         #[cfg(not(windows))]
         {
-            "Run a bash command. Each call is a fresh non-interactive shell already \
-             rooted at the workspace, so no state persists between calls: the working \
-             directory, shell variables, and exports reset every time. A bare `cd` is \
-             pointless — you are already at the workspace root; use paths relative to \
-             it, or chain within one call (`cd sub && cmd`). Captures stdout/stderr \
-             with configurable verbosity. 120s timeout; run commands that wait on \
-             external events (CI runs, deploys) detached via `spawn_background` \
-             instead."
+            "Run a bash command. Every call starts a fresh non-interactive `bash -lc` \
+             already rooted at the workspace, so no state persists between calls: the \
+             working directory, shell variables, and exports reset every time. A bare \
+             `cd` is pointless, you are already at the workspace root; use paths relative \
+             to it, or chain within one call (`cd sub && cmd`). The tool reports the shell \
+             process status, so unless the script handles an expected failure, structure \
+             it to return nonzero when a step fails. Captures stdout/stderr with \
+             configurable verbosity. 120s timeout; run commands that wait on external \
+             events (CI runs, deploys) detached via `spawn_background` instead."
         }
     }
     fn parameters_schema(&self) -> Value {
@@ -752,12 +753,22 @@ mod tests {
     // burned ~30 turns issuing bare `cd <workdir>` commands expecting the cwd to
     // persist; spelling out the contract is what steers it away.
     #[test]
-    fn bash_description_documents_stateless_shell() {
+    fn bash_description_documents_process_isolation_and_status() {
         let tool = BashTool::new(Workspace::from_path(std::env::current_dir().unwrap()));
-        let desc = tool.description().to_lowercase();
-        assert!(desc.contains("no state persists") || desc.contains("state persists"));
-        assert!(desc.contains("cd"));
-        assert!(desc.contains("workspace root"));
+        let description = tool.description();
+
+        for guarantee in [
+            "fresh non-interactive `bash -lc`",
+            "working directory, shell variables, and exports reset every time",
+            "chain within one call (`cd sub && cmd`)",
+            "tool reports the shell process status",
+            "return nonzero when a step fails",
+        ] {
+            assert!(
+                description.contains(guarantee),
+                "missing Bash contract guarantee: {guarantee}"
+            );
+        }
     }
 
     #[test]
@@ -888,6 +899,42 @@ mod tests {
             root_name,
             "cwd should reset to the workspace root between calls"
         );
+    }
+
+    #[tokio::test]
+    async fn bash_does_not_preserve_exports_between_calls() {
+        let dir = tempfile::tempdir().unwrap();
+        let tool = BashTool::new(Workspace::from_path(dir.path().to_path_buf()));
+
+        let first = tool
+            .execute(json!({ "command": "export YOLOP_BASH_ISOLATION=leaked" }))
+            .await;
+        assert!(matches!(first, ToolExecutionResult::Success(_)));
+
+        let second = tool
+            .execute(json!({ "command": "test -z \"${YOLOP_BASH_ISOLATION-}\"" }))
+            .await;
+        let ToolExecutionResult::Success(second) = second else {
+            panic!("expected structured result");
+        };
+        assert_eq!(second["success"], true);
+    }
+
+    #[tokio::test]
+    async fn bash_reports_a_failing_chained_step() {
+        let dir = tempfile::tempdir().unwrap();
+        let tool = BashTool::new(Workspace::from_path(dir.path().to_path_buf()));
+
+        let ToolExecutionResult::Success(result) = tool
+            .execute(json!({ "command": "printf before && false && printf after" }))
+            .await
+        else {
+            panic!("expected structured result");
+        };
+
+        assert_eq!(result["success"], false);
+        assert_eq!(result["exit_code"], 1);
+        assert_eq!(result["stdout"], "before");
     }
 
     #[cfg(target_os = "macos")]

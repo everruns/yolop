@@ -8785,6 +8785,21 @@ mod tests {
     }
 
     #[test]
+    fn system_prompt_balances_parallel_calls_and_coherent_shell_phases() {
+        let prompt = include_str!("system.md")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        assert!(prompt.contains("Emit independent tool calls together"));
+        assert!(
+            prompt.contains(
+                "One script per coherent shell phase; unexpected failures return nonzero"
+            )
+        );
+    }
+
+    #[test]
     fn system_prompt_requires_owner_evidence_before_non_obvious_mutation() {
         let workflow = SYSTEM_PROMPT
             .split("## Workflow")
@@ -9144,7 +9159,7 @@ mod tests {
     /// stable composition components so prompt/tool budget changes are explicit.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cold_start_prompt_composition_is_measured_by_component() {
-        const BASELINE_PROMPT_BYTES: usize = 12_888;
+        const BASELINE_PROMPT_BYTES: usize = 14_138;
         // The tool baselines model what today's surface would cost undeferred,
         // so enabling a capability raises them by exactly that capability's
         // undeferred cost — otherwise the ratio guards below would read a

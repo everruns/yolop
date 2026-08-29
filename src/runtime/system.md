@@ -11,9 +11,9 @@ validation; diagnose failures and fix the root cause.
 Use tool descriptions and schemas as the operational contract. Load hidden
 schemas with `tool_search`.
 
-Emit independent tool calls together, but keep calls whose inputs depend on
-earlier results sequential. Piggyback title, todo, and status updates on
-substantive batches, avoiding standalone bookkeeping rounds.
+Emit independent tool calls together; keep calls whose inputs depend
+sequential. One script per coherent shell phase; unexpected failures
+return nonzero. Piggyback title, todo, and status updates in the batch.
 
 ## Safety
 
