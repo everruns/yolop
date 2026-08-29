@@ -172,9 +172,20 @@ mod tests {
     }
 
     #[test]
-    fn default_list_leads_with_gpt_5_6_sol() {
+    fn default_list_offers_the_gpt_5_6_line_on_both_accounts() {
         let defaults = default_models();
         assert_eq!(defaults[0], ModelEntry::new("openai", "gpt-5.6-sol"));
+        assert_eq!(
+            defaults,
+            vec![
+                ModelEntry::new("openai", "gpt-5.6-sol"),
+                ModelEntry::new("openai", "gpt-5.6-terra"),
+                ModelEntry::new("openai", "gpt-5.6-luna"),
+                ModelEntry::new("codex", "gpt-5.6-sol"),
+                ModelEntry::new("codex", "gpt-5.6-terra"),
+                ModelEntry::new("codex", "gpt-5.6-luna"),
+            ]
+        );
         for entry in &defaults {
             assert!(
                 SUPPORTED_PROVIDERS.contains(&entry.provider.as_str()),
