@@ -76,9 +76,9 @@ Manage the persistent model catalog and future-session default from a shell:
 yolop config models
 yolop config models add openrouter anthropic/claude-opus-4-8 --label "Opus (OpenRouter)"
 yolop config models move claude-opus-4-8 1
-yolop config models rm gpt-5.4-mini
+yolop config models rm openai/gpt-5.6-luna
 yolop config model show
-yolop config model set gpt-5.6-sol
+yolop config model set openai/gpt-5.6-sol
 yolop config model clear
 yolop config models reset          # back to the built-in default list
 ```

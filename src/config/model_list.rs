@@ -89,17 +89,18 @@ impl ModelEntry {
 
 /// The menu a user who has never configured one gets.
 ///
-/// Small on purpose: enough to cover the everyday switches (a frontier model, a
-/// fast one, the other lab) without reproducing the catalog the list exists to
+/// Small on purpose: the current frontier line, reachable through either
+/// account that serves it, without reproducing the catalog the list exists to
 /// avoid. Entries whose provider has no credential are hidden at display time,
 /// so listing several providers here costs nothing to a user who has one.
 pub fn default_models() -> Vec<ModelEntry> {
     vec![
         ModelEntry::new("openai", "gpt-5.6-sol"),
-        ModelEntry::new("openai", "gpt-5.4-mini"),
-        ModelEntry::new("anthropic", "claude-opus-4-8"),
-        ModelEntry::new("anthropic", "claude-sonnet-4-5"),
+        ModelEntry::new("openai", "gpt-5.6-terra"),
+        ModelEntry::new("openai", "gpt-5.6-luna"),
         ModelEntry::new("codex", "gpt-5.6-sol"),
+        ModelEntry::new("codex", "gpt-5.6-terra"),
+        ModelEntry::new("codex", "gpt-5.6-luna"),
     ]
 }
 
@@ -171,9 +172,20 @@ mod tests {
     }
 
     #[test]
-    fn default_list_leads_with_gpt_5_6_sol() {
+    fn default_list_offers_the_gpt_5_6_line_on_both_accounts() {
         let defaults = default_models();
         assert_eq!(defaults[0], ModelEntry::new("openai", "gpt-5.6-sol"));
+        assert_eq!(
+            defaults,
+            vec![
+                ModelEntry::new("openai", "gpt-5.6-sol"),
+                ModelEntry::new("openai", "gpt-5.6-terra"),
+                ModelEntry::new("openai", "gpt-5.6-luna"),
+                ModelEntry::new("codex", "gpt-5.6-sol"),
+                ModelEntry::new("codex", "gpt-5.6-terra"),
+                ModelEntry::new("codex", "gpt-5.6-luna"),
+            ]
+        );
         for entry in &defaults {
             assert!(
                 SUPPORTED_PROVIDERS.contains(&entry.provider.as_str()),

@@ -3207,7 +3207,7 @@ fn config_model_entry_point_persists_show_set_and_clear() {
         String::from_utf8_lossy(&output.stdout)
     );
 
-    let output = run(&["config", "model", "set", "gpt-5.4-mini"]);
+    let output = run(&["config", "model", "set", "openai/gpt-5.6-luna"]);
     assert!(
         output.status.success(),
         "stderr={}",
@@ -3221,7 +3221,7 @@ fn config_model_entry_point_persists_show_set_and_clear() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(
-        String::from_utf8_lossy(&output.stdout).contains("openai/gpt-5.4-mini"),
+        String::from_utf8_lossy(&output.stdout).contains("openai/gpt-5.6-luna"),
         "unexpected stdout: {}",
         String::from_utf8_lossy(&output.stdout)
     );
@@ -3229,7 +3229,7 @@ fn config_model_entry_point_persists_show_set_and_clear() {
     let settings =
         fs::read_to_string(config_dir.join("settings.toml")).expect("read persisted settings");
     assert!(settings.contains("default_provider = \"openai\""));
-    assert!(settings.contains("gpt-5.4-mini"));
+    assert!(settings.contains("gpt-5.6-luna"));
 
     let output = run(&["config", "models", "add", "custom", "qualified-model"]);
     assert!(

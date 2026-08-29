@@ -1249,7 +1249,7 @@ impl SessionFileSystem for CodingCliSessionFileStore {
 
 const DEFAULT_OPENAI_MODEL: &str = "gpt-5.6-sol";
 const DEFAULT_CODEX_MODEL: &str = "gpt-5.6-sol";
-const DEFAULT_ANTHROPIC_MODEL: &str = "claude-opus-4-8";
+const DEFAULT_ANTHROPIC_MODEL: &str = "claude-opus-5";
 const DEFAULT_META_MODEL: &str = "muse-spark-1.2";
 const DEFAULT_GOOGLE_MODEL: &str = "gemini-2.5-flash";
 // Gemini exposes an OpenAI-compatible surface at this base URL, driven through
@@ -1885,11 +1885,14 @@ impl ProviderChoice {
                 "claude-opus-4-6",
                 "claude-opus-4-7",
                 "claude-opus-4-8",
+                "claude-sonnet-5",
+                "claude-opus-5",
                 "claude-fable-5",
                 // `[1m]` ids are the 1M-context twins of the 200K base models;
                 // the everruns-anthropic driver strips the suffix on the wire
                 // and requests the window via the `context-1m` beta header.
                 "claude-fable-5[1m]",
+                "claude-opus-5[1m]",
                 "claude-opus-4-8[1m]",
             ],
             "meta" => &["muse-spark-1.2", "muse-spark-1.2-contributor"],
@@ -7332,7 +7335,7 @@ mod tests {
         assert!(codex.label().starts_with("codex/gpt-5.6-sol"));
 
         let anthropic = ProviderChoice::default_for_provider_name("anthropic").unwrap();
-        assert_eq!(anthropic.label(), "anthropic/claude-opus-4-8 high");
+        assert_eq!(anthropic.label(), "anthropic/claude-opus-5 high");
 
         let meta = ProviderChoice::default_for_provider_name("meta").unwrap();
         assert_eq!(meta.label(), "meta/muse-spark-1.2");
