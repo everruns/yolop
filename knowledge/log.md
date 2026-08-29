@@ -1,5 +1,12 @@
 # Knowledge Log
 
+## 2026-08-29, Semantic navigation stays ready during code work
+
+Code sessions now receive `repo_map`, `repo_symbols`, and `ast_grep` with their
+full schemas in the eager tool profile. The progress guard tracks overlapping
+file-read intervals across mutations and redirects repeated paging toward those
+semantic tools before requiring a checkpoint.
+
 ## 2026-08-28, Auto worktrees are model-initialized
 
 - [Git worktrees](specs/worktrees.md): `auto` no longer classifies prompt text

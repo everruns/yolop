@@ -29,6 +29,9 @@ const PROGRESS_CHECKPOINT_TOOL: &str = "progress_checkpoint";
 const EXPLORATION_WITHOUT_PROGRESS_THRESHOLD: usize = 24;
 const CHECKPOINT_WITHOUT_PROGRESS_THRESHOLD: usize = 48;
 const REPEATED_EXPLORATION_THRESHOLD: usize = 5;
+const REPEATED_FILE_READ_WARNING_THRESHOLD: usize = 4;
+const REPEATED_FILE_READ_GATE_THRESHOLD: usize = 8;
+const MAX_TRACKED_FILE_READ_INTERVALS: usize = 256;
 const ZERO_EVIDENCE_SEARCH_THRESHOLD: usize = 3;
 const TRUNCATED_EXPLORATION_THRESHOLD: usize = 2;
 const REPEATED_STATUS_THRESHOLD: usize = 3;
@@ -198,6 +201,16 @@ struct SessionProgress {
     failure_gate: Option<FailureGate>,
     recent_warned_failures: VecDeque<FailureFingerprint>,
     warned_failures: HashSet<FailureFingerprint>,
+    file_reads: HashMap<String, FileReadHistory>,
+}
+
+#[derive(Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+struct FileReadHistory {
+    calls: usize,
+    intervals: Vec<(u64, u64)>,
+    semantic_navigation_at: usize,
+    warned: bool,
 }
 
 impl SessionProgress {
@@ -286,6 +299,18 @@ impl SessionProgress {
             }
             ToolClass::Exploration => {
                 self.exploration_since_progress += 1;
+                let mut file_read_warning = None;
+                if is_semantic_navigation(tool_call) {
+                    self.mark_semantic_navigation(tool_call);
+                } else {
+                    for (path, start, end) in file_read_intervals(tool_call) {
+                        if file_read_warning.is_none() {
+                            file_read_warning = self.file_read_warning(path, start, end);
+                        } else {
+                            let _ = self.file_read_warning(path, start, end);
+                        }
+                    }
+                }
                 self.observe_waiting_signal(false);
                 if let Some(warning) = self.result_warning(tool_call, result) {
                     return Some(warning);
@@ -296,7 +321,7 @@ impl SessionProgress {
                 if let Some(warning) = self.repetition_warning(tool_call) {
                     return Some(warning);
                 }
-                self.exploration_warning()
+                self.exploration_warning().or(file_read_warning)
             }
             ToolClass::Other => {
                 self.observe_waiting_signal(false);
@@ -471,6 +496,55 @@ impl SessionProgress {
         self.recent_warned_status_commands.clear();
         self.waiting_warning_emitted = false;
         self.reset_result_streaks();
+    }
+
+    fn mark_semantic_navigation(&mut self, tool_call: &ToolCall) {
+        let scope = tool_call
+            .arguments
+            .get("path")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        for (path, history) in &mut self.file_reads {
+            if scope.is_empty() || path.starts_with(scope) || scope.starts_with(path) {
+                history.semantic_navigation_at = history.calls;
+                history.warned = false;
+            }
+        }
+    }
+
+    fn file_read_warning(&mut self, path: String, start: u64, end: u64) -> Option<String> {
+        let history = self.file_reads.entry(path.clone()).or_default();
+        if history.intervals.contains(&(start, end)) {
+            return None;
+        }
+        history.calls += 1;
+        let overlaps = history
+            .intervals
+            .iter()
+            .any(|(seen_start, seen_end)| start < *seen_end && *seen_start < end);
+        history.intervals.push((start, end));
+        if history.intervals.len() > MAX_TRACKED_FILE_READ_INTERVALS {
+            history.intervals.remove(0);
+        }
+        let calls_since_navigation = history.calls.saturating_sub(history.semantic_navigation_at);
+        if calls_since_navigation >= REPEATED_FILE_READ_GATE_THRESHOLD {
+            self.checkpoint_required = true;
+            self.warning_count += 1;
+            return Some(format!(
+                "progress_guard: {calls_since_navigation} reads of {path} occurred without semantic navigation. Further investigation requires progress_checkpoint; use repo_map or repo_symbols to orient, ast_grep for structural search, or explain why those tools are insufficient and name the exact next region needed."
+            ));
+        }
+        if overlaps
+            && calls_since_navigation >= REPEATED_FILE_READ_WARNING_THRESHOLD
+            && !history.warned
+        {
+            history.warned = true;
+            self.warning_count += 1;
+            return Some(format!(
+                "progress_guard: repeated overlapping reads of {path}. Before paging through more of this file, use repo_map or repo_symbols to locate the owning symbol, ast_grep for a structural pattern, or a targeted grep_files query."
+            ));
+        }
+        None
     }
 
     fn observe_waiting_signal(&mut self, waiting: bool) -> bool {
@@ -1371,6 +1445,45 @@ fn poll_delay_tail(command: &str) -> Option<&str> {
 
 fn normalize_command(command: &str) -> String {
     command.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn is_semantic_navigation(tool_call: &ToolCall) -> bool {
+    matches!(
+        tool_call.name.as_str(),
+        "repo_map" | "repo_symbols" | "ast_grep"
+    )
+}
+
+fn file_read_intervals(tool_call: &ToolCall) -> Vec<(String, u64, u64)> {
+    let start = tool_call
+        .arguments
+        .get("offset")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let limit = tool_call
+        .arguments
+        .get("limit")
+        .and_then(Value::as_u64)
+        .unwrap_or(2_000);
+    let end = start.saturating_add(limit);
+    match tool_call.name.as_str() {
+        "read_file" => tool_call
+            .arguments
+            .get("path")
+            .and_then(Value::as_str)
+            .map(|path| vec![(path.to_string(), start, end)])
+            .unwrap_or_default(),
+        "read_many_files" => tool_call
+            .arguments
+            .get("paths")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(|path| (path.to_string(), start, end))
+            .collect(),
+        _ => Vec::new(),
+    }
 }
 
 fn exploration_signature(tool_call: &ToolCall) -> Option<String> {
@@ -2943,6 +3056,149 @@ mod tests {
                 "each new state remains progress after iteration {index}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn overlapping_file_reads_warn_and_semantic_navigation_resets_pressure() {
+        let state = Arc::new(Mutex::new(ProgressGuardState::default()));
+        let hook = ProgressGuardHook { state };
+        let context = ToolContext::new(SessionId::new());
+
+        let mut warning = None;
+        for offset in [350, 375, 422, 377] {
+            let mut out = result();
+            hook.after_exec(
+                &call(
+                    "read_file",
+                    json!({
+                        "path": "/workspace/src/runtime/mod.rs",
+                        "offset": offset,
+                        "limit": 80
+                    }),
+                ),
+                &tool_def("read_file"),
+                &mut out,
+                &context,
+            )
+            .await;
+            warning = out
+                .result
+                .as_ref()
+                .and_then(|value| value.get("progress_guard_warning"))
+                .and_then(Value::as_str)
+                .map(ToString::to_string);
+        }
+        assert!(
+            warning.is_some_and(|warning| {
+                warning.contains("repeated overlapping reads")
+                    && warning.contains("repo_map or repo_symbols")
+            }),
+            "the fourth overlapping read should redirect to semantic navigation"
+        );
+
+        hook.after_exec(
+            &call(
+                "repo_map",
+                json!({
+                    "path": "/workspace/src/runtime",
+                    "query": "CodingCliSessionFileStore"
+                }),
+            ),
+            &tool_def("repo_map"),
+            &mut result(),
+            &context,
+        )
+        .await;
+
+        for offset in [500, 550, 600] {
+            let mut out = result();
+            hook.after_exec(
+                &call(
+                    "read_file",
+                    json!({
+                        "path": "/workspace/src/runtime/mod.rs",
+                        "offset": offset,
+                        "limit": 80
+                    }),
+                ),
+                &tool_def("read_file"),
+                &mut out,
+                &context,
+            )
+            .await;
+            assert!(
+                out.result
+                    .as_ref()
+                    .and_then(|value| value.get("progress_guard_warning"))
+                    .and_then(Value::as_str)
+                    .is_none_or(
+                        |warning| !warning.contains("reads of /workspace/src/runtime/mod.rs")
+                    ),
+                "semantic navigation should reset file-read pressure"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn mutation_preserves_overlapping_file_read_history() {
+        let state = Arc::new(Mutex::new(ProgressGuardState::default()));
+        let hook = ProgressGuardHook { state };
+        let context = ToolContext::new(SessionId::new());
+
+        for offset in [350, 375, 422] {
+            hook.after_exec(
+                &call(
+                    "read_file",
+                    json!({
+                        "path": "/workspace/src/runtime/mod.rs",
+                        "offset": offset,
+                        "limit": 80
+                    }),
+                ),
+                &tool_def("read_file"),
+                &mut result(),
+                &context,
+            )
+            .await;
+        }
+        hook.after_exec(
+            &call(
+                "edit_file",
+                json!({ "path": "/workspace/src/runtime/mod.rs" }),
+            ),
+            &tool_def("edit_file"),
+            &mut result_value(json!({
+                "path": "/workspace/src/runtime/mod.rs",
+                "previous_content_hash": "before",
+                "content_hash": "after"
+            })),
+            &context,
+        )
+        .await;
+
+        let mut out = result();
+        hook.after_exec(
+            &call(
+                "read_file",
+                json!({
+                    "path": "/workspace/src/runtime/mod.rs",
+                    "offset": 377,
+                    "limit": 48
+                }),
+            ),
+            &tool_def("read_file"),
+            &mut out,
+            &context,
+        )
+        .await;
+        assert!(
+            out.result
+                .as_ref()
+                .and_then(|value| value.get("progress_guard_warning"))
+                .and_then(Value::as_str)
+                .is_some_and(|warning| warning.contains("repeated overlapping reads")),
+            "a mutation must not erase resource-level read history"
+        );
     }
 
     #[tokio::test]

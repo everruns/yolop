@@ -166,8 +166,10 @@ impl Tool for AstGrepTool {
     }
 
     fn description(&self) -> &str {
-        "Search workspace code with ast-grep structural patterns. Supports Rust, Python, \
-         TypeScript/TSX, JavaScript/JSX, C#, Go, CSS, HTML, and Bash."
+        "Search workspace code with ast-grep structural patterns. Prefer this over repeated file \
+         reads when locating functions, impl blocks, call shapes, field access, or repeated \
+         structural constructs. Supports Rust, Python, TypeScript/TSX, JavaScript/JSX, C#, Go, \
+         CSS, HTML, and Bash."
     }
 
     fn parameters_schema(&self) -> Value {

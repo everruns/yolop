@@ -19,6 +19,13 @@ invocation, missing-command, wrong-path, and usage failures. Two consecutive
 equivalent failures on unchanged workspace state trigger a transition away from
 the same tool path, even when the command text or target path was rewritten.
 
+Repeated file paging is tracked separately by normalized path and line interval,
+so changing offsets does not disguise overlapping reads as new investigations.
+Four overlapping reads without semantic navigation warn and redirect toward
+`repo_map`, `repo_symbols`, `ast_grep`, or targeted grep. Eight reads require a
+checkpoint. This resource history survives mutations, while relevant semantic
+navigation resets its pressure, and retained intervals are bounded.
+
 Warnings are transition notices, not recurring reminders. Each warning fires
 once for its relevant unchanged state. An exact repeated read or search still
 returns a compact content-addressed freshness marker on every repeat, but only
