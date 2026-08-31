@@ -32,7 +32,8 @@ top of the runtime's two, not a separate `CommandSource` variant.
 
 1. **System**: the **runtime** executes it via `runtime.execute_command`,
    returning a `CommandResult { success, message }` the host renders inline.
-   Example: `/setup` and its subcommands mutate provider/model/token settings;
+   Example: `/setup` opens guided setup, while `/setup status`, `/setup login <provider>`,
+   and `/setup reauthenticate <provider>` inspect or start provider authentication;
    `/shell <command>` runs the existing bounded bash tool; `/undo`, `/redo`, and
    `/rewind` preview and confirm durable session restores; `/goal <condition>`
    starts an autonomous completion loop (see [`goal.md`](./goal.md)).

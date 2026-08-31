@@ -50,7 +50,10 @@ path as `/shell` (handy for quick one-offs).
 
 | Command | Description |
 | --- | --- |
-| `/setup [subcommand]` | Guided provider/model setup, or direct forms: `status`, `provider`, `model`, `effort`, `token`, `url`, `attribution`, `approval` |
+| `/setup` | Open guided provider and model setup |
+| `/setup status` | Show provider authentication status |
+| `/setup login <provider>` | Start authentication for a provider |
+| `/setup reauthenticate <provider>` | Replace a provider credential |
 | `/goal [condition]` | Set a completion condition and keep working until met; `pause`/`resume`, `clear`, or omit for status |
 | `/background` | Show the task tree and branch usage |
 | `/btw <question>` | Ask a side question with session context, no tools, not added to history |
@@ -76,9 +79,9 @@ Manage the persistent model catalog and future-session default from a shell:
 yolop config models
 yolop config models add openrouter anthropic/claude-opus-4-8 --label "Opus (OpenRouter)"
 yolop config models move claude-opus-4-8 1
-yolop config models rm openai/gpt-5.6-luna
+yolop config models rm gpt-5.4-mini
 yolop config model show
-yolop config model set openai/gpt-5.6-sol
+yolop config model set gpt-5.6-sol
 yolop config model clear
 yolop config models reset          # back to the built-in default list
 ```

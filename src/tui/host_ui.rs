@@ -62,6 +62,11 @@ pub enum UiCommand {
     RunShell { command: String },
     /// Exit the application.
     Quit,
+    /// Open guided setup, optionally focused on one provider.
+    OpenSetup {
+        provider: Option<String>,
+        reauthenticate: bool,
+    },
     /// Open the interactive model picker. `arg` pre-seeds the selection.
     OpenModelOverlay { arg: Option<String> },
     /// Open the interactive reasoning-effort picker. `arg` pre-seeds it.

@@ -194,10 +194,12 @@ profiles fail before session construction.
 `ConfigCapability` owns the attached `config` CLI. `yolop config get [key]`,
 `set KEY VALUE`, and `clear KEY` manage settings, while
 `yolop config model show|set MODEL|clear` manages the persistent model selection.
-The plural `yolop config models ...` form delegates catalog reads and edits to
-`ModelListCapability`; bare `models` is shorthand for `models list`. The
-model-list capability keeps its `models` control route but does not register a
-separate top-level CLI command. The capability exposes no agent tools.
+The plural `yolop config models ...` form delegates list reads and edits to
+`ModelListCapability`; bare `models` is shorthand for `models list`. The same
+capability owns attached `yolop model` and `yolop model use TARGET`: the first
+reports the current session choice and the second changes that live session only.
+Persistent defaults remain exclusively under `yolop config model show|set|clear`.
+The capability exposes no agent tools.
 
 ### Configuration as a service
 
@@ -240,6 +242,8 @@ attached model commands and adjacent configuration surfaces.
 
 Configuration is distinct from the neighbouring personalization surfaces:
 durable preferences are **memory**, behavioral rules are **hooks**, and
-guided provider setup is **`/setup`**. Model selection and model-list edits go
-through the attached `config` command; other settings retain their dedicated
-setup and control surfaces.
+guided provider setup is **`/setup`** in the TUI and **`yolop setup`** when
+attached from another terminal. The attached family also provides `setup status`,
+`setup login PROVIDER`, and `setup reauthenticate PROVIDER`. Live model selection
+uses `yolop model use`; persistent selection and model-list edits remain under
+the attached `config` command.
