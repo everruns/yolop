@@ -8795,6 +8795,9 @@ mod tests {
             // The shell is eager: a stub costs a correction round trip on the
             // most-called tool in the harness.
             "bash",
+            // Recursive delegation needs its authoritative argument shape so
+            // child agents can start without a validation correction round.
+            "spawn_agent",
         ];
         let deferred = [
             "write_file",
@@ -8803,7 +8806,6 @@ mod tests {
             "lsp_definition",
             "lsp_hover",
             "spawn_background",
-            "spawn_agent",
             "search_sessions",
             "activate_skill",
             "search_skills",
