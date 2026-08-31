@@ -3299,6 +3299,16 @@ impl App {
             UiCommand::OpenEffortOverlay { arg } => {
                 self.start_effort_setup(arg.as_deref().unwrap_or(""))
             }
+            UiCommand::OpenSetup {
+                provider,
+                reauthenticate,
+            } => match provider {
+                Some(provider) => {
+                    self.start_setup_for_provider(&provider, reauthenticate)
+                        .await;
+                }
+                None => self.start_setup(),
+            },
             UiCommand::SetAgentStatus { status } => {
                 let status = status.trim();
                 self.agent_status = (!status.is_empty()).then(|| status.to_string());

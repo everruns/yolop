@@ -376,7 +376,7 @@ fn direct_control_args(
         return None;
     }
     let words = command.split_ascii_whitespace().collect::<Vec<_>>();
-    if words.len() < 3 || Path::new(words[0]).file_name().and_then(|v| v.to_str()) != Some("yolop")
+    if words.len() < 2 || Path::new(words[0]).file_name().and_then(|v| v.to_str()) != Some("yolop")
     {
         return None;
     }
@@ -657,6 +657,7 @@ mod tests {
     #[test]
     fn only_plain_foreground_extension_invocations_are_attached() {
         let service = service();
+        assert!(direct_control_args("yolop extensions", &service).is_some());
         assert!(direct_control_args("yolop extensions list", &service).is_some());
         assert!(
             direct_control_args("/usr/local/bin/yolop extensions enable demo", &service).is_some()

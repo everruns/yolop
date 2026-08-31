@@ -667,8 +667,8 @@ impl Capability for ModelsCapability {
         let action = parts.next().unwrap_or_default();
         let rest = parts.next().unwrap_or_default().trim();
         match action {
-            "provider" => controller.change_provider(rest).await,
-            "model" => controller.change_model(rest).await,
+            "provider" => controller.change_provider_and_persist(rest).await,
+            "model" => controller.change_model_and_persist(rest).await,
             "effort" => controller.change_effort(rest).await,
             "token" => controller.change_token(rest),
             "url" => controller.change_base_url(rest),
@@ -745,7 +745,7 @@ impl SetupController {
             .clone()
     }
 
-    fn status_result(&self) -> CommandResult {
+    pub(crate) fn status_result(&self) -> CommandResult {
         let current = self
             .provider
             .read()
@@ -789,9 +789,25 @@ impl SetupController {
     /// provider and model atomically — the wizard needs this for the custom
     /// provider, whose `/setup model` form would otherwise have no provider
     /// context to resolve against on first-time setup.
+    /// Switch the running session without changing the persisted default.
     pub(crate) async fn change_provider(
         &self,
         raw: &str,
+    ) -> everruns_provider::error::Result<CommandResult> {
+        self.change_provider_with_persistence(raw, false).await
+    }
+
+    async fn change_provider_and_persist(
+        &self,
+        raw: &str,
+    ) -> everruns_provider::error::Result<CommandResult> {
+        self.change_provider_with_persistence(raw, true).await
+    }
+
+    async fn change_provider_with_persistence(
+        &self,
+        raw: &str,
+        persist: bool,
     ) -> everruns_provider::error::Result<CommandResult> {
         let mut parts = raw.splitn(2, char::is_whitespace);
         let name = parts.next().unwrap_or_default();
@@ -840,22 +856,26 @@ impl SetupController {
         }
         let provider_name = next.provider_name().to_string();
         let label = next.label();
-        // Persist the model only when explicitly given: a plain provider
-        // switch must not clobber the saved model with the default.
-        let model_persist = if model_spec.is_empty() {
-            Ok(())
+        let persist_note = if persist {
+            // Persist the model only when explicitly given: a plain provider
+            // switch must not clobber the saved model with the default.
+            let model_persist = if model_spec.is_empty() {
+                Ok(())
+            } else {
+                self.settings
+                    .set_model(provider_name.clone(), next.model_spec())
+            };
+            match model_persist.and_then(|()| {
+                self.settings
+                    .set_default_provider(Some(provider_name.clone()))
+            }) {
+                Ok(()) => format!("saved to {}", self.settings.path().display()),
+                Err(err) => format!("warning: settings not saved: {err}"),
+            }
         } else {
-            self.settings
-                .set_model(provider_name.clone(), next.model_spec())
+            "current session only".to_string()
         };
         *self.provider.write().expect("provider lock poisoned") = next;
-        let persist_note = match model_persist.and_then(|()| {
-            self.settings
-                .set_default_provider(Some(provider_name.clone()))
-        }) {
-            Ok(()) => format!("saved to {}", self.settings.path().display()),
-            Err(err) => format!("warning: settings not saved: {err}"),
-        };
         Ok(CommandResult {
             success: true,
             message: format!(
@@ -872,6 +892,21 @@ impl SetupController {
     }
 
     async fn change_model(&self, raw: &str) -> everruns_provider::error::Result<CommandResult> {
+        self.change_model_with_persistence(raw, false).await
+    }
+
+    async fn change_model_and_persist(
+        &self,
+        raw: &str,
+    ) -> everruns_provider::error::Result<CommandResult> {
+        self.change_model_with_persistence(raw, true).await
+    }
+
+    async fn change_model_with_persistence(
+        &self,
+        raw: &str,
+        persist: bool,
+    ) -> everruns_provider::error::Result<CommandResult> {
         if raw.is_empty() {
             let current = self
                 .provider
@@ -907,24 +942,31 @@ impl SetupController {
                 return Ok(failed_result(format!("setup model failed: {err}")));
             }
         };
-        if let Err(err) = self
-            .provider_store
-            .set_default_model_spec(mw.model_spec())
-            .await
+        if persist
+            && let Err(err) = self
+                .provider_store
+                .set_default_model_spec(mw.model_spec())
+                .await
         {
             return Ok(failed_result(format!("setup model failed: {err}")));
         }
         let label = next.label();
         *self.provider.write().expect("provider lock poisoned") = next.clone();
-        *self
-            .pending_model_choice
-            .write()
-            .expect("pending model lock poisoned") = Some(next);
+        if persist {
+            *self
+                .pending_model_choice
+                .write()
+                .expect("pending model lock poisoned") = Some(next);
+        }
         Ok(CommandResult {
             success: true,
-            message: format!(
-                "setup model changed: {label}; applies to this session until a turn succeeds"
-            ),
+            message: if persist {
+                format!(
+                    "setup model changed: {label}; applies to this session until a turn succeeds"
+                )
+            } else {
+                format!("model changed: {label} (live session only)")
+            },
             error_code: None,
             error_fields: None,
         })
@@ -1590,7 +1632,7 @@ fn env_credential_present() -> bool {
 
 /// Controller scaffolding shared by the tests in this module and by
 /// `capabilities::model_list`, which drives the same live session through
-/// `yolop models use`.
+/// `yolop model use`.
 #[cfg(test)]
 pub(crate) mod test_support {
     use super::*;
@@ -1723,7 +1765,7 @@ mod tests {
         });
 
         controller
-            .change_model("gpt-5.4")
+            .change_model_and_persist("gpt-5.4")
             .await
             .expect("change model");
         let before = controller.settings.snapshot();
