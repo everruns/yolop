@@ -1,5 +1,10 @@
 # Knowledge Log
 
+## 2026-08-31, Mermaid diagrams remain rendered at transcript width
+
+- [Tuika](specs/tuika.md): Mermaid fences preserve terminal diagram output even
+  when their natural layout exceeds the transcript width.
+
 ## 2026-08-31, ACP failures stay bounded at their source
 
 - [Model-context checkpoints](specs/checkpointing.md): Codex native compaction
