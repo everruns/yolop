@@ -65,7 +65,7 @@ tuika owns *presentation*; yolop owns *acquisition and meaning*. Concretely:
 | --- | --- | --- |
 | Code highlighting | `CodeBlock` framing, gutter, wrapping | the `Highlighter` (`tuika-codeformatters`) |
 | Markdown images | block reservation and protocol emission | an `ImageResolver` that decodes bytes to RGBA |
-| Mermaid fences | the `FencedBlockRenderer` boundary | the renderer (`tuika-mermaid`), the transcript's width guard, and telling the model the TUI paints them ([system prompt](./system-prompt.md)) |
+| Mermaid fences | the `FencedBlockRenderer` boundary | the renderer (`tuika-mermaid`) and telling the model the TUI paints them ([system prompt](./system-prompt.md)) |
 | Key bindings | the keymap engine (chords, sequences, gated layers, dispatch) | the binding table and what each command *means* |
 | Input routing | `Router` stages, and the `FocusRegistry` ownership they read | which modal state owns input, and in what order |
 | Links | OSC 8 encoding and the `LinkPolicy` sanitizer | which schemes are allowed, and the transcript's link runs |
@@ -119,11 +119,10 @@ it receives, or a modifier-click opens the browser twice. See
 - **The companion crates move with tuika.** `tuika-codeformatters`,
   `tuika-mermaid`, and `tuika-html` pin a compatible `tuika` range, so bumping
   one usually means bumping the full set.
-- **A fenced block that does not fit is not painted.** A companion renderer may
-  lay content out at its natural size and ignore the offered width;
-  `tuika-mermaid` does. The transcript falls back to the themed code block
-  rather than paint a diagram the viewport will clip, so the source stays
-  readable at any terminal width.
+- **Mermaid fences stay diagrams at every transcript width.** `tuika-mermaid`
+  lays content out at its natural size and ignores the offered width. Yolop
+  preserves that diagram output rather than replacing wide charts with source;
+  viewport clipping is a presentation concern for tuika.
 - **`ratatui` stays aligned.** Yolop and tuika must resolve to one shared
   `ratatui-core`, since the interoperability boundary is a raw `Buffer` from it. A
   `ratatui` major bump is a coordinated change across both repositories.

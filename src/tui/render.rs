@@ -1943,13 +1943,7 @@ pub(crate) fn diff_line_style(line: &str) -> Style {
     Style::default().fg(color)
 }
 
-/// `tuika-mermaid` with a transcript-width guard.
-///
-/// mmdflux lays a diagram out at its natural size and ignores the width tuika
-/// offers, so a wide flowchart in a narrow terminal would be painted clipped —
-/// half a box, no way to read the rest. Falling back to `None` there hands the
-/// block back to tuika's themed code block, which keeps the Mermaid source
-/// itself on screen.
+/// Render Mermaid fences as terminal diagrams.
 struct MermaidBlocks;
 
 impl tuika::components::MarkdownBlockRenderer for MermaidBlocks {
@@ -1958,11 +1952,7 @@ impl tuika::components::MarkdownBlockRenderer for MermaidBlocks {
         block: tuika::components::MarkdownBlock<'_>,
         context: tuika::components::MarkdownBlockContext<'_>,
     ) -> Option<Vec<Line<'static>>> {
-        let rendered = tuika_mermaid::MermaidRenderer::new().render(block, context)?;
-        rendered
-            .iter()
-            .all(|line| line_width(line) <= context.width as usize)
-            .then_some(rendered)
+        tuika_mermaid::MermaidRenderer::new().render(block, context)
     }
 }
 
@@ -1971,8 +1961,8 @@ impl tuika::components::MarkdownBlockRenderer for MermaidBlocks {
 /// `tuika-codeformatters` crates).
 ///
 /// ` ```mermaid ` fences go through [`MermaidBlocks`], which paints them as
-/// Unicode cell diagrams; unsupported, malformed, or too-wide diagrams keep the
-/// ordinary code-block fallback so the source stays readable. Safe block HTML
+/// Unicode cell diagrams; unsupported or malformed diagrams keep the ordinary
+/// code-block fallback so the source stays readable. Safe block HTML
 /// is rendered as styled terminal text; unsafe elements and attributes are
 /// ignored by `tuika-html`.
 ///
