@@ -20,6 +20,7 @@ pub(crate) mod host;
 pub(crate) mod lsp;
 pub(crate) mod mcp;
 pub(crate) mod memory;
+pub(crate) mod model_cli;
 pub(crate) mod model_discovery;
 pub(crate) mod model_list;
 pub(crate) mod model_ranking;
@@ -30,6 +31,7 @@ pub(crate) mod repo_map;
 pub(crate) mod session_coordination;
 pub(crate) mod session_history;
 pub(crate) mod session_tasks_override;
+pub(crate) mod setup_cli;
 pub(crate) mod skill_registry;
 pub mod skills;
 pub(crate) mod subagents_override;
@@ -67,6 +69,7 @@ pub(crate) use host::{
     MODELS_CAPABILITY_ID, ModelsCapability,
 };
 pub(crate) use lsp::LspCapability;
+pub(crate) use model_cli::ModelCliCapability;
 pub(crate) use model_list::{ModelListCapability, offered_models};
 pub(crate) use model_runtime_context::{
     MODEL_RUNTIME_CONTEXT_CAPABILITY_ID, ModelRuntimeContextCapability,
@@ -78,6 +81,7 @@ pub(crate) use session_coordination::{
     SessionCoordinationCapability, coordination_project_id,
 };
 pub(crate) use session_history::{SESSION_HISTORY_CAPABILITY_ID, SessionHistoryCapability};
+pub(crate) use setup_cli::SetupCliCapability;
 pub(crate) use tool_approval::{ApprovalDecision, ToolApprovalCapability, ToolApprover};
 pub(crate) use tool_argument_validation::{
     TOOL_ARGUMENT_VALIDATION_CAPABILITY_ID, ToolArgumentValidationCapability,

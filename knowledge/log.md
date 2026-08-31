@@ -1,5 +1,11 @@
 # Knowledge Log
 
+## 2026-08-31, Attached model switching is live-only
+
+The singular attached `yolop model` command shows and switches the running session.
+`model use` no longer writes provider or model defaults; persistent defaults remain under
+`yolop config model`.
+
 ## 2026-08-31, ACP failures stay bounded at their source
 
 - [Model-context checkpoints](specs/checkpointing.md): Codex native compaction

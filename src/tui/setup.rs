@@ -1760,6 +1760,24 @@ impl App {
     }
 }
 
+impl App {
+    pub(crate) async fn start_setup_for_provider(&mut self, provider: &str, reauthenticate: bool) {
+        let Some(selected) = PROVIDER_OPTIONS
+            .iter()
+            .position(|option| option.name.eq_ignore_ascii_case(provider))
+        else {
+            self.push_system(format!("unknown provider: {provider}"));
+            return;
+        };
+        self.setup = Some(SetupStep::Provider { selected });
+        if reauthenticate {
+            self.open_provider_config(selected);
+        } else {
+            self.confirm_provider(selected).await;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::App;

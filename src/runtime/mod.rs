@@ -26,11 +26,11 @@ use crate::capabilities::{
     ContextCostControlCapability, CoordinationConfig, CoordinationHost, CoordinationStore,
     ENVIRONMENT_CONTEXT_CAPABILITY_ID, EnvironmentContextRegistry, GOAL_CAPABILITY_ID,
     GoalCapability, HERDR_CAPABILITY_ID, HOOKS_CAPABILITY_ID, HerdrCapability, HooksCapability,
-    LspCapability, MODEL_RUNTIME_CONTEXT_CAPABILITY_ID, MODELS_CAPABILITY_ID,
+    LspCapability, MODEL_RUNTIME_CONTEXT_CAPABILITY_ID, MODELS_CAPABILITY_ID, ModelCliCapability,
     ModelRuntimeContextCapability, ModelsCapability, PROGRESS_GUARD_CAPABILITY_ID,
     ProgressGuardCapability, REPO_MAP_CAPABILITY_ID, RepoMapCapability,
     SESSION_COORDINATION_CAPABILITY_ID, SESSION_HISTORY_CAPABILITY_ID,
-    SessionCoordinationCapability, SessionHistoryCapability,
+    SessionCoordinationCapability, SessionHistoryCapability, SetupCliCapability,
     TOOL_ARGUMENT_VALIDATION_CAPABILITY_ID, ToolArgumentValidationCapability,
     USER_ASK_CAPABILITY_ID, UserAskCapability, WorktreeCapability, coordination_project_id,
 };
@@ -3828,14 +3828,15 @@ pub async fn build_with_options(
     // Runtime switching stays on the existing models control route, which shares
     // `ModelsCapability`'s controller with `/setup provider <name> <model>`.
     let pending_model_choice = Arc::new(RwLock::new(None));
+    let setup_controller = crate::capabilities::host::setup_controller(
+        provider_state.clone(),
+        provider_store.clone(),
+        settings.clone(),
+        pending_model_choice.clone(),
+    );
     let model_list = Arc::new(crate::capabilities::ModelListCapability::new(
         settings.clone(),
-        Some(crate::capabilities::host::setup_controller(
-            provider_state.clone(),
-            provider_store.clone(),
-            settings.clone(),
-            pending_model_choice.clone(),
-        )),
+        Some(setup_controller.clone()),
     ));
     session_control_registry.register(model_list.clone())?;
     // ConfigCapability owns the attached `config` CLI; the model list remains
@@ -4132,6 +4133,14 @@ pub async fn build_with_options(
     if let Some(ui) = host_ui.clone() {
         capabilities.register(ClientCommandsCapability::new(ui));
     }
+    capabilities.register(SetupCliCapability::live(
+        setup_controller.clone(),
+        host_ui.clone(),
+    ));
+    capabilities.register(ModelCliCapability::live(
+        model_list.clone(),
+        setup_controller,
+    ));
     // `run_command` is host-neutral: it dispatches whatever this session's
     // registry holds, so every host registers it. The terminal's `HostUi` rides
     // along only so informational client commands (`/mcp`, `/tools`) can return
@@ -9093,8 +9102,10 @@ mod tests {
         // legitimately larger surface as lost savings. Enabling
         // `yolop_skill_management` added `search_skills` (588 def / 409 schema),
         // `install_skill` (854 / 582), and `delete_skill` (493 / 314).
-        const BASELINE_TOOL_DEFINITION_BYTES: usize = 28_901 + 1_935;
-        const BASELINE_SCHEMA_BYTES: usize = 13_414 + 1_305;
+        // Includes the logical model, config, and setup command schemas that
+        // are intentionally eager so users can discover and invoke them.
+        const BASELINE_TOOL_DEFINITION_BYTES: usize = 31_158;
+        const BASELINE_SCHEMA_BYTES: usize = 15_845;
         let workspace = tempfile::tempdir().expect("workspace");
         let sessions = tempfile::tempdir().expect("sessions");
         let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
@@ -9126,17 +9137,6 @@ mod tests {
                     .len()
             })
             .sum();
-        let batch_read_schema_bytes = context
-            .runtime_agent
-            .tools
-            .iter()
-            .find(|tool| tool.name() == "read_many_files")
-            .map(|tool| {
-                serde_json::to_vec(tool.parameters())
-                    .expect("serialize batch-read schema")
-                    .len()
-            })
-            .expect("batch-read schema stays eager");
         let tool_definition_bytes: usize = context
             .runtime_agent
             .tools
@@ -9183,6 +9183,7 @@ mod tests {
             tool_definition_bytes * 100 <= BASELINE_TOOL_DEFINITION_BYTES * 89,
             "provider-visible tool bytes must fall by at least 11%: {tool_definition_bytes} vs {BASELINE_TOOL_DEFINITION_BYTES}"
         );
+<<<<<<< HEAD
         // Keeping `bash`, batch reads, and semantic code navigation eager costs
         // schema bytes but avoids measured correction or repeated-read rounds.
         // Keep a historical floor while the dynamic all-eager comparison below
@@ -9190,6 +9191,14 @@ mod tests {
         assert!(
             schema_bytes * 100 <= BASELINE_SCHEMA_BYTES * 93,
             "schema bytes must remain at least 7% below the historical all-eager surface: {schema_bytes} vs {BASELINE_SCHEMA_BYTES}; batch schema={batch_read_schema_bytes}"
+=======
+        // Keeping `bash`, batch reads, semantic code navigation, and the logical
+        // command schemas eager avoids measured correction or repeated-read rounds.
+        // Hold that intentional profile to a 28% reduction from its all-eager surface.
+        assert!(
+            schema_bytes * 100 <= BASELINE_SCHEMA_BYTES * 72,
+            "schema bytes must remain at least 28% below the historical all-eager surface: {schema_bytes} vs {BASELINE_SCHEMA_BYTES}"
+>>>>>>> origin/main
         );
     }
 
