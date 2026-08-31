@@ -230,8 +230,10 @@ providers that require registered structured-call schemas.
 The composition regression records the undeferred baseline and candidate
 through the assembled runtime entry point. On the current default surface, the
 stable prompt remains capped at 12,888 bytes, provider-visible tool definitions
-must fall by at least 24%, and the historical parameter-schema surface by at
-least 45%. Keeping the mandatory checkpoint and bounded batch-read schemas eager
+must fall by at least 11%, and the historical parameter-schema surface by at
+least 7%, while staying at or below 50% of the same tool set with every schema
+eager. Keeping the mandatory checkpoint, bounded batch-read, and delegation
+schemas eager
 intentionally spends schema bytes so neither a host-required transition nor an
 independent-read plan depends on another schema-discovery round. The compact
 `repo_map` schema spends another 261 bytes so the first broad repository
