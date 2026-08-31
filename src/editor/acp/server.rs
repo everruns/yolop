@@ -241,12 +241,9 @@ impl ToolApprover for AcpToolApprover {
                 _ => ApprovalDecision::Reject,
             },
             Err(err) => {
-                // The client could not answer (no permission UI, or the
-                // connection is winding down). Fall back to allowing so a client
-                // without `session/request_permission` keeps working rather than
-                // having every mutating tool blocked; the soft-approval prompt
-                // still nudges the model.
-                tracing::warn!(%err, "acp: request_permission failed; allowing tool");
+                // The client could not answer or the connection is winding
+                // down. `Unavailable` makes the hard gate fail closed.
+                tracing::warn!(%err, "acp: request_permission failed; rejecting tool");
                 ApprovalDecision::Unavailable
             }
         }

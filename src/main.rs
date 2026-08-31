@@ -741,7 +741,7 @@ async fn async_main(crash_reporter: &crash_report::CrashReporter) -> Result<()> 
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("error")),
         )
-        .with_ansi(!interactive)
+        .with_ansi(trace_ansi_enabled(&cli))
         .with_writer(trace_writer(interactive))
         .init();
 
@@ -903,6 +903,10 @@ async fn async_main(crash_reporter: &crash_report::CrashReporter) -> Result<()> 
 fn uses_interactive_renderer(cli: &Cli) -> bool {
     (cli.command.is_none() && cli.print.is_none() && !cli.acp)
         || matches!(cli.command.as_ref(), Some(Commands::TuikaGallery))
+}
+
+fn trace_ansi_enabled(cli: &Cli) -> bool {
+    !uses_interactive_renderer(cli) && !cli.acp
 }
 
 fn trace_writer(interactive: bool) -> BoxMakeWriter {
@@ -2338,11 +2342,15 @@ mod tests {
         let print = Cli::try_parse_from(["yolop", "--provider", "llmsim", "-p", "hi"])
             .expect("parse print mode");
         let command = Cli::try_parse_from(["yolop", "version"]).expect("parse command");
+        let acp = Cli::try_parse_from(["yolop", "--acp"]).expect("parse ACP");
 
         assert!(uses_interactive_renderer(&tui));
         assert!(uses_interactive_renderer(&gallery));
         assert!(!uses_interactive_renderer(&print));
         assert!(!uses_interactive_renderer(&command));
+        assert!(trace_ansi_enabled(&print));
+        assert!(trace_ansi_enabled(&command));
+        assert!(!trace_ansi_enabled(&acp));
     }
 
     #[test]
