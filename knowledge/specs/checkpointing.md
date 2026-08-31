@@ -144,11 +144,14 @@ therefore leave the live model view while remaining lossless and retrievable
 through `query_history`, with the active raw suffix retaining recent asks,
 decisions, edits, and validation.
 
-A provider endpoint that answers native compaction with HTTP 404 or 405 is
-unavailable for that Yolop process. The provider factory opens a circuit shared
-by subsequently constructed driver instances, logs the transition once, and
-returns to the ordinary fallback path. Transient failures remain errors and do
-not disable the capability.
+The private Codex backend has no capability-discovery contract, so the first
+real native-compaction request is its lazy probe. HTTP 404 or 405 selects the
+ordinary fallback path for a 30-minute cooldown scoped to the endpoint and
+Codex account, or to a credential fingerprint when no account id exists. The
+state is shared by reconstructed driver instances, and concurrent demand sends
+only one probe. Expiry makes the capability eligible for one new lazy probe;
+changing endpoint or credential scope starts unknown. Other HTTP failures
+remain errors and keep native compaction eligible.
 
 A durable model-context checkpoint may use an event boundary already persisted
 inside the currently open turn. That pending turn is the active head extension

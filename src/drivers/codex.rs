@@ -22,15 +22,159 @@ use reqwest::StatusCode;
 use reqwest::header::{HeaderMap, HeaderValue};
 use serde::Serialize;
 use serde_json::{Value, json};
+use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
 use std::future::Future;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 pub const CODEX_DRIVER_ID: &str = "openai-codex";
 const CODEX_RESPONSES_URL: &str = "https://chatgpt.com/backend-api/codex/responses";
 const CODEX_BETA_HEADER: &str = "responses=experimental";
+// The private ChatGPT backend has no documented capability discovery route.
+// Treat the first real compact request after this cooldown as the probe.
+const NATIVE_COMPACTION_REPROBE_AFTER: Duration = Duration::from_secs(30 * 60);
 const REAUTH_MESSAGE: &str =
     "Codex login is no longer valid. Run `/setup` and sign in with Codex again.";
+
+type CompactionClock = Arc<dyn Fn() -> Instant + Send + Sync>;
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct CompactionCapabilityScope {
+    responses_url: String,
+    credential: CompactionCredentialScope,
+}
+
+impl CompactionCapabilityScope {
+    fn new(responses_url: &str, account_id: Option<&str>, access_token: &str) -> Self {
+        let credential = match account_id {
+            Some(account_id) => CompactionCredentialScope::AccountId(account_id.to_string()),
+            None => {
+                let mut hasher = DefaultHasher::new();
+                access_token.hash(&mut hasher);
+                CompactionCredentialScope::AccessTokenFingerprint(hasher.finish())
+            }
+        };
+        Self {
+            responses_url: responses_url.trim_end_matches('/').to_string(),
+            credential,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum CompactionCredentialScope {
+    AccountId(String),
+    AccessTokenFingerprint(u64),
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+enum CompactionCapabilityState {
+    #[default]
+    Unknown,
+    Supported,
+    UnavailableUntil(Instant),
+}
+
+#[derive(Default)]
+struct CompactionCapabilities {
+    states: Mutex<HashMap<CompactionCapabilityScope, CompactionCapabilityState>>,
+}
+
+impl CompactionCapabilities {
+    fn supports(&self, scope: &CompactionCapabilityScope, now: Instant) -> bool {
+        match self.state(scope) {
+            CompactionCapabilityState::Unknown | CompactionCapabilityState::Supported => true,
+            CompactionCapabilityState::UnavailableUntil(deadline) => now >= deadline,
+        }
+    }
+
+    fn needs_probe(&self, scope: &CompactionCapabilityScope, now: Instant) -> bool {
+        match self.state(scope) {
+            CompactionCapabilityState::Unknown => true,
+            CompactionCapabilityState::Supported => false,
+            CompactionCapabilityState::UnavailableUntil(deadline) => now >= deadline,
+        }
+    }
+
+    fn mark_supported(&self, scope: &CompactionCapabilityScope) {
+        self.lock_states()
+            .insert(scope.clone(), CompactionCapabilityState::Supported);
+    }
+
+    fn mark_unavailable(
+        &self,
+        scope: &CompactionCapabilityScope,
+        now: Instant,
+        deadline: Instant,
+    ) -> bool {
+        let mut states = self.lock_states();
+        let should_log = !matches!(
+            states.get(scope),
+            Some(CompactionCapabilityState::UnavailableUntil(existing)) if *existing > now
+        );
+        states.insert(
+            scope.clone(),
+            CompactionCapabilityState::UnavailableUntil(deadline),
+        );
+        should_log
+    }
+
+    fn state(&self, scope: &CompactionCapabilityScope) -> CompactionCapabilityState {
+        self.lock_states().get(scope).copied().unwrap_or_default()
+    }
+
+    fn lock_states(
+        &self,
+    ) -> std::sync::MutexGuard<'_, HashMap<CompactionCapabilityScope, CompactionCapabilityState>>
+    {
+        self.states
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+#[derive(Clone)]
+struct CompactionCapabilityPolicy {
+    capabilities: Arc<CompactionCapabilities>,
+    probe_gate: Arc<tokio::sync::Mutex<()>>,
+    cooldown: Duration,
+    clock: CompactionClock,
+}
+
+impl CompactionCapabilityPolicy {
+    fn new(cooldown: Duration, clock: CompactionClock) -> Self {
+        Self {
+            capabilities: Arc::new(CompactionCapabilities::default()),
+            probe_gate: Arc::new(tokio::sync::Mutex::new(())),
+            cooldown,
+            clock,
+        }
+    }
+
+    fn now(&self) -> Instant {
+        (self.clock)()
+    }
+
+    fn supports(&self, scope: &CompactionCapabilityScope) -> bool {
+        self.capabilities.supports(scope, self.now())
+    }
+
+    fn needs_probe(&self, scope: &CompactionCapabilityScope) -> bool {
+        self.capabilities.needs_probe(scope, self.now())
+    }
+
+    fn mark_supported(&self, scope: &CompactionCapabilityScope) {
+        self.capabilities.mark_supported(scope);
+    }
+
+    fn mark_unavailable(&self, scope: &CompactionCapabilityScope) -> bool {
+        let now = self.now();
+        self.capabilities
+            .mark_unavailable(scope, now, now + self.cooldown)
+    }
+}
 
 /// Host-side Codex OAuth storage. Reload must hit disk so another process that
 /// already rotated the refresh token is visible before we call `/oauth/token`.
@@ -68,10 +212,11 @@ struct CodexTokens {
 pub struct CodexChatDriver {
     client: reqwest::Client,
     responses_url: String,
+    compaction_scope: CompactionCapabilityScope,
     tokens: Arc<tokio::sync::Mutex<CodexTokens>>,
     refresh_gate: Arc<tokio::sync::Mutex<()>>,
     auth_store: Option<Arc<dyn CodexAuthStore>>,
-    native_compaction_available: Arc<AtomicBool>,
+    compaction_policy: CompactionCapabilityPolicy,
 }
 
 pub fn register_driver(registry: &mut DriverRegistry, settings: Arc<SettingsStore>) {
@@ -85,13 +230,14 @@ fn register_driver_with_url(
 ) {
     let auth_store: Arc<dyn CodexAuthStore> = settings;
     let refresh_gate = Arc::new(tokio::sync::Mutex::new(()));
-    let native_compaction_available = Arc::new(AtomicBool::new(true));
+    let compaction_policy =
+        CompactionCapabilityPolicy::new(NATIVE_COMPACTION_REPROBE_AFTER, Arc::new(Instant::now));
     registry.register_external(CODEX_DRIVER_ID, move |config| {
         Box::new(CodexChatDriver::from_config_with_refresh_gate(
             config,
             Some(auth_store.clone()),
             refresh_gate.clone(),
-            native_compaction_available.clone(),
+            compaction_policy.clone(),
             responses_url.clone(),
         ))
     });
@@ -106,7 +252,7 @@ impl CodexChatDriver {
         config: &DriverConfig,
         auth_store: Option<Arc<dyn CodexAuthStore>>,
         refresh_gate: Arc<tokio::sync::Mutex<()>>,
-        native_compaction_available: Arc<AtomicBool>,
+        compaction_policy: CompactionCapabilityPolicy,
         responses_url: String,
     ) -> Self {
         let access_token = config
@@ -126,9 +272,12 @@ impl CodexChatDriver {
             .as_ref()
             .and_then(|store| store.load_from_disk())
             .and_then(|auth| auth.email);
+        let compaction_scope =
+            CompactionCapabilityScope::new(&responses_url, account_id.as_deref(), &access_token);
         Self {
             client: reqwest::Client::new(),
             responses_url,
+            compaction_scope,
             tokens: Arc::new(tokio::sync::Mutex::new(CodexTokens {
                 access_token,
                 refresh_token,
@@ -138,7 +287,7 @@ impl CodexChatDriver {
             })),
             refresh_gate,
             auth_store,
-            native_compaction_available,
+            compaction_policy,
         }
     }
 
@@ -447,7 +596,7 @@ impl ChatDriver for CodexChatDriver {
     }
 
     fn supports_compact(&self) -> bool {
-        self.native_compaction_available.load(Ordering::Acquire)
+        self.compaction_policy.supports(&self.compaction_scope)
     }
 
     fn effective_context_window(&self, model: &str) -> Option<usize> {
@@ -463,9 +612,22 @@ impl ChatDriver for CodexChatDriver {
         _endpoint: &ProviderEndpoint,
         request: CompactRequest,
     ) -> EverrunsResult<Option<CompactResponse>> {
-        if !self.supports_compact() {
+        if !self.compaction_policy.supports(&self.compaction_scope) {
             return Ok(None);
         }
+
+        let mut probe_guard = if self.compaction_policy.needs_probe(&self.compaction_scope) {
+            Some(self.compaction_policy.probe_gate.lock().await)
+        } else {
+            None
+        };
+        if !self.compaction_policy.supports(&self.compaction_scope) {
+            return Ok(None);
+        }
+        if probe_guard.is_some() && !self.compaction_policy.needs_probe(&self.compaction_scope) {
+            probe_guard.take();
+        }
+
         let tokens = self.token_snapshot().await?;
         let response = self
             .client
@@ -489,16 +651,19 @@ impl ChatDriver for CodexChatDriver {
                 StatusCode::NOT_FOUND | StatusCode::METHOD_NOT_ALLOWED
             ) {
                 if self
-                    .native_compaction_available
-                    .swap(false, Ordering::AcqRel)
+                    .compaction_policy
+                    .mark_unavailable(&self.compaction_scope)
                 {
                     tracing::warn!(
                         %status,
+                        retry_after_secs = self.compaction_policy.cooldown.as_secs(),
                         "Codex native compaction unavailable; using fallback compaction"
                     );
                 }
                 return Ok(None);
             }
+            self.compaction_policy
+                .mark_supported(&self.compaction_scope);
             let body = response.text().await.unwrap_or_default();
             return Err(codex_response_error(
                 "compact API",
@@ -507,6 +672,8 @@ impl ChatDriver for CodexChatDriver {
                 self.auth_store.as_deref(),
             ));
         }
+        self.compaction_policy
+            .mark_supported(&self.compaction_scope);
 
         let compact = response
             .json::<CompactResponse>()
@@ -1310,8 +1477,25 @@ mod tests {
     }
 
     fn test_driver(responses_url: String) -> CodexChatDriver {
+        test_driver_with_compaction_policy(
+            responses_url,
+            NATIVE_COMPACTION_REPROBE_AFTER,
+            Arc::new(Instant::now),
+        )
+    }
+
+    fn test_driver_with_compaction_policy(
+        responses_url: String,
+        cooldown: Duration,
+        clock: CompactionClock,
+    ) -> CodexChatDriver {
         CodexChatDriver {
             client: reqwest::Client::new(),
+            compaction_scope: CompactionCapabilityScope::new(
+                &responses_url,
+                Some("account-test"),
+                "test-access-token",
+            ),
             responses_url,
             tokens: Arc::new(tokio::sync::Mutex::new(CodexTokens {
                 access_token: "test-access-token".to_string(),
@@ -1322,7 +1506,7 @@ mod tests {
             })),
             refresh_gate: Arc::new(tokio::sync::Mutex::new(())),
             auth_store: None,
-            native_compaction_available: Arc::new(AtomicBool::new(true)),
+            compaction_policy: CompactionCapabilityPolicy::new(cooldown, clock),
         }
     }
 
@@ -1359,6 +1543,44 @@ mod tests {
         let wire = serde_json::to_value(tools).expect("serialize tools");
 
         assert_eq!(wire[0]["strict"], true);
+    }
+
+    #[test]
+    fn compaction_scope_tracks_endpoint_and_credential_identity() {
+        let account = CompactionCapabilityScope::new(
+            "https://example.test/responses",
+            Some("account-a"),
+            "token-a",
+        );
+
+        assert_eq!(
+            account,
+            CompactionCapabilityScope::new(
+                "https://example.test/responses/",
+                Some("account-a"),
+                "rotated-token",
+            )
+        );
+        assert_ne!(
+            account,
+            CompactionCapabilityScope::new(
+                "https://other.test/responses",
+                Some("account-a"),
+                "token-a",
+            )
+        );
+        assert_ne!(
+            account,
+            CompactionCapabilityScope::new(
+                "https://example.test/responses",
+                Some("account-b"),
+                "token-a",
+            )
+        );
+        assert_ne!(
+            CompactionCapabilityScope::new("https://example.test/responses", None, "token-a",),
+            CompactionCapabilityScope::new("https://example.test/responses", None, "token-b",)
+        );
     }
 
     #[test]
@@ -1402,47 +1624,56 @@ mod tests {
         status: &'static str,
         response_body: &'static str,
     ) -> (String, mpsc::Receiver<String>) {
+        serve_responses(vec![(status, response_body, Duration::ZERO)])
+    }
+
+    fn serve_responses(
+        responses: Vec<(&'static str, &'static str, Duration)>,
+    ) -> (String, mpsc::Receiver<String>) {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock Codex server");
         let address = listener.local_addr().expect("mock server address");
         let (request_tx, request_rx) = mpsc::channel();
         thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("accept Codex request");
-            let mut request = Vec::new();
-            let mut buffer = [0u8; 4096];
-            let header_end = loop {
-                let count = stream.read(&mut buffer).expect("read Codex request");
-                assert!(count > 0, "request ended before headers");
-                request.extend_from_slice(&buffer[..count]);
-                if let Some(index) = request.windows(4).position(|bytes| bytes == b"\r\n\r\n") {
-                    break index + 4;
+            for (status, response_body, delay) in responses {
+                let (mut stream, _) = listener.accept().expect("accept Codex request");
+                let mut request = Vec::new();
+                let mut buffer = [0u8; 4096];
+                let header_end = loop {
+                    let count = stream.read(&mut buffer).expect("read Codex request");
+                    assert!(count > 0, "request ended before headers");
+                    request.extend_from_slice(&buffer[..count]);
+                    if let Some(index) = request.windows(4).position(|bytes| bytes == b"\r\n\r\n") {
+                        break index + 4;
+                    }
+                };
+                let headers = String::from_utf8_lossy(&request[..header_end]);
+                let content_length = headers
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().expect("content length"))
+                    })
+                    .unwrap_or(0);
+                while request.len() < header_end + content_length {
+                    let count = stream.read(&mut buffer).expect("read Codex request body");
+                    assert!(count > 0, "request body ended early");
+                    request.extend_from_slice(&buffer[..count]);
                 }
-            };
-            let headers = String::from_utf8_lossy(&request[..header_end]);
-            let content_length = headers
-                .lines()
-                .find_map(|line| {
-                    let (name, value) = line.split_once(':')?;
-                    name.eq_ignore_ascii_case("content-length")
-                        .then(|| value.trim().parse::<usize>().expect("content length"))
-                })
-                .unwrap_or(0);
-            while request.len() < header_end + content_length {
-                let count = stream.read(&mut buffer).expect("read Codex request body");
-                assert!(count > 0, "request body ended early");
-                request.extend_from_slice(&buffer[..count]);
-            }
-            request_tx
-                .send(String::from_utf8(request).expect("UTF-8 request"))
-                .expect("capture request");
+                request_tx
+                    .send(String::from_utf8(request).expect("UTF-8 request"))
+                    .expect("capture request");
+                thread::sleep(delay);
 
-            let response = format!(
-                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                response_body.len(),
-                response_body
-            );
-            stream
-                .write_all(response.as_bytes())
-                .expect("write compact response");
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    response_body.len(),
+                    response_body
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .expect("write compact response");
+            }
         });
         (format!("http://{address}/responses"), request_rx)
     }
@@ -1535,10 +1766,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn compact_404_disables_native_compaction_for_the_driver() {
-        let (responses_url, request_rx) =
-            serve_one_response("404 Not Found", r#"{"detail":"Not Found"}"#);
-        let driver = test_driver(responses_url);
+    async fn compact_404_uses_fallback_until_cooldown_expires() {
+        let compact_response = r#"{"output":[{"type":"compaction","encrypted_content":"opaque-result"}],"usage":{"input_tokens":100,"output_tokens":12,"total_tokens":112}}"#;
+        let (responses_url, request_rx) = serve_responses(vec![
+            ("404 Not Found", r#"{"detail":"Not Found"}"#, Duration::ZERO),
+            ("200 OK", compact_response, Duration::ZERO),
+        ]);
+        let now = Arc::new(StdMutex::new(Instant::now()));
+        let clock: CompactionClock = {
+            let now = now.clone();
+            Arc::new(move || *now.lock().expect("clock lock"))
+        };
+        let cooldown = Duration::from_secs(30 * 60);
+        let driver = test_driver_with_compaction_policy(responses_url, cooldown, clock);
         let request = CompactRequest {
             model: "gpt-5.6".to_string(),
             input: vec![everruns_provider::compact::CompactInputItem::Message {
@@ -1558,9 +1798,9 @@ mod tests {
         );
         assert!(!ChatDriver::supports_compact(&driver));
         assert!(
-            ChatDriver::compact(&driver, &ProviderEndpoint::default(), request)
+            ChatDriver::compact(&driver, &ProviderEndpoint::default(), request.clone())
                 .await
-                .expect("disabled native compaction should stay on fallback")
+                .expect("cooldown should stay on fallback")
                 .is_none()
         );
         assert!(
@@ -1569,10 +1809,27 @@ mod tests {
                 .expect("captured request")
                 .starts_with("POST /responses/compact HTTP/1.1\r\n")
         );
+        assert!(request_rx.try_recv().is_err(), "cooldown must not probe");
+
+        *now.lock().expect("clock lock") += cooldown + Duration::from_secs(1);
+        assert!(ChatDriver::supports_compact(&driver));
+        assert!(
+            ChatDriver::compact(&driver, &ProviderEndpoint::default(), request)
+                .await
+                .expect("expired cooldown should re-probe")
+                .is_some()
+        );
+        assert!(ChatDriver::supports_compact(&driver));
+        assert!(
+            request_rx
+                .recv()
+                .expect("captured re-probe")
+                .starts_with("POST /responses/compact HTTP/1.1\r\n")
+        );
     }
 
     #[tokio::test]
-    async fn compact_capability_circuit_is_shared_across_factory_drivers() {
+    async fn compact_capability_cooldown_is_shared_across_factory_drivers() {
         use everruns_provider::driver_registry::ProviderConfig;
 
         let temp = tempfile::tempdir().unwrap();
@@ -1582,7 +1839,11 @@ mod tests {
         let mut registry = DriverRegistry::new();
         register_driver_with_url(&mut registry, settings, responses_url);
         let config = ProviderConfig::new(DriverId::external(CODEX_DRIVER_ID))
-            .with_api_key("test-access-token");
+            .with_api_key("test-access-token")
+            .with_metadata(ProviderMetadata {
+                account_id: Some("account-a".to_string()),
+                ..ProviderMetadata::default()
+            });
 
         let first = registry.create_chat_driver(&config).expect("first driver");
         assert!(first.supports_compact());
@@ -1604,29 +1865,77 @@ mod tests {
 
         let second = registry.create_chat_driver(&config).expect("second driver");
         assert!(!second.supports_compact());
+
+        let different_credential = ProviderConfig::new(DriverId::external(CODEX_DRIVER_ID))
+            .with_api_key("test-access-token")
+            .with_metadata(ProviderMetadata {
+                account_id: Some("account-b".to_string()),
+                ..ProviderMetadata::default()
+            });
+        let different_account = registry
+            .create_chat_driver(&different_credential)
+            .expect("different credential driver");
+        assert!(different_account.supports_compact());
     }
 
     #[tokio::test]
-    async fn transient_compact_failure_keeps_native_compaction_enabled() {
-        let (responses_url, _request_rx) =
-            serve_one_response("503 Service Unavailable", r#"{"error":"try later"}"#);
+    async fn non_capability_failures_keep_native_compaction_enabled() {
+        for (status, body) in [
+            ("400 Bad Request", r#"{"error":"bad input"}"#),
+            ("401 Unauthorized", r#"{"error":"expired"}"#),
+            ("403 Forbidden", r#"{"error":"denied"}"#),
+            ("422 Unprocessable Entity", r#"{"error":"bad model"}"#),
+            ("429 Too Many Requests", r#"{"error":"slow down"}"#),
+            ("503 Service Unavailable", r#"{"error":"try later"}"#),
+        ] {
+            let (responses_url, _request_rx) = serve_one_response(status, body);
+            let driver = test_driver(responses_url);
+
+            let result = ChatDriver::compact(
+                &driver,
+                &ProviderEndpoint::default(),
+                CompactRequest {
+                    model: "gpt-5.6".to_string(),
+                    input: Vec::new(),
+                    previous_response_id: None,
+                    instructions: None,
+                },
+            )
+            .await;
+
+            assert!(result.is_err(), "{status} must remain an error");
+            assert!(
+                ChatDriver::supports_compact(&driver),
+                "{status} must not start the capability cooldown"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn concurrent_unknown_capability_sends_one_probe() {
+        let (responses_url, request_rx) = serve_responses(vec![(
+            "404 Not Found",
+            r#"{"detail":"Not Found"}"#,
+            Duration::from_millis(100),
+        )]);
         let driver = test_driver(responses_url);
+        let request = CompactRequest {
+            model: "gpt-5.6".to_string(),
+            input: Vec::new(),
+            previous_response_id: None,
+            instructions: None,
+        };
+        let endpoint = ProviderEndpoint::default();
 
-        let error = ChatDriver::compact(
-            &driver,
-            &ProviderEndpoint::default(),
-            CompactRequest {
-                model: "gpt-5.6".to_string(),
-                input: Vec::new(),
-                previous_response_id: None,
-                instructions: None,
-            },
-        )
-        .await
-        .expect_err("transient failures remain errors");
+        let (first, second) = tokio::join!(
+            ChatDriver::compact(&driver, &endpoint, request.clone()),
+            ChatDriver::compact(&driver, &endpoint, request),
+        );
 
-        assert!(error.to_string().contains("503 Service Unavailable"));
-        assert!(ChatDriver::supports_compact(&driver));
+        assert!(first.expect("first compact").is_none());
+        assert!(second.expect("second compact").is_none());
+        request_rx.recv().expect("one capability probe");
+        assert!(request_rx.try_recv().is_err(), "only one probe is allowed");
     }
 
     #[tokio::test]
@@ -1717,13 +2026,22 @@ mod tests {
             .unwrap();
         let auth_store: Arc<dyn CodexAuthStore> = store.clone();
         let refresh_gate = Arc::new(tokio::sync::Mutex::new(()));
+        let compaction_policy = CompactionCapabilityPolicy::new(
+            NATIVE_COMPACTION_REPROBE_AFTER,
+            Arc::new(Instant::now),
+        );
         let make_driver = || CodexChatDriver {
             client: reqwest::Client::new(),
             responses_url: CODEX_RESPONSES_URL.to_string(),
+            compaction_scope: CompactionCapabilityScope::new(
+                CODEX_RESPONSES_URL,
+                Some("acc"),
+                "access-old",
+            ),
             tokens: Arc::new(tokio::sync::Mutex::new(expired_tokens("refresh-once"))),
             refresh_gate: refresh_gate.clone(),
             auth_store: Some(auth_store.clone()),
-            native_compaction_available: Arc::new(AtomicBool::new(true)),
+            compaction_policy: compaction_policy.clone(),
         };
         let first = make_driver();
         let second = make_driver();
