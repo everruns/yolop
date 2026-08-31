@@ -21,13 +21,13 @@ files, test failures, audits, migrations, or research questions. Concurrent
 agents share one working tree, so give each branch non-overlapping files and
 reserve shared manifests, lockfiles, and final integration for the coordinator.
 
-The default hierarchy allows two child levels and up to 32 active descendants.
-You can tighten those limits in `settings.toml`:
+The default hierarchy allows five child levels and up to 32 active descendants.
+You can tighten those limits in `settings.toml`, for example:
 
 ```toml
 [[capabilities]]
 ref = "subagents"
-max_subagent_depth = 2
+max_subagent_depth = 3
 max_active_descendant_tasks = 12
 max_total_descendant_tasks = 100
 ```
