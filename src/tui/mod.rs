@@ -5945,47 +5945,40 @@ mod tests {
         );
     }
 
-    /// mmdflux lays diagrams out at their natural size; when that overflows the
-    /// transcript we show the source instead of a clipped half-diagram.
     #[test]
-    fn markdown_mermaid_too_wide_for_the_transcript_falls_back_to_source() {
-        let text = "```mermaid\nflowchart LR\n  A[Parse] --> B[Layout] --> C[Paint]\n```";
-        let mut narrow = Vec::new();
+    fn markdown_mermaid_session_topology_renders_as_a_diagram() {
+        let text = r#"```mermaid
+flowchart TD
+    ROOT["Root session<br/>...1ae2c135"]
+    ROOT --> A["config-command-implementation<br/>...db309821"]
+    A --> A1["config-command-implementation<br/>...4990123b"]
+    A --> A2["config-command-review<br/>...89bae644"]
+    A --> A3["complete-config-grammar<br/>...me29f1cd2"]
+    A --> A4["✓ implement-full-config-click<br/>...e464ab3f8"]
+    ROOT --> B["fix-config-model-semantics<br/>...171dddc2"]
+    ROOT --> C["restore-general-config-command<br/>...0d0fdfe7"]
+    ROOT --> D["audit-approved-model-design<br/>...f09fe35a"]
+    ROOT --> E["design-setup-model-commands<br/>...55de0d03"]
+    ROOT --> F["design-model-scope-renaming<br/>...a051d1af"]
+```"#;
+        let mut lines = Vec::new();
         append_chat_lines(
-            &mut narrow,
+            &mut lines,
             &ChatLine {
                 author: Author::Assistant,
                 text: text.to_string(),
             },
-            30,
+            160,
         );
+        let rendered = lines.iter().map(line_text).collect::<Vec<_>>();
 
-        let body = narrow.iter().map(line_text).collect::<Vec<_>>().join("\n");
         assert!(
-            body.contains("flowchart LR"),
-            "a diagram wider than the transcript should fall back to source: {body}"
-        );
-
-        // The same diagram fits — and renders — once the transcript is wide
-        // enough, so the fallback is about width, not about this input.
-        let mut wide = Vec::new();
-        append_chat_lines(
-            &mut wide,
-            &ChatLine {
-                author: Author::Assistant,
-                text: text.to_string(),
-            },
-            80,
-        );
-        assert!(
-            !wide
+            rendered
                 .iter()
-                .map(line_text)
-                .collect::<Vec<_>>()
-                .join("\n")
-                .contains("flowchart LR"),
-            "the same diagram should render at width 80: {wide:?}"
+                .any(|line| line.contains('┌') || line.contains('╭')),
+            "expected topology diagram, got: {rendered:?}"
         );
+        assert!(!rendered.iter().any(|line| line.contains("flowchart TD")));
     }
 
     /// Other fence languages keep the syntax-highlighted code block.
