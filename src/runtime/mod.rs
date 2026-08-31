@@ -9183,22 +9183,13 @@ mod tests {
             tool_definition_bytes * 100 <= BASELINE_TOOL_DEFINITION_BYTES * 89,
             "provider-visible tool bytes must fall by at least 11%: {tool_definition_bytes} vs {BASELINE_TOOL_DEFINITION_BYTES}"
         );
-<<<<<<< HEAD
-        // Keeping `bash`, batch reads, and semantic code navigation eager costs
-        // schema bytes but avoids measured correction or repeated-read rounds.
-        // Keep a historical floor while the dynamic all-eager comparison below
-        // guards the intentional compact profile as the tool surface evolves.
-        assert!(
-            schema_bytes * 100 <= BASELINE_SCHEMA_BYTES * 93,
-            "schema bytes must remain at least 7% below the historical all-eager surface: {schema_bytes} vs {BASELINE_SCHEMA_BYTES}; batch schema={batch_read_schema_bytes}"
-=======
         // Keeping `bash`, batch reads, semantic code navigation, and the logical
         // command schemas eager avoids measured correction or repeated-read rounds.
-        // Hold that intentional profile to a 28% reduction from its all-eager surface.
+        // Keep a historical floor while the compact profile evolves with the
+        // intentional eager schemas.
         assert!(
-            schema_bytes * 100 <= BASELINE_SCHEMA_BYTES * 72,
-            "schema bytes must remain at least 28% below the historical all-eager surface: {schema_bytes} vs {BASELINE_SCHEMA_BYTES}"
->>>>>>> origin/main
+            schema_bytes * 100 <= BASELINE_SCHEMA_BYTES * 93,
+            "schema bytes must remain at least 7% below the historical all-eager surface: {schema_bytes} vs {BASELINE_SCHEMA_BYTES}"
         );
     }
 
