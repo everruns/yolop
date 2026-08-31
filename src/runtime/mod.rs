@@ -1221,6 +1221,10 @@ const YOLOP_NEVER_DEFER_TOOLS: &[&str] = &[
     // is `additionalProperties: false`, so argument validation rejects the call
     // and the turn is spent on a correction round trip instead of the work.
     "bash",
+    // Recursive delegation needs the authoritative schema up front. A deferred
+    // stub causes models to guess legacy prompt/model fields and spend turns on
+    // validation corrections before a child can start.
+    "spawn_agent",
     // progress_guard can make this the only allowed transition, so the model
     // must never need tool_search to recover its argument shape.
     "progress_checkpoint",
@@ -2452,12 +2456,15 @@ fn default_coding_harness_capabilities(client_commands: bool) -> Vec<CapabilityR
         CapabilityRef::new(TOOL_OUTPUT_PERSISTENCE_CAPABILITY_ID),
         CapabilityRef::new(MODEL_RUNTIME_CONTEXT_CAPABILITY_ID),
         CapabilityRef::new(SESSION_TASKS_CAPABILITY_ID),
-        // A two-level 4×4 swarm has 20 live descendants (four coordinators and
-        // sixteen workers). Keep that useful topology inside the default bound
-        // while the per-session fan-out and total-task ceilings remain intact.
+        // Deeper coordinator trees need room beyond the upstream depth-two
+        // default. Keep the existing active-descendant bound while the
+        // per-session fan-out and total-task ceilings remain intact.
         CapabilityRef::with_config(
             SUBAGENTS_CAPABILITY_ID,
-            serde_json::json!({ "max_active_descendant_tasks": 32 }),
+            serde_json::json!({
+                "max_subagent_depth": 5,
+                "max_active_descendant_tasks": 32
+            }),
         ),
         CapabilityRef::new(DUCKDUCKGO_CAPABILITY_ID),
         CapabilityRef::new(ATTRIBUTION_CAPABILITY_ID),
@@ -8668,7 +8675,8 @@ mod tests {
             .expect("subagents capability must be enabled");
 
         assert_eq!(subagents.config_value()["max_active_descendant_tasks"], 32);
-        assert!(!YOLOP_NEVER_DEFER_TOOLS.contains(&"spawn_agent"));
+        assert_eq!(subagents.config_value()["max_subagent_depth"], 5);
+        assert!(YOLOP_NEVER_DEFER_TOOLS.contains(&"spawn_agent"));
     }
 
     #[test]
