@@ -10,15 +10,14 @@ outside the model.
 
 Yolop uses the upstream `everruns-core` `user_hooks` capability. The local
 Yolop layer only discovers hook files, merges workspace and global scopes, and
-exposes a `hooks` capability to configure those files from natural language.
+exposes `yolop config hooks` plus a host control route for those files.
 
 ## How it works
 
 ```mermaid
 flowchart LR
-  User["User: yolop setup a hook"] --> Hooks["hooks capability"]
-  Hooks --> Tools["validate_hook / upsert_hook"]
-  Tools --> Files["hooks.json"]
+  User["User: yolop config hooks set"] --> Hooks["hooks control route"]
+  Hooks --> Files["hooks.json"]
   Files --> Runtime["user_hooks capability"]
   Runtime --> Decision{"Hook decision"}
   Decision -->|allow| Continue["run action"]
@@ -26,9 +25,8 @@ flowchart LR
   Decision -->|mutate| Rewrite["rewrite action/result"]
 ```
 
-The model interprets the request, but it does not hand-edit hook JSON. The
-embedded `yolop-hooks` skill maps common requests to hook specs, and the
-`hooks` tools validate and write the config atomically.
+The attached CLI validates and writes hook configuration atomically. Hook
+management is not exposed as model tools.
 
 ## Scopes
 
@@ -40,18 +38,15 @@ embedded `yolop-hooks` skill maps common requests to hook specs, and the
 Workspace hooks override global hooks with the same `id`. A workspace file can
 also disable a lower-precedence global hook by listing the id in `disabled`.
 
-## Configure from chat
+## Configure with the CLI
 
-Ask Yolop directly:
-
-```text
-yolop setup a hook to prevent calls to git
+```bash
+yolop config hooks list
+yolop config hooks set hook.json --scope workspace
 ```
 
-Yolop should translate that into a `pre_tool_use` hook and save it through
-`upsert_hook`. If the scope is ambiguous and the hook blocks a broad class
-of normal coding actions, Yolop should ask whether the hook is global or just
-for the current workspace.
+Use `get` to inspect one effective hook and `remove` to delete or disable a hook
+in a selected scope.
 
 ## Configure by file
 

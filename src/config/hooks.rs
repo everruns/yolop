@@ -49,7 +49,7 @@ pub struct HooksFile {
     pub disabled_contributions: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct ResolvedHook {
     pub scope: HookScope,
     pub path: PathBuf,
@@ -95,7 +95,7 @@ impl ResolvedHook {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct EffectiveHooks {
     pub global_path: PathBuf,
     pub workspace_path: PathBuf,

@@ -22,6 +22,9 @@
 //   * system    — pre-packed, materialized once          (read-only; override: YOLOP_SYSTEM_SKILLS_DIR)
 
 use crate::capabilities::narration::stable_labeled;
+use crate::control::{
+    CliCapability, ControlCapability, ControlRequest, ControlResponse, ControlRoute,
+};
 use async_trait::async_trait;
 use everruns_builtins::{SkillDirResolver, SkillScope, SkillsConfig};
 use everruns_core::tool_narration::{ToolNarrationPhase, arg_str, truncate};
@@ -29,7 +32,9 @@ use everruns_core::{Capability, CapabilityStatus};
 use everruns_core::{Tool, ToolExecutionResult};
 use everruns_provider::ToolCall;
 use include_dir::{Dir, include_dir};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::io::{IsTerminal, Read};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -146,7 +151,7 @@ pub fn skills_config(dirs: &SkillDirs, extensions: &[(String, PathBuf)]) -> Skil
                 .map(|(name, dir)| (extension_skills_label(name), dir.clone()))
                 .collect(),
         }),
-        manage_tools: true,
+        manage_tools: false,
     }
 }
 
@@ -343,12 +348,7 @@ fn write_if_changed(target: &Path, contents: &[u8]) -> std::io::Result<()> {
 
 pub(crate) const SKILL_MANAGEMENT_CAPABILITY_ID: &str = "yolop_skill_management";
 
-/// Skill removal for yolop's writable scopes. The upstream
-/// `ScopedSkillsCapability` owns discovery and `list/activate/read/write_skill`
-/// but has no uninstall, so yolop contributes `delete_skill` here. It operates
-/// on the same workspace/global directories the resolver exposes (system stays
-/// read-only), giving the agent a first-class, conversational uninstall instead
-/// of shelling out to `rm`.
+/// Detached skill package and registry administration.
 pub(crate) struct SkillManagementCapability {
     dirs: SkillDirs,
     registry: crate::capabilities::skill_registry::SkillRegistryClient,
@@ -369,35 +369,301 @@ impl Capability for SkillManagementCapability {
         SKILL_MANAGEMENT_CAPABILITY_ID
     }
     fn name(&self) -> &str {
-        "Skill Management"
+        "Skill management CLI"
     }
     fn description(&self) -> &str {
-        "Search skills.sh, install registry skills, and uninstall workspace/global skills."
+        "Detached skill package and registry administration."
     }
     fn status(&self) -> CapabilityStatus {
         CapabilityStatus::Available
     }
-    fn category(&self) -> Option<&str> {
-        Some("Examples")
-    }
-    fn system_prompt_addition(&self) -> Option<&str> {
-        // Tool descriptions already cover search → ask → install, and that
-        // system skills are read-only.
-        None
-    }
     fn tools(&self) -> Vec<Box<dyn Tool>> {
-        vec![
-            Box::new(crate::capabilities::skill_registry::SearchSkillsTool::new(
-                self.registry.clone(),
-            )),
-            Box::new(crate::capabilities::skill_registry::InstallSkillTool::new(
-                self.dirs.clone(),
-                self.registry.clone(),
-            )),
-            Box::new(DeleteSkillTool {
-                dirs: self.dirs.clone(),
-            }),
-        ]
+        Vec::new()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "operation", rename_all = "snake_case")]
+pub(crate) enum SkillsAction {
+    List,
+    Read {
+        name: String,
+    },
+    Activate {
+        name: String,
+    },
+    Write {
+        name: String,
+        content: String,
+        scope: Option<String>,
+    },
+    Delete {
+        name: String,
+        scope: Option<String>,
+    },
+    Search {
+        query: String,
+    },
+    Install {
+        source: String,
+        scope: Option<String>,
+    },
+}
+
+#[async_trait]
+impl ControlCapability for SkillManagementCapability {
+    fn control_route(&self) -> ControlRoute {
+        ControlRoute {
+            resource: "skills",
+            cli_subcommand: "skills",
+            read_only_operations: &["list", "read", "search"],
+            summary: "installed skill management",
+        }
+    }
+    async fn execute_control(&self, action: &Value) -> ToolExecutionResult {
+        let Ok(action) = serde_json::from_value::<SkillsAction>(action.clone()) else {
+            return ToolExecutionResult::tool_error("invalid skills action");
+        };
+        match action {
+            SkillsAction::Activate { name } => match self.read_skill(&name) {
+                Ok(value) => ToolExecutionResult::success(value),
+                Err(error) => ToolExecutionResult::tool_error(error),
+            },
+            SkillsAction::Write {
+                name,
+                content,
+                scope,
+            } => match self.write_skill(&name, &content, scope.as_deref()) {
+                Ok(value) => ToolExecutionResult::success(value),
+                Err(error) => ToolExecutionResult::tool_error(error),
+            },
+            SkillsAction::Delete { name, scope } => {
+                DeleteSkillTool {
+                    dirs: self.dirs.clone(),
+                }
+                .execute(
+                    json!({"name": name, "scope": scope.unwrap_or_else(|| "workspace".into())}),
+                )
+                .await
+            }
+            SkillsAction::Search { query } => {
+                crate::capabilities::skill_registry::SearchSkillsTool::new(self.registry.clone())
+                    .execute(json!({"query": query}))
+                    .await
+            }
+            SkillsAction::Install { source, scope } => {
+                crate::capabilities::skill_registry::InstallSkillTool::new(
+                    self.dirs.clone(),
+                    self.registry.clone(),
+                )
+                .execute(
+                    json!({"source": source, "scope": scope.unwrap_or_else(|| "workspace".into())}),
+                )
+                .await
+            }
+            SkillsAction::List => {
+                let mut skills = Vec::new();
+                for (scope, base) in self.readable_scopes() {
+                    let Ok(entries) = std::fs::read_dir(base) else {
+                        continue;
+                    };
+                    for entry in entries.flatten() {
+                        if entry.path().join("SKILL.md").is_file() {
+                            skills.push(json!({"name": entry.file_name().to_string_lossy(), "scope": scope}));
+                        }
+                    }
+                }
+                ToolExecutionResult::success(json!({"skills": skills}))
+            }
+            SkillsAction::Read { name } => match self.read_skill(&name) {
+                Ok(value) => ToolExecutionResult::success(value),
+                Err(error) => ToolExecutionResult::tool_error(error),
+            },
+        }
+    }
+    fn render_control(&self, _action: &Value, response: &ControlResponse) -> String {
+        response.render_default()
+    }
+}
+
+#[derive(clap::Args)]
+struct SkillsCommandLine {
+    #[command(subcommand)]
+    command: SkillsCommand,
+}
+#[derive(clap::Subcommand)]
+enum SkillsCommand {
+    List,
+    Read {
+        name: String,
+    },
+    Activate {
+        name: String,
+    },
+    Write {
+        name: String,
+        /// Read SKILL.md from this path. Use `-` for stdin.
+        #[arg(long, value_name = "PATH", conflicts_with = "content")]
+        file: Option<PathBuf>,
+        /// Set short SKILL.md text directly. Prefer `--file` or stdin for substantial files.
+        #[arg(
+            long,
+            value_name = "TEXT",
+            allow_hyphen_values = true,
+            conflicts_with = "file"
+        )]
+        content: Option<String>,
+        #[arg(long, value_parser = ["workspace", "global"])]
+        scope: Option<String>,
+    },
+    Delete {
+        name: String,
+        #[arg(long, value_parser = ["workspace", "global"])]
+        scope: Option<String>,
+    },
+    Search {
+        query: String,
+    },
+    Install {
+        source: String,
+        #[arg(long, value_parser = ["workspace", "global"])]
+        scope: Option<String>,
+    },
+}
+impl SkillsCommandLine {
+    fn action(matches: &clap::ArgMatches) -> anyhow::Result<SkillsAction> {
+        use clap::FromArgMatches;
+        let cli = Self::from_arg_matches(matches)?;
+        Ok(match cli.command {
+            SkillsCommand::List => SkillsAction::List,
+            SkillsCommand::Read { name } => SkillsAction::Read { name },
+            SkillsCommand::Activate { name } => SkillsAction::Activate { name },
+            SkillsCommand::Write {
+                name,
+                file,
+                content,
+                scope,
+            } => SkillsAction::Write {
+                name,
+                content: read_skill_input(file.as_deref(), content)?,
+                scope,
+            },
+            SkillsCommand::Delete { name, scope } => SkillsAction::Delete { name, scope },
+            SkillsCommand::Search { query } => SkillsAction::Search { query },
+            SkillsCommand::Install { source, scope } => SkillsAction::Install { source, scope },
+        })
+    }
+}
+
+#[async_trait]
+impl CliCapability for SkillManagementCapability {
+    fn cli_command(&self) -> clap::Command {
+        use clap::Args;
+        SkillsCommandLine::augment_args(clap::Command::new("skills"))
+    }
+    fn control_request_from_cli(
+        &self,
+        matches: &clap::ArgMatches,
+    ) -> anyhow::Result<ControlRequest> {
+        let action = SkillsCommandLine::action(matches)?;
+        Ok(ControlRequest::new(self.control_route().resource, action)?)
+    }
+    async fn execute_cli(&self, request: &ControlRequest) -> anyhow::Result<()> {
+        let response =
+            ControlResponse::from_tool_result(self.execute_control(&request.action).await);
+        let rendered = response.render_default();
+        if response.ok {
+            println!("{rendered}");
+            Ok(())
+        } else {
+            anyhow::bail!(rendered)
+        }
+    }
+}
+
+const MAX_SKILL_MD_BYTES: u64 = 1024 * 1024;
+
+fn read_skill_input(file: Option<&Path>, content: Option<String>) -> anyhow::Result<String> {
+    if let Some(content) = content {
+        if content.len() as u64 > MAX_SKILL_MD_BYTES {
+            anyhow::bail!("skill content exceeds the 1 MiB limit");
+        }
+        return Ok(content);
+    }
+
+    if let Some(path) = file.filter(|path| *path != Path::new("-")) {
+        let file = std::fs::File::open(path)
+            .map_err(|error| anyhow::anyhow!("failed to open {}: {error}", path.display()))?;
+        return read_bounded_skill_input(file, &format!("skill file {}", path.display()));
+    }
+
+    let stdin = std::io::stdin();
+    if stdin.is_terminal() {
+        anyhow::bail!(
+            "no skill content provided; pass --file PATH, --content TEXT, or pipe SKILL.md on stdin"
+        );
+    }
+    read_bounded_skill_input(stdin.lock(), "skill content from stdin")
+}
+
+fn read_bounded_skill_input(reader: impl Read, source: &str) -> anyhow::Result<String> {
+    let mut bytes = Vec::new();
+    reader
+        .take(MAX_SKILL_MD_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| anyhow::anyhow!("failed to read {source}: {error}"))?;
+    if bytes.len() as u64 > MAX_SKILL_MD_BYTES {
+        anyhow::bail!("{source} exceeds the 1 MiB limit");
+    }
+    String::from_utf8(bytes).map_err(|error| anyhow::anyhow!("{source} is not UTF-8: {error}"))
+}
+
+impl SkillManagementCapability {
+    fn readable_scopes(&self) -> Vec<(&str, &Path)> {
+        let mut scopes = vec![("workspace", self.dirs.workspace.as_path())];
+        if let Some(path) = &self.dirs.profile {
+            scopes.push(("profile", path.as_path()));
+        }
+        if let Some(path) = &self.dirs.global {
+            scopes.push(("global", path.as_path()));
+        }
+        if let Some(path) = &self.dirs.environment {
+            scopes.push(("environment", path.as_path()));
+        }
+        if let Some(path) = &self.dirs.system {
+            scopes.push(("system", path.as_path()));
+        }
+        scopes
+    }
+    fn write_skill(&self, name: &str, content: &str, scope: Option<&str>) -> Result<Value, String> {
+        validate_skill_name(name)?;
+        let base = match scope.unwrap_or("workspace") {
+            "workspace" => self.dirs.workspace.clone(),
+            "global" => self
+                .dirs
+                .global
+                .clone()
+                .ok_or_else(|| "global skills scope is not configured".to_string())?,
+            other => return Err(format!("unsupported writable scope `{other}`")),
+        };
+        let dir = base.join(name);
+        std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
+        std::fs::write(dir.join("SKILL.md"), content).map_err(|error| error.to_string())?;
+        Ok(
+            json!({"name": name, "scope": scope.unwrap_or("workspace"), "path": dir.join("SKILL.md")}),
+        )
+    }
+
+    fn read_skill(&self, name: &str) -> Result<Value, String> {
+        validate_skill_name(name)?;
+        for (scope, base) in self.readable_scopes() {
+            let path = base.join(name).join("SKILL.md");
+            if path.is_file() {
+                let content = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+                return Ok(json!({"name": name, "scope": scope, "path": path, "content": content}));
+            }
+        }
+        Err(format!("skill `{name}` was not found"))
     }
 }
 
@@ -621,7 +887,7 @@ mod tests {
         let cfg = skills_config(&dirs, &[]);
         let labels: Vec<&str> = cfg.scopes.iter().map(|s| s.label.as_str()).collect();
         assert_eq!(labels, vec!["workspace", "system"]);
-        assert!(cfg.manage_tools);
+        assert!(!cfg.manage_tools);
         // System scope is read-only; workspace is writable.
         assert!(
             !cfg.scopes
@@ -807,7 +1073,7 @@ mod tests {
     // ---------- delete_skill ----------
 
     #[test]
-    fn skill_management_capability_exposes_search_install_delete() {
+    fn skill_management_capability_exposes_cli_not_agent_tools() {
         let dirs = SkillDirs {
             workspace: PathBuf::from("/ws/.agents/skills"),
             global: None,
@@ -816,35 +1082,9 @@ mod tests {
             environment: None,
         };
         let capability = SkillManagementCapability::new(dirs);
-        let names: Vec<String> = capability
-            .tools()
-            .iter()
-            .map(|t| t.name().to_string())
-            .collect();
-        for expected in ["search_skills", "install_skill", "delete_skill"] {
-            assert!(
-                names.iter().any(|n| n == expected),
-                "{expected} should be exposed: {names:?}"
-            );
-        }
-        // Guidance belongs to the tools, not to a per-turn prompt block:
-        // the descriptions are already in context whenever the tools are offered.
-        assert!(
-            capability.system_prompt_addition().is_none(),
-            "skill management guidance lives in the tool descriptions"
-        );
-        let description = capability
-            .tools()
-            .into_iter()
-            .find(|t| t.name() == "delete_skill")
-            .expect("delete_skill")
-            .description()
-            .to_string();
-        assert!(description.contains("workspace"));
-        // The read-only system scope is the one thing the schema cannot express;
-        // routing between delete/write lives in the skill-management skill, not
-        // in provider-visible description bytes.
-        assert!(description.contains("System skills cannot be deleted"));
+        assert!(capability.tools().is_empty());
+        assert_eq!(capability.control_route().resource, "skills");
+        assert_eq!(capability.cli_command().get_name(), "skills");
     }
 
     /// Build a tool whose workspace/global scopes point at fresh temp dirs.

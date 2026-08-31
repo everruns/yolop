@@ -2995,6 +2995,119 @@ fn openai_print_smoke() {
 }
 
 #[test]
+fn skills_cli_write_list_and_activate_uses_compiled_binary() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let config_dir = tmp.path().join("config");
+    let data_dir = tmp.path().join("data");
+    let workspace = tmp.path().join("workspace");
+    let global_skills = tmp.path().join("global-skills");
+    std::fs::create_dir(&workspace).expect("workspace");
+    let skill_file = tmp.path().join("SKILL.md");
+    let file_content = "---\nname: cli-file\ndescription: Installed from a file through the compiled CLI.\n---\n# CLI file\n\nThis skill proves file input.\n";
+    std::fs::write(&skill_file, file_content).expect("skill fixture");
+    let stdin_content = "---\nname: cli-stdin\ndescription: Installed from stdin through the compiled CLI.\n---\n# CLI stdin\n\nThis skill proves stdin input.\n";
+    let direct_content = "---\nname: cli-direct\ndescription: Installed from direct text through the compiled CLI.\n---\n# CLI direct\n";
+
+    let command = || {
+        let mut command = Command::new(yolop_binary());
+        command
+            .env("YOLOP_GLOBAL_SKILLS_DIR", &global_skills)
+            .args([
+                "--config-dir",
+                config_dir.to_str().unwrap(),
+                "--data-dir",
+                data_dir.to_str().unwrap(),
+                "-C",
+                workspace.to_str().unwrap(),
+            ]);
+        command
+    };
+
+    let file_write = command()
+        .args([
+            "skills",
+            "write",
+            "cli-file",
+            "--scope",
+            "global",
+            "--file",
+            skill_file.to_str().unwrap(),
+        ])
+        .output()
+        .expect("spawn yolop skills write --file");
+    assert!(
+        file_write.status.success(),
+        "skills write --file failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&file_write.stdout),
+        String::from_utf8_lossy(&file_write.stderr)
+    );
+
+    let mut stdin_write = command()
+        .args(["skills", "write", "cli-stdin", "--scope", "global"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn yolop skills write on stdin");
+    std::io::Write::write_all(
+        stdin_write.stdin.as_mut().expect("stdin pipe"),
+        stdin_content.as_bytes(),
+    )
+    .expect("write skill stdin");
+    let stdin_write = stdin_write
+        .wait_with_output()
+        .expect("wait for stdin write");
+    assert!(
+        stdin_write.status.success(),
+        "skills write on stdin failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&stdin_write.stdout),
+        String::from_utf8_lossy(&stdin_write.stderr)
+    );
+
+    let direct_write = command()
+        .args([
+            "skills",
+            "write",
+            "cli-direct",
+            "--scope",
+            "global",
+            "--content",
+            direct_content,
+        ])
+        .output()
+        .expect("spawn yolop skills write --content");
+    assert!(direct_write.status.success());
+    assert!(global_skills.join("cli-file/SKILL.md").is_file());
+    assert!(global_skills.join("cli-stdin/SKILL.md").is_file());
+    assert!(global_skills.join("cli-direct/SKILL.md").is_file());
+
+    let list = command()
+        .args(["skills", "list"])
+        .output()
+        .expect("spawn yolop skills list");
+    let list_stdout = String::from_utf8_lossy(&list.stdout);
+    assert!(list.status.success(), "skills list failed: {list_stdout}");
+    for name in ["cli-file", "cli-stdin", "cli-direct"] {
+        assert!(list_stdout.contains(name), "skill missing: {list_stdout}");
+    }
+
+    let activate = command()
+        .args(["skills", "activate", "cli-stdin"])
+        .output()
+        .expect("spawn yolop skills activate");
+    let activate_stdout = String::from_utf8_lossy(&activate.stdout);
+    assert!(
+        activate.status.success(),
+        "skills activate failed: stdout={activate_stdout} stderr={}",
+        String::from_utf8_lossy(&activate.stderr)
+    );
+    assert!(
+        activate_stdout.contains("This skill proves stdin input."),
+        "unexpected activation output: {activate_stdout}"
+    );
+}
+
+#[test]
 fn openai_multistep_completion_smoke() {
     let Some(_) = live_key_or_skip("OPENAI_API_KEY") else {
         return;

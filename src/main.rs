@@ -1422,7 +1422,7 @@ fn detached_cli_registry() -> Result<control::CliRegistry> {
     let capability = Arc::new(
         extensions::ExtensionsCapability::new(
             extensions_dir,
-            workspace,
+            workspace.clone(),
             settings.clone(),
             extensions::LiveProcessRegistry::default(),
             None,
@@ -1456,6 +1456,9 @@ fn detached_cli_registry() -> Result<control::CliRegistry> {
     registry.register(Arc::new(
         capabilities::SessionCoordinationCapability::detached(coordination_store),
     ))?;
+    registry.register(Arc::new(capabilities::SkillManagementCapability::new(
+        capabilities::SkillDirs::resolve(&workspace, None),
+    )))?;
     Ok(registry)
 }
 
@@ -2353,6 +2356,28 @@ mod tests {
         assert!(trace_ansi_enabled(&print));
         assert!(trace_ansi_enabled(&command));
         assert!(!trace_ansi_enabled(&acp));
+    }
+
+    #[tokio::test]
+    async fn detached_management_commands_dispatch() {
+        let registry = detached_cli_registry().expect("build detached CLI registry");
+        for argv in [
+            vec!["yolop", "config", "hooks", "list"],
+            vec!["yolop", "skills", "list"],
+        ] {
+            let root = registry
+                .augment(Cli::command())
+                .expect("augment root command");
+            let matches = root.try_get_matches_from(argv).expect("parse command");
+            let invocation = registry
+                .invocation(&matches)
+                .expect("route detached command")
+                .expect("management command was not dispatched");
+            invocation
+                .execute()
+                .await
+                .expect("execute detached command");
+        }
     }
 
     #[test]

@@ -12,15 +12,16 @@ use crate::config::capability_settings::{
     capability_catalog_json, capability_catalog_list, effective_harness_json, overrides_to_json,
     parse_override_from_json, stored_override_json,
 };
+use crate::config::hooks::{HookScope, HooksStore};
 use crate::config::schema::{KeyTarget, ValueKind, known_keys, parse_key, schema};
 use crate::config::service::{ConfigService, current_value, scoped_current};
-use crate::config::{ApprovalMode, Settings, SettingsStore};
+use crate::config::{ApprovalMode, Settings, SettingsStore, default_settings_path};
 use crate::control::{
     CliCapability, ControlCapability, ControlRequest, ControlResponse, ControlRoute,
 };
 use crate::runtime::{SUPPORTED_PROVIDERS, coding_harness_defaults, resolve_for_settings};
 use async_trait::async_trait;
-use clap::{Args, Command, FromArgMatches, Subcommand};
+use clap::{Args, Command, FromArgMatches, Subcommand, ValueEnum};
 use everruns_core::tool_narration::ToolNarrationPhase;
 use everruns_core::{Capability, CapabilityStatus, SystemPromptContext};
 use everruns_core::{Tool, ToolExecutionResult};
@@ -56,6 +57,48 @@ enum ConfigCommand {
     Models {
         #[command(subcommand)]
         command: Option<ModelsCliCommand>,
+    },
+    Hooks {
+        #[command(subcommand)]
+        command: HooksCommand,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, ValueEnum)]
+enum HookScopeArg {
+    Global,
+    Workspace,
+}
+impl From<HookScopeArg> for HookScope {
+    fn from(value: HookScopeArg) -> Self {
+        match value {
+            HookScopeArg::Global => Self::Global,
+            HookScopeArg::Workspace => Self::Workspace,
+        }
+    }
+}
+#[derive(Debug, Serialize, Deserialize, Subcommand)]
+enum HooksCommand {
+    List,
+    Get {
+        id: String,
+        #[arg(long, value_enum)]
+        scope: Option<HookScopeArg>,
+    },
+    Set {
+        id: String,
+        event: String,
+        #[arg(long)]
+        command: String,
+        #[arg(long, value_enum, default_value = "global")]
+        scope: HookScopeArg,
+        #[arg(long)]
+        disabled: bool,
+    },
+    Remove {
+        id: String,
+        #[arg(long, value_enum, default_value = "global")]
+        scope: HookScopeArg,
     },
 }
 
@@ -119,6 +162,7 @@ impl ConfigCommandLine {
                     connected: false,
                 },
             })?,
+            ConfigCommand::Hooks { command } => serde_json::json!({ "hooks": command }),
         };
         Ok(ControlRequest::new("models", action)?)
     }
@@ -168,6 +212,12 @@ impl CliCapability for ConfigCapability {
     }
 
     async fn execute_cli(&self, request: &ControlRequest) -> anyhow::Result<()> {
+        if let Some(value) = request.action.get("hooks") {
+            let command: HooksCommand = serde_json::from_value(value.clone())?;
+            let result = execute_hooks_cli(command)?;
+            println!("{}", tool_result_json(result));
+            return Ok(());
+        }
         if serde_json::from_value::<ConfigAction>(request.action.clone()).is_err() {
             return self.model_list.execute_cli_request(request).await;
         }
@@ -900,6 +950,53 @@ fn on_off(enabled: bool) -> &'static str {
     if enabled { "on" } else { "off" }
 }
 
+fn tool_result_json(result: ToolExecutionResult) -> String {
+    match result {
+        ToolExecutionResult::Success(value) => {
+            serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string())
+        }
+        ToolExecutionResult::ToolError(message) => message,
+        _ => "hook command failed".to_string(),
+    }
+}
+
+fn execute_hooks_cli(command: HooksCommand) -> anyhow::Result<ToolExecutionResult> {
+    let settings_path =
+        default_settings_path().unwrap_or_else(|| std::path::PathBuf::from("settings.toml"));
+    let workspace_root = std::env::current_dir()?;
+    let store = HooksStore::new(settings_path.with_file_name("hooks.json"), workspace_root);
+    let value = match command {
+        HooksCommand::List => serde_json::json!({ "hooks": store.effective().summaries() }),
+        HooksCommand::Get { id, scope } => {
+            let scope = scope.map(HookScope::from);
+            let hook = store.effective().hooks.into_iter().find(|hook| {
+                hook.id.as_deref() == Some(id.as_str())
+                    && scope.is_none_or(|scope| hook.scope == scope)
+            });
+            serde_json::to_value(hook.ok_or_else(|| anyhow::anyhow!("hook `{id}` was not found"))?)?
+        }
+        HooksCommand::Set {
+            id,
+            event,
+            command,
+            scope,
+            disabled,
+        } => {
+            let hook = serde_json::json!({
+                "id": id,
+                "event": event,
+                "executor": { "type": "bash", "command": command },
+                "enabled": !disabled,
+            });
+            serde_json::to_value(store.upsert_hook(scope.into(), hook)?)?
+        }
+        HooksCommand::Remove { id, scope } => {
+            serde_json::json!({ "removed": store.remove_hook(scope.into(), &id)?, "id": id })
+        }
+    };
+    Ok(ToolExecutionResult::success(value))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -924,6 +1021,8 @@ mod tests {
             &["config", "model", "set", "openai/gpt-5.6"][..],
             &["config", "model", "clear"][..],
             &["config", "models"][..],
+            &["config", "hooks", "list"][..],
+            &["config", "hooks", "remove", "example", "--scope", "global"][..],
         ] {
             cli_request(args);
         }
@@ -977,6 +1076,27 @@ mod tests {
                 .is_err(),
             "scalar and JSON forms must be mutually exclusive"
         );
+    }
+
+    #[test]
+    fn hooks_cli_dispatches_management_commands() {
+        for (args, expected) in [
+            (&["config", "hooks", "list"][..], "list"),
+            (&["config", "hooks", "get", "sample"][..], "get"),
+            (&["config", "hooks", "remove", "sample"][..], "remove"),
+        ] {
+            let request = cli_request(args);
+            let command: HooksCommand =
+                serde_json::from_value(request.action.get("hooks").expect("hooks action").clone())
+                    .expect("hooks command");
+            let actual = match command {
+                HooksCommand::List => "list",
+                HooksCommand::Get { .. } => "get",
+                HooksCommand::Remove { .. } => "remove",
+                HooksCommand::Set { .. } => "set",
+            };
+            assert_eq!(actual, expected);
+        }
     }
 
     #[test]

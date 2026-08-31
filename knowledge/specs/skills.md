@@ -8,14 +8,14 @@ description: Defines the skills specification contract for Yolop.
 
 ## Abstract
 
-Skills are instruction packages (`SKILL.md` files) the agent can discover,
-activate, and manage at runtime via skills tools, plus a system-prompt listing
-of what's available.
+Skills are instruction packages (`SKILL.md` files) the agent can discover and
+activate at runtime, manage through the detached `yolop skills` CLI, and see in
+the system-prompt listing.
 
 yolop uses the upstream `ScopedSkillsCapability` from `everruns-core` (0.12.0+).
-That capability owns discovery, precedence, the skills tools (`list_skills`,
-`activate_skill`, `read_skill`, `write_skill`), validation, and `SKILL.md`
-substitution, all driven strictly through the session `SessionFileSystem`. yolop
+That capability owns discovery, precedence, the model tools (`list_skills` and
+`activate_skill`), validation, and `SKILL.md` substitution, all driven strictly
+through the session `SessionFileSystem`. yolop
 supplies only the embedder-specific glue (`crate::capabilities::skills`):
 
 1. **The scope set and writability**: workspace, profile, global, environment,
@@ -65,6 +65,14 @@ a labeled **real on-disk directory**:
    available, **read-only**. Overridable with `YOLOP_SYSTEM_SKILLS_DIR` (used
    verbatim, no materialization).
 
+## Management and model surfaces
+
+The detached `yolop skills` command owns list, read, delete, registry search,
+and registry install operations. It reuses the scoped skills,
+yolop skill management, and registry services. The assembled model tool surface
+contains exactly `list_skills` and `activate_skill`; CLI duplication of those two
+operations is intentional.
+
 ## Required Behavior
 
 1. **Merge.** `list_skills` and the system-prompt listing see skills from all
@@ -80,43 +88,32 @@ a labeled **real on-disk directory**:
    expanded, activating a skill must not spawn a shell on the host (mirrors the
    upstream trust gate; see `everruns-core` skills / EVE-388).
 5. **Writes are explicit.** Normal file tools edit only the workspace. The
-   dedicated `write_skill` tool may write workspace or global skills when the
+   `yolop skills write` command may write workspace or global skills when the
    user asks Yolop to install or modify skills. System skills are read-only.
 6. **Hot install.** Workspace and global scope paths are kept even when the
    directories do not exist yet. Discovery reads the filesystem on each
-   `list_skills`, `read_skill`, and `activate_skill` call, so a skill installed
+   `list_skills`, CLI `read`, and `activate_skill` call, so a skill installed
    after Yolop starts is available without restarting.
-7. **Manage workspace/global skills.** `read_skill` returns an installed
-   skill's `SKILL.md` and file manifest. `write_skill` installs or updates a
-   skill in the workspace (`workspace`/`local`) or global (`global`) scope.
-   `write_skill` validates the skill name and `SKILL.md`, requires the
-   frontmatter `name` to match the directory name, bounds extra files, rejects
-   path traversal, and never writes system skills.
-8. **Uninstall.** The yolop-owned `delete_skill` tool removes an installed skill
+7. **Inspect workspace/global skills.** `yolop skills read` returns an installed
+   skill's `SKILL.md` and file manifest. Registry installation validates the
+   skill name and `SKILL.md`, bounds files, rejects path traversal, and never
+   writes system skills.
+8. **Uninstall.** The `yolop skills delete` command removes an installed skill
    from a writable scope (`workspace` or `global`). It validates the name as a
    single path segment (no separators, `.`, or `..`), refuses a directory with no
-   `SKILL.md`, and never touches the read-only system scope. This is the
-   conversational uninstall path (see [`conversational-control.md`](./conversational-control.md));
-   the upstream capability has no removal.
+   `SKILL.md`, and never touches the read-only system scope. The upstream capability has no removal.
 9. **Absent scopes are silent.** A missing workspace/global directory is simply
    empty until a skill is installed. A failure to materialize system skills
    disables that scope without failing the session.
 10. **Materialization is safe.** System-skill materialization is idempotent and
     concurrency-safe (atomic per-file writes, skipped when bytes are unchanged),
     so parallel processes do not race on the shared cache directory.
-11. **Management guidance is bundled.** Yolop ships a `skill-management` system
-    skill that tells the agent how to inspect, install, search for, and upgrade
-    skills. Prefer the yolop-owned `search_skills` / `install_skill` tools for
-    the public skills.sh registry (search → ask which to install → install).
-    Reconstruct `npx skill add ...` style installs that are not on skills.sh by
-    fetching source files directly and writing them with `write_skill`.
-12. **Registry search and install.** `search_skills` queries skills.sh and
-    returns structured matches (id, source, installs, URL). `install_skill`
-    downloads a skills.sh snapshot into a writable scope (`workspace` or
-    `global`), validates `SKILL.md` and relative paths, and makes the skill
-    available immediately. Both are conversational control surfaces (see
-    [`conversational-control.md`](./conversational-control.md)): present search
-    results and ask before installing. System skills remain read-only.
+11. **Management guidance is bundled.** Yolop ships a `skill-management`
+    system skill that directs operators to `yolop skills` for listing, reading,
+    searching, installing, and deleting skills.
+12. **Registry search and install.** `yolop skills search` queries skills.sh and
+    returns structured matches. `yolop skills install` downloads and validates a
+    snapshot into a writable scope. Neither operation is exposed as a model tool.
 13. **User guide is bundled.** Yolop ships a `yolop` system skill from the
     private bundled asset tree as the durable reference for slash commands,
     keyboard shortcuts, CLI flags, and session controls. `/help` in the TUI
@@ -134,14 +131,17 @@ a labeled **real on-disk directory**:
   session `SessionFileSystem`.
 - `crate::capabilities::skills` owns the yolop wiring: the scope set, the
   host-path `SkillDirResolver`, embedded and generated skill materialization, and
-  the `SkillManagementCapability`
-  that contributes `search_skills`, `install_skill`, and `delete_skill`. That
-  capability must be both registered *and* enabled in the default coding
-  harness; registering it alone leaves its tools out of every session while the
-  skill-management skill still instructs the model to call them.
+  the operator-only `SkillManagementCapability` behind `yolop skills`.
 - `crate::capabilities::skill_registry` owns the skills.sh HTTP client used by
-  `search_skills` / `install_skill`.
+  the CLI `search` and `install` operations.
 - `crate::runtime` (`CodingCliSessionFileStore`) owns read-only access to physical
   skill directories outside the workspace.
 - `everruns_core::skill` owns the `SKILL.md` format, parsing, validation, and
   substitution.
+
+## Management surface
+
+The model-visible skill surface is exactly `list_skills` and `activate_skill`.
+Reading, deleting, searching, and installing skills are operator actions exposed
+through top-level `yolop skills list|read|delete|search|install`; they are not
+model tools.

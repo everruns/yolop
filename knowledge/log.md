@@ -11,6 +11,17 @@ The singular attached `yolop model` command shows and switches the running sessi
 `model use` no longer writes provider or model defaults; persistent defaults remain under
 `yolop config model`.
 
+## 2026-08-31, Hook and skill management moved to detached CLI
+
+- [Hooks](specs/hooks.md): hook CRUD is available under `yolop config hooks`
+  through the shared hook store, and hook management model tools are removed.
+- [Skills](specs/skills.md): package management and registry operations are
+  available under top-level `yolop skills`; assembled sessions expose only
+  `list_skills` and `activate_skill` to the model.
+- [Conversational control](specs/conversational-control.md) and
+  [configuration](specs/configuration.md) distinguish host administration from
+  the runtime model surface.
+
 ## 2026-08-31, ACP failures stay bounded at their source
 
 - [Model-context checkpoints](specs/checkpointing.md): Codex native compaction
