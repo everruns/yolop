@@ -3647,25 +3647,28 @@ impl App {
     }
 
     fn show_help(&mut self) {
+        let mut help = String::from(
+            "# Yolop help\n\n## Command syntax\n\nType a slash command followed by its arguments. Arguments in `<angle brackets>` are required; arguments in `[square brackets]` are optional. Run `/setup` to configure the provider, API key, and model.",
+        );
+
         if !self.startup.capability_commands.is_empty() {
-            let command_lines: Vec<String> = self
-                .startup
-                .capability_commands
-                .iter()
-                .map(help_command_line)
-                .collect();
-            self.push_system("commands:".into());
-            for line in command_lines {
-                self.push_system(line);
+            help.push_str("\n\n## Commands\n");
+            for command in &self.startup.capability_commands {
+                help.push_str("\n- ");
+                help.push_str(&help_command_line(command));
             }
         }
-        self.push_system("shortcuts:".into());
-        for line in help_shortcut_lines() {
-            self.push_system(line.to_string());
+
+        help.push_str("\n\n## Keyboard shortcuts\n");
+        for shortcut in help_shortcut_lines() {
+            help.push_str("\n- ");
+            help.push_str(shortcut);
         }
-        self.push_system(
-            "more: /tools · /mcp · /yolop skill · type naturally for terminal actions".into(),
+
+        help.push_str(
+            "\n\n## Discover more\n\n- `/tools` lists tools available to the agent.\n- `/mcp` manages MCP servers.\n- `/yolop skill` shows reusable workflows.\n- You can also describe terminal actions naturally.",
         );
+        self.push_system(help);
     }
 
     fn set_status_layout(&mut self, raw: Option<&str>) {
@@ -4369,16 +4372,16 @@ fn help_command_line(descriptor: &CommandDescriptor) -> String {
     } else {
         capability_command_usage(descriptor)
     };
-    format!("  {} — {}", usage, descriptor.description)
+    format!("`{usage}`: {}", descriptor.description)
 }
 
 fn help_shortcut_lines() -> [&'static str; 5] {
     [
-        "  Enter send · Shift-Enter newline · Tab complete (cmds, @files) · ↑/↓ history · Ctrl+R search",
-        "  Ctrl+V paste image/text · Ctrl+B activity · !<cmd> shell alias",
-        "  exit: Ctrl-C twice / Ctrl-D",
-        "  steer while busy: type and Enter to queue · cancel turn: Esc twice",
-        "  scroll: terminal scrollback (no in-app page keys)",
+        "Send and edit: `Enter` send, `Shift-Enter` newline, `Tab` complete commands and `@files`, `↑`/`↓` history, `Ctrl+R` search",
+        "Paste and inspect: `Ctrl+V` paste image/text, `Ctrl+B` activity, `!<cmd>` shell alias",
+        "Exit: `Ctrl-C` twice or `Ctrl-D`",
+        "While busy: type and `Enter` to queue, `Esc` twice to cancel the turn",
+        "Scroll: use terminal scrollback; there are no in-app page keys",
     ]
 }
 
@@ -9228,42 +9231,36 @@ mod tests {
 
         app.dispatch_command_for_test("help").await;
 
-        let help_lines: Vec<_> = app.lines.iter().map(|line| line.text.as_str()).collect();
+        assert_eq!(app.lines.len(), 1, "help should be one transcript message");
+        let help = app.lines[0].text.as_str();
         assert!(
-            help_lines.contains(&"commands:"),
-            "help should introduce the command list: {help_lines:?}"
+            help.starts_with("# Yolop help\n"),
+            "help should be Markdown: {help}"
         );
         assert!(
-            help_lines.iter().any(|line| line.starts_with("  /help —")),
-            "help should list /help with a description: {help_lines:?}"
+            help.contains("## Commands\n") && help.contains("- `/help`:"),
+            "help should list /help with a description: {help}"
         );
         assert!(
-            help_lines.contains(&"shortcuts:"),
-            "help should introduce keyboard shortcuts: {help_lines:?}"
+            help.contains("`<angle brackets>` are required")
+                && help.contains("`[square brackets]` are optional")
+                && help.contains("Run `/setup` to configure the provider, API key, and model"),
+            "help should explain command argument notation: {help}"
         );
         assert!(
-            help_lines
-                .iter()
-                .any(|line| line.contains("exit: Ctrl-C twice / Ctrl-D")),
-            "help output should name Ctrl-C/Ctrl-D exits: {help_lines:?}"
+            help.contains("## Keyboard shortcuts\n")
+                && help.contains("Exit: `Ctrl-C` twice or `Ctrl-D`")
+                && help.contains("to cancel the turn")
+                && help.contains("`Ctrl+V` paste image/text"),
+            "help should describe keyboard shortcuts: {help}"
         );
         assert!(
-            help_lines.iter().any(|line| line.contains("cancel turn")),
-            "help output should label Esc as cancel turn: {help_lines:?}"
+            help.contains("/quit (/exit)"),
+            "help should mention /exit alias for /quit: {help}"
         );
         assert!(
-            help_lines.iter().any(|line| line.contains("/exit")),
-            "help output should mention /exit alias for /quit: {help_lines:?}"
-        );
-        assert!(
-            help_lines
-                .iter()
-                .any(|line| line.contains("Ctrl+V paste image/text")),
-            "help output should mention image paste: {help_lines:?}"
-        );
-        assert!(
-            help_lines.iter().any(|line| line.contains("/yolop skill")),
-            "help output should point at the yolop skill: {help_lines:?}"
+            help.contains("## Discover more\n") && help.contains("/yolop skill"),
+            "help should point at further discovery: {help}"
         );
     }
 
