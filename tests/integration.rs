@@ -22,7 +22,7 @@
 mod support;
 
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -2688,6 +2688,8 @@ struct AcpHandshake {
     assistant_text: String,
     /// True if the process exited cleanly after stdin was closed.
     exited_cleanly: bool,
+    /// Process diagnostics captured from stderr.
+    stderr: String,
 }
 
 /// Spawn `yolop --acp <provider>` over real OS stdin/stdout pipes and drive the
@@ -2712,7 +2714,7 @@ fn run_acp_handshake(provider: &str, prompt_text: &str) -> AcpHandshake {
         ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
         .expect("spawn yolop --acp");
 
@@ -2733,6 +2735,15 @@ fn run_acp_handshake(provider: &str, prompt_text: &str) -> AcpHandshake {
                 Err(_) => break,
             }
         }
+    });
+    let stderr = child.stderr.take().expect("acp stderr");
+    let stderr_reader = thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let mut stderr = stderr;
+        stderr
+            .read_to_end(&mut bytes)
+            .expect("read yolop --acp stderr");
+        String::from_utf8_lossy(&bytes).into_owned()
     });
 
     let send = |stdin: &mut std::process::ChildStdin, value: serde_json::Value| {
@@ -2818,6 +2829,7 @@ fn run_acp_handshake(provider: &str, prompt_text: &str) -> AcpHandshake {
     drop(stdin);
     let status = wait_for_process_exit(&mut child, Duration::from_secs(10));
     let _ = reader.join();
+    let stderr = stderr_reader.join().expect("join stderr reader");
 
     AcpHandshake {
         init,
@@ -2825,6 +2837,7 @@ fn run_acp_handshake(provider: &str, prompt_text: &str) -> AcpHandshake {
         prompt,
         assistant_text: assistant_text.into_inner(),
         exited_cleanly: status.map(|s| s.success()).unwrap_or(false),
+        stderr,
     }
 }
 
@@ -2855,6 +2868,11 @@ fn acp_stdio_handshake_smoke() {
     assert!(
         result.exited_cleanly,
         "yolop --acp should exit cleanly after stdin close"
+    );
+    assert!(
+        !result.stderr.contains('\x1b'),
+        "ACP stderr must be plain text: {:?}",
+        result.stderr
     );
 }
 

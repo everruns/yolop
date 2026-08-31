@@ -23,6 +23,7 @@ use reqwest::header::{HeaderMap, HeaderValue};
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::future::Future;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 pub const CODEX_DRIVER_ID: &str = "openai-codex";
@@ -70,16 +71,28 @@ pub struct CodexChatDriver {
     tokens: Arc<tokio::sync::Mutex<CodexTokens>>,
     refresh_gate: Arc<tokio::sync::Mutex<()>>,
     auth_store: Option<Arc<dyn CodexAuthStore>>,
+    native_compaction_available: Arc<AtomicBool>,
 }
 
 pub fn register_driver(registry: &mut DriverRegistry, settings: Arc<SettingsStore>) {
+    register_driver_with_url(registry, settings, CODEX_RESPONSES_URL.to_string());
+}
+
+fn register_driver_with_url(
+    registry: &mut DriverRegistry,
+    settings: Arc<SettingsStore>,
+    responses_url: String,
+) {
     let auth_store: Arc<dyn CodexAuthStore> = settings;
     let refresh_gate = Arc::new(tokio::sync::Mutex::new(()));
+    let native_compaction_available = Arc::new(AtomicBool::new(true));
     registry.register_external(CODEX_DRIVER_ID, move |config| {
         Box::new(CodexChatDriver::from_config_with_refresh_gate(
             config,
             Some(auth_store.clone()),
             refresh_gate.clone(),
+            native_compaction_available.clone(),
+            responses_url.clone(),
         ))
     });
 }
@@ -93,6 +106,8 @@ impl CodexChatDriver {
         config: &DriverConfig,
         auth_store: Option<Arc<dyn CodexAuthStore>>,
         refresh_gate: Arc<tokio::sync::Mutex<()>>,
+        native_compaction_available: Arc<AtomicBool>,
+        responses_url: String,
     ) -> Self {
         let access_token = config
             .api_key
@@ -113,7 +128,7 @@ impl CodexChatDriver {
             .and_then(|auth| auth.email);
         Self {
             client: reqwest::Client::new(),
-            responses_url: CODEX_RESPONSES_URL.to_string(),
+            responses_url,
             tokens: Arc::new(tokio::sync::Mutex::new(CodexTokens {
                 access_token,
                 refresh_token,
@@ -123,6 +138,7 @@ impl CodexChatDriver {
             })),
             refresh_gate,
             auth_store,
+            native_compaction_available,
         }
     }
 
@@ -431,7 +447,7 @@ impl ChatDriver for CodexChatDriver {
     }
 
     fn supports_compact(&self) -> bool {
-        true
+        self.native_compaction_available.load(Ordering::Acquire)
     }
 
     fn effective_context_window(&self, model: &str) -> Option<usize> {
@@ -447,6 +463,9 @@ impl ChatDriver for CodexChatDriver {
         _endpoint: &ProviderEndpoint,
         request: CompactRequest,
     ) -> EverrunsResult<Option<CompactResponse>> {
+        if !self.supports_compact() {
+            return Ok(None);
+        }
         let tokens = self.token_snapshot().await?;
         let response = self
             .client
@@ -465,6 +484,21 @@ impl ChatDriver for CodexChatDriver {
 
         let status = response.status();
         if !status.is_success() {
+            if matches!(
+                status,
+                StatusCode::NOT_FOUND | StatusCode::METHOD_NOT_ALLOWED
+            ) {
+                if self
+                    .native_compaction_available
+                    .swap(false, Ordering::AcqRel)
+                {
+                    tracing::warn!(
+                        %status,
+                        "Codex native compaction unavailable; using fallback compaction"
+                    );
+                }
+                return Ok(None);
+            }
             let body = response.text().await.unwrap_or_default();
             return Err(codex_response_error(
                 "compact API",
@@ -1288,6 +1322,7 @@ mod tests {
             })),
             refresh_gate: Arc::new(tokio::sync::Mutex::new(())),
             auth_store: None,
+            native_compaction_available: Arc::new(AtomicBool::new(true)),
         }
     }
 
@@ -1360,6 +1395,13 @@ mod tests {
     }
 
     fn serve_one_json_response(response_body: &'static str) -> (String, mpsc::Receiver<String>) {
+        serve_one_response("200 OK", response_body)
+    }
+
+    fn serve_one_response(
+        status: &'static str,
+        response_body: &'static str,
+    ) -> (String, mpsc::Receiver<String>) {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock Codex server");
         let address = listener.local_addr().expect("mock server address");
         let (request_tx, request_rx) = mpsc::channel();
@@ -1394,7 +1436,7 @@ mod tests {
                 .expect("capture request");
 
             let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                 response_body.len(),
                 response_body
             );
@@ -1493,6 +1535,101 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn compact_404_disables_native_compaction_for_the_driver() {
+        let (responses_url, request_rx) =
+            serve_one_response("404 Not Found", r#"{"detail":"Not Found"}"#);
+        let driver = test_driver(responses_url);
+        let request = CompactRequest {
+            model: "gpt-5.6".to_string(),
+            input: vec![everruns_provider::compact::CompactInputItem::Message {
+                role: "user".to_string(),
+                content: CompactContent::Text("compact me".to_string()),
+            }],
+            previous_response_id: None,
+            instructions: None,
+        };
+
+        assert!(ChatDriver::supports_compact(&driver));
+        assert!(
+            ChatDriver::compact(&driver, &ProviderEndpoint::default(), request.clone())
+                .await
+                .expect("404 should fall back instead of failing")
+                .is_none()
+        );
+        assert!(!ChatDriver::supports_compact(&driver));
+        assert!(
+            ChatDriver::compact(&driver, &ProviderEndpoint::default(), request)
+                .await
+                .expect("disabled native compaction should stay on fallback")
+                .is_none()
+        );
+        assert!(
+            request_rx
+                .recv()
+                .expect("captured request")
+                .starts_with("POST /responses/compact HTTP/1.1\r\n")
+        );
+    }
+
+    #[tokio::test]
+    async fn compact_capability_circuit_is_shared_across_factory_drivers() {
+        use everruns_provider::driver_registry::ProviderConfig;
+
+        let temp = tempfile::tempdir().unwrap();
+        let settings = Arc::new(SettingsStore::open(temp.path().join("settings.toml")));
+        let (responses_url, _request_rx) =
+            serve_one_response("405 Method Not Allowed", r#"{"detail":"unsupported"}"#);
+        let mut registry = DriverRegistry::new();
+        register_driver_with_url(&mut registry, settings, responses_url);
+        let config = ProviderConfig::new(DriverId::external(CODEX_DRIVER_ID))
+            .with_api_key("test-access-token");
+
+        let first = registry.create_chat_driver(&config).expect("first driver");
+        assert!(first.supports_compact());
+        assert!(
+            first
+                .compact(
+                    &ProviderEndpoint::default(),
+                    CompactRequest {
+                        model: "gpt-5.6".to_string(),
+                        input: Vec::new(),
+                        previous_response_id: None,
+                        instructions: None,
+                    },
+                )
+                .await
+                .expect("405 should select fallback")
+                .is_none()
+        );
+
+        let second = registry.create_chat_driver(&config).expect("second driver");
+        assert!(!second.supports_compact());
+    }
+
+    #[tokio::test]
+    async fn transient_compact_failure_keeps_native_compaction_enabled() {
+        let (responses_url, _request_rx) =
+            serve_one_response("503 Service Unavailable", r#"{"error":"try later"}"#);
+        let driver = test_driver(responses_url);
+
+        let error = ChatDriver::compact(
+            &driver,
+            &ProviderEndpoint::default(),
+            CompactRequest {
+                model: "gpt-5.6".to_string(),
+                input: Vec::new(),
+                previous_response_id: None,
+                instructions: None,
+            },
+        )
+        .await
+        .expect_err("transient failures remain errors");
+
+        assert!(error.to_string().contains("503 Service Unavailable"));
+        assert!(ChatDriver::supports_compact(&driver));
+    }
+
+    #[tokio::test]
     async fn refresh_persists_rotated_tokens_to_store() {
         let store = MemoryAuthStore::default();
         store
@@ -1586,6 +1723,7 @@ mod tests {
             tokens: Arc::new(tokio::sync::Mutex::new(expired_tokens("refresh-once"))),
             refresh_gate: refresh_gate.clone(),
             auth_store: Some(auth_store.clone()),
+            native_compaction_available: Arc::new(AtomicBool::new(true)),
         };
         let first = make_driver();
         let second = make_driver();

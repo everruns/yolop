@@ -5,6 +5,7 @@
 
 pub mod proc;
 pub mod sandbox;
+pub(crate) mod shell_policy;
 pub mod tools;
 pub mod workspace_host;
 pub mod worktree;

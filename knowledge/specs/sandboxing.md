@@ -23,6 +23,16 @@ Every shell entry point uses one shared `SandboxProvider` boundary:
 - the `/shell` command; and
 - the TUI `!shell` shortcut.
 
+The shared Bash boundary also rejects a process-control command that visibly
+targets the running Yolop PID. In clients with a hard tool-approval UI, shell
+commands that launch another coding-agent runtime or invoke process-control
+programs are classified as destructive and pause at the normal approval level.
+The classifier parses Bash command nodes, including common execution wrappers,
+so quoted documentation and search terms do not become actions. This is a
+guardrail against accidental commands, not process isolation: dynamically
+resolved or deliberately obscured signals still require a kernel, container,
+or VM boundary.
+
 A direct foreground `yolop extensions ...` invocation is a special typed host
 broker, not arbitrary shell execution. It passes the same shell approval policy
 first, then the host invokes its exact Yolop executable with anonymous pipes for
@@ -274,6 +284,9 @@ provider smoke.
 - the one-shot attached Yolop administration broker is a typed host boundary,
   not a sandbox escape available to arbitrary child processes;
 - LSP, MCP, and extension server processes are configured control-plane
-  processes and are not automatically moved into this shell sandbox; and
+  processes and are not automatically moved into this shell sandbox;
+- danger-full-access does not isolate process signals at the OS boundary. The
+  self-PID guard and destructive-command approval reduce accidental misuse but
+  do not contain hostile shell code; and
 - resource controls are the existing wall-clock/output limits, not yet cgroup
   or VM quotas.
