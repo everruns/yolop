@@ -9,6 +9,7 @@
 
 use crate::config::{ApprovalPolicy, SandboxMode};
 use crate::exec::sandbox::SandboxProvider;
+use crate::exec::shell_policy::command_can_signal_yolop;
 use crate::exec::workspace_host::WorkspaceHost;
 use crate::sandbox_approval::{ApprovalGate, ApprovalRequest};
 use async_trait::async_trait;
@@ -308,6 +309,11 @@ impl BashTool {
         request_full_access: bool,
         justification: Option<&str>,
     ) -> Result<BashRunOutput, ToolExecutionResult> {
+        if command_can_signal_yolop(command, std::process::id()) {
+            return Err(ToolExecutionResult::tool_error(
+                "refusing to signal the running Yolop host process",
+            ));
+        }
         if sink.is_none()
             && self.control.is_some()
             && self.sandbox.mode() != SandboxMode::DangerFullAccess
@@ -813,6 +819,48 @@ mod tests {
         ] {
             assert!(!trusted_command(command), "expected untrusted: {command}");
         }
+    }
+
+    #[test]
+    fn shell_process_guard_detects_commands_that_can_signal_yolop() {
+        let pid = 95_236;
+        for command in [
+            "kill 77982 95236 2>/dev/null || true",
+            "kill -TERM 95236",
+            "pkill yolop",
+            "kill $(pgrep yolop)",
+            "kill -TERM 0",
+            "kill -- -1",
+        ] {
+            assert!(
+                command_can_signal_yolop(command, pid),
+                "expected guarded command: {command}"
+            );
+        }
+        for command in ["kill 77982", "echo 95236", "rg yolop src"] {
+            assert!(
+                !command_can_signal_yolop(command, pid),
+                "expected unrelated command: {command}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn bash_refuses_to_signal_the_running_yolop_process() {
+        let dir = tempfile::tempdir().unwrap();
+        let tool = BashTool::new(Workspace::from_path(dir.path().to_path_buf()));
+
+        let result = tool
+            .execute(json!({
+                "command": format!("kill -TERM {}", std::process::id())
+            }))
+            .await;
+
+        assert!(matches!(
+            result,
+            ToolExecutionResult::ToolError(message)
+                if message.contains("refusing to signal the running Yolop host process")
+        ));
     }
 
     #[tokio::test]

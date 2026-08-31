@@ -1,5 +1,15 @@
 # Knowledge Log
 
+## 2026-08-31, ACP failures stay bounded at their source
+
+- [Model-context checkpoints](specs/checkpointing.md): Codex native compaction
+  opens a process-wide fallback circuit after HTTP 404 or 405 instead of
+  retrying an unavailable endpoint for every reconstructed driver.
+- [ACP](specs/acp.md): tracing on the protocol stderr channel is plain text.
+- [Sandboxing](specs/sandboxing.md): direct attempts to signal Yolop's own PID
+  are rejected, while recognizable process-control and nested-agent shell
+  commands receive destructive approval classification in interactive clients.
+
 ## 2026-08-29, Skills and repository tools use physical paths
 
 - [Skills](specs/skills.md): every skill scope now points at a real directory.

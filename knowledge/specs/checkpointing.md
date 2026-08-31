@@ -144,6 +144,12 @@ therefore leave the live model view while remaining lossless and retrievable
 through `query_history`, with the active raw suffix retaining recent asks,
 decisions, edits, and validation.
 
+A provider endpoint that answers native compaction with HTTP 404 or 405 is
+unavailable for that Yolop process. The provider factory opens a circuit shared
+by subsequently constructed driver instances, logs the transition once, and
+returns to the ordinary fallback path. Transient failures remain errors and do
+not disable the capability.
+
 A durable model-context checkpoint may use an event boundary already persisted
 inside the currently open turn. That pending turn is the active head extension
 until completion, but the timeline rejects boundaries beyond the event log's

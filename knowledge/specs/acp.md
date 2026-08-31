@@ -25,8 +25,9 @@ This is a promotion target for the same runtime that powers the TUI and
 
 `yolop --acp` turns the process into an ACP agent speaking **newline-delimited
 JSON-RPC 2.0** over stdin/stdout (one compact JSON object per line, no embedded
-newlines). Tracing still goes to stderr, so stdout stays a clean protocol
-channel.
+newlines). Tracing still goes to stderr as plain text without terminal color
+escapes, so stdout stays a clean protocol channel and clients can retain
+diagnostics without rendering ANSI control sequences.
 
 ACP protocol version: **1** (integer).
 
