@@ -9,8 +9,9 @@ The singular attached `yolop model` command shows and switches the running sessi
 ## 2026-08-31, ACP failures stay bounded at their source
 
 - [Model-context checkpoints](specs/checkpointing.md): Codex native compaction
-  opens a process-wide fallback circuit after HTTP 404 or 405 instead of
-  retrying an unavailable endpoint for every reconstructed driver.
+  uses a shared, scoped cooldown after HTTP 404 or 405, then sends one lazy
+  capability probe instead of permanently assuming the private route exists or
+  does not exist.
 - [ACP](specs/acp.md): tracing on the protocol stderr channel is plain text.
 - [Sandboxing](specs/sandboxing.md): direct attempts to signal Yolop's own PID
   are rejected, while recognizable process-control and nested-agent shell
