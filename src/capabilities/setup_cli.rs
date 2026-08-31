@@ -28,7 +28,6 @@ pub(crate) struct SetupCliCapability {
 }
 
 impl SetupCliCapability {
-    #[cfg(test)]
     pub(crate) fn detached() -> Self {
         Self {
             controller: None,

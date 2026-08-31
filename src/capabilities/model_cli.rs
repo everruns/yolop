@@ -27,7 +27,6 @@ pub(crate) struct ModelCliCapability {
 }
 
 impl ModelCliCapability {
-    #[cfg(test)]
     pub(crate) fn detached() -> Self {
         Self {
             model_list: None,
