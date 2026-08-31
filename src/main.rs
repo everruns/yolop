@@ -1441,8 +1441,10 @@ fn detached_cli_registry() -> Result<control::CliRegistry> {
     registry.register(Arc::new(capabilities::ConfigCapability {
         settings: settings.clone(),
         catalog: Arc::new(catalog),
-        model_list,
+        model_list: model_list.clone(),
     }))?;
+    registry.register(Arc::new(capabilities::ModelCliCapability::detached()))?;
+    registry.register(Arc::new(capabilities::SetupCliCapability::detached()))?;
     registry.register(Arc::new(capabilities::WorktreeCapability::detached()))?;
     let coordination_store = match runtime::session_log::default_sessions_dir()
         .ok()
@@ -2366,6 +2368,30 @@ mod tests {
         root.clone()
             .try_get_matches_from(["yolop", "config", "model", "set", "openai/gpt-5.6"])
             .expect("parse configured model command");
+        root.clone()
+            .try_get_matches_from(["yolop", "model", "use", "openai/gpt-5.6"])
+            .expect("parse live model command");
+        root.clone()
+            .try_get_matches_from(["yolop", "setup", "status"])
+            .expect("parse setup status command");
+        root.clone()
+            .try_get_matches_from(["yolop", "setup", "login", "openai"])
+            .expect("parse setup login command");
+        root.clone()
+            .try_get_matches_from(["yolop", "setup", "reauthenticate", "openai"])
+            .expect("parse setup reauthentication command");
+        root.clone()
+            .try_get_matches_from(["yolop", "model", "use", "openai/gpt-5.6"])
+            .expect("parse live model command");
+        root.clone()
+            .try_get_matches_from(["yolop", "setup", "status"])
+            .expect("parse setup status command");
+        root.clone()
+            .try_get_matches_from(["yolop", "setup", "login", "openai"])
+            .expect("parse setup login command");
+        root.clone()
+            .try_get_matches_from(["yolop", "setup", "reauthenticate", "openai"])
+            .expect("parse setup reauthentication command");
         assert!(
             root.try_get_matches_from(["yolop", "models", "list"])
                 .is_err()
