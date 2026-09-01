@@ -902,6 +902,15 @@ async fn handle_prompt<F: RuntimeFactory>(
     let _turn = session.turn_lock.lock().await;
     let mode_peer = peer.clone();
     let parsed_command = parse_command_prompt(&prompt);
+    let model_before = if parsed_command.is_none() {
+        Some((
+            session.model.provider_name(),
+            session.model.model_id(),
+            session.model.reasoning_effort(),
+        ))
+    } else {
+        None
+    };
     if parsed_command.is_none() && session.user_ask_enabled {
         if let Err(err) = session
             .user_ask_store
@@ -918,6 +927,16 @@ async fn handle_prompt<F: RuntimeFactory>(
     // A level changed mid-turn (the `set_approval_mode` tool, `/setup approval`)
     // must reach the client's mode picker, not just the settings file.
     emit_mode_change_if_needed(&mode_peer, &session);
+    if let Some(before) = model_before {
+        let after = (
+            session.model.provider_name(),
+            session.model.model_id(),
+            session.model.reasoning_effort(),
+        );
+        if after != before {
+            emit_config_options(&mode_peer, &session).await;
+        }
+    }
     Ok(PromptResult::new(stop_reason))
 }
 

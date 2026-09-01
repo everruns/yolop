@@ -312,8 +312,9 @@ yolop implements the agent side of the [Agent Client
 Protocol](https://agentclientprotocol.com). Launch it with `--acp` and it speaks
 newline-delimited JSON-RPC 2.0 over stdin/stdout: the editor handshakes, opens a
 session, and sends turns; yolop streams back assistant text, reasoning, tool
-calls, and plans. Editors can also load an existing session with `session/load`,
-replaying the same persisted history used by CLI `--session`.
+calls, plans, and session-title changes. Editors can also load an existing
+session with `session/load`, replaying the same persisted history used by CLI
+`--session`.
 
 ACP model pickers list only providers that are currently connected. A stale
 saved provider no longer prevents session creation: yolop starts with another
@@ -321,7 +322,14 @@ usable provider (or local `llmsim`) and updates the picker live after `/setup`
 or authentication changes. Clients that support ACP authentication can launch
 Yolop's browser-based ChatGPT/Codex sign-in directly from the agent UI. API-key
 providers must receive their keys through the ACP process environment; Yolop
-does not accept secrets through ACP prompt text.
+does not accept secrets through ACP prompt text. Model tools that require a
+credential argument, such as connector `connect`, are not exposed in ACP.
+MCP configuration accepts environment placeholders but rejects literal
+credential-bearing headers and environment values.
+
+ACP checkpoint commands restore workspace state only. Conversation rewind is
+not offered because ACP cannot replace messages already displayed by the
+editor; use the TUI when the transcript and model history must both rewind.
 
 An experimental opt-in adds a second route for those providers: an extra ACP
 authentication method that opens a short-lived setup page on `127.0.0.1`, where

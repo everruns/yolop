@@ -1926,6 +1926,73 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn title_tool_updates_acp_session_info() {
+        let config = LlmSimConfig::scripted(vec![
+            SimTurn::ToolCalls(vec![SimToolCall {
+                name: "write_session_title".to_string(),
+                arguments: json!({ "title": "ACP host policy" }),
+                id: None,
+            }]),
+            SimTurn::Assistant("titled".to_string()),
+        ]);
+        let run = with_sdk_client(config, |client| async move {
+            let mut session = client.new_session().await?;
+            let _ = collect_available_commands(&mut session).await?;
+            SdkClient::prompt(&mut session, "apply the ACP host policy").await
+        })
+        .await;
+
+        assert!(
+            run.updates_of_kind("session_info_update")
+                .iter()
+                .any(|update| update["title"] == "ACP host policy")
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn model_tool_change_refreshes_config_options() {
+        let config = LlmSimConfig::scripted(vec![
+            SimTurn::ToolCalls(vec![SimToolCall {
+                name: "set_provider".to_string(),
+                arguments: json!({ "provider": "openai", "model": "gpt-5.5" }),
+                id: None,
+            }]),
+            SimTurn::Assistant("switched".to_string()),
+        ]);
+        let sessions = tempfile::tempdir().expect("sessions tempdir").keep();
+        let settings = Arc::new(SettingsStore::open(sessions.join("settings.toml")));
+        settings
+            .set_token("openai".to_string(), "test-token".to_string())
+            .expect("configure OpenAI for the provider switch");
+        let factory = Arc::new(ScriptedFactory {
+            config,
+            sessions_dir: sessions,
+            settings,
+        });
+        let run = with_factory(factory, |client| async move {
+            let mut session = client.new_session().await?;
+            let _ = collect_available_commands(&mut session).await?;
+            SdkClient::prompt(&mut session, "switch to OpenAI").await
+        })
+        .await;
+
+        let mut updates = run.updates_of_kind("config_option_update").into_iter();
+        let update = updates.next().unwrap_or_else(|| {
+            panic!(
+                "model-driven provider change must refresh ACP options: {:?}",
+                run.updates
+            )
+        });
+        let model = update["configOptions"]
+            .as_array()
+            .expect("config options")
+            .iter()
+            .find(|option| option["id"] == "model")
+            .expect("model option");
+        assert_eq!(model["currentValue"], "openai:gpt-5.5");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn opt_in_completion_gate_continues_tool_only_stop_to_one_final() {
         use everruns_llmsim::OnExhausted;
 

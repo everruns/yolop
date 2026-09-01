@@ -4043,6 +4043,7 @@ pub async fn build_with_options(
     });
     capabilities.register(CheckpointCapability {
         manager: checkpoints.clone(),
+        workspace_only: matches!(options.client_ui, ClientUiContext::Acp),
     });
     // `/setup` (below) is the capability-sourced slash command. It implements
     // `Capability::execute_command` end to end.
@@ -4061,6 +4062,7 @@ pub async fn build_with_options(
     capabilities.register(ConnectorsCapability {
         catalog: connection_catalog,
         store: connections.clone(),
+        expose_connect_tool: !matches!(options.client_ui, ClientUiContext::Acp),
     });
     // `memory` — global, durable, structured user memory. Its MEMORY.md lives
     // beside settings.toml in the yolop config dir, so a tempdir settings path
@@ -4082,6 +4084,7 @@ pub async fn build_with_options(
     capabilities.register(YolopCapability);
     capabilities.register(YolopMcpCapability {
         store: Arc::new(McpConfigStore::default_for_workspace(&canonical_root)),
+        allow_literal_credentials: !matches!(options.client_ui, ClientUiContext::Acp),
     });
     // `progress_guard` — runtime-visible warnings when tool use stops making
     // observable progress.
@@ -4927,6 +4930,21 @@ mod tests {
 
         assert!(built.startup.setup_recommended);
         assert_eq!(built.model.provider_name(), "llmsim");
+        assert!(
+            !built.startup.tool_names.contains(&"connect".to_string()),
+            "ACP must not expose model-facing connector credential entry: {:?}",
+            built.startup.tool_names
+        );
+        for connector_tool in ["list_connectors", "get_connector", "disconnect"] {
+            assert!(
+                built
+                    .startup
+                    .tool_names
+                    .contains(&connector_tool.to_string()),
+                "non-secret connector operations remain available: {:?}",
+                built.startup.tool_names
+            );
+        }
         let options = built.model.model_options().await;
         assert!(options.iter().any(|(id, _, _)| id == "llmsim:llmsim-yolop"));
         assert!(

@@ -67,7 +67,7 @@ ACP starts with another usable provider and falls back to local `llmsim` when
 none is connected. Session creation therefore never fails only because a saved
 provider lost its credentials, while one-shot print mode remains fail-fast.
 
-Clients change either option with `session/set_config_option`. Yolop validates the selected provider, model, and reasoning effort, applies the change only to that live ACP session, and returns the complete refreshed `configOptions` list. After authentication or a `/setup` command changes provider connectivity or selection, Yolop also pushes ACP's standard `config_option_update` to every affected open session. Invalid option IDs and unsupported values return ACP `InvalidParams`.
+Clients change either option with `session/set_config_option`. Yolop validates the selected provider, model, and reasoning effort, applies the change only to that live ACP session, and returns the complete refreshed `configOptions` list. After authentication, a `/setup` command, or a conversational model tool changes provider connectivity or selection, Yolop also pushes ACP's standard `config_option_update` to every affected open session. Invalid option IDs and unsupported values return ACP `InvalidParams`.
 When the process was launched with `--profile`, that profile supplies the
 initial model before any live ACP selection.
 
@@ -210,6 +210,7 @@ notifications. The mapping is a pure, per-turn state machine
 | tool started | `tool_call` (`status: in_progress`, `rawInput`, semantic `kind`) |
 | tool completed | `tool_call_update` (`status: completed`/`failed`, summary `content`) |
 | `write_todos` tool | `plan` (entries with status) instead of a raw tool call |
+| session title updated | `session_info_update` with the new title |
 
 Yolop classifies runtime tools into ACP's semantic kinds (for example `read`,
 `search`, `fetch`, `edit`, or `execute`). This gives clients a stable tool label
@@ -241,6 +242,26 @@ clients can render command argument suggestions (for example `/setup login`,
 this metadata and still see the command name, description, and hint. After a
 system command runs, yolop re-emits `available_commands_update` so clients can
 refresh any state-sensitive command UI.
+
+### Host-specific tool surface
+
+ACP keeps model-facing tools when their native protocol counterpart is an
+output or UI projection. `write_session_title` therefore remains available and
+drives `session_info_update`; `write_todos` similarly drives `plan`. Filesystem
+and shell tools also remain model-facing because ACP does not replace the
+runtime's sandboxed execution boundary.
+
+Secret-entry tools are different. The connector `connect` tool is omitted in
+ACP because its arguments carry credentials through the transcript. Connector
+discovery and disconnection remain available. `upsert_mcp_server` accepts
+environment placeholders such as `${MCP_TOKEN}`, but rejects literal values in
+credential-bearing header and environment fields; browser OAuth remains
+available through `/mcp login`.
+
+ACP cannot replace or retract the transcript already displayed by its client.
+Checkpoint commands and `manage_checkpoint` therefore expose workspace restore
+only. Conversation and combined restore remain available in hosts that can
+replace their active transcript.
 
 ### Stop reasons
 

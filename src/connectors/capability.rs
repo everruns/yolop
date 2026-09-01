@@ -19,6 +19,10 @@ pub(crate) const CONNECTORS_CAPABILITY_ID: &str = "connectors";
 pub(crate) struct ConnectorsCapability {
     pub(crate) catalog: Arc<ConnectionCatalog>,
     pub(crate) store: Arc<ConnectionStore>,
+    /// ACP has no secure model-facing credential input. Its optional loopback
+    /// setup page handles LLM providers, not connector forms, so exposing
+    /// `connect` there would invite users to paste secrets into the transcript.
+    pub(crate) expose_connect_tool: bool,
 }
 
 #[async_trait]
@@ -67,7 +71,7 @@ impl Capability for ConnectorsCapability {
             catalog: self.catalog.clone(),
             store: self.store.clone(),
         };
-        vec![
+        let mut tools: Vec<Box<dyn Tool>> = vec![
             Box::new(ListConnectorsTool {
                 catalog: self.catalog.clone(),
                 store: self.store.clone(),
@@ -76,14 +80,15 @@ impl Capability for ConnectorsCapability {
                 catalog: self.catalog.clone(),
                 store: self.store.clone(),
             }),
-            Box::new(ConnectTool {
-                inner: shared.clone(),
-            }),
-            Box::new(DisconnectTool {
-                catalog: self.catalog.clone(),
-                store: self.store.clone(),
-            }),
-        ]
+        ];
+        if self.expose_connect_tool {
+            tools.push(Box::new(ConnectTool { inner: shared }));
+        }
+        tools.push(Box::new(DisconnectTool {
+            catalog: self.catalog.clone(),
+            store: self.store.clone(),
+        }));
+        tools
     }
 }
 
@@ -386,6 +391,26 @@ impl Tool for DisconnectTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn connect_tool_can_be_omitted_for_hosts_without_secure_secret_input() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let capability = ConnectorsCapability {
+            store: Arc::new(ConnectionStore::open(tmp.path().join("connections.toml"))),
+            catalog: Arc::new(ConnectionCatalog::with_defaults()),
+            expose_connect_tool: false,
+        };
+        let names = capability
+            .tools()
+            .into_iter()
+            .map(|tool| tool.name().to_string())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            names,
+            vec!["list_connectors", "get_connector", "disconnect"]
+        );
+    }
 
     #[test]
     fn connector_narration_names_action_and_provider() {

@@ -1,5 +1,13 @@
 # Knowledge Log
 
+## 2026-08-31, ACP tools follow host capabilities
+
+- [ACP](specs/acp.md): session-title events update the client title, while
+  conversational model changes refresh its standard configuration controls.
+- ACP omits connector credential entry, rejects literal MCP credential fields,
+  and limits checkpoint restoration to workspace state because it has neither
+  secure prompt input nor transcript replacement.
+
 ## 2026-08-31, Mermaid diagrams remain rendered at transcript width
 
 - [Tuika](specs/tuika.md): Mermaid fences preserve terminal diagram output even

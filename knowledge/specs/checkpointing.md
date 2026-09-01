@@ -272,10 +272,11 @@ The controller is host-independent; presentation is not:
 - TUI: `/rewind`, `/undo`, and `/redo` produce textual previews and confirmation
   tokens; a conversation restore puts the original prompt back in the composer.
 - ACP: advertise system commands through the existing
-  `available_commands_update` path. Because ACP has no Yolop-specific rewind
-  picker, restoration is a two-step command: the first invocation returns a
-  preview plus a confirmation token; the second supplies that token.
-  Do not expose TUI-only effects over ACP.
+  `available_commands_update` path, restricted to workspace restore. ACP cannot
+  replace the client transcript after conversation history is rewound, so
+  conversation and combined modes are not exposed. Restoration is a two-step
+  command: the first invocation returns a preview plus a confirmation token;
+  the second supplies that token.
 - `--print`: the same model-facing tool is available. A restore still requires
   the explicit preview/confirmation sequence and is applied only after the turn.
 

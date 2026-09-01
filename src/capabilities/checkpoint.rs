@@ -16,6 +16,7 @@ pub(crate) const CHECKPOINT_CAPABILITY_ID: &str = "yolop_checkpoint";
 
 pub(crate) struct CheckpointCapability {
     pub(crate) manager: Arc<CheckpointManager>,
+    pub(crate) workspace_only: bool,
 }
 
 #[async_trait]
@@ -48,15 +49,28 @@ impl Capability for CheckpointCapability {
 
     fn commands(&self) -> Vec<CommandDescriptor> {
         vec![
-            command("rewind", "list or restore an earlier turn"),
-            command("undo", "restore the state before the latest turn"),
-            command("redo", "restore the most recently abandoned branch"),
+            command(
+                "rewind",
+                "list or restore an earlier turn",
+                self.workspace_only,
+            ),
+            command(
+                "undo",
+                "restore the state before the latest turn",
+                self.workspace_only,
+            ),
+            command(
+                "redo",
+                "restore the most recently abandoned branch",
+                self.workspace_only,
+            ),
         ]
     }
 
     fn tools(&self) -> Vec<Box<dyn Tool>> {
         vec![Box::new(ManageCheckpointTool {
             manager: self.manager.clone(),
+            workspace_only: self.workspace_only,
         })]
     }
 
@@ -65,13 +79,16 @@ impl Capability for CheckpointCapability {
         request: &ExecuteCommandRequest,
         _ctx: &CommandExecutionContext,
     ) -> everruns_provider::error::Result<CommandResult> {
-        let result = execute_command(&self.manager, &request.name, request.arguments.as_deref())
-            .await
-            .map_err(|error| {
-                everruns_provider::error::AgentLoopError::config(safe_display(&format!(
-                    "{error:#}"
-                )))
-            })?;
+        let result = execute_command(
+            &self.manager,
+            &request.name,
+            request.arguments.as_deref(),
+            self.workspace_only,
+        )
+        .await
+        .map_err(|error| {
+            everruns_provider::error::AgentLoopError::config(safe_display(&format!("{error:#}")))
+        })?;
         Ok(CommandResult {
             success: true,
             message: result,
@@ -81,22 +98,30 @@ impl Capability for CheckpointCapability {
     }
 }
 
-fn command(name: &str, description: &str) -> CommandDescriptor {
+fn command(name: &str, description: &str, workspace_only: bool) -> CommandDescriptor {
     CommandDescriptor {
         name: name.to_string(),
         description: description.to_string(),
         source: CommandSource::System,
         args: vec![CommandArg {
             name: "checkpoint, mode, or confirmation token".to_string(),
-            description:
+            description: if workspace_only {
+                "ACP restores workspace state only. Use `confirm <token>` after preview."
+                    .to_string()
+            } else {
                 "Modes: conversation, workspace, both. Use `confirm <token>` after preview."
-                    .to_string(),
+                    .to_string()
+            },
             required: false,
-            suggestions: vec![
-                "conversation".to_string(),
-                "workspace".to_string(),
-                "both".to_string(),
-            ],
+            suggestions: if workspace_only {
+                vec!["workspace".to_string()]
+            } else {
+                vec![
+                    "conversation".to_string(),
+                    "workspace".to_string(),
+                    "both".to_string(),
+                ]
+            },
         }],
     }
 }
@@ -105,6 +130,7 @@ async fn execute_command(
     manager: &CheckpointManager,
     name: &str,
     arguments: Option<&str>,
+    workspace_only: bool,
 ) -> anyhow::Result<String> {
     let words = arguments
         .unwrap_or_default()
@@ -117,42 +143,70 @@ async fn execute_command(
         return manager.confirm(token).await;
     }
     match name {
-        "rewind" if words.is_empty() => Ok(render_checkpoints(manager)),
+        "rewind" if words.is_empty() => Ok(render_checkpoints(manager, workspace_only)),
         "rewind" => {
             let checkpoint = words[0];
-            let mode = match words.get(1).copied() {
-                Some(mode) => RestoreMode::parse(Some(mode))?,
-                None => manager.default_rewind_mode(checkpoint),
-            };
+            let mode = resolve_mode(
+                words.get(1).copied(),
+                manager.default_rewind_mode(checkpoint),
+                workspace_only,
+            )?;
             Ok(manager.prepare_rewind(checkpoint, mode)?.render())
         }
         "undo" => {
-            let mode = match words.first().copied() {
-                Some(mode) => RestoreMode::parse(Some(mode))?,
-                None => manager.default_undo_mode(),
-            };
+            let mode = resolve_mode(
+                words.first().copied(),
+                manager.default_undo_mode(),
+                workspace_only,
+            )?;
             Ok(manager.prepare_undo(mode)?.render())
         }
         "redo" => {
-            let mode = match words.first().copied() {
-                Some(mode) => RestoreMode::parse(Some(mode))?,
-                None => manager.default_redo_mode(),
-            };
+            let mode = resolve_mode(
+                words.first().copied(),
+                manager.default_redo_mode(),
+                workspace_only,
+            )?;
             Ok(manager.prepare_redo(mode)?.render())
         }
         _ => anyhow::bail!("unknown checkpoint command `/{name}`"),
     }
 }
 
-fn render_checkpoints(manager: &CheckpointManager) -> String {
+fn resolve_mode(
+    requested: Option<&str>,
+    default: RestoreMode,
+    workspace_only: bool,
+) -> anyhow::Result<RestoreMode> {
+    let mode = requested
+        .map(|mode| RestoreMode::parse(Some(mode)))
+        .transpose()?
+        .unwrap_or(if workspace_only {
+            RestoreMode::Workspace
+        } else {
+            default
+        });
+    if workspace_only && mode != RestoreMode::Workspace {
+        anyhow::bail!(
+            "ACP can restore workspace state only; conversation restore is unavailable because ACP cannot replace the client transcript"
+        );
+    }
+    Ok(mode)
+}
+
+fn render_checkpoints(manager: &CheckpointManager, workspace_only: bool) -> String {
     let checkpoints = manager.list();
     if checkpoints.is_empty() {
         return "no checkpoints yet".to_string();
     }
     let mut lines = vec!["checkpoints (newest first):".to_string()];
     lines.extend(checkpoints.into_iter().map(|checkpoint| {
-        let workspace = if checkpoint.workspace_available {
+        let workspace = if checkpoint.workspace_available && workspace_only {
+            "workspace"
+        } else if checkpoint.workspace_available {
             "conversation + workspace"
+        } else if workspace_only {
+            "workspace unavailable"
         } else {
             "conversation only"
         };
@@ -165,12 +219,17 @@ fn render_checkpoints(manager: &CheckpointManager) -> String {
             checkpoint.id, workspace, reason, checkpoint.prompt
         )
     }));
-    lines.push("preview with `/rewind <id> [conversation|workspace|both]`".to_string());
+    lines.push(if workspace_only {
+        "preview with `/rewind <id> workspace`".to_string()
+    } else {
+        "preview with `/rewind <id> [conversation|workspace|both]`".to_string()
+    });
     lines.join("\n")
 }
 
 struct ManageCheckpointTool {
     manager: Arc<CheckpointManager>,
+    workspace_only: bool,
 }
 
 #[async_trait]
@@ -180,14 +239,26 @@ impl Tool for ManageCheckpointTool {
     }
 
     fn description(&self) -> &str {
-        "List or preview session undo/redo/rewind — use this when the user asks to undo, redo, \
-         rewind, or roll back the session. Preview returns a confirmation token; describe the \
-         preview and only use operation=confirm after the user explicitly confirms. Confirmation \
-         is queued until the current turn ends so model history is never mutated mid-turn. \
-         Workspace restore is available only in a Yolop-owned worktree."
+        if self.workspace_only {
+            "List or preview workspace undo/redo/rewind. ACP cannot replace its client transcript, \
+             so conversation and both-state restore modes are unavailable. Preview returns a \
+             confirmation token; describe it and only confirm after the user explicitly agrees. \
+             Workspace restore is available only in a Yolop-owned worktree."
+        } else {
+            "List or preview session undo/redo/rewind — use this when the user asks to undo, redo, \
+             rewind, or roll back the session. Preview returns a confirmation token; describe the \
+             preview and only use operation=confirm after the user explicitly confirms. Confirmation \
+             is queued until the current turn ends so model history is never mutated mid-turn. \
+             Workspace restore is available only in a Yolop-owned worktree."
+        }
     }
 
     fn parameters_schema(&self) -> Value {
+        let modes = if self.workspace_only {
+            json!(["workspace"])
+        } else {
+            json!(["conversation", "workspace", "both"])
+        };
         json!({
             "type": "object",
             "properties": {
@@ -198,7 +269,7 @@ impl Tool for ManageCheckpointTool {
                 "checkpoint_id": { "type": "string" },
                 "mode": {
                     "type": "string",
-                    "enum": ["conversation", "workspace", "both"]
+                    "enum": modes
                 },
                 "token": { "type": "string" }
             },
@@ -238,7 +309,9 @@ impl Tool for ManageCheckpointTool {
                 .and_then(Value::as_str)
                 .ok_or_else(|| anyhow::anyhow!("operation is required"))?;
             if operation == "list" {
-                return Ok(json!({ "message": render_checkpoints(&self.manager) }));
+                return Ok(json!({
+                    "message": render_checkpoints(&self.manager, self.workspace_only)
+                }));
             }
             if operation == "confirm" {
                 let token = arguments
@@ -253,21 +326,19 @@ impl Tool for ManageCheckpointTool {
             }
             let preview = match operation {
                 "undo" => {
-                    let mode = arguments
-                        .get("mode")
-                        .and_then(Value::as_str)
-                        .map(|mode| RestoreMode::parse(Some(mode)))
-                        .transpose()?
-                        .unwrap_or_else(|| self.manager.default_undo_mode());
+                    let mode = resolve_mode(
+                        arguments.get("mode").and_then(Value::as_str),
+                        self.manager.default_undo_mode(),
+                        self.workspace_only,
+                    )?;
                     self.manager.prepare_undo(mode)?
                 }
                 "redo" => {
-                    let mode = arguments
-                        .get("mode")
-                        .and_then(Value::as_str)
-                        .map(|mode| RestoreMode::parse(Some(mode)))
-                        .transpose()?
-                        .unwrap_or_else(|| self.manager.default_redo_mode());
+                    let mode = resolve_mode(
+                        arguments.get("mode").and_then(Value::as_str),
+                        self.manager.default_redo_mode(),
+                        self.workspace_only,
+                    )?;
                     self.manager.prepare_redo(mode)?
                 }
                 "rewind" => {
@@ -275,12 +346,11 @@ impl Tool for ManageCheckpointTool {
                         .get("checkpoint_id")
                         .and_then(Value::as_str)
                         .ok_or_else(|| anyhow::anyhow!("checkpoint_id is required"))?;
-                    let mode = arguments
-                        .get("mode")
-                        .and_then(Value::as_str)
-                        .map(|mode| RestoreMode::parse(Some(mode)))
-                        .transpose()?
-                        .unwrap_or_else(|| self.manager.default_rewind_mode(checkpoint));
+                    let mode = resolve_mode(
+                        arguments.get("mode").and_then(Value::as_str),
+                        self.manager.default_rewind_mode(checkpoint),
+                        self.workspace_only,
+                    )?;
                     self.manager.prepare_rewind(checkpoint, mode)?
                 }
                 other => anyhow::bail!("unknown operation `{other}`"),
@@ -306,8 +376,24 @@ mod tests {
 
     #[test]
     fn command_descriptors_expose_restore_modes() {
-        let descriptor = command("undo", "undo");
+        let descriptor = command("undo", "undo", false);
         assert_eq!(descriptor.source, CommandSource::System);
         assert!(descriptor.args[0].suggestions.contains(&"both".to_string()));
+    }
+
+    #[test]
+    fn acp_checkpoint_surface_is_workspace_only() {
+        let descriptor = command("undo", "undo", true);
+        assert_eq!(descriptor.args[0].suggestions, vec!["workspace"]);
+        assert_eq!(
+            resolve_mode(None, RestoreMode::Both, true).unwrap(),
+            RestoreMode::Workspace
+        );
+        let error = resolve_mode(Some("conversation"), RestoreMode::Both, true).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("cannot replace the client transcript")
+        );
     }
 }
