@@ -1,6 +1,6 @@
 # Changelog
 
-## [v0.17.2](https://github.com/everruns/yolop/releases/tag/v0.17.2) - 2026-08-31
+## [0.17.2] - 2026-08-31
 
 * feat(config): unify configuration commands ([#639](https://github.com/everruns/yolop/pull/639)) by @chaliy
 * feat(worktree): make auto initialization model-driven ([#640](https://github.com/everruns/yolop/pull/640)) by @chaliy
