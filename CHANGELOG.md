@@ -1,5 +1,21 @@
 # Changelog
 
+## [v0.17.2](https://github.com/everruns/yolop/releases/tag/v0.17.2) - 2026-08-31
+
+* feat(config): unify configuration commands ([#639](https://github.com/everruns/yolop/pull/639)) by @chaliy
+* feat(worktree): make auto initialization model-driven ([#640](https://github.com/everruns/yolop/pull/640)) by @chaliy
+* feat(models): default to the gpt-5.6 line and Claude 5 ([#641](https://github.com/everruns/yolop/pull/641)) by @chaliy
+* fix(agent): redirect repeated reads to semantic tools ([#642](https://github.com/everruns/yolop/pull/642)) by @chaliy
+* refactor(filesystem): use physical repository paths ([#643](https://github.com/everruns/yolop/pull/643)) by @chaliy
+* fix(agent): harden ACP compaction and shell failures ([#644](https://github.com/everruns/yolop/pull/644)) by @chaliy
+* feat(commands): redesign model and setup controls ([#645](https://github.com/everruns/yolop/pull/645)) by @chaliy
+* feat(tui): render help as markdown ([#646](https://github.com/everruns/yolop/pull/646)) by @chaliy
+* fix(tui): keep wide Mermaid diagrams rendered ([#647](https://github.com/everruns/yolop/pull/647)) by @chaliy
+* feat(subagents): allow depth-two delegation ([#648](https://github.com/everruns/yolop/pull/648)) by @chaliy
+* fix(codex): re-probe native compaction availability ([#649](https://github.com/everruns/yolop/pull/649)) by @chaliy
+* feat(cli): manage hooks and skills with commands ([#650](https://github.com/everruns/yolop/pull/650)) by @chaliy
+* feat(cli): add realistic help examples ([#651](https://github.com/everruns/yolop/pull/651)) by @chaliy
+
 All notable user-visible changes to yolop are recorded here.
 
 The format follows the [release spec](./knowledge/specs/release.md): one section per
