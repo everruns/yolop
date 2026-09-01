@@ -58,6 +58,9 @@ enum ConfigCommand {
         #[command(subcommand)]
         command: Option<ModelsCliCommand>,
     },
+    #[command(
+        after_help = "Examples:\n  Reject edits to environment files before a write tool runs:\n    yolop config hooks set protect-env PreToolUse --matcher 'write_file|edit_file' --command ./scripts/reject-env-edits.sh --timeout-secs 5 --scope workspace\n\n  Disable a global hook for this workspace without deleting its global definition:\n    yolop config hooks set release-check PreToolUse --command true --scope workspace --disabled"
+    )]
     Hooks {
         #[command(subcommand)]
         command: HooksCommand,
@@ -201,7 +204,9 @@ impl ControlCapability for ConfigCapability {
 #[async_trait]
 impl CliCapability for ConfigCapability {
     fn cli_command(&self) -> clap::Command {
-        ConfigCommandLine::augment_args(Command::new("config"))
+        ConfigCommandLine::augment_args(Command::new("config")).after_help(
+            "Examples:\n  Inspect one capability override and its effective schema:\n    yolop config get capabilities.web_fetch\n\n  Add a labeled fallback immediately after the default model:\n    yolop config models add anthropic claude-sonnet-4-6 --label fallback --after default",
+        )
     }
 
     fn control_request_from_cli(

@@ -45,6 +45,7 @@ impl SetupCliCapability {
     fn command() -> Command {
         Command::new(SETUP_CONTROL_ROUTE)
             .about("Set up provider authentication")
+            .after_help("Examples:\n  Replace an expired OpenAI credential:\n    yolop setup reauthenticate openai\n\n  Authenticate GitHub Copilot using its device-code flow:\n    yolop setup login github-copilot")
             .subcommand(Command::new("status").about("Show setup status"))
             .subcommand(
                 Command::new("login")

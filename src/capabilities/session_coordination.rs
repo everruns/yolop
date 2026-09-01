@@ -1237,6 +1237,7 @@ enum CoordinationCliCommand {
 #[command(
     name = "coordination",
     about = "Coordinate work across local Yolop sessions",
+    after_help = "Examples:\n  Delegate an isolated test task to a specific idle session:\n    yolop coordination dispatch --title 'Add parser tests' --request 'Cover malformed frontmatter' --target-session-id <session-id>\n\n  Finish assigned work and report validation plus the changed artifact:\n    yolop coordination complete --status succeeded --summary 'Fixed parser' --validation 'cargo test' --artifact src/parser.rs",
     disable_help_subcommand = true
 )]
 struct CoordinationCommandLine {

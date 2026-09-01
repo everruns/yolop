@@ -113,6 +113,59 @@ fn coordination_cli_advertises_dispatch_and_completion() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("dispatch"), "stdout={stdout}");
     assert!(stdout.contains("complete"), "stdout={stdout}");
+    assert!(
+        stdout.contains("yolop coordination dispatch --title 'Add parser tests'"),
+        "stdout={stdout}"
+    );
+}
+
+#[test]
+fn command_group_help_includes_realistic_examples() {
+    let cases = [
+        (
+            &["config", "--help"][..],
+            "yolop config get capabilities.web_fetch",
+        ),
+        (&["model", "--help"][..], "yolop model use review"),
+        (
+            &["setup", "--help"][..],
+            "yolop setup reauthenticate openai",
+        ),
+        (
+            &["worktree", "--help"][..],
+            "yolop worktree prune --dry-run",
+        ),
+        (
+            &["extensions", "--help"][..],
+            "yolop extensions reload release-notes",
+        ),
+        (
+            &["skills", "--help"][..],
+            "yolop skills install cloudflare/skills/cloudflare --scope workspace",
+        ),
+        (
+            &["config", "hooks", "--help"][..],
+            "yolop config hooks set protect-env PreToolUse",
+        ),
+    ];
+
+    for (args, example) in cases {
+        let output = Command::new(yolop_binary())
+            .args(args)
+            .output()
+            .unwrap_or_else(|error| panic!("show help for {args:?}: {error}"));
+        assert!(
+            output.status.success(),
+            "args={args:?}, stderr={}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("Examples:"),
+            "args={args:?}, stdout={stdout}"
+        );
+        assert!(stdout.contains(example), "args={args:?}, stdout={stdout}");
+    }
 }
 
 #[test]
