@@ -160,7 +160,10 @@ fn command_group_help_includes_realistic_examples() {
             String::from_utf8_lossy(&output.stderr)
         );
         let stdout = String::from_utf8_lossy(&output.stdout);
-        assert!(stdout.contains("Examples:"), "args={args:?}, stdout={stdout}");
+        assert!(
+            stdout.contains("Examples:"),
+            "args={args:?}, stdout={stdout}"
+        );
         assert!(stdout.contains(example), "args={args:?}, stdout={stdout}");
     }
 }
