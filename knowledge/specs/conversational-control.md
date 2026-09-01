@@ -67,10 +67,8 @@ command, an overlay confirmation, or a next-run-only settings write fail this ba
 | Model list (the menu `/model` and ACP offer) | `yolop config models …` (attached CLI) | `/model` overlay, `[[models]]` in settings |
 | Provider | `set_provider` | `/setup provider` |
 | Skills, list | `list_skills` (upstream) | system-prompt listing |
-| Skills, search (skills.sh) | `search_skills` |, |
-| Skills, install from registry | `install_skill` |, |
-| Skills, install/update by content | `write_skill` (upstream) |, |
-| Skills, uninstall | `delete_skill` |, |
+| Skills, package management | `yolop skills` (attached CLI) | skills control route |
+| Hooks, configuration | `yolop config hooks` (attached CLI) | hooks control route |
 | Model selection and model-list edits | `yolop config model` / `yolop config models` | `/setup`, `yolop-config` skill |
 | Any slash command the host's registry holds (`/setup`, `/background`, `/undo`, `/redo`, `/rewind`, `/goal`, plus the terminal ones in the TUI) | `run_command` (every host) | the slash commands themselves |
 
@@ -111,9 +109,12 @@ Notes:
 
 - This spec owns the conversational-control contract and the inventory above.
 - `crate::capabilities::host` owns `SetupController` and the `set_*` tools.
-- `crate::capabilities::skills` owns `delete_skill`; `crate::capabilities::skill_registry`
-  owns `search_skills` / `install_skill`; the upstream `ScopedSkillsCapability`
-  owns `list_skills` / `write_skill` (see [`skills.md`](./skills.md)).
+- `crate::capabilities::skills` owns attached skill package management;
+  `crate::capabilities::skill_registry` owns its skills.sh client. The upstream
+  `ScopedSkillsCapability` owns model-visible `list_skills` and `activate_skill`
+  (see [`skills.md`](./skills.md)).
+- `crate::capabilities::hooks` owns the hook control route; `config` nests its
+  CLI at `yolop config hooks`.
 - `crate::capabilities::config` owns the attached `config` command and delegates
   model-list actions to `ModelListCapability` (see
   [`configuration.md`](./configuration.md)).
@@ -124,3 +125,9 @@ Notes:
 - [`commands.md`](./commands.md), slash-command surface and natural-language dispatch.
 - [`skills.md`](./skills.md), skill scopes and management tools.
 - [`configuration.md`](./configuration.md), the settings file and its schema.
+
+Hook and skill mutation is intentionally outside conversational control. The model may list and activate installed skills, but operators manage hooks with `yolop config hooks ...` and skill storage with `yolop skills ...`.
+
+## Detached administration
+
+Hook CRUD and skill installation, editing, deletion, and registry operations are host administration. They run under `yolop config hooks` and `yolop skills`, not as model tools. The model skill surface remains limited to discovery and activation.

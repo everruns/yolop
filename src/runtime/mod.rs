@@ -1214,6 +1214,10 @@ const YOLOP_NEVER_DEFER_TOOLS: &[&str] = &[
     "ast_grep",
     "write_todos",
     "write_session_title",
+    // Skill discovery and activation are core prompt-routing operations. Keep
+    // their complete schemas eager even though the CLI duplicates them.
+    "list_skills",
+    "activate_skill",
     // The most-called tool in the harness, and the one a deferred stub hurts
     // most: the stub names no parameters while declaring
     // `additionalProperties: true`, so a model fills the gap from other
@@ -2411,11 +2415,6 @@ fn default_coding_harness_capabilities(client_commands: bool) -> Vec<CapabilityR
         ),
         CapabilityRef::new(SESSION_FILE_SYSTEM_CAPABILITY_ID),
         CapabilityRef::new(SKILLS_CAPABILITY_ID),
-        // Registering `SkillManagementCapability` is not enough — a capability
-        // the harness never enables contributes no tools, which left
-        // `search_skills` / `install_skill` / `delete_skill` absent from the
-        // session while the skill-management skill documented them.
-        CapabilityRef::new(crate::capabilities::skills::SKILL_MANAGEMENT_CAPABILITY_ID),
         CapabilityRef::new(HERDR_CAPABILITY_ID),
         CapabilityRef::new(REPO_MAP_CAPABILITY_ID),
         CapabilityRef::new(SESSION_HISTORY_CAPABILITY_ID),
@@ -3685,8 +3684,8 @@ pub async fn build_with_options(
     // Skills (upstream `ScopedSkillsCapability`, wired in `crate::capabilities::skills`):
     //   * skills               — discovers SKILL.md across workspace / global /
     //                            environment / system scopes via the session file store;
-    //                            list_skills + activate_skill + read/write_skill
-    //   * skill_management     — search_skills / install_skill (skills.sh) + delete_skill
+    //                            model-visible tools are list_skills + activate_skill
+    //   * skill_management     — operator-only top-level `yolop skills` CLI
     //
     // Non-filesystem, but useful for a coding agent:
     //   * repo_map            - on-demand multi-language symbol map for broad codebase orientation
@@ -3732,10 +3731,9 @@ pub async fn build_with_options(
     // Herdr contributes a conditional, read-only skill mount. Outside a Herdr
     // pane it has no mounts and the reporter is inert.
     capabilities.register(HerdrCapability::new(herdr.is_active()));
-    // yolop-owned skill registry + uninstall (`search_skills`, `install_skill`,
-    // `delete_skill`); the upstream capability has list/activate/read/write only.
-    // Shares the same resolved scope directories.
-    capabilities.register(crate::capabilities::skills::SkillManagementCapability::new(
+    // Yolop-owned skill lifecycle operations are exposed through `yolop skills`.
+    // The upstream agent capability remains responsible for list/activate/read/write.
+    let skill_management = Arc::new(crate::capabilities::skills::SkillManagementCapability::new(
         skill_dirs.clone(),
     ));
     capabilities.register(RepoMapCapability::new(workspace_host.clone()));
@@ -3823,7 +3821,13 @@ pub async fn build_with_options(
     // iteration) without a yolop restart.
     let live_processes = crate::extensions::LiveProcessRegistry::default();
     let mut session_control_registry = crate::control::ControlRegistry::default();
+    session_control_registry.register(skill_management)?;
     session_control_registry.register(coordination_capability)?;
+    // Hook management is exposed through the control plane and `yolop config hooks`.
+    // Runtime execution is still upstream `user_hooks`, registered above.
+    let hooks_capability = Arc::new(HooksCapability::new((*hooks_store).clone()));
+    session_control_registry.register(hooks_capability.clone())?;
+    capabilities.register_arc(hooks_capability);
     // The persistent config CLI delegates catalog operations to the model list.
     // Runtime switching stays on the existing models control route, which shares
     // `ModelsCapability`'s controller with `/setup provider <name> <model>`.
@@ -4074,9 +4078,6 @@ pub async fn build_with_options(
         )),
         reveals: tool_reveals.clone(),
     });
-    // `hooks` — global/workspace hook self-configuration tools. Runtime
-    // execution is still upstream `user_hooks`, registered above.
-    capabilities.register(HooksCapability { hooks: hooks_store });
     // `yolop` — framing when the user addresses yolop itself, not the project.
     capabilities.register(YolopCapability);
     capabilities.register(YolopMcpCapability {
@@ -6963,22 +6964,8 @@ mod tests {
         assert!(unknown.message.contains("model <id>"));
     }
 
-    // The live-config tools (`set_provider` / `set_model` / `set_reasoning_effort`)
-    // and skill management tools (`search_skills` / `install_skill` / `delete_skill`)
-    // are registered via ModelsCapability / SkillManagementCapability
-    // in `build_with_options`. Because ToolSearchCapability defers the long tail
-    // behind `tool_search`, all three skill-management schemas remain deferred
-    // but discoverable until the model reveals them. Behavior is covered by the
-    // SkillRegistry / DeleteSkillTool unit tests.
-
-    /// Registering a capability is not the same as enabling it: the harness only
-    /// contributes tools for capabilities in its enabled set. Asserting presence
-    /// at the capability level once let `search_skills` / `install_skill` /
-    /// `delete_skill` disappear from real sessions while the skill-management
-    /// skill still told the model to call them, so this pins the assembled
-    /// session tool surface instead.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn skill_management_tools_reach_the_assembled_session() {
+    async fn assembled_session_exposes_only_activation_skill_tools() {
         let workspace = tempfile::tempdir().expect("workspace");
         let sessions = tempfile::tempdir().expect("sessions");
         let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
@@ -6997,17 +6984,26 @@ mod tests {
             .runtime
             .load_context(built.handles.session_id)
             .await
-            .expect("assemble cold-start context");
+            .expect("assemble context");
         let names: Vec<&str> = context
             .runtime_agent
             .tools
             .iter()
             .map(|tool| tool.name())
             .collect();
-        for expected in ["search_skills", "install_skill", "delete_skill"] {
+        assert!(names.contains(&"list_skills"));
+        assert!(names.contains(&"activate_skill"));
+        for removed in [
+            "read_skill",
+            "write_skill",
+            "delete_skill",
+            "search_skills",
+            "install_skill",
+            "list_hooks",
+        ] {
             assert!(
-                names.contains(&expected),
-                "{expected} missing from the assembled session tools: {names:?}"
+                !names.contains(&removed),
+                "{removed} remains exposed: {names:?}"
             );
         }
     }
@@ -8800,6 +8796,8 @@ mod tests {
             "ast_grep",
             "write_todos",
             "write_session_title",
+            "list_skills",
+            "activate_skill",
             "progress_checkpoint",
             // The shell is eager: a stub costs a correction round trip on the
             // most-called tool in the harness.
@@ -8816,9 +8814,6 @@ mod tests {
             "lsp_hover",
             "spawn_background",
             "search_sessions",
-            "activate_skill",
-            "search_skills",
-            "install_skill",
             "run_command",
             "search_models",
         ];
@@ -9095,17 +9090,11 @@ mod tests {
     async fn cold_start_prompt_composition_is_measured_by_component() {
         // Auto mode teaches the model to initialize its session worktree before mutation.
         // Skill scopes now advertise physical directories instead of synthetic roots.
-        const BASELINE_PROMPT_BYTES: usize = 14_402;
-        // The tool baselines model what today's surface would cost undeferred,
-        // so enabling a capability raises them by exactly that capability's
-        // undeferred cost — otherwise the ratio guards below would read a
-        // legitimately larger surface as lost savings. Enabling
-        // `yolop_skill_management` added `search_skills` (588 def / 409 schema),
-        // `install_skill` (854 / 582), and `delete_skill` (493 / 314).
-        // Includes the logical model, config, and setup command schemas that
-        // are intentionally eager so users can discover and invoke them.
-        const BASELINE_TOOL_DEFINITION_BYTES: usize = 31_158;
-        const BASELINE_SCHEMA_BYTES: usize = 15_845;
+        const BASELINE_PROMPT_BYTES: usize = 14_496;
+        // Includes the logical model, config, setup, and mandatory skill
+        // discovery/activation schemas that are intentionally eager.
+        const BASELINE_TOOL_DEFINITION_BYTES: usize = 28_901;
+        const BASELINE_SCHEMA_BYTES: usize = 13_414;
         let workspace = tempfile::tempdir().expect("workspace");
         let sessions = tempfile::tempdir().expect("sessions");
         let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
@@ -9183,13 +9172,13 @@ mod tests {
             tool_definition_bytes * 100 <= BASELINE_TOOL_DEFINITION_BYTES * 89,
             "provider-visible tool bytes must fall by at least 11%: {tool_definition_bytes} vs {BASELINE_TOOL_DEFINITION_BYTES}"
         );
-        // Keeping `bash`, batch reads, semantic code navigation, and the logical
-        // command schemas eager avoids measured correction or repeated-read rounds.
-        // Keep a historical floor while the compact profile evolves with the
-        // intentional eager schemas.
+        // Keeping `bash`, batch reads, semantic code navigation, and mandatory
+        // skill discovery/activation eager avoids measured correction rounds.
+        // This migration intentionally spends almost all prior schema savings
+        // on list_skills and activate_skill while staying below the baseline.
         assert!(
-            schema_bytes * 100 <= BASELINE_SCHEMA_BYTES * 93,
-            "schema bytes must remain at least 7% below the historical all-eager surface: {schema_bytes} vs {BASELINE_SCHEMA_BYTES}"
+            schema_bytes <= BASELINE_SCHEMA_BYTES,
+            "schema bytes must remain below the historical all-eager surface: {schema_bytes} vs {BASELINE_SCHEMA_BYTES}"
         );
     }
 

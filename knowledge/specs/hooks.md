@@ -6,8 +6,8 @@ description: Defines the hooks specification contract for Yolop.
 
 # Hooks Specification
 
-Status: v1 implemented for scoped config loading, `hooks` self-configuration,
-and upstream `user_hooks` registration.
+Status: v1 implemented for scoped config loading, detached `yolop config hooks`
+management, and upstream `user_hooks` registration.
 
 ## Why
 
@@ -97,69 +97,13 @@ This matches yolop's existing extension model: workspace scope is most
 specific, global scope is user-wide, and absent or broken optional extension
 files do not sink startup.
 
-## Natural-Language Setup
+## Management CLI
 
-Hook setup is part of yolop self-configuration. A user should be able to say:
-
-> yolop setup a hook to prevent calls to git
-
-and have yolop create a real hook config entry rather than merely remembering a
-preference.
-
-The reliable design is **prompt/skill for interpretation, tools for writes**:
-
-- The `hooks` capability prompt teaches the model that requests like
-  "configure yolop", "set up your hooks", or "prevent yourself from calling X"
-  are self-configuration requests.
-- The embedded `yolop-hooks` skill holds examples that map common intents to
-  hook specs, so the prompt stays short and examples are loaded on demand.
-- Structured `hooks` capability tools perform the actual mutation. They read,
-  validate, merge, and atomically write `hooks.json`, then return the effective
-  hook id and scope. The model should not hand-edit hook JSON through generic
-  file tools for global self-configuration.
-
-Initial tool surface:
-
-- `list_hooks`, show effective hooks, their scope, event, matcher, and
-  source file.
-- `upsert_hook`, create or replace one hook by `id`.
-- `remove_hook`, remove or disable one hook by `id`.
-- `validate_hook`, validate a candidate spec without writing it.
-
-`upsert_hook` accepts an explicit `scope`:
-
-- `global` writes `<config_dir>/yolop/hooks.json`.
-- `workspace` writes `<workspace>/.agents/hooks.json`.
-
-If the user says "yolop", "your", or otherwise frames the request as a
-personal preference, default to `global`. If the user says "this repo",
-"workspace", or "project", use `workspace`. If the requested hook would block a
-broad class of normal coding actions and the scope is ambiguous, ask once for
-scope instead of guessing.
-
-Example generated hook for "prevent calls to git":
-
-```json
-{
-  "id": "block-git",
-  "event": "pre_tool_use",
-  "matcher": {
-    "tool_name": "bash",
-    "args_jsonpath": "$.command",
-    "match_regex": "(^|[;&|()[:space:]])git([[:space:]]|$)"
-  },
-  "executor": {
-    "type": "bash",
-    "command": "printf '%s\\n' '{\"decision\":\"block\",\"reason\":\"git command blocked by hook\",\"user_message\":\"Blocked by your yolop hook: git commands are disabled.\"}'"
-  },
-  "timeout_ms": 1000,
-  "on_error": "block",
-  "description": "Block bash commands that invoke git"
-}
-```
-
-The model may offer to refine the matcher for narrower cases, such as allowing
-read-only `git status` while blocking mutating commands.
+Hook management is detached host administration under `yolop config hooks`.
+The `list`, `get`, `set`, and `remove` commands reuse `HooksStore`, including
+its global/workspace merge and atomic write behavior. Hook management is not a
+model tool surface. The model can still explain hook configuration, but it does
+not receive hook CRUD tools in an assembled session.
 
 ## Events
 
@@ -241,11 +185,9 @@ Implemented:
    and enables it with `AgentCapabilityConfig::with_config("user_hooks", ...)`
    only when hooks are configured.
 3. `StartupInfo` includes effective hook counts; `--print` shows loaded hooks.
-4. `HooksCapability` includes the hook self-configuration tools described in
-   [Natural-Language Setup](#natural-language-setup).
-5. The bundled `yolop-hooks` system skill ships the self-configuration recipes
-   used for natural-language hook setup.
-6. Tests cover merge behavior, `hooks` tools, and a scripted llmsim
+4. `yolop config hooks` manages hooks through the startup `HooksStore`; hook
+   management is not exposed as model tools.
+5. Tests cover merge behavior, hook CLI management, and a scripted llmsim
    `pre_tool_use` hook that blocks a matching `bash` tool call.
 
 Follow-up:
@@ -261,3 +203,7 @@ Follow-up:
 - No TOML format until there is a concrete reason to diverge from upstream's
   JSON schema.
 - No separate yolop-only hook executor.
+
+## Management surface
+
+Hook management is explicit CLI configuration, not a model tool surface. Use `yolop config hooks list`, `get`, `set`, and `remove`. Runtime hook execution remains model-independent.

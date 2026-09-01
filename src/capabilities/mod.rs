@@ -82,6 +82,7 @@ pub(crate) use session_coordination::{
 };
 pub(crate) use session_history::{SESSION_HISTORY_CAPABILITY_ID, SessionHistoryCapability};
 pub(crate) use setup_cli::SetupCliCapability;
+pub(crate) use skills::{SkillDirs, SkillManagementCapability};
 pub(crate) use tool_approval::{ApprovalDecision, ToolApprovalCapability, ToolApprover};
 pub(crate) use tool_argument_validation::{
     TOOL_ARGUMENT_VALIDATION_CAPABILITY_ID, ToolArgumentValidationCapability,

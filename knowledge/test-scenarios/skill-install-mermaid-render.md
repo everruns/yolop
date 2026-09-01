@@ -14,7 +14,7 @@ rather than as source.
 
 Neither half is reachable from `cargo test`. The install needs the live
 [skills.sh](https://skills.sh) registry over the network, and the answer needs a
-live provider, a simulated one will not choose to call `search_skills`. The
+live provider, a simulated one will not choose to invoke `yolop skills search`. The
 rendering half is asserted in unit tests at fixed widths
 (`markdown_mermaid_fence_renders_as_a_diagram`), but only a real terminal shows
 whether a real model's diagram fits the transcript it actually gets.
@@ -61,10 +61,10 @@ doppler run -- target/debug/yolop -C /tmp/yolop-show-me-orbit --provider anthrop
 
 **Skill installed**
 
-1. The transcript shows a `search_skills` call followed by an `install_skill`
-   call. A `write_skill` call instead means the registry tools were unreachable
-   and the model fell back to fetching files by hand, that is a failure of this
-   scenario even though the skill ends up on disk.
+1. The transcript shows `yolop skills search` followed by `yolop skills
+   install`. A `yolop skills write` command instead means registry installation
+   was unreachable and the model fell back to fetching files by hand, that is a
+   failure of this scenario even though the skill ends up on disk.
 2. `/tmp/yolop-show-me-orbit/.agents/skills/show-me/SKILL.md` exists after the
    first turn.
 3. Its contents match what the registry serves, byte for byte:
@@ -93,7 +93,7 @@ and wording differ run to run, and the diagram may include return arrows one run
 and not the next. None of that fails the scenario, criteria 5 through 7 are
 about the render, not the content.
 
-The registry install count reported by `search_skills` changes over time, and
+The registry install count reported by `yolop skills search` changes over time, and
 other `show-me` skills from other owners appear in the results. Only
 `humanlayer/skills/show-me` matters.
 
@@ -111,7 +111,7 @@ other `show-me` skills from other owners appear in the results. Only
 
 ## Related
 
-- [`skills.md`](../specs/skills.md), scopes, precedence, and the registry tools.
+- [`skills.md`](../specs/skills.md), scopes, precedence, and the registry CLI.
 - [`tuika.md`](../specs/tuika.md), the rendering boundary this exercises.
 - [Registry skills and Mermaid diagrams](../../docs/features/show-me/show-me.md)
 , the public guide, whose recording is this scenario run once.

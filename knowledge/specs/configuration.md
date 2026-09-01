@@ -247,3 +247,12 @@ attached from another terminal. The attached family also provides `setup status`
 `setup login PROVIDER`, and `setup reauthenticate PROVIDER`. Live model selection
 uses `yolop model use`; persistent selection and model-list edits remain under
 the attached `config` command.
+guided provider setup is **`/setup`**. Model selection and model-list edits go
+through the attached `config` command; other settings retain their dedicated
+setup and control surfaces.
+
+Hook configuration is managed under the configuration command: `yolop config hooks list|get|set|remove`. Skill packages use the separate top-level `yolop skills ...` management command.
+
+## Detached management commands
+
+`yolop config hooks` manages global and workspace hook files through the same `HooksStore` used at startup. Skill package administration is a separate top-level `yolop skills` command. Neither management surface is registered as model tools.
