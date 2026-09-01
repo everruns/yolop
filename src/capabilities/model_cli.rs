@@ -44,6 +44,7 @@ impl ModelCliCapability {
     fn command() -> Command {
         Command::new(MODEL_ROUTE)
             .about("Show or switch the current session model")
+            .after_help("Examples:\n  Switch this session to the configured model labeled review:\n    yolop model use review\n\n  Temporarily use a high-effort model without changing defaults:\n    yolop model use openai/gpt-5.4:high")
             .subcommand(
                 Command::new("use")
                     .about("Switch the current session model without changing defaults")

@@ -24,7 +24,11 @@ pub(crate) const WORKTREE_CONTROL_ROUTE: ControlRoute = ControlRoute {
 };
 
 #[derive(Debug, Clone, Parser)]
-#[command(name = "worktree", about = "Control this session's Yolop worktree")]
+#[command(
+    name = "worktree",
+    about = "Control this session's Yolop worktree",
+    after_help = "Examples:\n  Preview cleanup of worktrees no longer referenced by saved sessions:\n    yolop worktree prune --dry-run\n\n  Inspect the active session's policy and workspace path:\n    yolop worktree status"
+)]
 struct WorktreeCommandLine {
     #[command(subcommand)]
     command: WorktreeCliCommand,

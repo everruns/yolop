@@ -559,7 +559,9 @@ impl SkillsCommandLine {
 impl CliCapability for SkillManagementCapability {
     fn cli_command(&self) -> clap::Command {
         use clap::Args;
-        SkillsCommandLine::augment_args(clap::Command::new("skills"))
+        SkillsCommandLine::augment_args(clap::Command::new("skills")).after_help(
+            "Examples:\n  Install a registry skill only for this repository:\n    yolop skills install cloudflare/skills/cloudflare --scope workspace\n\n  Replace a substantial global skill from a reviewed local file:\n    yolop skills write release-checklist --file ./SKILL.md --scope global",
+        )
     }
     fn control_request_from_cli(
         &self,
