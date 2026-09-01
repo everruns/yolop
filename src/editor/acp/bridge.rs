@@ -3,7 +3,7 @@
 //! The runtime emits a rich event stream (reasoning deltas and summaries,
 //! message deltas, tool lifecycle, todo writes). ACP wants a narrower
 //! vocabulary: assistant message chunks, thought chunks, tool calls,
-//! tool-call updates, and plans.
+//! tool-call updates, plans, and session metadata.
 //! [`Translator`] is the pure, per-turn state machine that performs that
 //! mapping. Keeping it free of I/O is what makes the wire behaviour fully
 //! unit-testable without a live model.
@@ -16,8 +16,9 @@ use everruns_core::{EventData, ToolCompletedData};
 use serde_json::Value;
 
 use super::protocol::{
-    self, ContentBlock, Plan, PlanEntry, PlanEntryPriority, PlanEntryStatus, SessionUpdate,
-    ToolCall, ToolCallContent, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind,
+    self, ContentBlock, Plan, PlanEntry, PlanEntryPriority, PlanEntryStatus, SessionInfoUpdate,
+    SessionUpdate, ToolCall, ToolCallContent, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields,
+    ToolKind,
 };
 
 /// The runtime's todo tool. write_todos updates are surfaced as ACP plans
@@ -163,6 +164,9 @@ impl Translator {
                     ))]
                 }
             }
+            EventData::SessionTitleUpdated(data) => vec![SessionUpdate::SessionInfoUpdate(
+                SessionInfoUpdate::new().title(data.title.clone()),
+            )],
             EventData::ToolStarted(data) => {
                 let name = data.tool_call.name.as_str();
                 if name == WRITE_TODOS {
@@ -354,7 +358,7 @@ mod tests {
     use everruns_core::Message;
     use everruns_core::{
         Event, EventContext, OutputMessageCompletedData, OutputMessageDeltaData, ReasonItemData,
-        ReasonThinkingDeltaData, ToolCompletedData, ToolStartedData,
+        ReasonThinkingDeltaData, SessionTitleUpdatedData, ToolCompletedData, ToolStartedData,
     };
     use everruns_provider::ExecutionPhase;
     use everruns_provider::ToolCall;
@@ -542,6 +546,31 @@ mod tests {
             vec![SessionUpdate::AgentThoughtChunk(protocol::text_chunk(
                 "**Investigating event semantics**\n\n**Comparing ACP projections**"
             ))]
+        );
+    }
+
+    #[test]
+    fn session_title_updates_session_info() {
+        let mut translator = Translator::new();
+        let updates = translator.on_event(&event(EventData::SessionTitleUpdated(
+            SessionTitleUpdatedData {
+                previous_title: None,
+                title: "ACP tool policy".into(),
+            },
+        )));
+
+        assert_eq!(
+            updates,
+            vec![SessionUpdate::SessionInfoUpdate(
+                SessionInfoUpdate::new().title("ACP tool policy")
+            )]
+        );
+        assert_eq!(
+            serde_json::to_value(&updates[0]).unwrap(),
+            json!({
+                "sessionUpdate": "session_info_update",
+                "title": "ACP tool policy"
+            })
         );
     }
 

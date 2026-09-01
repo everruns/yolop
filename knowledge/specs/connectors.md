@@ -35,8 +35,9 @@ implementations. Daytona is registered by default; new providers add a
 
 ### Runtime wiring
 
-- **`connectors`** is enabled on the default harness, always available
-  for listing providers and saving credentials.
+- **`connectors`** is enabled on the default harness. ACP omits only `connect`
+  because its arguments would carry credentials through the transcript;
+  listing, inspection, and disconnection remain available.
 - **`daytona`** and **`session_storage`** are registered but **not** on the
   default harness. Opt in through the generic capability config in
   `settings.toml` (see [`configuration.md`](./configuration.md)).
@@ -76,6 +77,10 @@ Inspect the registered catalog with `get_config key=capabilities` or
 | `get_connector` | One provider's instructions and form schema |
 | `connect` | Validate and save credentials |
 | `disconnect` | Remove stored credentials |
+
+`connect` is not exposed to ACP sessions. Configure connector credentials
+outside the ACP prompt channel, for example through the agent process
+environment, before using the connected capability.
 
 ### Daytona tools (upstream `daytona` capability, opt-in)
 

@@ -12,6 +12,7 @@ pub(crate) const MCP_CAPABILITY_ID: &str = "mcp";
 
 pub(crate) struct McpCapability {
     pub(crate) store: Arc<McpConfigStore>,
+    pub(crate) allow_literal_credentials: bool,
 }
 
 #[async_trait]
@@ -43,6 +44,7 @@ impl Capability for McpCapability {
             }),
             Box::new(UpsertMcpServerTool {
                 store: self.store.clone(),
+                allow_literal_credentials: self.allow_literal_credentials,
             }),
             Box::new(RemoveMcpServerTool {
                 store: self.store.clone(),
@@ -96,6 +98,7 @@ impl Tool for ListMcpServersTool {
 
 struct UpsertMcpServerTool {
     store: Arc<McpConfigStore>,
+    allow_literal_credentials: bool,
 }
 
 #[async_trait]
@@ -152,6 +155,13 @@ impl Tool for UpsertMcpServerTool {
             Some(value) => value.clone(),
             None => return ToolExecutionResult::tool_error("server is required"),
         };
+        if !self.allow_literal_credentials
+            && let Some(field) = literal_credential_field(&server_value)
+        {
+            return ToolExecutionResult::tool_error(format!(
+                "ACP cannot enter credentials securely through model tools; replace literal `{field}` with an environment placeholder such as `${{MCP_TOKEN}}`, or use `/mcp login`"
+            ));
+        }
         let entry: McpServerEntry = match serde_json::from_value(server_value) {
             Ok(entry) => entry,
             Err(err) => {
@@ -282,5 +292,140 @@ fn parse_scope(value: Option<&Value>) -> McpConfigScope {
     match value.and_then(Value::as_str) {
         Some("workspace") | Some("local") => McpConfigScope::Workspace,
         _ => McpConfigScope::Global,
+    }
+}
+
+fn literal_credential_field(server: &Value) -> Option<String> {
+    for container in ["headers", "env"] {
+        let Some(fields) = server.get(container).and_then(Value::as_object) else {
+            continue;
+        };
+        for (name, value) in fields {
+            let Some(value) = value.as_str() else {
+                continue;
+            };
+            if credential_field_name(name) && !credential_value_uses_placeholder(name, value) {
+                return Some(format!("{container}.{name}"));
+            }
+        }
+    }
+    None
+}
+
+fn credential_field_name(name: &str) -> bool {
+    let normalized = name.to_ascii_lowercase().replace('_', "-");
+    matches!(
+        normalized.as_str(),
+        "authorization"
+            | "proxy-authorization"
+            | "cookie"
+            | "set-cookie"
+            | "api-key"
+            | "x-api-key"
+            | "x-auth-token"
+    ) || normalized.contains("token")
+        || normalized.contains("secret")
+        || normalized.contains("api-key")
+        || normalized.contains("apikey")
+}
+
+fn credential_value_uses_placeholder(name: &str, value: &str) -> bool {
+    let value = value.trim();
+    if is_env_placeholder(value) {
+        return true;
+    }
+    let normalized = name.to_ascii_lowercase().replace('_', "-");
+    if matches!(normalized.as_str(), "authorization" | "proxy-authorization")
+        && let Some((scheme, credential)) = value.split_once(char::is_whitespace)
+    {
+        return matches!(scheme.to_ascii_lowercase().as_str(), "bearer" | "basic")
+            && is_env_placeholder(credential.trim());
+    }
+    false
+}
+
+fn is_env_placeholder(value: &str) -> bool {
+    value
+        .strip_prefix("${")
+        .and_then(|value| value.strip_suffix('}'))
+        .is_some_and(|name| {
+            !name.is_empty()
+                && name
+                    .chars()
+                    .all(|character| character == '_' || character.is_ascii_alphanumeric())
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn upsert_tool(root: &std::path::Path, allow_literal_credentials: bool) -> UpsertMcpServerTool {
+        UpsertMcpServerTool {
+            store: Arc::new(McpConfigStore::new(
+                root.join("settings.toml"),
+                root.to_path_buf(),
+            )),
+            allow_literal_credentials,
+        }
+    }
+
+    #[tokio::test]
+    async fn acp_rejects_literal_mcp_credentials() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let result = upsert_tool(tmp.path(), false)
+            .execute(json!({
+                "name": "docs",
+                "server": {
+                    "type": "http",
+                    "url": "https://example.com/mcp",
+                    "headers": { "Authorization": "Bearer secret" }
+                }
+            }))
+            .await;
+
+        match result {
+            ToolExecutionResult::ToolError(message) => {
+                assert!(message.contains("ACP cannot enter credentials securely"));
+                assert!(message.contains("headers.Authorization"));
+            }
+            other => panic!("expected credential rejection, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn acp_accepts_mcp_environment_placeholders() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let result = upsert_tool(tmp.path(), false)
+            .execute(json!({
+                "name": "docs",
+                "server": {
+                    "type": "http",
+                    "url": "https://example.com/mcp",
+                    "headers": { "Authorization": "Bearer ${DOCS_TOKEN}" }
+                }
+            }))
+            .await;
+
+        assert!(result.is_success(), "{result:?}");
+    }
+
+    #[tokio::test]
+    async fn acp_rejects_mixed_literal_and_placeholder_credentials() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let result = upsert_tool(tmp.path(), false)
+            .execute(json!({
+                "name": "docs",
+                "server": {
+                    "type": "http",
+                    "url": "https://example.com/mcp",
+                    "headers": {
+                        "Authorization": "Bearer literal-${DOCS_TOKEN}"
+                    }
+                }
+            }))
+            .await;
+
+        assert!(result.is_error(), "{result:?}");
     }
 }

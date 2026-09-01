@@ -43,7 +43,9 @@ path, so MCP tools flow through the same agent loop as the built-in tools.
     client-configured server wins on a name collision.
 - **Secrets via env**: string fields support `${VAR}` expansion from the
   environment (`"Authorization": "Bearer ${DOCS_TOKEN}"`), so tokens stay out of
-  the file. Unset placeholders are left intact so the gap is debuggable.
+  the file. Unset placeholders are left intact so the gap is debuggable. ACP's
+  model-facing config tool rejects literal credential-bearing header and
+  environment fields because ACP prompt text is not a secure input channel.
 - **Discovery + execution**: the runtime discovers each server's tools live
   (`tools/list`) and routes `mcp_*` tool calls to the MCP executor. Tool names
   are prefixed (`mcp_<server>__<tool>`) by the runtime to avoid collisions.

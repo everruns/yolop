@@ -24,6 +24,7 @@ record and:
 
 - persists it in the session `events.jsonl` log;
 - projects its latest title into `workspace.json` for local session discovery;
+- sends ACP clients a `session_info_update` so their session label changes;
 - restores the latest event-projected title when resuming a session.
 
 Repeated writes of the current title are no-ops and emit no event. Worktree
