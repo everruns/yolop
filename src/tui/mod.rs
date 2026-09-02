@@ -254,8 +254,6 @@ pub struct App {
     /// extension servers over `status/changed`. Rendered in the status bar via
     /// [`App::presentation_state`].
     extension_status: std::collections::BTreeMap<String, String>,
-    /// Turn-scoped status text set by the agent through the host UI.
-    agent_status: Option<String>,
     /// Incoming extension `ui/ask` requests; each is prompted one at a time via
     /// [`App::pending_ask`].
     ask_rx: mpsc::UnboundedReceiver<crate::tui::host_ui::AskRequest>,
@@ -765,7 +763,6 @@ impl App {
             session_tokens: None,
             ui_rx: runtime.ui_rx,
             extension_status: std::collections::BTreeMap::new(),
-            agent_status: None,
             ask_rx: runtime.ask_rx,
             pending_ask: None,
             sandbox_approval_rx: runtime.sandbox_approval_rx,
@@ -1278,7 +1275,6 @@ impl App {
             ask_indicator: self.ask_indicator(),
             worktree_compact: self.worktree.status_bar_compact(),
             worktree_expanded: self.worktree.status_bar_expanded(),
-            agent_status: self.agent_status.clone(),
             extension_status: self
                 .extension_status
                 .iter()
@@ -3309,10 +3305,6 @@ impl App {
                 }
                 None => self.start_setup(),
             },
-            UiCommand::SetAgentStatus { status } => {
-                let status = status.trim();
-                self.agent_status = (!status.is_empty()).then(|| status.to_string());
-            }
             UiCommand::SetExtensionStatus { ext, status } => {
                 let status = status.trim();
                 if status.is_empty() {
@@ -3845,7 +3837,6 @@ impl App {
         self.busy = false;
         self.busy_frame = 0;
         self.turn_activity = None;
-        self.agent_status = None;
         self.turn_started_at = None;
         self.stream_preview = None;
         self.rx = None;
@@ -6294,7 +6285,6 @@ flowchart TD
             ask_indicator: None,
             worktree_compact: None,
             worktree_expanded: None,
-            agent_status: None,
             extension_status: Vec::new(),
         }
     }
@@ -11762,7 +11752,6 @@ flowchart TD
         let state = ViewState {
             presentation: PresentationState {
                 status_layout: StatusLayout::Expanded,
-                agent_status: Some("running tests 3/8".to_string()),
                 worktree_expanded: Some(("codex/status-drawer".into(), "…/bb69/yolop".into())),
                 ..presentation_state_idle()
             },
@@ -11783,7 +11772,6 @@ flowchart TD
             }),
             "wide drawer should place all sections in columns: {wide_text}"
         );
-        assert!(wide_text.contains("agent running tests 3/8"));
         assert!(
             wide.lines
                 .iter()
@@ -11848,25 +11836,6 @@ flowchart TD
             }
             app.setup = None;
         }
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn agent_status_is_visible_for_the_turn_and_clears_on_finish() {
-        let mut fixture = app_with_llmsim().await;
-        let app = &mut fixture.app;
-        app.apply_ui_command(UiCommand::SetAgentStatus {
-            status: "running tests 3/8".to_string(),
-        })
-        .await;
-
-        assert_eq!(
-            app.presentation_state().agent_status.as_deref(),
-            Some("running tests 3/8")
-        );
-
-        app.finish_busy();
-
-        assert!(app.presentation_state().agent_status.is_none());
     }
 
     #[test]

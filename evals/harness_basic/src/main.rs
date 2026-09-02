@@ -2078,7 +2078,7 @@ struct Mined {
 fn is_bookkeeping_tool(name: &str) -> bool {
     matches!(
         name,
-        "write_session_title" | "write_todos" | "set_status" | "progress_checkpoint"
+        "write_session_title" | "write_todos" | "progress_checkpoint"
     )
 }
 
