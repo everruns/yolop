@@ -1272,11 +1272,12 @@ fn tui_inline_renders_and_responds_smoke() {
 }
 
 #[test]
-fn tui_compact_work_collapses_and_expands_shell_details() {
+fn tui_default_compact_work_collapses_and_expands_shell_details() {
     let mut tui = spawn_tui_llmsim_with(
         &yolop_binary(),
         TuiSpawnOptions {
             inline: false,
+            // `true` means do not pass an override, so this drives the CLI default.
             compact_work: true,
             ..TuiSpawnOptions::default()
         },

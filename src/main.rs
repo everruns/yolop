@@ -29,7 +29,7 @@ use anyhow::{Context, Result};
 // LTO/dead-code elimination when we register capabilities explicitly.
 extern crate everruns_integrations_daytona;
 extern crate everruns_integrations_parallel;
-use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
+use clap::{ArgAction, Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 use config::SettingsStore;
 use config::mcp::{McpConfigScope, McpConfigStore};
 use crossterm::event::{
@@ -198,11 +198,17 @@ struct Cli {
     #[arg(long)]
     inline: bool,
 
-    /// Collapse each active turn's narration and tool output into one updating
-    /// transcript row. Press Ctrl+O to expand or collapse the latest turn's
-    /// retained work details. Fullscreen only because inline scrollback cannot
-    /// repaint a previously published accordion.
-    #[arg(long, conflicts_with_all = ["inline", "print", "acp"])]
+    /// Retain narration and tool output as ordinary transcript rows.
+    ///
+    /// Compact work is enabled by default in the fullscreen TUI. Press Ctrl+O
+    /// to expand or collapse each turn's retained work details. Fullscreen only
+    /// because inline scrollback cannot repaint a previously published accordion.
+    #[arg(
+        long = "no-compact-work",
+        default_value_t = true,
+        action = ArgAction::SetFalse,
+        conflicts_with_all = ["inline", "print", "acp"]
+    )]
     compact_work: bool,
 
     /// Color theme for the interactive TUI. `yolop` (default) is yolop's own
@@ -2424,12 +2430,14 @@ mod tests {
     }
 
     #[test]
-    fn compact_work_is_fullscreen_only() {
-        let compact =
-            Cli::try_parse_from(["yolop", "--compact-work"]).expect("compact fullscreen TUI");
+    fn compact_work_is_enabled_by_default_and_fullscreen_only() {
+        let compact = Cli::try_parse_from(["yolop"]).expect("default fullscreen TUI");
         assert!(compact.compact_work);
-        assert!(Cli::try_parse_from(["yolop", "--compact-work", "--inline"]).is_err());
-        assert!(Cli::try_parse_from(["yolop", "--compact-work", "-p", "hi"]).is_err());
+        let expanded =
+            Cli::try_parse_from(["yolop", "--no-compact-work"]).expect("expanded fullscreen TUI");
+        assert!(!expanded.compact_work);
+        assert!(Cli::try_parse_from(["yolop", "--no-compact-work", "--inline"]).is_err());
+        assert!(Cli::try_parse_from(["yolop", "--no-compact-work", "-p", "hi"]).is_err());
     }
 
     #[test]
@@ -2573,14 +2581,14 @@ mod tests {
     }
 
     #[test]
-    fn continuation_preserves_compact_work_mode() {
-        let args = ["yolop", "--compact-work", "--session=old-session"]
+    fn continuation_preserves_disabled_compact_work_mode() {
+        let args = ["yolop", "--no-compact-work", "--session=old-session"]
             .into_iter()
             .map(OsString::from);
 
         assert_eq!(
             continuation_command(args, "new-session"),
-            "yolop --compact-work --session new-session"
+            "yolop --no-compact-work --session new-session"
         );
     }
 
@@ -2603,7 +2611,7 @@ mod tests {
             session_dir: None,
             trajectory_out: None,
             inline: false,
-            compact_work: false,
+            compact_work: true,
             theme: None,
             sandbox: false,
         }

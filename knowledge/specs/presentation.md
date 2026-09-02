@@ -72,8 +72,9 @@ files under the platform data directory's `yolop/logs/` folder; command,
 `--print`, and ACP modes continue to write tracing output to stderr. At most
 five interactive trace files are retained, capped at 4 MiB each.
 
-`--compact-work` selects an alternate fullscreen transcript projection. Each
-live turn owns one mutable work summary instead of appending narration and tool
+Compact work is the default fullscreen transcript projection. `--no-compact-work`
+restores the expanded projection. Each live turn owns one mutable work summary
+instead of appending narration and tool
 rows. The summary carries current activity, elapsed time, top-level action
 count, and its terminal success, failure, or cancellation state. `Ctrl+O`
 expands or collapses the latest turn's retained detail rows inline beneath the

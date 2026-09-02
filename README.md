@@ -79,10 +79,11 @@ yolop --provider llmsim -p "hi"         # offline demo, no API key required
   commands, and monitors with branch usage and cooperative cancellation,
   `!<command>` as a direct shell shortcut,
   `@`-triggered file-path completion, and shell-style
-  history recall (`↑`/`↓`, `Ctrl+R`) persisted across sessions. Start with
-  `--compact-work` to replace per-turn narration and tool lines with one live
-  summary; `Ctrl+O` expands or collapses the retained details. Compact work is
-  fullscreen-only because native inline scrollback cannot repaint old rows.
+  history recall (`↑`/`↓`, `Ctrl+R`) persisted across sessions. Fullscreen runs
+  replace per-turn narration and tool lines with one live summary by default;
+  `Ctrl+O` expands or collapses the retained details. Pass `--no-compact-work`
+  to retain ordinary transcript rows. Compact work is fullscreen-only because
+  native inline scrollback cannot repaint old rows.
 - **Side questions**: `/btw <question>` answers out-of-band using the current
   session context, with no tools and nothing added to conversation history.
 - **Goal loops**: `/goal <condition>` keeps working across turns until a
@@ -428,7 +429,7 @@ act of consent. MCP tools run autonomously like the rest of yolop's tools.
 | `--config-dir <PATH>`      | Override the global config directory (settings, profiles, extensions) |
 | `--data-dir <PATH>`        | Override the global data directory (sessions, logs, models)          |
 | `--sandbox`                | One-run `workspace-write` containment without changing settings      |
-| `--compact-work`           | Collapse each fullscreen turn's work into an expandable summary row  |
+| `--no-compact-work`        | Retain each fullscreen turn's work as ordinary transcript rows       |
 | `--reasoning-effort <E>`   | Reasoning effort override when the model profile supports it          |
 | `--trajectory-out <PATH>`  | Write the session as an [ATIF](https://github.com/harbor-framework/harbor/blob/main/rfcs/0001-trajectory-format.md) v1.7 trajectory JSON at end of run |
 
