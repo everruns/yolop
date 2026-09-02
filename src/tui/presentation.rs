@@ -108,8 +108,6 @@ pub(crate) struct PresentationState {
     pub ask_indicator: Option<String>,
     pub worktree_compact: Option<String>,
     pub worktree_expanded: Option<(String, String)>,
-    /// Turn-scoped status text contributed by the agent through the TUI host.
-    pub agent_status: Option<String>,
     /// Live status pushed by extensions over `status/changed`, as
     /// `(extension_name, status_text)` pairs. Rendered as its own status field.
     pub extension_status: Vec<(String, String)>,
@@ -304,12 +302,7 @@ impl PresentationState {
         }
         session.push(status_field("goal", goal_label(self)));
         session.push(status_field("ask", ask_label(self)));
-        if let Some(status) = self
-            .agent_status
-            .as_deref()
-            .or_else(|| self.activity_text())
-            .filter(|status| !status.is_empty())
-        {
+        if let Some(status) = self.activity_text().filter(|status| !status.is_empty()) {
             session.push(status_field("agent", status));
         }
 
@@ -696,7 +689,6 @@ mod tests {
             ask_indicator: None,
             worktree_compact: None,
             worktree_expanded: None,
-            agent_status: None,
             extension_status: Vec::new(),
         }
     }
@@ -831,7 +823,6 @@ mod tests {
     fn expanded_sections_group_runtime_session_and_workspace_status() {
         let model = PresentationState {
             status_layout: StatusLayout::Expanded,
-            agent_status: Some("running tests 3/8".to_string()),
             worktree_expanded: Some(("codex/status-drawer".into(), "…/bb69/yolop".into())),
             ..state()
         };
@@ -851,12 +842,6 @@ mod tests {
         assert!(sections[0].fields.iter().any(|field| {
             field.label == Some("effort") && field.action == Some(StatusAction::OpenEffort)
         }));
-        assert!(
-            sections[1]
-                .fields
-                .iter()
-                .any(|field| field.label == Some("agent") && field.value == "running tests 3/8")
-        );
         assert!(
             sections[2]
                 .fields

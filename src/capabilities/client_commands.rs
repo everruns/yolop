@@ -17,18 +17,13 @@
 //! [`crate::capabilities::agent_commands`], which resolves names against the
 //! live registry rather than any list kept here.
 
-use crate::capabilities::narration::stable_labeled;
 use crate::tui::host_ui::{HostUi, UiCommand};
 use async_trait::async_trait;
 use everruns_core::command::{
     CommandArg, CommandDescriptor, CommandExecutionContext, CommandResult, CommandSource,
     ExecuteCommandRequest,
 };
-use everruns_core::tool_narration::{ToolNarrationPhase, arg_str, truncate};
 use everruns_core::{Capability, CapabilityStatus};
-use everruns_core::{Tool, ToolExecutionResult};
-use everruns_provider::ToolCall;
-use serde_json::{Value, json};
 use std::sync::Arc;
 
 pub(crate) const CLIENT_COMMANDS_CAPABILITY_ID: &str = "yolop_client_commands";
@@ -40,8 +35,6 @@ Terminal commands, all runnable with `run_command`: `/help`, `/tools`, `/mcp`,
 "clear the screen", "show tools", "switch model", "restart MCP", "reconnect MCP",
 or "refresh MCP" (`/mcp reload`), "log in to an MCP server" (`/mcp login <name>`);
 never invent a manager window. `/shell` is typed-only; use `bash`.
-`set_status` sets a concise live description of turn progress; it clears when the
-turn finishes, or send an empty value to clear it earlier.
 </capability>"#;
 
 pub(crate) struct ClientCommandsCapability {
@@ -77,12 +70,6 @@ impl Capability for ClientCommandsCapability {
 
     fn commands(&self) -> Vec<CommandDescriptor> {
         command_descriptors()
-    }
-
-    fn tools(&self) -> Vec<Box<dyn Tool>> {
-        vec![Box::new(SetStatusTool {
-            ui: self.ui.clone(),
-        })]
     }
 
     async fn execute_command(
@@ -195,72 +182,6 @@ fn arg(name: &str, required: bool) -> CommandArg {
     }
 }
 
-struct SetStatusTool {
-    ui: Arc<dyn HostUi>,
-}
-
-#[async_trait]
-impl Tool for SetStatusTool {
-    fn narrate(
-        &self,
-        tool_call: &ToolCall,
-        phase: ToolNarrationPhase,
-        locale: Option<&str>,
-        _ctx: everruns_core::tool_narration::ToolNarrationContext<'_>,
-    ) -> Option<String> {
-        let _ = locale;
-        let status = arg_str(&tool_call.arguments, &["status"]).map(|value| truncate(value, 48));
-        Some(stable_labeled("Update status", status, phase))
-    }
-
-    fn name(&self) -> &str {
-        "set_status"
-    }
-
-    fn display_name(&self) -> Option<&str> {
-        Some("Status")
-    }
-
-    fn description(&self) -> &str {
-        "Set a concise, turn-scoped status shown in the interactive TUI. \
-         Use an empty status to clear it before the turn finishes."
-    }
-
-    fn parameters_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "status": {
-                    "type": "string",
-                    "description": "Concise live progress, at most 120 characters. Empty clears it."
-                }
-            },
-            "required": ["status"],
-            "additionalProperties": false
-        })
-    }
-
-    async fn execute(&self, arguments: Value) -> ToolExecutionResult {
-        let Some(raw) = arguments.get("status").and_then(Value::as_str) else {
-            return ToolExecutionResult::tool_error("'status' is required");
-        };
-        let status = raw.trim();
-        if status.chars().count() > 120 {
-            return ToolExecutionResult::tool_error("status must be at most 120 characters");
-        }
-        if status.chars().any(char::is_control) {
-            return ToolExecutionResult::tool_error("status must be a single printable line");
-        }
-        self.ui.send(UiCommand::SetAgentStatus {
-            status: status.to_string(),
-        });
-        ToolExecutionResult::success(json!({
-            "success": true,
-            "status": status
-        }))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -268,7 +189,7 @@ mod tests {
     use everruns_provider::typed_id::SessionId;
 
     #[test]
-    fn prompt_covers_the_terminal_commands_and_status() {
+    fn prompt_covers_the_terminal_commands() {
         let ui = Arc::new(RecordingUi::default());
         let capability = ClientCommandsCapability::new(ui);
         let prompt = capability.system_prompt_addition().expect("prompt");
@@ -279,13 +200,12 @@ mod tests {
         assert!(prompt.contains("\"restart MCP\""));
         assert!(prompt.contains("\"reconnect MCP\""));
         assert!(prompt.contains("\"refresh MCP\" (`/mcp reload`)"));
-        assert!(prompt.contains("set_status"));
     }
 
     /// The terminal commands are ordinary registry entries; `run_command` finds
     /// them there rather than in a list this capability hands the model.
     #[test]
-    fn capability_contributes_commands_and_only_the_status_tool() {
+    fn capability_contributes_terminal_commands() {
         let capability = ClientCommandsCapability::new(Arc::new(RecordingUi::default()));
 
         let commands: Vec<String> = capability
@@ -295,13 +215,7 @@ mod tests {
             .collect();
         assert!(commands.contains(&"quit".to_string()), "{commands:?}");
         assert!(commands.contains(&"mcp".to_string()), "{commands:?}");
-
-        let tools: Vec<String> = capability
-            .tools()
-            .iter()
-            .map(|tool| tool.name().to_string())
-            .collect();
-        assert_eq!(tools, vec!["set_status".to_string()]);
+        assert!(capability.tools().is_empty());
     }
 
     /// Executing a client command emits its `UiCommand` and returns an empty
@@ -351,69 +265,6 @@ mod tests {
             .expect_err("/setup belongs to another capability");
 
         assert!(error.to_string().contains("setup"), "error: {error}");
-        assert!(ui.take().is_empty());
-    }
-
-    #[test]
-    fn set_status_narration_includes_truncated_status() {
-        use everruns_core::tool_narration::ToolNarrationPhase;
-        use everruns_provider::ToolCall;
-
-        let tool = SetStatusTool {
-            ui: Arc::new(RecordingUi::default()),
-        };
-        let tool_call = ToolCall {
-            id: "call-1".to_string(),
-            name: "set_status".to_string(),
-            arguments: json!({ "status": "Auditing tool narration" }),
-        };
-
-        assert_eq!(
-            tool.narrate(
-                &tool_call,
-                ToolNarrationPhase::Started,
-                None,
-                everruns_core::tool_narration::ToolNarrationContext::default(),
-            ),
-            Some("Update status: Auditing tool narration".to_string())
-        );
-    }
-
-    #[tokio::test]
-    async fn set_status_queues_turn_scoped_status_update() {
-        let ui = Arc::new(RecordingUi::default());
-        let tool = SetStatusTool { ui: ui.clone() };
-
-        let result = tool.execute(json!({ "status": "running tests 3/8" })).await;
-
-        assert!(result.is_success(), "tool result: {result:?}");
-        assert_eq!(
-            ui.take(),
-            vec![UiCommand::SetAgentStatus {
-                status: "running tests 3/8".to_string()
-            }]
-        );
-    }
-
-    #[tokio::test]
-    async fn set_status_rejects_values_over_the_ui_limit() {
-        let ui = Arc::new(RecordingUi::default());
-        let tool = SetStatusTool { ui: ui.clone() };
-
-        let result = tool.execute(json!({ "status": "x".repeat(121) })).await;
-
-        assert!(result.is_error(), "tool result: {result:?}");
-        assert!(ui.take().is_empty());
-    }
-
-    #[tokio::test]
-    async fn set_status_rejects_terminal_control_characters() {
-        let ui = Arc::new(RecordingUi::default());
-        let tool = SetStatusTool { ui: ui.clone() };
-
-        let result = tool.execute(json!({ "status": "tests\u{1b}[2J" })).await;
-
-        assert!(result.is_error(), "tool result: {result:?}");
         assert!(ui.take().is_empty());
     }
 }
