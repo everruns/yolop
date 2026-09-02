@@ -321,8 +321,7 @@ impl ControlPlaneCapability {
             ));
         }
         prompt.push_str(
-            "Invoke it directly: a pipeline, redirection, quoting, substitution, or `&` runs as \
-             ordinary shell and loses the attachment.",
+            "Invoke directly: shell composition loses attachment. Do not repeat `--help`.",
         );
         Some(Self { prompt })
     }
@@ -792,7 +791,19 @@ mod tests {
         assert!(prompt.contains("- `extensions`, administer extension packages"));
         // Discovery points at the contributed help, not at a duplicated grammar.
         assert!(prompt.contains("`yolop <subcommand> --help`"));
-        assert!(prompt.contains("loses the attachment"));
+        assert!(prompt.contains("loses attachment"));
+    }
+
+    #[test]
+    fn control_plane_prompt_discourages_repeated_help_probes() {
+        let registry = service();
+        let capability = ControlPlaneCapability::new(&ControlService::routes(&registry))
+            .expect("a registered route contributes the block");
+        let prompt = capability
+            .system_prompt_addition()
+            .expect("the block is the capability's contribution");
+
+        assert!(prompt.contains("Do not repeat `--help`"));
     }
 
     #[test]
