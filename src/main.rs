@@ -207,9 +207,18 @@ struct Cli {
         long = "no-compact-work",
         default_value_t = true,
         action = ArgAction::SetFalse,
-        conflicts_with_all = ["inline", "print", "acp"]
+        conflicts_with_all = ["inline", "print", "acp", "force_compact_work"]
     )]
     compact_work: bool,
+
+    // Kept hidden because compact work is the default. Continuation commands
+    // write it explicitly so their presentation remains stable across releases.
+    #[arg(
+        long = "compact-work",
+        hide = true,
+        conflicts_with_all = ["inline", "print", "acp", "compact_work"]
+    )]
+    force_compact_work: bool,
 
     /// Color theme for the interactive TUI. `yolop` (default) is yolop's own
     /// palette; other values select a bundled `tuika` preset (e.g.
@@ -901,7 +910,7 @@ async fn async_main(crash_reporter: &crash_report::CrashReporter) -> Result<()> 
         pending_images,
         cli.trajectory_out,
         !cli.inline,
-        cli.compact_work,
+        cli.compact_work || cli.force_compact_work,
     )
     .await
 }
@@ -1867,6 +1876,7 @@ fn continuation_command(
     let _executable = args.next();
     let mut preserved = Vec::new();
     let mut skip_value = false;
+    let mut compact_work = true;
 
     for arg in args {
         if skip_value {
@@ -1881,6 +1891,10 @@ fn continuation_command(
             skip_value = true;
             continue;
         }
+        if matches!(value.as_ref(), "--compact-work" | "--no-compact-work") {
+            compact_work = value == "--compact-work";
+            continue;
+        }
         if value.starts_with("--print=")
             || value.starts_with("--image=")
             || value.starts_with("--session=")
@@ -1891,6 +1905,11 @@ fn continuation_command(
         preserved.push(shell_quote(&value));
     }
 
+    preserved.push(if compact_work {
+        "--compact-work".to_string()
+    } else {
+        "--no-compact-work".to_string()
+    });
     preserved.push("--session".to_string());
     preserved.push(shell_quote(session_id));
     format!("yolop {}", preserved.join(" "))
@@ -2436,6 +2455,10 @@ mod tests {
         let expanded =
             Cli::try_parse_from(["yolop", "--no-compact-work"]).expect("expanded fullscreen TUI");
         assert!(!expanded.compact_work);
+        let resumed = Cli::try_parse_from(["yolop", "--compact-work"])
+            .expect("explicit compact fullscreen TUI");
+        assert!(resumed.compact_work || resumed.force_compact_work);
+        assert!(Cli::try_parse_from(["yolop", "--no-compact-work", "--compact-work"]).is_err());
         assert!(Cli::try_parse_from(["yolop", "--no-compact-work", "--inline"]).is_err());
         assert!(Cli::try_parse_from(["yolop", "--no-compact-work", "-p", "hi"]).is_err());
     }
@@ -2581,7 +2604,7 @@ mod tests {
     }
 
     #[test]
-    fn continuation_preserves_disabled_compact_work_mode() {
+    fn continuation_serializes_compact_work_mode() {
         let args = ["yolop", "--no-compact-work", "--session=old-session"]
             .into_iter()
             .map(OsString::from);
@@ -2589,6 +2612,14 @@ mod tests {
         assert_eq!(
             continuation_command(args, "new-session"),
             "yolop --no-compact-work --session new-session"
+        );
+
+        let args = ["yolop", "--session=old-session"]
+            .into_iter()
+            .map(OsString::from);
+        assert_eq!(
+            continuation_command(args, "new-session"),
+            "yolop --compact-work --session new-session"
         );
     }
 
@@ -2612,6 +2643,7 @@ mod tests {
             trajectory_out: None,
             inline: false,
             compact_work: true,
+            force_compact_work: false,
             theme: None,
             sandbox: false,
         }
@@ -2724,6 +2756,7 @@ mod tests {
             trajectory_out: None,
             inline: false,
             compact_work: false,
+            force_compact_work: false,
             theme: None,
             sandbox: false,
         };
