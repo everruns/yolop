@@ -4269,6 +4269,7 @@ pub async fn build_with_options(
     let platform = everruns_host::HostComposition::builder()
         .capability_registry(capabilities)
         .driver_registry(driver_registry)
+        .egress_service(everruns_host::runtime_egress_service())
         .session_file_system_factory(Arc::new(CodingCliSessionFileSystemFactory {
             workspace: workspace_host.clone(),
             session_dir: session_dir.clone(),
