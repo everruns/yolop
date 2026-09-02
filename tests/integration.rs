@@ -147,6 +147,10 @@ fn command_group_help_includes_realistic_examples() {
             &["config", "hooks", "--help"][..],
             "yolop config hooks set protect-env PreToolUse",
         ),
+        (
+            &["config", "models", "--help"][..],
+            "yolop config models add codex gpt-5.6-sol --label sol",
+        ),
     ];
 
     for (args, example) in cases {

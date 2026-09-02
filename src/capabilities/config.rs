@@ -54,6 +54,15 @@ enum ConfigCommand {
         #[command(subcommand)]
         command: ConfigModelCommand,
     },
+    #[command(after_help = "Examples:
+  List models:
+    yolop config models list
+
+  Add a model:
+    yolop config models add codex gpt-5.6-sol --label sol
+
+  Remove a model:
+    yolop config models rm codex/gpt-5.6-sol")]
     Models {
         #[command(subcommand)]
         command: Option<ModelsCliCommand>,
@@ -1013,6 +1022,24 @@ mod tests {
         let command = ConfigCommandLine::augment_args(Command::new("config"));
         let matches = command.try_get_matches_from(args).expect("parse config");
         ConfigCommandLine::request(&matches).expect("config request")
+    }
+
+    #[test]
+    fn models_help_includes_common_command_forms() {
+        let mut command = ConfigCommandLine::augment_args(Command::new("config"));
+        let help = command
+            .find_subcommand_mut("models")
+            .expect("models subcommand")
+            .render_long_help()
+            .to_string();
+
+        for example in [
+            "yolop config models list",
+            "yolop config models add codex gpt-5.6-sol --label sol",
+            "yolop config models rm codex/gpt-5.6-sol",
+        ] {
+            assert!(help.contains(example), "missing help example: {example}");
+        }
     }
 
     #[test]
