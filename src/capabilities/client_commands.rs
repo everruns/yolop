@@ -334,6 +334,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn execute_command_emits_mcp_reload() {
+        let ui = Arc::new(RecordingUi::default());
+        let capability = ClientCommandsCapability::new(ui.clone());
+
+        let result = capability
+            .execute_command(
+                &ExecuteCommandRequest {
+                    name: "mcp".to_string(),
+                    arguments: Some("reload".to_string()),
+                    controls: None,
+                },
+                &CommandExecutionContext::without_host(SessionId::new()),
+            )
+            .await
+            .expect("execute /mcp reload");
+
+        assert!(result.success);
+        assert!(result.message.is_empty());
+        assert_eq!(
+            ui.take(),
+            vec![UiCommand::ManageMcp {
+                arg: Some("reload".to_string())
+            }]
+        );
+    }
+
+    #[tokio::test]
     async fn execute_command_rejects_names_this_capability_does_not_own() {
         let ui = Arc::new(RecordingUi::default());
         let capability = ClientCommandsCapability::new(ui.clone());
