@@ -1877,6 +1877,7 @@ fn continuation_command(
     let mut preserved = Vec::new();
     let mut skip_value = false;
     let mut compact_work = true;
+    let mut compact_work_available = true;
 
     for arg in args {
         if skip_value {
@@ -1895,6 +1896,9 @@ fn continuation_command(
             compact_work = value == "--compact-work";
             continue;
         }
+        if matches!(value.as_ref(), "--inline" | "--print" | "--acp") {
+            compact_work_available = false;
+        }
         if value.starts_with("--print=")
             || value.starts_with("--image=")
             || value.starts_with("--session=")
@@ -1905,11 +1909,13 @@ fn continuation_command(
         preserved.push(shell_quote(&value));
     }
 
-    preserved.push(if compact_work {
-        "--compact-work".to_string()
-    } else {
-        "--no-compact-work".to_string()
-    });
+    if compact_work_available {
+        preserved.push(if compact_work {
+            "--compact-work".to_string()
+        } else {
+            "--no-compact-work".to_string()
+        });
+    }
     preserved.push("--session".to_string());
     preserved.push(shell_quote(session_id));
     format!("yolop {}", preserved.join(" "))
@@ -2600,6 +2606,14 @@ mod tests {
         assert_eq!(
             continuation_command(args, "new-session"),
             "yolop --inline --sandbox --model 'gpt test' --session new-session"
+        );
+
+        let args = ["yolop", "--acp", "--session=old-session"]
+            .into_iter()
+            .map(OsString::from);
+        assert_eq!(
+            continuation_command(args, "new-session"),
+            "yolop --acp --session new-session"
         );
     }
 
