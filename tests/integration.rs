@@ -2337,7 +2337,14 @@ fn tui_bang_shell_runs_shell_without_model_turn() {
     if !require_native_sandbox("tui_bang_shell_runs_shell_without_model_turn") {
         return;
     }
-    let mut tui = spawn_tui_llmsim(&yolop_binary());
+    let mut tui = spawn_tui_llmsim_with(
+        &yolop_binary(),
+        TuiSpawnOptions {
+            inline: false,
+            compact_work: true,
+            ..TuiSpawnOptions::default()
+        },
+    );
     assert!(
         tui.wait_for_output("type /help", Duration::from_secs(3)),
         "TUI did not render startup banner: {}",
@@ -2345,9 +2352,19 @@ fn tui_bang_shell_runs_shell_without_model_turn() {
     );
 
     tui.write_input(b"!shell printf shell-pty-output\r");
+    let summary = tui
+        .wait_for_screen(Duration::from_secs(10), |screen| {
+            screen.iter().any(|line| line.contains("Ctrl+O details"))
+        })
+        .join("\n");
+    assert!(
+        summary.contains("Ctrl+O details"),
+        "!shell did not complete: {summary}"
+    );
+    tui.write_input(b"\x0f");
     assert!(
         tui.wait_for_output("shell exited with code 0", Duration::from_secs(5)),
-        "!shell did not complete: {}",
+        "!shell details did not expand: {}",
         tui.output_text()
     );
 
@@ -2372,7 +2389,14 @@ fn tui_bang_shell_runs_shell_without_model_turn() {
 
 #[test]
 fn tui_bang_yolop_extensions_uses_attached_control() {
-    let mut tui = spawn_tui_llmsim(&yolop_binary());
+    let mut tui = spawn_tui_llmsim_with(
+        &yolop_binary(),
+        TuiSpawnOptions {
+            inline: false,
+            compact_work: true,
+            ..TuiSpawnOptions::default()
+        },
+    );
     assert!(
         tui.wait_for_output("type /help", Duration::from_secs(10)),
         "TUI did not render startup banner: {}",
@@ -2380,9 +2404,19 @@ fn tui_bang_yolop_extensions_uses_attached_control() {
     );
 
     tui.write_input(b"!yolop extensions list\r");
+    let summary = tui
+        .wait_for_screen(Duration::from_secs(10), |screen| {
+            screen.iter().any(|line| line.contains("Ctrl+O details"))
+        })
+        .join("\n");
+    assert!(
+        summary.contains("Ctrl+O details"),
+        "attached extension control did not complete: {summary}"
+    );
+    tui.write_input(b"\x0f");
     assert!(
         tui.wait_for_output("shell exited with code 0", Duration::from_secs(5)),
-        "attached extension control did not complete: {}",
+        "attached extension-control details did not expand: {}",
         tui.output_text()
     );
     assert!(
@@ -2406,7 +2440,14 @@ fn tui_bang_yolop_extensions_uses_attached_control() {
 /// clap prints help inside the child, which never sends a control frame.
 #[test]
 fn tui_bang_yolop_extensions_help_renders_usage_instead_of_a_parse_error() {
-    let mut tui = spawn_tui_llmsim(&yolop_binary());
+    let mut tui = spawn_tui_llmsim_with(
+        &yolop_binary(),
+        TuiSpawnOptions {
+            inline: false,
+            compact_work: true,
+            ..TuiSpawnOptions::default()
+        },
+    );
     assert!(
         tui.wait_for_output("type /help", Duration::from_secs(10)),
         "TUI did not render startup banner: {}",
@@ -2414,14 +2455,24 @@ fn tui_bang_yolop_extensions_help_renders_usage_instead_of_a_parse_error() {
     );
 
     tui.write_input(b"!yolop extensions --help\r");
+    let summary = tui
+        .wait_for_screen(Duration::from_secs(10), |screen| {
+            screen.iter().any(|line| line.contains("Ctrl+O details"))
+        })
+        .join("\n");
     assert!(
-        tui.wait_for_output("shell exited with code 0", Duration::from_secs(10)),
-        "attached help did not complete: {}",
+        summary.contains("Ctrl+O details"),
+        "attached help did not complete: {summary}"
+    );
+    tui.write_input(b"\x0f");
+    assert!(
+        tui.wait_for_output("Scaffold a Python extension", Duration::from_secs(5)),
+        "attached help details did not expand: {}",
         tui.output_text()
     );
     let transcript = strip_ansi(&tui.output_text());
     assert!(
-        transcript.contains("Usage: yolop extensions"),
+        transcript.contains("Scaffold a Python extension"),
         "help text should render: {transcript}"
     );
     assert!(
@@ -2437,7 +2488,11 @@ fn tui_bang_yolop_extensions_help_renders_usage_instead_of_a_parse_error() {
 fn tui_shell_session_approval_skips_later_prompts_for_the_same_scope() {
     let mut tui = spawn_tui_llmsim_with_settings(
         &yolop_binary(),
-        TuiSpawnOptions::default(),
+        TuiSpawnOptions {
+            inline: false,
+            compact_work: true,
+            ..TuiSpawnOptions::default()
+        },
         "provider = \"llmsim\"\napproval_policy = \"untrusted\"\n",
     );
     assert!(
@@ -2453,18 +2508,38 @@ fn tui_shell_session_approval_skips_later_prompts_for_the_same_scope() {
         tui.output_text()
     );
     tui.write_input(b"a");
+    let summary = tui
+        .wait_for_screen(Duration::from_secs(10), |screen| {
+            screen.iter().any(|line| line.contains("Ctrl+O details"))
+        })
+        .join("\n");
+    assert!(
+        summary.contains("Ctrl+O details"),
+        "approved shell command did not finish: {summary}"
+    );
+    tui.write_input(b"\x0f");
     assert!(
         tui.wait_for_output("first-session-command", Duration::from_secs(5))
             && tui.wait_for_output("shell exited with code 0", Duration::from_secs(5)),
-        "approved shell command did not finish: {}",
+        "approved shell details did not expand: {}",
         tui.output_text()
     );
 
     tui.write_input(b"!shell printf second-session-command\r");
+    let summary = tui
+        .wait_for_screen(Duration::from_secs(10), |screen| {
+            screen.iter().any(|line| line.contains("Ctrl+O details"))
+        })
+        .join("\n");
+    assert!(
+        summary.contains("Ctrl+O details"),
+        "second shell command did not inherit session approval: {summary}"
+    );
+    tui.write_input(b"\x0f");
     assert!(
         tui.wait_for_output("second-session-command", Duration::from_secs(5))
             && tui.wait_for_output("shell exited with code 0", Duration::from_secs(5)),
-        "second shell command did not inherit session approval: {}",
+        "second shell details did not expand: {}",
         tui.output_text()
     );
     // The footer keeps the recent transcript on screen, so the first command's
@@ -2511,6 +2586,8 @@ fn shell_commands_have_full_host_access_by_default() {
         &yolop_binary(),
         TuiSpawnOptions {
             workspace: Some(workspace),
+            inline: false,
+            compact_work: true,
             ..TuiSpawnOptions::default()
         },
     );
@@ -2526,9 +2603,19 @@ fn shell_commands_have_full_host_access_by_default() {
     );
 
     tui.write_input(command.as_bytes());
+    let summary = tui
+        .wait_for_screen(Duration::from_secs(10), |screen| {
+            screen.iter().any(|line| line.contains("Ctrl+O details"))
+        })
+        .join("\n");
+    assert!(
+        summary.contains("Ctrl+O details"),
+        "full-access shell did not complete: {summary}"
+    );
+    tui.write_input(b"\x0f");
     assert!(
         tui.wait_for_output("shell exited with code 0", Duration::from_secs(5)),
-        "full-access shell did not complete: {}",
+        "full-access shell details did not expand: {}",
         tui.output_text()
     );
     assert!(
@@ -2592,7 +2679,14 @@ fn tui_bang_shell_can_create_toolchain_home() {
     if !require_native_sandbox("tui_bang_shell_can_create_toolchain_home") {
         return;
     }
-    let mut tui = spawn_tui_llmsim(&yolop_binary());
+    let mut tui = spawn_tui_llmsim_with(
+        &yolop_binary(),
+        TuiSpawnOptions {
+            inline: false,
+            compact_work: true,
+            ..TuiSpawnOptions::default()
+        },
+    );
     assert!(
         tui.wait_for_output("type /help", Duration::from_secs(3)),
         "TUI did not render startup banner: {}",
@@ -2600,6 +2694,16 @@ fn tui_bang_shell_can_create_toolchain_home() {
     );
 
     tui.write_input(b"!shell mkdir -p \"$HOME/.rustup\" && test -d \"$HOME/.rustup\"\r");
+    let summary = tui
+        .wait_for_screen(Duration::from_secs(10), |screen| {
+            screen.iter().any(|line| line.contains("Ctrl+O details"))
+        })
+        .join("\n");
+    assert!(
+        summary.contains("Ctrl+O details"),
+        "sandbox should permit creating directories under its synthetic home: {summary}"
+    );
+    tui.write_input(b"\x0f");
     assert!(
         tui.wait_for_output("shell exited with code 0", Duration::from_secs(5)),
         "sandbox should permit creating directories under its synthetic home: {}",
@@ -2617,7 +2721,14 @@ fn tui_bang_shell_can_redirect_to_dev_null() {
     if !require_native_sandbox("tui_bang_shell_can_redirect_to_dev_null") {
         return;
     }
-    let mut tui = spawn_tui_llmsim(&yolop_binary());
+    let mut tui = spawn_tui_llmsim_with(
+        &yolop_binary(),
+        TuiSpawnOptions {
+            inline: false,
+            compact_work: true,
+            ..TuiSpawnOptions::default()
+        },
+    );
     assert!(
         tui.wait_for_output("type /help", Duration::from_secs(3)),
         "TUI did not render startup banner: {}",
@@ -2625,6 +2736,16 @@ fn tui_bang_shell_can_redirect_to_dev_null() {
     );
 
     tui.write_input(b"!shell printf discarded >/dev/null\r");
+    let summary = tui
+        .wait_for_screen(Duration::from_secs(10), |screen| {
+            screen.iter().any(|line| line.contains("Ctrl+O details"))
+        })
+        .join("\n");
+    assert!(
+        summary.contains("Ctrl+O details"),
+        "sandbox should permit writing /dev/null: {summary}"
+    );
+    tui.write_input(b"\x0f");
     assert!(
         tui.wait_for_output("shell exited with code 0", Duration::from_secs(5)),
         "sandbox should permit writing /dev/null: {}",
