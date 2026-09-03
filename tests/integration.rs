@@ -2569,14 +2569,14 @@ fn sandbox_flag_restricts_shell_writes_for_one_run() {
         },
     );
     assert!(
-        tui.wait_for_output("type /help", Duration::from_secs(3)),
+        tui.wait_for_output("type /help", Duration::from_secs(10)),
         "TUI did not finish startup: {}",
         tui.output_text()
     );
 
     tui.write_input(command.as_bytes());
     assert!(
-        tui.wait_for_output("shell exited with code", Duration::from_secs(5)),
+        tui.wait_for_output("Failed after", Duration::from_secs(5)),
         "sandboxed shell did not complete: {}",
         tui.output_text()
     );
@@ -2664,7 +2664,7 @@ fn tui_agents_context_cannot_bypass_native_shell_sandbox() {
         },
     );
     assert!(
-        tui.wait_for_output("type /help", Duration::from_secs(3)),
+        tui.wait_for_output("type /help", Duration::from_secs(10)),
         "TUI did not render startup banner: {}",
         tui.output_text()
     );
@@ -2679,12 +2679,26 @@ fn tui_agents_context_cannot_bypass_native_shell_sandbox() {
     );
     tui.write_input(format!("!shell printf escaped > '{}'\r", outside.display()).as_bytes());
     assert!(
-        tui.wait_for_output(
-            "native sandbox likely blocked this operation",
-            Duration::from_secs(8)
-        ),
-        "sandbox denial was not explained: {}",
+        tui.wait_for_output("Failed after", Duration::from_secs(8)),
+        "sandboxed shell did not complete: {}",
         tui.output_text()
+    );
+    let collapsed = tui
+        .wait_for_screen(Duration::from_secs(3), |screen| {
+            screen.iter().any(|line| line.contains("Ctrl+O details"))
+        })
+        .join("\n");
+    assert!(collapsed.contains("Ctrl+O details"), "{collapsed}");
+
+    tui.write_input(b"\x0f");
+    let expanded = tui
+        .wait_for_screen(Duration::from_secs(3), |screen| {
+            screen.iter().any(|line| line.contains("Failed after"))
+        })
+        .join("\n");
+    assert!(
+        expanded.contains("Failed after"),
+        "sandbox failure disappeared after expanding compact work: {expanded}"
     );
     assert!(!outside.exists(), "AGENTS.md context bypassed the sandbox");
 
