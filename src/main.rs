@@ -293,6 +293,17 @@ enum McpCommand {
         #[arg(short = 'C', long = "cwd")]
         cwd: Option<PathBuf>,
     },
+    /// Show one configured MCP server.
+    Show {
+        /// Server name.
+        name: String,
+        /// Scope to inspect (`global`, `workspace`, or `effective`).
+        #[arg(long, default_value = "effective")]
+        scope: McpScopeArg,
+        /// Workspace root for workspace/effective config.
+        #[arg(short = 'C', long = "cwd")]
+        cwd: Option<PathBuf>,
+    },
     /// Add or replace an MCP server.
     Add {
         /// Scope to write (`global` or `workspace`).
@@ -339,16 +350,24 @@ enum McpCommand {
         #[arg(short = 'C', long = "cwd")]
         cwd: Option<PathBuf>,
     },
-    /// Enable or disable an MCP server without deleting it.
+    /// Enable an MCP server.
     Enable {
         /// Scope to write (`global` or `workspace`).
         #[arg(long, default_value = "global")]
         scope: McpScopeArg,
         /// Server name.
         name: String,
-        /// Disable instead of enable.
-        #[arg(long, default_value_t = false)]
-        disable: bool,
+        /// Workspace root when writing workspace config.
+        #[arg(short = 'C', long = "cwd")]
+        cwd: Option<PathBuf>,
+    },
+    /// Disable an MCP server without deleting it.
+    Disable {
+        /// Scope to write (`global` or `workspace`).
+        #[arg(long, default_value = "global")]
+        scope: McpScopeArg,
+        /// Server name.
+        name: String,
         /// Workspace root when writing workspace config.
         #[arg(short = 'C', long = "cwd")]
         cwd: Option<PathBuf>,
@@ -1163,6 +1182,25 @@ fn run_mcp_command(command: McpCommand) -> Result<()> {
             }
             Ok(())
         }
+        McpCommand::Show { name, scope, cwd } => {
+            let store = store(cwd)?;
+            let server = store
+                .effective()
+                .map_err(anyhow::Error::msg)?
+                .servers
+                .into_iter()
+                .find(|server| {
+                    server.name == name
+                        && match scope {
+                            McpScopeArg::Global => server.scope == McpConfigScope::Global,
+                            McpScopeArg::Workspace => server.scope == McpConfigScope::Workspace,
+                            McpScopeArg::Effective => server.effective,
+                        }
+                })
+                .with_context(|| format!("MCP server `{name}` was not found in {scope:?} scope"))?;
+            println!("{}", serde_json::to_string_pretty(&server)?);
+            Ok(())
+        }
         McpCommand::Add {
             scope,
             name,
@@ -1243,19 +1281,27 @@ fn run_mcp_command(command: McpCommand) -> Result<()> {
             }
             Ok(())
         }
-        McpCommand::Enable {
-            scope,
-            name,
-            disable,
-            cwd,
-        } => {
+        McpCommand::Enable { scope, name, cwd } => {
             let store = store(cwd)?;
             store
-                .set_enabled(write_scope(scope)?, &name, !disable)
+                .set_enabled(write_scope(scope)?, &name, true)
                 .map_err(anyhow::Error::msg)?;
             println!(
-                "{} MCP server `{name}` in {} scope",
-                if disable { "disabled" } else { "enabled" },
+                "enabled MCP server `{name}` in {} scope",
+                mcp_scope_label(write_scope(scope)?)
+            );
+            println!(
+                "restart or start a new yolop session for MCP connection changes to take effect"
+            );
+            Ok(())
+        }
+        McpCommand::Disable { scope, name, cwd } => {
+            let store = store(cwd)?;
+            store
+                .set_enabled(write_scope(scope)?, &name, false)
+                .map_err(anyhow::Error::msg)?;
+            println!(
+                "disabled MCP server `{name}` in {} scope",
                 mcp_scope_label(write_scope(scope)?)
             );
             println!(
@@ -2377,6 +2423,18 @@ mod tests {
                 .execute()
                 .await
                 .expect("execute detached command");
+        }
+    }
+
+    #[test]
+    fn mcp_cli_exposes_management_and_runtime_commands() {
+        for argv in [
+            vec!["yolop", "mcp", "list"],
+            vec!["yolop", "mcp", "show", "demo"],
+            vec!["yolop", "mcp", "enable", "demo"],
+            vec!["yolop", "mcp", "disable", "demo"],
+        ] {
+            Cli::try_parse_from(argv).expect("parse MCP command");
         }
     }
 
