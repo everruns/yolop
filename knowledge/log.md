@@ -1,5 +1,11 @@
 # Knowledge Log
 
+## 2026-09-02, Compact work is the fullscreen default
+
+- [Presentation](specs/presentation.md): fullscreen turns compact narration and
+  tool activity into an expandable work summary by default. `--no-compact-work`
+  restores ordinary transcript rows for users who need the expanded projection.
+
 ## 2026-08-31, ACP tools follow host capabilities
 
 - [ACP](specs/acp.md): session-title events update the client title, while
