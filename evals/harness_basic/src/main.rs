@@ -26,6 +26,7 @@ use mira::scorer::{Scorer, cost_within, scorer, succeeded};
 use mira::subject::subject_fn;
 use mira::{Dataset, Eval, RunCx, Sample, Score, Target, Transcript, eval};
 use serde_json::{Value, json};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 // ============================================================================
 // Matrix
@@ -358,6 +359,36 @@ mod tests {
                 ]
             }
         ]),
+    )
+}
+
+fn background_failure_wake_sample() -> Sample {
+    Sample::new(
+        "background-failure-wake",
+        "Use spawn_background to start one bash task with command `exit 1` and title \
+         `intentional eval failure`, then end the turn immediately. Do not call wait_task or \
+         inspect the task before its automatic completion notification. Do not retry or replace \
+         that task. When the notification arrives, reply with BACKGROUND_FAILED.",
+    )
+    .tag("background-wake")
+    .tag("orchestration-efficiency")
+    .meta("kind", "interactive-background")
+    .meta("runner", "acp-background-wake")
+    .meta("max_turns", 8)
+    .meta("max_tool_calls", 12)
+    .meta(
+        "checks",
+        json!([{
+            "response_contains": ["BACKGROUND_FAILED"],
+            "metric_at_least": {"automatic_background_wakes": 1.0},
+            "metric_equals": {
+                "background_spawn_calls": 1.0,
+                "background_wake_llm_calls": 1.0,
+                "background_wake_responses": 1.0,
+                "background_wake_tool_calls": 0.0
+            },
+            "metric_at_most": {"turns": 5.0, "tool_calls": 3.0}
+        }]),
     )
 }
 
@@ -1550,6 +1581,7 @@ fn dataset() -> Dataset {
         progress_guard_checkpoint_sample(),
         stale_history_local_state_sample(),
         background_callback_bridge_sample(),
+        background_failure_wake_sample(),
         owner_selection_sample(false),
         owner_selection_sample(true),
         prior_session_reference_sample(),
@@ -2022,6 +2054,11 @@ struct Mined {
     tool_calls: Vec<String>,
     tool_calls_failed: u64,
     inner_tool_failures: u64,
+    automatic_background_wakes: u64,
+    background_wake_llm_calls: u64,
+    background_wake_responses: u64,
+    background_wake_tool_calls: u64,
+    background_spawn_calls: u64,
     final_response: String,
     effort_applied: Option<String>,
     exploration_tools_before_first_mutation: u64,
@@ -2439,6 +2476,7 @@ fn parse_events(jsonl: &str) -> Mined {
     let mut saw_progress_warning = false;
     let mut saw_checkpoint_required = false;
     let mut saw_truncated_repo_map = false;
+    let mut saw_background_wake = false;
     let mut repo_map_recovery_pending = false;
     let mut exploration_fingerprints = BTreeSet::new();
     let mut workspace = WorkspaceTrajectory::default();
@@ -2454,8 +2492,26 @@ fn parse_events(jsonl: &str) -> Mined {
         let data = ev.get("data").cloned().unwrap_or(Value::Null);
         let num = |v: &Value, key: &str| v.get(key).and_then(Value::as_u64).unwrap_or(0);
         match etype {
+            "input.message" => {
+                let text = data
+                    .pointer("/message/content")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter(|part| part.get("type").and_then(Value::as_str) == Some("text"))
+                    .filter_map(|part| part.get("text").and_then(Value::as_str))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                if text.starts_with("[automatic] Background work you started has finished:") {
+                    m.automatic_background_wakes += 1;
+                    saw_background_wake = true;
+                }
+            }
             "output.message.completed" => {
                 m.llm_calls += 1;
+                if saw_background_wake {
+                    m.background_wake_llm_calls += 1;
+                }
                 if let Some(usage) = data.get("usage") {
                     if m.llm_calls == 1 {
                         m.first_request_input_tokens = num(usage, "input_tokens");
@@ -2555,6 +2611,9 @@ fn parse_events(jsonl: &str) -> Mined {
                         })
                         .unwrap_or_default();
                     if !text.trim().is_empty() {
+                        if saw_background_wake {
+                            m.background_wake_responses += 1;
+                        }
                         m.final_response = text;
                     }
                     if let Some(effort) = message
@@ -2566,11 +2625,17 @@ fn parse_events(jsonl: &str) -> Mined {
                 }
             }
             "tool.completed" => {
+                if saw_background_wake {
+                    m.background_wake_tool_calls += 1;
+                }
                 let name = data
                     .get("tool_name")
                     .and_then(Value::as_str)
                     .unwrap_or("unknown");
                 m.tool_calls.push(name.to_string());
+                if name == "spawn_background" {
+                    m.background_spawn_calls += 1;
+                }
                 let tool_succeeded = data.get("success").and_then(Value::as_bool) == Some(true);
                 match name {
                     "repo_map" => {
@@ -2875,6 +2940,44 @@ fn seed_prior_sessions(sample: &Sample, sessions_dir: &Path) -> Result<(), Strin
     Ok(())
 }
 
+async fn acp_request(
+    stdin: &mut tokio::process::ChildStdin,
+    stdout: &mut BufReader<tokio::process::ChildStdout>,
+    id: u64,
+    method: &str,
+    params: Value,
+) -> Result<Value, String> {
+    let request = json!({"jsonrpc":"2.0", "id":id, "method":method, "params":params});
+    stdin
+        .write_all(format!("{request}\n").as_bytes())
+        .await
+        .map_err(|error| format!("write ACP {method}: {error}"))?;
+    stdin.flush().await.map_err(|error| format!("flush ACP {method}: {error}"))?;
+    let mut line = String::new();
+    loop {
+        line.clear();
+        let read = tokio::time::timeout(Duration::from_secs(30), stdout.read_line(&mut line))
+            .await
+            .map_err(|_| format!("timeout waiting for ACP {method}"))?
+            .map_err(|error| format!("read ACP {method}: {error}"))?;
+        if read == 0 {
+            return Err(format!("ACP closed while waiting for {method}"));
+        }
+        let value: Value = serde_json::from_str(&line)
+            .map_err(|error| format!("decode ACP {method}: {error}: {line}"))?;
+        if value.get("id").and_then(Value::as_u64) != Some(id) {
+            continue;
+        }
+        if let Some(error) = value.get("error") {
+            return Err(format!("ACP {method}: {error}"));
+        }
+        return value
+            .get("result")
+            .cloned()
+            .ok_or_else(|| format!("ACP {method} response had no result"));
+    }
+}
+
 async fn run_yolop(sample: Sample, cx: RunCx) -> Transcript {
     let binary = cx
         .param("binary")
@@ -2921,7 +3024,12 @@ async fn run_yolop(sample: Sample, cx: RunCx) -> Transcript {
     if let Err(error) = seed_prior_sessions(&sample, &sessions) {
         return Transcript::infra_error(error);
     }
-    let session_id = fresh_session_id();
+    let mut session_id = fresh_session_id();
+    let acp_background_wake = sample
+        .metadata
+        .get("runner")
+        .and_then(Value::as_str)
+        == Some("acp-background-wake");
 
     let prompt = sample.input.join("\n");
     let mut cmd = tokio::process::Command::new(&bin);
@@ -2937,12 +3045,16 @@ async fn run_yolop(sample: Sample, cx: RunCx) -> Transcript {
     if effort != "default" {
         cmd.arg("--reasoning-effort").arg(&effort);
     }
-    cmd.arg("--session")
-        .arg(&session_id)
-        .arg("--session-dir")
-        .arg(&sessions)
-        .arg("-p")
-        .arg(&prompt);
+    if acp_background_wake {
+        cmd.arg("--acp").arg("--session-dir").arg(&sessions);
+    } else {
+        cmd.arg("--session")
+            .arg(&session_id)
+            .arg("--session-dir")
+            .arg(&sessions)
+            .arg("-p")
+            .arg(&prompt);
+    }
     // Full config isolation: Linux honors XDG_CONFIG_HOME; macOS `dirs` uses
     // HOME/Library/Application Support, so set HOME to the scratch tree too.
     cmd.env("XDG_CONFIG_HOME", &xdg_config)
@@ -2950,7 +3062,11 @@ async fn run_yolop(sample: Sample, cx: RunCx) -> Transcript {
         .env("XDG_STATE_HOME", scratch.path().join("xdg-state"))
         .env("XDG_CACHE_HOME", scratch.path().join("xdg-cache"))
         .env("HOME", &home)
-        .stdin(std::process::Stdio::null())
+        .stdin(if acp_background_wake {
+            std::process::Stdio::piped()
+        } else {
+            std::process::Stdio::null()
+        })
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true); // dropping the wait future on timeout kills yolop
@@ -2964,46 +3080,91 @@ async fn run_yolop(sample: Sample, cx: RunCx) -> Transcript {
     }
 
     let started = std::time::Instant::now();
-    let child = match cmd.spawn() {
+    let mut child = match cmd.spawn() {
         Ok(child) => child,
         Err(e) => return Transcript::infra_error(format!("spawn {}: {e}", bin.display())),
     };
-    let waited =
-        tokio::time::timeout(Duration::from_secs(timeout_s()), child.wait_with_output()).await;
-    let duration_ms = started.elapsed().as_millis() as u64;
-
     let mut t = Transcript::default();
     let mut stop_reason = "completed";
-    match &waited {
-        Ok(Ok(output)) if output.status.success() => {}
-        Ok(Ok(output)) => {
-            stop_reason = "error";
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let tail: String = stderr
-                .lines()
-                .rev()
-                .take(6)
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
-                .collect::<Vec<_>>()
-                .join(" | ");
-            let code = output
-                .status
-                .code()
-                .map(|c| c.to_string())
-                .unwrap_or_else(|| "signal".into());
-            t.error = Some(format!("yolop exit {code}: {tail}"));
+    if acp_background_wake {
+        let mut stdin = child.stdin.take().expect("ACP stdin");
+        let stdout = child.stdout.take().expect("ACP stdout");
+        let mut stdout = BufReader::new(stdout);
+        let acp = async {
+            acp_request(&mut stdin, &mut stdout, 1, "initialize", json!({
+                "protocolVersion": 1, "clientCapabilities": {},
+                "clientInfo": {"name":"harness_basic", "version":"0"}
+            })).await?;
+            let created = acp_request(&mut stdin, &mut stdout, 2, "session/new", json!({
+                "cwd": work.path(), "mcpServers": []
+            })).await?;
+            let id = created.get("sessionId").and_then(Value::as_str)
+                .ok_or_else(|| format!("ACP session/new missing sessionId: {created}"))?.to_string();
+            acp_request(&mut stdin, &mut stdout, 3, "session/prompt", json!({
+                "sessionId": id, "prompt": [{"type":"text", "text": prompt}]
+            })).await?;
+            Ok::<_, String>(id)
+        }.await;
+        match acp {
+            Ok(id) => {
+                session_id = id;
+                let events = sessions.join(&session_id).join("events.jsonl");
+                let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout_s());
+                while tokio::time::Instant::now() < deadline {
+                    if std::fs::read_to_string(&events).ok().is_some_and(|body| {
+                        let mined = parse_events(&body);
+                        mined.automatic_background_wakes >= 1
+                            && mined.background_wake_responses >= 1
+                    }) {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                }
+            }
+            Err(error) => {
+                stop_reason = "error";
+                t.error = Some(error);
+            }
         }
-        Ok(Err(e)) => {
-            stop_reason = "error";
-            t.error = Some(format!("wait for yolop: {e}"));
-        }
-        Err(_) => {
-            // A run that never finishes is a finding about the agent under
-            // test, not the environment — score it as a failure, not infra.
-            stop_reason = "timeout";
-            t.error = Some(format!("timeout after {}s", timeout_s()));
+        let _ = child.kill().await;
+        let _ = child.wait().await;
+    } else {
+        match &tokio::time::timeout(
+            Duration::from_secs(timeout_s()),
+            child.wait_with_output(),
+        )
+        .await
+        {
+            Ok(Ok(output)) if output.status.success() => {}
+            Ok(Ok(output)) => {
+                stop_reason = "error";
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                let tail: String = stderr
+                    .lines()
+                    .rev()
+                    .take(6)
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect::<Vec<_>>()
+                    .join(" | ");
+                let code = output
+                    .status
+                    .code()
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| "signal".into());
+                t.error = Some(format!("yolop exit {code}: {tail}"));
+            }
+            Ok(Err(e)) => {
+                stop_reason = "error";
+                t.error = Some(format!("wait for yolop: {e}"));
+            }
+            Err(_) => {
+                // A run that never finishes is a finding about the agent under
+                // test, not the environment, so score it as a failure, not infra.
+                stop_reason = "timeout";
+                t.error = Some(format!("timeout after {}s", timeout_s()));
+            }
         }
     }
 
@@ -3038,7 +3199,7 @@ async fn run_yolop(sample: Sample, cx: RunCx) -> Transcript {
     t.usage.output_tokens = mined.output_tokens;
     t.usage.cache_read_tokens = mined.cache_read_tokens;
     t.usage.cost_usd = mined.cost_usd;
-    t.timing.duration_ms = duration_ms;
+    t.timing.duration_ms = started.elapsed().as_millis() as u64;
     t.files = read_files_back(work.path());
 
     t.metrics.insert("llm_calls".into(), mined.llm_calls as f64);
@@ -3105,6 +3266,26 @@ async fn run_yolop(sample: Sample, cx: RunCx) -> Transcript {
     t.metrics.insert("turns".into(), mined.turns as f64);
     t.metrics
         .insert("tool_calls_failed".into(), mined.tool_calls_failed as f64);
+    t.metrics.insert(
+        "automatic_background_wakes".into(),
+        mined.automatic_background_wakes as f64,
+    );
+    t.metrics.insert(
+        "background_wake_llm_calls".into(),
+        mined.background_wake_llm_calls as f64,
+    );
+    t.metrics.insert(
+        "background_spawn_calls".into(),
+        mined.background_spawn_calls as f64,
+    );
+    t.metrics.insert(
+        "background_wake_responses".into(),
+        mined.background_wake_responses as f64,
+    );
+    t.metrics.insert(
+        "background_wake_tool_calls".into(),
+        mined.background_wake_tool_calls as f64,
+    );
     t.metrics.insert(
         "inner_tool_failures".into(),
         mined.inner_tool_failures as f64,
@@ -3511,6 +3692,29 @@ mod tests {
         assert_eq!(m.standalone_bookkeeping_rounds, 1);
         assert_eq!(task_tool_calls(&m), 2);
         assert_eq!(task_llm_calls(&m), 2);
+    }
+
+    #[test]
+    fn parse_events_requires_a_text_response_after_background_wake() {
+        let before_response = r#"
+{"type":"output.message.completed","data":{"message":{"role":"agent","content":[{"type":"text","text":"Started."}]}}}
+{"type":"input.message","data":{"message":{"role":"user","content":[{"type":"text","text":"[automatic] Background work you started has finished:\n\nBackground run failed."}]}}}
+"#;
+        let m = parse_events(before_response);
+        assert_eq!(m.automatic_background_wakes, 1);
+        assert_eq!(m.background_wake_responses, 0);
+        assert_eq!(m.background_wake_llm_calls, 0);
+        assert_eq!(m.background_wake_tool_calls, 0);
+        assert_eq!(m.final_response, "Started.");
+
+        let after_response = format!(
+            "{before_response}\n{{\"type\":\"output.message.completed\",\"data\":{{\"message\":{{\"role\":\"agent\",\"content\":[{{\"type\":\"text\",\"text\":\"BACKGROUND_FAILED\"}}]}}}}}}"
+        );
+        let m = parse_events(&after_response);
+        assert_eq!(m.background_wake_responses, 1);
+        assert_eq!(m.background_wake_llm_calls, 1);
+        assert_eq!(m.background_wake_tool_calls, 0);
+        assert_eq!(m.final_response, "BACKGROUND_FAILED");
     }
 
     #[test]

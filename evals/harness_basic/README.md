@@ -9,8 +9,10 @@ exploration before first mutation.
 
 Unlike `swebench_verified/` (Python, benchmark-scale), this study is pure Rust
 on the [`mira-eval`](https://crates.io/crates/mira-eval) SDK, no Python
-plumbing, and drives yolop through its headless one-shot mode (`yolop -p`,
-the runtime path; the TUI is never involved). The `with-ast-edit` variant
+plumbing, and normally drives yolop through its headless one-shot mode
+(`yolop -p`, the runtime path; the TUI is never involved). The
+`background-failure-wake` case uses a persistent ACP session so it can observe
+the automatic completion wake and the turn it triggers. The `with-ast-edit` variant
 exercises the opt-in `ast_edit` capability; see [`knowledge/specs/ast_edit.md`](../../knowledge/specs/ast_edit.md).
 
 ## The matrix
@@ -116,9 +118,11 @@ selection (`--axis harness=no-progress-guard`), and `--group-by harness`.
 2. Write the variant's `settings.toml` into scratch config dirs
    (config/data/state/cache are all isolated, the developer's real
    `~/.config/yolop` never leaks in).
-3. Spawn `yolop -C <workdir> --provider … --model … [--reasoning-effort …]
-   --session … --session-dir … -p "<prompt>"` and wait (default cap 600s,
-   `HARNESS_BASIC_TIMEOUT_S`).
+3. Spawn `yolop -C <workdir> --provider … --model … [--reasoning-effort …]`
+   in one-shot mode with `--session … --session-dir … -p "<prompt>"`. Persistent
+   cases instead use `--acp`, perform the `initialize`, `session/new`, and
+   `session/prompt` JSON-RPC exchange, then wait for their declared automatic
+   wake completion condition (default cap 600s, `HARNESS_BASIC_TIMEOUT_S`).
 4. Mine the session `events.jsonl` for usage/cost (once per
    `output.message.completed`; yolop repeats usage on `reason.completed`),
   tool calls + failures, trajectory counters, iterations/turns, the final
@@ -166,6 +170,9 @@ automatic title and status maintenance do not consume focused task budgets.
 `cumulative_input_tokens` sums uncached,
 cache-read, and cache-creation input so fewer repeated rounds remain visible
 even when provider caching makes billable input look small.
+The persistent background case also reports model calls, tool calls, and final
+text responses after the automatic wake, separating wake efficiency from the
+initial title, tool-discovery, and spawn path.
 `first_request_input_tokens` records the provider's uncached input on the first
 model call, while `first_request_total_input_tokens` adds cache-read and
 cache-creation input for an apples-to-apples cold-start comparison. All cases also
@@ -207,6 +214,10 @@ doppler run -- mira run --preset progress-guard --group-by harness
 HARNESS_BASIC_BASELINE_BIN=/path/to/main/yolop \
 HARNESS_BASIC_CANDIDATE_BIN=/path/to/change/yolop \
   doppler run -- mira run --preset search-efficiency --trials 3 --group-by binary
+
+# Persistent ACP proof for failed background completion handling.
+HARNESS_BASIC_CANDIDATE_BIN=/path/to/change/yolop \
+  doppler run -- mira run --preset background-wake --trials 3
 
 # Smallest focused discovery A/B.
 HARNESS_BASIC_BASELINE_BIN=/path/to/main/yolop \

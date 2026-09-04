@@ -15,6 +15,8 @@
 
 use async_trait::async_trait;
 use everruns::local::{HostRoutedRunner, LocalSessionRunner, WakeRoutes};
+use everruns_core::Event;
+use everruns_core::EventData;
 use everruns_core::ExecutionSession;
 use everruns_core::InputMessage;
 use everruns_core::MessageRole;
@@ -26,7 +28,7 @@ use everruns_provider::typed_id::{AgentId, HarnessId, SessionId};
 use everruns_provider::{AgentLoopError, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use tokio::sync::{Mutex as AsyncMutex, mpsc};
 
@@ -383,10 +385,71 @@ pub fn frame_wake_prompt(message: &WakeMessage) -> String {
     }
     format!(
         "[automatic] Background work you started has finished:\n\n{}\n\nThis is not a \
-         user message. Read the run's result if useful (its `result_path`/`log_path` are session \
-         files you can read), then continue the work it was for or report the result.",
+         user message. Treat the terminal summary as authoritative. Read its `result_path` or \
+         `log_path` only when the summary lacks detail required for the active ask. Do not update \
+         the session title. Do not retry or replace failed work unchanged. Continue the work it \
+         was for or report the result.",
         message.raw
     )
+}
+
+/// A queued completion does not create a second model obligation when the
+/// foreground turn already consumed the same terminal task snapshot.
+pub(crate) fn completion_already_observed(message: &WakeMessage, events: &[Event]) -> bool {
+    let Some(handoff) = message.handoff.as_ref() else {
+        return false;
+    };
+    let mut pending = handoff
+        .tasks
+        .iter()
+        .map(|task| (task.task_id.as_str(), task.status.as_str()))
+        .collect::<HashSet<_>>();
+    if pending.is_empty() {
+        return false;
+    }
+    for event in events.iter().rev() {
+        let EventData::ToolCompleted(data) = &event.data else {
+            continue;
+        };
+        if !matches!(
+            data.tool_name.as_str(),
+            "get_task" | "wait_task" | "list_tasks"
+        ) {
+            continue;
+        }
+        for text in data
+            .result
+            .iter()
+            .flatten()
+            .filter_map(|part| part.as_text())
+        {
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
+                continue;
+            };
+            if let Some(task) = value.get("task") {
+                remove_observed_task(&mut pending, task);
+            }
+            if let Some(tasks) = value.get("tasks").and_then(|tasks| tasks.as_array()) {
+                for task in tasks {
+                    remove_observed_task(&mut pending, task);
+                }
+            }
+        }
+        if pending.is_empty() {
+            return true;
+        }
+    }
+    false
+}
+
+fn remove_observed_task(pending: &mut HashSet<(&str, &str)>, snapshot: &serde_json::Value) {
+    if let (Some(id), Some(state)) = (
+        snapshot.get("id").and_then(|id| id.as_str()),
+        snapshot.get("state").and_then(|state| state.as_str()),
+    ) {
+        pending
+            .retain(|(expected_id, expected_state)| *expected_id != id || *expected_state != state);
+    }
 }
 
 /// Persist the raw wake exactly as received while attaching a host-only marker
@@ -641,7 +704,10 @@ mod tests {
     use super::*;
     use chrono::Utc;
     use everruns_core::session_task::new_session_task;
-    use everruns_core::{CreateSessionTask, SessionTaskState, TaskWakePolicy};
+    use everruns_core::{
+        ContentPart, CreateSessionTask, EventContext, SessionTaskState, TaskWakePolicy,
+        ToolCompletedData,
+    };
     use everruns_host::HostBackends;
 
     fn runner() -> WakeRunner {
@@ -803,6 +869,118 @@ mod tests {
             .is_none(),
             "missing summary must select the full-history fallback"
         );
+    }
+
+    #[test]
+    fn failed_background_completion_is_a_tagged_automatic_turn() {
+        let task = task_handoff(terminal_task(
+            "task_failed",
+            SessionTaskState::Failed,
+            Some("command exited with code 1"),
+        ))
+        .expect("failed task has a handoff");
+        let wake = WakeMessage {
+            raw: "Background run failed.\n- run_id: task_failed".to_string(),
+            handoff: Some(WakeHandoff {
+                version: 1,
+                active_ask: None,
+                active_goal: None,
+                tasks: vec![task],
+                omitted_tasks: 0,
+            }),
+            kind: WakeKind::Background,
+        };
+
+        let input = input_for_wake(&wake);
+        assert_eq!(input.tags, vec!["automatic_background_wake"]);
+        assert!(
+            input
+                .content
+                .first()
+                .and_then(|part| part.as_text())
+                .is_some_and(|text| text.contains("Background run failed"))
+        );
+        assert!(
+            input
+                .content
+                .first()
+                .and_then(|part| part.as_text())
+                .is_some_and(|text| text.contains("Continue the work it was for")),
+            "this is the production framing that the ACP eval exercises"
+        );
+        let text = input.content[0].as_text().expect("wake text");
+        assert!(text.contains("terminal summary as authoritative"));
+        assert!(text.contains("Do not update the session title"));
+        assert!(text.contains("Do not retry or replace failed work unchanged"));
+    }
+
+    #[test]
+    fn terminal_task_observation_suppresses_its_queued_wake() {
+        let task = task_handoff(terminal_task(
+            "task_failed",
+            SessionTaskState::Failed,
+            Some("command exited with code 1"),
+        ))
+        .expect("failed task has a handoff");
+        let wake = WakeMessage {
+            raw: "Background run failed.\n- run_id: task_failed".to_string(),
+            handoff: Some(WakeHandoff {
+                version: 1,
+                active_ask: None,
+                active_goal: None,
+                tasks: vec![task],
+                omitted_tasks: 0,
+            }),
+            kind: WakeKind::Background,
+        };
+        let observation = |tool: &str, id: &str, state: &str| {
+            Event::new(
+                SessionId::from_seed(910_099),
+                EventContext::empty(),
+                ToolCompletedData::success(
+                    "call_observe".to_string(),
+                    tool.to_string(),
+                    vec![ContentPart::text(
+                        json!({"task": {"id": id, "state": state}}).to_string(),
+                    )],
+                    None,
+                ),
+            )
+        };
+
+        assert!(completion_already_observed(
+            &wake,
+            &[observation("wait_task", "task_failed", "failed")]
+        ));
+        assert!(completion_already_observed(
+            &wake,
+            &[observation("get_task", "task_failed", "failed")]
+        ));
+        let listed = Event::new(
+            SessionId::from_seed(910_099),
+            EventContext::empty(),
+            ToolCompletedData::success(
+                "call_list".to_string(),
+                "list_tasks".to_string(),
+                vec![ContentPart::text(
+                    json!({"tasks": [{"id": "task_failed", "state": "failed"}]}).to_string(),
+                )],
+                None,
+            ),
+        );
+        assert!(completion_already_observed(&wake, &[listed]));
+        assert!(!completion_already_observed(
+            &wake,
+            &[observation("wait_task", "task_failed", "running")]
+        ));
+        assert!(!completion_already_observed(
+            &wake,
+            &[observation("get_task", "task_other", "failed")]
+        ));
+        assert!(!completion_already_observed(
+            &wake,
+            &[observation("read_file", "task_failed", "failed")]
+        ));
     }
 
     #[test]

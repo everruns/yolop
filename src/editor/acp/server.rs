@@ -767,6 +767,19 @@ fn spawn_background_wake_drain(
                         .user_ask_store
                         .active_text(session.handles.session_id),
                 );
+            if !message.is_coordination()
+                && session.handles.runtime.events().await.is_ok_and(|events| {
+                    crate::runtime::background_wake::completion_already_observed(&message, &events)
+                })
+            {
+                peer.session_update(
+                    &session.acp_id,
+                    SessionUpdate::AgentMessageChunk(protocol::text_chunk(
+                        "✓ background task completion already handled",
+                    )),
+                );
+                continue;
+            }
             if !message.is_coordination() && !session.settings.snapshot().proactive_wake_enabled() {
                 peer.session_update(
                     &session.acp_id,
