@@ -149,6 +149,13 @@ tag = "orchestration-efficiency"
 targets = ["openai/gpt-5.5"]
 axes = { binary = ["baseline", "parallel-only", "policy-only", "candidate"], effort = ["default"], harness = ["default"] }
 
+# BACKGROUND-WAKE: persistent ACP session that starts a failing detached task
+# and measures the automatic wake's recovery trajectory.
+[presets.background-wake]
+samples = ["background-failure-wake"]
+targets = ["openai/gpt-5.5"]
+axes = { binary = ["candidate"], effort = ["default"], harness = ["default"] }
+
 # BATCH-NATIVE-DISCOVERY — isolates the structured multi-file read contract
 # from Yolop changes. The independent case measures adoption and model-round
 # savings; the dependent control must remain one logical file per read round.

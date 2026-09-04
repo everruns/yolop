@@ -158,10 +158,14 @@ Yolop installs a platform store to close that gap (`crate::background_wake`):
   (`spawn_background_wake_drain`) that takes the same `turn_lock` as client
   prompts so a wake turn never overlaps one, and joins on connection teardown.
 - Both frame the completion message as an `[automatic]` prompt
-  (`frame_wake_prompt`): explicitly not a user message, pointing the model at the
-  run's result before it continues. The host resolves the matching durable task
-  snapshot and attaches provenance metadata that ordinary prompt text cannot
-  forge.
+  (`frame_wake_prompt`): explicitly not a user message. The authenticated
+  terminal snapshot is authoritative, so the model does not re-query task state,
+  retitle the session, or retry unchanged failed work before it continues. The
+  host resolves the matching durable task snapshot and attaches provenance
+  metadata that ordinary prompt text cannot forge.
+- If the foreground turn already observed the same terminal snapshot through a
+  task inspection tool, the host consumes the queued notification without a
+  second model turn. ACP and the TUI still surface a completion-handled notice.
 - A completion turn receives a bounded model-view handoff instead of replaying
   the parent transcript prefix. It contains the active ask and goal, task
   identity and requested scope, terminal state, concise execution/validation

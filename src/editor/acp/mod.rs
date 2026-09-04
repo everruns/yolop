@@ -2421,6 +2421,100 @@ mod tests {
         );
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn observed_terminal_background_task_does_not_wake_agent_again() {
+        let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let config = LlmSimConfig::scripted(vec![
+            SimTurn::ToolCalls(vec![SimToolCall {
+                name: "spawn_background".to_string(),
+                arguments: json!({
+                    "tool": "bash",
+                    "args": { "command": "exit 1" },
+                    "title": "expected failure",
+                    "signal_on_completion": true,
+                }),
+                id: None,
+            }]),
+            SimTurn::ToolCalls(vec![SimToolCall {
+                name: "bash".to_string(),
+                arguments: json!({"command": "sleep 0.2"}),
+                id: None,
+            }]),
+            SimTurn::ToolCalls(vec![SimToolCall {
+                name: "list_tasks".to_string(),
+                arguments: json!({}),
+                id: None,
+            }]),
+            SimTurn::Assistant("BACKGROUND_FAILED".to_string()),
+            SimTurn::Assistant("DUPLICATE_WAKE".to_string()),
+        ])
+        .with_message_capture(captured.clone());
+
+        let sessions = tempfile::tempdir().expect("sessions tempdir").keep();
+        let (mut client_w, mut reader, _server) = start_raw_server(config, sessions.clone());
+        send_json(
+            &mut client_w,
+            json!({ "jsonrpc": "2.0", "id": 0, "method": "initialize", "params": { "protocolVersion": 1 } }),
+        )
+        .await;
+        collect_until_response_id(&mut reader, 0).await;
+
+        let cwd = tempfile::tempdir().expect("cwd tempdir").keep();
+        send_json(
+            &mut client_w,
+            json!({ "jsonrpc": "2.0", "id": 1, "method": "session/new", "params": { "cwd": cwd.to_str().unwrap(), "mcpServers": [] } }),
+        )
+        .await;
+        let (created, _) = collect_until_response_id(&mut reader, 1).await;
+        let session_id = created["result"]["sessionId"]
+            .as_str()
+            .expect("sessionId")
+            .to_string();
+
+        send_json(
+            &mut client_w,
+            json!({
+                "jsonrpc": "2.0", "id": 2, "method": "session/prompt",
+                "params": { "sessionId": session_id, "prompt": [{ "type": "text", "text": "run and inspect the expected failure" }] }
+            }),
+        )
+        .await;
+        let (_, updates) = collect_until_response_id(&mut reader, 2).await;
+        assert!(
+            update_texts(&updates, "agent_message_chunk")
+                .iter()
+                .any(|text| text.contains("BACKGROUND_FAILED")),
+            "foreground turn should consume the terminal task: {updates:?}"
+        );
+
+        let notice = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let message = next_json(&mut reader).await;
+                let text = message
+                    .pointer("/params/update/content/text")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                if text.contains("background task completion already handled") {
+                    return;
+                }
+                assert!(!text.contains("DUPLICATE_WAKE"));
+            }
+        })
+        .await;
+        assert!(
+            notice.is_ok(),
+            "expected host-side duplicate wake suppression"
+        );
+        assert_eq!(
+            captured.lock().expect("captured provider messages").len(),
+            4,
+            "a consumed completion must not create another provider call"
+        );
+        let events = std::fs::read_to_string(sessions.join(session_id).join("events.jsonl"))
+            .expect("read events");
+        assert!(!events.contains("[automatic] Background work you started has finished:"));
+    }
+
     /// A persisted local schedule must wake an idle ACP session at its due time,
     /// let that turn start the requested background command, then deliver the
     /// command's ordinary completion wake through the same serialized channel.

@@ -1,5 +1,12 @@
 # Knowledge Log
 
+## 2026-09-03, Background completions are handled once
+
+- [Background execution](specs/background.md): a terminal task snapshot observed
+  by the foreground turn consumes its queued completion without another model
+  turn. Automatic wake prompts treat authenticated snapshots as authoritative
+  and prohibit title churn, redundant task inspection, and unchanged retries.
+
 ## 2026-09-02, Compact work is the fullscreen default
 
 - [Presentation](specs/presentation.md): fullscreen turns compact narration and

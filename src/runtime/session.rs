@@ -21,6 +21,7 @@ use everruns_provider::typed_id::SessionId;
 use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::exec::tools::{BashTool, Workspace};
+use crate::runtime::background_wake::WakeMessage;
 use crate::runtime::{ModelState, RuntimeHandles};
 use crate::tui::transcript::{
     Author, ChatLine, DeltaRouter, TurnEvent, assistant_lines_since, handle_live_event,
@@ -152,6 +153,12 @@ impl Session {
             .iter()
             .flat_map(lines_for_replayed_event)
             .collect())
+    }
+
+    pub(crate) async fn completion_already_observed(&self, message: &WakeMessage) -> bool {
+        self.handles.runtime.events().await.is_ok_and(|events| {
+            crate::runtime::background_wake::completion_already_observed(message, &events)
+        })
     }
 
     pub fn take_checkpoint_notice(&self) -> Option<String> {

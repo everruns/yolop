@@ -2032,7 +2032,7 @@ impl App {
         // 3c) proactive wake: when an everruns `spawn_background` task finishes
         // while the session is idle, auto-start a turn so the agent reacts
         // without a user prompt.
-        if self.maybe_wake_from_background_channel() {
+        if self.maybe_wake_from_background_channel().await {
             return Ok(());
         }
 
@@ -3185,7 +3185,7 @@ impl App {
     /// never interrupts an in-flight turn. Only the first pending message wakes a
     /// turn (draining the rest would lose them); the remainder wake on subsequent
     /// idle ticks. Returns true if it started a turn.
-    fn maybe_wake_from_background_channel(&mut self) -> bool {
+    async fn maybe_wake_from_background_channel(&mut self) -> bool {
         if self.busy || self.rx.is_some() || self.setup.is_some() {
             return false;
         }
@@ -3198,6 +3198,10 @@ impl App {
         )
         .with_active_goal(self.goal_store.active_condition(self.session.session_id()))
         .with_active_ask(self.user_ask_store.active_text(self.session.session_id()));
+        if !message.is_coordination() && self.session.completion_already_observed(&message).await {
+            self.push_system("✓ background task completion already handled".to_string());
+            return false;
+        }
         if !message.is_coordination() && !self.settings.snapshot().proactive_wake_enabled() {
             self.push_system(
                 "✓ background task finished — see /background (proactive wake off)".to_string(),
@@ -7340,12 +7344,12 @@ flowchart TD
         app.setup = None;
 
         // Idle with no signal: nothing to wake for.
-        assert!(!app.maybe_wake_from_background_channel());
+        assert!(!app.maybe_wake_from_background_channel().await);
 
         // A completion signal arrives on the wake channel ⇒ a turn is started.
         let _tx = seed_background_wake(app, "Background run completed.\n- run_id: bg_1");
         assert!(
-            app.maybe_wake_from_background_channel(),
+            app.maybe_wake_from_background_channel().await,
             "a finished background task should wake the agent"
         );
         assert!(app.busy, "proactive wake must start a turn");
@@ -7370,7 +7374,7 @@ flowchart TD
         ))
         .unwrap();
 
-        assert!(app.maybe_wake_from_background_channel());
+        assert!(app.maybe_wake_from_background_channel().await);
         assert!(app.busy);
         assert!(
             app.lines
@@ -7395,13 +7399,13 @@ flowchart TD
         let _tx = seed_background_wake(app, "Background run completed.\n- run_id: bg_1");
         app.setup = Some(SetupStep::Provider { selected: 0 });
         assert!(
-            !app.maybe_wake_from_background_channel(),
+            !app.maybe_wake_from_background_channel().await,
             "no wake during setup"
         );
         assert!(!app.busy);
         app.setup = None;
         assert!(
-            app.maybe_wake_from_background_channel(),
+            app.maybe_wake_from_background_channel().await,
             "wake should fire once the overlay closes — the signal wasn't consumed"
         );
         assert!(app.busy);
@@ -7446,7 +7450,7 @@ flowchart TD
 
         let _tx = seed_background_wake(app, "Background run completed.\n- run_id: bg_1");
         // Setting off: no turn, but the completion is still surfaced once.
-        assert!(!app.maybe_wake_from_background_channel());
+        assert!(!app.maybe_wake_from_background_channel().await);
         assert!(!app.busy, "wake setting off must not start a turn");
         assert!(
             app.lines
