@@ -64,6 +64,30 @@ class TestMatrix(unittest.TestCase):
             tb.MATRIX["openrouter-claude-sonnet-5"],
             {"agent": "yolop", "model": "openrouter/anthropic/claude-sonnet-5"},
         )
+        self.assertEqual(
+            tb.MATRIX["claude-code-sonnet-5"],
+            {
+                "agent": "claude-code",
+                "harbor_agent": "harbor_claude:ClaudeCodeCompatibility",
+                "model": "anthropic/claude-sonnet-5",
+            },
+        )
+
+    def test_terra_medium_compare_preset_is_explicit_and_balanced(self):
+        config_path = Path(__file__).resolve().parents[1] / "mira.toml"
+        config = tomllib.loads(config_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(
+            tb.MATRIX["openai-gpt-5.6-terra-medium"],
+            {"agent": "yolop", "model": "openai/gpt-5.6-terra", "reasoning_effort": "medium"},
+        )
+        self.assertEqual(
+            config["presets"]["terra-medium-compare"],
+            {
+                "samples": ["modernize-scientific-stack", "chess-best-move", "count-dataset-tokens"],
+                "targets": ["openai-gpt-5.6-terra-medium", "claude-code-sonnet-5", "codex"],
+            },
+        )
 
 
 class TestBuildCommand(unittest.TestCase):
@@ -84,11 +108,32 @@ class TestBuildCommand(unittest.TestCase):
         cmd = self._command(tb.MATRIX["openai-gpt-5.6-terra-high"])
         self.assertIn("reasoning_effort=high", cmd)
 
+    def test_medium_reasoning_effort_rides_as_an_agent_kwarg(self):
+        cmd = self._command(tb.MATRIX["openai-gpt-5.6-terra-medium"])
+        self.assertIn("reasoning_effort=medium", cmd)
+
     def test_harbor_native_agent_is_passed_through(self):
         cmd = self._command(tb.MATRIX["terminus-2"])
         self.assertEqual(cmd[cmd.index("--agent") + 1], "terminus-2")
         # Adapter-only kwargs must not leak onto a Harbor-native agent.
         self.assertNotIn("--ak", cmd)
+
+    def test_competitor_workarounds_are_passed_to_harbor(self):
+        codex_cmd = self._command(tb.MATRIX["codex"])
+        self.assertEqual(
+            codex_cmd[codex_cmd.index("--agent") + 1],
+            "harbor_codex:CodexCompatibility",
+        )
+
+        claude_cmd = self._command(tb.MATRIX["claude-code-sonnet-5"])
+        self.assertEqual(
+            claude_cmd[claude_cmd.index("--agent") + 1],
+            "harbor_claude:ClaudeCodeCompatibility",
+        )
+
+    def test_memory_override_is_shared_by_every_target(self):
+        cmd = self._command(tb.MATRIX["codex"], env={"TB_OVERRIDE_MEMORY_MB": "4096"})
+        self.assertEqual(cmd[cmd.index("--override-memory-mb") + 1], "4096")
 
     def test_agent_env_pairs_are_forwarded(self):
         cmd = self._command(tb.MATRIX["llmsim"],

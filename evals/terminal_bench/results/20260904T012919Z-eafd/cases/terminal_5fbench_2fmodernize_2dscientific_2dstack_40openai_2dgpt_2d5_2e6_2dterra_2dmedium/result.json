@@ -1,0 +1,85 @@
+{
+  "eval": "terminal_bench",
+  "sample": "modernize-scientific-stack",
+  "target": "openai-gpt-5.6-terra-medium",
+  "passed": true,
+  "aggregate": 1.0,
+  "scores": [
+    {
+      "scorer": "succeeded",
+      "value": 1.0,
+      "pass": true,
+      "reason": "no error"
+    },
+    {
+      "scorer": "resolved",
+      "value": 1.0,
+      "pass": true,
+      "reason": "tests passed"
+    }
+  ],
+  "transcript": {
+    "final_response": "resolved=True",
+    "iterations": 9,
+    "tool_calls_count": 12,
+    "tool_calls": [
+      "write_session_title",
+      "write_todos",
+      "write_todos",
+      "repo_map",
+      "list_directory",
+      "list_directory",
+      "read_many_files",
+      "progress_checkpoint",
+      "write_file",
+      "write_file",
+      "bash",
+      "bash"
+    ],
+    "usage": {
+      "input_tokens": 13301,
+      "output_tokens": 1459,
+      "cache_read_tokens": 85493,
+      "cost_usd": 0.07651074999999999
+    },
+    "timing": {
+      "duration_ms": 61294
+    },
+    "metrics": {
+      "cache_read_tokens": 85493.0,
+      "llm_calls": 9.0,
+      "reward": 1.0,
+      "tool_calls": 12.0
+    },
+    "metadata": {
+      "agent": "yolop",
+      "category": "scientific-computing",
+      "difficulty": "medium",
+      "exception": null,
+      "model": "openai/gpt-5.6-terra",
+      "model_effective": "gpt-5.6-terra",
+      "model_requested": "openai/gpt-5.6-terra",
+      "provider": "openai",
+      "provider_effective": "openai",
+      "provider_requested": "openai",
+      "reasoning_effort": "medium",
+      "reasoning_effort_effective": "medium",
+      "reasoning_effort_requested": "medium",
+      "resolved": true,
+      "reward": 1.0,
+      "stop_reason": "completed",
+      "tools_used": {
+        "bash": 2,
+        "list_directory": 2,
+        "progress_checkpoint": 1,
+        "read_many_files": 1,
+        "repo_map": 1,
+        "write_file": 2,
+        "write_session_title": 1,
+        "write_todos": 2
+      },
+      "yolop_version": "0.17.2"
+    }
+  },
+  "skipped": false
+}

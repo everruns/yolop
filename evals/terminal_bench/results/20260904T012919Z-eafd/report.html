@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mira eval report</title>
+<style>
+:root{color-scheme:light dark;--ok:#1a7f37;--bad:#cf222e;--warn:#9a6700;--mut:#57606a;--bg:#fff;--fg:#1f2328;--line:#d0d7de}
+@media(prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;--line:#30363d;--mut:#8b949e}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 -apple-system,Segoe UI,Roboto,sans-serif}
+main{max-width:960px;margin:0 auto;padding:2rem 1.25rem}
+h1{font-size:1.6rem;margin:0 0 1rem}h2{font-size:1.15rem;margin:2rem 0 .75rem;border-bottom:1px solid var(--line);padding-bottom:.25rem}
+.cards{display:flex;flex-wrap:wrap;gap:.75rem}
+.card{flex:1;min-width:96px;border:1px solid var(--line);border-radius:8px;padding:.75rem 1rem;text-align:center}
+.card b{display:block;font-size:1.5rem}.card span{color:var(--mut);font-size:.8rem;text-transform:uppercase;letter-spacing:.04em}
+.card.ok b{color:var(--ok)}.card.bad b{color:var(--bad)}.card.warn b{color:var(--warn)}
+table.matrix{border-collapse:collapse;width:100%}table.matrix th,table.matrix td{border:1px solid var(--line);padding:.4rem .6rem;text-align:center}
+table.matrix td:first-child,table.matrix th:first-child{text-align:left}
+.case{border:1px solid var(--line);border-radius:8px;margin:.5rem 0;padding:.25rem .75rem}
+.case summary{cursor:pointer;display:flex;gap:.6rem;align-items:center;flex-wrap:wrap}
+.case code{font-size:.92rem}.metrics{color:var(--mut);font-size:.8rem;margin-left:auto}
+.badge{font-size:.7rem;font-weight:700;padding:.1rem .4rem;border-radius:4px;color:#fff}
+.badge.pass{background:var(--ok)}.badge.fail{background:var(--bad)}.badge.skip{background:var(--mut)}.badge.na{background:var(--warn)}
+.scores{list-style:none;padding:0;margin:.5rem 0}.scores li{padding:.15rem 0}.scores li.pass{color:var(--ok)}.scores li.fail{color:var(--bad)}.scores li.na{color:var(--mut)}
+.tools,.meta{font-size:.85rem;color:var(--mut)}
+pre{background:rgba(127,127,127,.1);border-radius:6px;padding:.6rem .75rem;overflow:auto;font-size:.85rem;white-space:pre-wrap}
+pre.error{color:var(--bad)}a{color:#0969da}
+</style>
+</head>
+<body>
+<main>
+<h1>Mira eval report</h1>
+<section class="cards">
+<div class="card bad"><b>7/9</b><span>passed</span></div>
+<div class="card"><b>2</b><span>failed</span></div>
+<div class="card"><b>0</b><span>n/a</span></div>
+<div class="card"><b>0</b><span>skipped</span></div>
+<div class="card"><b>219327</b><span>tokens</span></div>
+<div class="card"><b>$1.2788</b><span>cost</span></div>
+</section>
+<h2>Matrix</h2>
+<table class="matrix">
+<thead><tr><th>eval</th><th>openai-gpt-5.6-terra-medium</th><th>claude-code-sonnet-5</th><th>codex</th></tr></thead>
+<tbody>
+<tr><td>terminal_bench</td><td>2/3</td><td>3/3</td><td>2/3</td></tr>
+</tbody>
+</table>
+<h2>Resolve rate by agent</h2>
+<table class="matrix">
+<thead><tr><th>agent</th><th>passed</th><th>scored</th><th>rate</th></tr></thead>
+<tbody>
+<tr><td>claude-code</td><td>3</td><td>3</td><td>100%</td></tr>
+<tr><td>codex</td><td>2</td><td>3</td><td>67%</td></tr>
+<tr><td>yolop</td><td>2</td><td>3</td><td>67%</td></tr>
+</tbody>
+</table>
+<h2>Cases</h2>
+<details class="case fail">
+<summary><span class="badge fail">FAIL</span> <code>terminal_bench/chess-best-move@openai-gpt-5.6-terra-medium</code><span class="metrics">24015 tok · $0.1458 · 106089ms · 13 tool calls</span></summary>
+<ul class="scores">
+<li class="pass">✓ <b>succeeded</b> — no error</li>
+<li class="fail">✗ <b>resolved</b> — tests failed</li>
+</ul>
+<p class="tools"><b>tools:</b> write_session_title, list_directory, write_todos, write_todos, read_file, read_file, bash, bash, bash, bash, bash, progress_checkpoint, write_file</p>
+<p class="meta"><b>metrics:</b> cache_read_tokens=131667, llm_calls=12, reward=0, tool_calls=13</p>
+<p class="meta"><b>metadata:</b> agent=yolop, category=games, difficulty=medium, exception=null, model=openai/gpt-5.6-terra, model_effective=gpt-5.6-terra, model_requested=openai/gpt-5.6-terra, provider=openai, provider_effective=openai, provider_requested=openai, reasoning_effort=medium, reasoning_effort_effective=medium, reasoning_effort_requested=medium, resolved=false, reward=0.0, stop_reason=completed, tools_used={"bash":5,"list_directory":1,"progress_checkpoint":1,"read_file":2,"write_file":1,"write_session_title":1,"write_todos":2}, yolop_version=0.17.2</p>
+<pre class="response">resolved=False</pre>
+</details>
+<details class="case pass">
+<summary><span class="badge pass">PASS</span> <code>terminal_bench/chess-best-move@claude-code-sonnet-5</code><span class="metrics">21996 tok · $0.2426 · 168301ms · 0 tool calls</span></summary>
+<ul class="scores">
+<li class="pass">✓ <b>succeeded</b> — no error</li>
+<li class="pass">✓ <b>resolved</b> — tests passed</li>
+</ul>
+<p class="meta"><b>metrics:</b> cache_read_tokens=583241, llm_calls=0, reward=1, tool_calls=0</p>
+<p class="meta"><b>metadata:</b> agent=claude-code, category=games, difficulty=medium, exception=null, model=anthropic/claude-sonnet-5, model_effective=null, model_requested=anthropic/claude-sonnet-5, provider=anthropic, provider_effective=null, provider_requested=anthropic, reasoning_effort=null, reasoning_effort_effective=null, reasoning_effort_requested=null, resolved=true, reward=1.0, stop_reason=completed, tools_used={}, yolop_version=null</p>
+<pre class="response">resolved=True</pre>
+</details>
+<details class="case fail">
+<summary><span class="badge fail">FAIL</span> <code>terminal_bench/chess-best-move@codex</code><span class="metrics">16886 tok · $0.0854 · 90502ms · 0 tool calls</span></summary>
+<ul class="scores">
+<li class="pass">✓ <b>succeeded</b> — no error</li>
+<li class="fail">✗ <b>resolved</b> — tests failed</li>
+</ul>
+<p class="meta"><b>metrics:</b> cache_read_tokens=101924, llm_calls=0, reward=0, tool_calls=0</p>
+<p class="meta"><b>metadata:</b> agent=codex, category=games, difficulty=medium, exception=null, model=openai/gpt-5.6-terra, model_effective=null, model_requested=openai/gpt-5.6-terra, provider=openai, provider_effective=null, provider_requested=openai, reasoning_effort=null, reasoning_effort_effective=null, reasoning_effort_requested=null, resolved=false, reward=0.0, stop_reason=completed, tools_used={}, yolop_version=null</p>
+<pre class="response">resolved=False</pre>
+</details>
+<details class="case pass">
+<summary><span class="badge pass">PASS</span> <code>terminal_bench/count-dataset-tokens@openai-gpt-5.6-terra-medium</code><span class="metrics">43749 tok · $0.2303 · 139573ms · 17 tool calls</span></summary>
+<ul class="scores">
+<li class="pass">✓ <b>succeeded</b> — no error</li>
+<li class="pass">✓ <b>resolved</b> — tests passed</li>
+</ul>
+<p class="tools"><b>tools:</b> write_session_title, write_todos, write_todos, write_todos, web_fetch, web_fetch, bash, bash, bash, bash, bash, bash, bash, bash, progress_checkpoint, progress_checkpoint, progress_checkpoint</p>
+<p class="meta"><b>metrics:</b> cache_read_tokens=237085, llm_calls=18, reward=1, tool_calls=17</p>
+<p class="meta"><b>metadata:</b> agent=yolop, category=model-training, difficulty=medium, exception=null, model=openai/gpt-5.6-terra, model_effective=gpt-5.6-terra, model_requested=openai/gpt-5.6-terra, provider=openai, provider_effective=openai, provider_requested=openai, reasoning_effort=medium, reasoning_effort_effective=medium, reasoning_effort_requested=medium, resolved=true, reward=1.0, stop_reason=completed, tools_used={"bash":8,"progress_checkpoint":3,"web_fetch":2,"write_session_title":1,"write_todos":3}, yolop_version=0.17.2</p>
+<pre class="response">resolved=True</pre>
+</details>
+<details class="case pass">
+<summary><span class="badge pass">PASS</span> <code>terminal_bench/count-dataset-tokens@claude-code-sonnet-5</code><span class="metrics">24093 tok · $0.1569 · 143250ms · 0 tool calls</span></summary>
+<ul class="scores">
+<li class="pass">✓ <b>succeeded</b> — no error</li>
+<li class="pass">✓ <b>resolved</b> — tests passed</li>
+</ul>
+<p class="meta"><b>metrics:</b> cache_read_tokens=304728, llm_calls=0, reward=1, tool_calls=0</p>
+<p class="meta"><b>metadata:</b> agent=claude-code, category=model-training, difficulty=medium, exception=null, model=anthropic/claude-sonnet-5, model_effective=null, model_requested=anthropic/claude-sonnet-5, provider=anthropic, provider_effective=null, provider_requested=anthropic, reasoning_effort=null, reasoning_effort_effective=null, reasoning_effort_requested=null, resolved=true, reward=1.0, stop_reason=completed, tools_used={}, yolop_version=null</p>
+<pre class="response">resolved=True</pre>
+</details>
+<details class="case pass">
+<summary><span class="badge pass">PASS</span> <code>terminal_bench/count-dataset-tokens@codex</code><span class="metrics">49034 tok · $0.2299 · 120772ms · 0 tool calls</span></summary>
+<ul class="scores">
+<li class="pass">✓ <b>succeeded</b> — no error</li>
+<li class="pass">✓ <b>resolved</b> — tests passed</li>
+</ul>
+<p class="meta"><b>metrics:</b> cache_read_tokens=372674, llm_calls=0, reward=1, tool_calls=0</p>
+<p class="meta"><b>metadata:</b> agent=codex, category=model-training, difficulty=medium, exception=null, model=openai/gpt-5.6-terra, model_effective=null, model_requested=openai/gpt-5.6-terra, provider=openai, provider_effective=null, provider_requested=openai, reasoning_effort=null, reasoning_effort_effective=null, reasoning_effort_requested=null, resolved=true, reward=1.0, stop_reason=completed, tools_used={}, yolop_version=null</p>
+<pre class="response">resolved=True</pre>
+</details>
+<details class="case pass">
+<summary><span class="badge pass">PASS</span> <code>terminal_bench/modernize-scientific-stack@openai-gpt-5.6-terra-medium</code><span class="metrics">14760 tok · $0.0765 · 61294ms · 12 tool calls</span></summary>
+<ul class="scores">
+<li class="pass">✓ <b>succeeded</b> — no error</li>
+<li class="pass">✓ <b>resolved</b> — tests passed</li>
+</ul>
+<p class="tools"><b>tools:</b> write_session_title, write_todos, write_todos, repo_map, list_directory, list_directory, read_many_files, progress_checkpoint, write_file, write_file, bash, bash</p>
+<p class="meta"><b>metrics:</b> cache_read_tokens=85493, llm_calls=9, reward=1, tool_calls=12</p>
+<p class="meta"><b>metadata:</b> agent=yolop, category=scientific-computing, difficulty=medium, exception=null, model=openai/gpt-5.6-terra, model_effective=gpt-5.6-terra, model_requested=openai/gpt-5.6-terra, provider=openai, provider_effective=openai, provider_requested=openai, reasoning_effort=medium, reasoning_effort_effective=medium, reasoning_effort_requested=medium, resolved=true, reward=1.0, stop_reason=completed, tools_used={"bash":2,"list_directory":2,"progress_checkpoint":1,"read_many_files":1,"repo_map":1,"write_file":2,"write_session_title":1,"write_todos":2}, yolop_version=0.17.2</p>
+<pre class="response">resolved=True</pre>
+</details>
+<details class="case pass">
+<summary><span class="badge pass">PASS</span> <code>terminal_bench/modernize-scientific-stack@claude-code-sonnet-5</code><span class="metrics">8428 tok · $0.0530 · 65075ms · 0 tool calls</span></summary>
+<ul class="scores">
+<li class="pass">✓ <b>succeeded</b> — no error</li>
+<li class="pass">✓ <b>resolved</b> — tests passed</li>
+</ul>
+<p class="meta"><b>metrics:</b> cache_read_tokens=112064, llm_calls=0, reward=1, tool_calls=0</p>
+<p class="meta"><b>metadata:</b> agent=claude-code, category=scientific-computing, difficulty=medium, exception=null, model=anthropic/claude-sonnet-5, model_effective=null, model_requested=anthropic/claude-sonnet-5, provider=anthropic, provider_effective=null, provider_requested=anthropic, reasoning_effort=null, reasoning_effort_effective=null, reasoning_effort_requested=null, resolved=true, reward=1.0, stop_reason=completed, tools_used={}, yolop_version=null</p>
+<pre class="response">resolved=True</pre>
+</details>
+<details class="case pass">
+<summary><span class="badge pass">PASS</span> <code>terminal_bench/modernize-scientific-stack@codex</code><span class="metrics">16366 tok · $0.0584 · 71157ms · 0 tool calls</span></summary>
+<ul class="scores">
+<li class="pass">✓ <b>succeeded</b> — no error</li>
+<li class="pass">✓ <b>resolved</b> — tests passed</li>
+</ul>
+<p class="meta"><b>metrics:</b> cache_read_tokens=38013, llm_calls=0, reward=1, tool_calls=0</p>
+<p class="meta"><b>metadata:</b> agent=codex, category=scientific-computing, difficulty=medium, exception=null, model=openai/gpt-5.6-terra, model_effective=null, model_requested=openai/gpt-5.6-terra, provider=openai, provider_effective=null, provider_requested=openai, reasoning_effort=null, reasoning_effort_effective=null, reasoning_effort_requested=null, resolved=true, reward=1.0, stop_reason=completed, tools_used={}, yolop_version=null</p>
+<pre class="response">resolved=True</pre>
+</details>
+<script type="application/json" id="mira-data">
+{"cases":[{"aggregate":0.5,"eval":"terminal_bench","passed":false,"sample":"chess-best-move","scores":[{"pass":true,"reason":"no error","scorer":"succeeded","value":1.0},{"pass":false,"reason":"tests failed","scorer":"resolved","value":0.0}],"skipped":false,"target":"openai-gpt-5.6-terra-medium","transcript":{"final_response":"resolved=False","iterations":12,"metadata":{"agent":"yolop","category":"games","difficulty":"medium","exception":null,"model":"openai/gpt-5.6-terra","model_effective":"gpt-5.6-terra","model_requested":"openai/gpt-5.6-terra","provider":"openai","provider_effective":"openai","provider_requested":"openai","reasoning_effort":"medium","reasoning_effort_effective":"medium","reasoning_effort_requested":"medium","resolved":false,"reward":0.0,"stop_reason":"completed","tools_used":{"bash":5,"list_directory":1,"progress_checkpoint":1,"read_file":2,"write_file":1,"write_session_title":1,"write_todos":2},"yolop_version":"0.17.2"},"metrics":{"cache_read_tokens":131667.0,"llm_calls":12.0,"reward":0.0,"tool_calls":13.0},"timing":{"duration_ms":106089},"tool_calls":["write_session_title","list_directory","write_todos","write_todos","read_file","read_file","bash","bash","bash","bash","bash","progress_checkpoint","write_file"],"tool_calls_count":13,"usage":{"cache_read_tokens":131667,"cost_usd":0.14577925000000003,"input_tokens":19789,"output_tokens":4226}}},{"aggregate":1.0,"eval":"terminal_bench","passed":true,"sample":"chess-best-move","scores":[{"pass":true,"reason":"no error","scorer":"succeeded","value":1.0},{"pass":true,"reason":"tests passed","scorer":"resolved","value":1.0}],"skipped":false,"target":"claude-code-sonnet-5","transcript":{"final_response":"resolved=True","iterations":0,"metadata":{"agent":"claude-code","category":"games","difficulty":"medium","exception":null,"model":"anthropic/claude-sonnet-5","model_effective":null,"model_requested":"anthropic/claude-sonnet-5","provider":"anthropic","provider_effective":null,"provider_requested":"anthropic","reasoning_effort":null,"reasoning_effort_effective":null,"reasoning_effort_requested":null,"resolved":true,"reward":1.0,"stop_reason":"completed","tools_used":{},"yolop_version":null},"metrics":{"cache_read_tokens":583241.0,"llm_calls":0.0,"reward":1.0,"tool_calls":0.0},"timing":{"duration_ms":168301},"tool_calls_count":0,"usage":{"cache_read_tokens":583241,"cost_usd":0.2426302,"input_tokens":12528,"output_tokens":9468}}},{"aggregate":0.5,"eval":"terminal_bench","passed":false,"sample":"chess-best-move","scores":[{"pass":true,"reason":"no error","scorer":"succeeded","value":1.0},{"pass":false,"reason":"tests failed","scorer":"resolved","value":0.0}],"skipped":false,"target":"codex","transcript":{"final_response":"resolved=False","iterations":0,"metadata":{"agent":"codex","category":"games","difficulty":"medium","exception":null,"model":"openai/gpt-5.6-terra","model_effective":null,"model_requested":"openai/gpt-5.6-terra","provider":"openai","provider_effective":null,"provider_requested":"openai","reasoning_effort":null,"reasoning_effort_effective":null,"reasoning_effort_requested":null,"resolved":false,"reward":0.0,"stop_reason":"completed","tools_used":{},"yolop_version":null},"metrics":{"cache_read_tokens":101924.0,"llm_calls":0.0,"reward":0.0,"tool_calls":0.0},"timing":{"duration_ms":90502},"tool_calls_count":0,"usage":{"cache_read_tokens":101924,"cost_usd":0.08541480000000001,"input_tokens":14483,"output_tokens":2403}}},{"aggregate":1.0,"eval":"terminal_bench","passed":true,"sample":"count-dataset-tokens","scores":[{"pass":true,"reason":"no error","scorer":"succeeded","value":1.0},{"pass":true,"reason":"tests passed","scorer":"resolved","value":1.0}],"skipped":false,"target":"openai-gpt-5.6-terra-medium","transcript":{"final_response":"resolved=True","iterations":18,"metadata":{"agent":"yolop","category":"model-training","difficulty":"medium","exception":null,"model":"openai/gpt-5.6-terra","model_effective":"gpt-5.6-terra","model_requested":"openai/gpt-5.6-terra","provider":"openai","provider_effective":"openai","provider_requested":"openai","reasoning_effort":"medium","reasoning_effort_effective":"medium","reasoning_effort_requested":"medium","resolved":true,"reward":1.0,"stop_reason":"completed","tools_used":{"bash":8,"progress_checkpoint":3,"web_fetch":2,"write_session_title":1,"write_todos":3},"yolop_version":"0.17.2"},"metrics":{"cache_read_tokens":237085.0,"llm_calls":18.0,"reward":1.0,"tool_calls":17.0},"timing":{"duration_ms":139573},"tool_calls":["write_session_title","write_todos","write_todos","write_todos","web_fetch","web_fetch","bash","bash","bash","bash","bash","bash","bash","bash","progress_checkpoint","progress_checkpoint","progress_checkpoint"],"tool_calls_count":17,"usage":{"cache_read_tokens":237085,"cost_usd":0.23025625,"input_tokens":38820,"output_tokens":4929}}},{"aggregate":1.0,"eval":"terminal_bench","passed":true,"sample":"count-dataset-tokens","scores":[{"pass":true,"reason":"no error","scorer":"succeeded","value":1.0},{"pass":true,"reason":"tests passed","scorer":"resolved","value":1.0}],"skipped":false,"target":"claude-code-sonnet-5","transcript":{"final_response":"resolved=True","iterations":0,"metadata":{"agent":"claude-code","category":"model-training","difficulty":"medium","exception":null,"model":"anthropic/claude-sonnet-5","model_effective":null,"model_requested":"anthropic/claude-sonnet-5","provider":"anthropic","provider_effective":null,"provider_requested":"anthropic","reasoning_effort":null,"reasoning_effort_effective":null,"reasoning_effort_requested":null,"resolved":true,"reward":1.0,"stop_reason":"completed","tools_used":{},"yolop_version":null},"metrics":{"cache_read_tokens":304728.0,"llm_calls":0.0,"reward":1.0,"tool_calls":0.0},"timing":{"duration_ms":143250},"tool_calls_count":0,"usage":{"cache_read_tokens":304728,"cost_usd":0.1568836,"input_tokens":20260,"output_tokens":3833}}},{"aggregate":1.0,"eval":"terminal_bench","passed":true,"sample":"count-dataset-tokens","scores":[{"pass":true,"reason":"no error","scorer":"succeeded","value":1.0},{"pass":true,"reason":"tests passed","scorer":"resolved","value":1.0}],"skipped":false,"target":"codex","transcript":{"final_response":"resolved=True","iterations":0,"metadata":{"agent":"codex","category":"model-training","difficulty":"medium","exception":null,"model":"openai/gpt-5.6-terra","model_effective":null,"model_requested":"openai/gpt-5.6-terra","provider":"openai","provider_effective":null,"provider_requested":"openai","reasoning_effort":null,"reasoning_effort_effective":null,"reasoning_effort_requested":null,"resolved":true,"reward":1.0,"stop_reason":"completed","tools_used":{},"yolop_version":null},"metrics":{"cache_read_tokens":372674.0,"llm_calls":0.0,"reward":1.0,"tool_calls":0.0},"timing":{"duration_ms":120772},"tool_calls_count":0,"usage":{"cache_read_tokens":372674,"cost_usd":0.2299008,"input_tokens":45581,"output_tokens":3453}}},{"aggregate":1.0,"eval":"terminal_bench","passed":true,"sample":"modernize-scientific-stack","scores":[{"pass":true,"reason":"no error","scorer":"succeeded","value":1.0},{"pass":true,"reason":"tests passed","scorer":"resolved","value":1.0}],"skipped":false,"target":"openai-gpt-5.6-terra-medium","transcript":{"final_response":"resolved=True","iterations":9,"metadata":{"agent":"yolop","category":"scientific-computing","difficulty":"medium","exception":null,"model":"openai/gpt-5.6-terra","model_effective":"gpt-5.6-terra","model_requested":"openai/gpt-5.6-terra","provider":"openai","provider_effective":"openai","provider_requested":"openai","reasoning_effort":"medium","reasoning_effort_effective":"medium","reasoning_effort_requested":"medium","resolved":true,"reward":1.0,"stop_reason":"completed","tools_used":{"bash":2,"list_directory":2,"progress_checkpoint":1,"read_many_files":1,"repo_map":1,"write_file":2,"write_session_title":1,"write_todos":2},"yolop_version":"0.17.2"},"metrics":{"cache_read_tokens":85493.0,"llm_calls":9.0,"reward":1.0,"tool_calls":12.0},"timing":{"duration_ms":61294},"tool_calls":["write_session_title","write_todos","write_todos","repo_map","list_directory","list_directory","read_many_files","progress_checkpoint","write_file","write_file","bash","bash"],"tool_calls_count":12,"usage":{"cache_read_tokens":85493,"cost_usd":0.07651074999999999,"input_tokens":13301,"output_tokens":1459}}},{"aggregate":1.0,"eval":"terminal_bench","passed":true,"sample":"modernize-scientific-stack","scores":[{"pass":true,"reason":"no error","scorer":"succeeded","value":1.0},{"pass":true,"reason":"tests passed","scorer":"resolved","value":1.0}],"skipped":false,"target":"claude-code-sonnet-5","transcript":{"final_response":"resolved=True","iterations":0,"metadata":{"agent":"claude-code","category":"scientific-computing","difficulty":"medium","exception":null,"model":"anthropic/claude-sonnet-5","model_effective":null,"model_requested":"anthropic/claude-sonnet-5","provider":"anthropic","provider_effective":null,"provider_requested":"anthropic","reasoning_effort":null,"reasoning_effort_effective":null,"reasoning_effort_requested":null,"resolved":true,"reward":1.0,"stop_reason":"completed","tools_used":{},"yolop_version":null},"metrics":{"cache_read_tokens":112064.0,"llm_calls":0.0,"reward":1.0,"tool_calls":0.0},"timing":{"duration_ms":65075},"tool_calls_count":0,"usage":{"cache_read_tokens":112064,"cost_usd":0.05296630000000001,"input_tokens":7163,"output_tokens":1265}}},{"aggregate":1.0,"eval":"terminal_bench","passed":true,"sample":"modernize-scientific-stack","scores":[{"pass":true,"reason":"no error","scorer":"succeeded","value":1.0},{"pass":true,"reason":"tests passed","scorer":"resolved","value":1.0}],"skipped":false,"target":"codex","transcript":{"final_response":"resolved=True","iterations":0,"metadata":{"agent":"codex","category":"scientific-computing","difficulty":"medium","exception":null,"model":"openai/gpt-5.6-terra","model_effective":null,"model_requested":"openai/gpt-5.6-terra","provider":"openai","provider_effective":null,"provider_requested":"openai","reasoning_effort":null,"reasoning_effort_effective":null,"reasoning_effort_requested":null,"resolved":true,"reward":1.0,"stop_reason":"completed","tools_used":{},"yolop_version":null},"metrics":{"cache_read_tokens":38013.0,"llm_calls":0.0,"reward":1.0,"tool_calls":0.0},"timing":{"duration_ms":71157},"tool_calls_count":0,"usage":{"cache_read_tokens":38013,"cost_usd":0.058429600000000005,"input_tokens":15322,"output_tokens":1044}}}],"groups":{"agent":{"claude-code":{"passed":3,"scored":3},"codex":{"passed":2,"scored":3},"yolop":{"passed":2,"scored":3}}},"summary":{"failed":2,"na":0,"passed":7,"scored":9,"skipped":0,"total_cost_usd":1.27877155,"total_duration_ms":966013,"total_tokens":219327,"total_tool_calls":42}}
+</script>
+</main>
+</body>
+</html>
