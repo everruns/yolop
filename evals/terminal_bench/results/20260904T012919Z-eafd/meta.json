@@ -1,0 +1,33 @@
+{
+  "format": 1,
+  "run_id": "20260904T012919Z-eafd",
+  "study": "terminal_bench",
+  "study_version": "0.1.0",
+  "started_unix": 1788485359,
+  "finished_unix": 1788486325,
+  "environment": {
+    "git": {
+      "commit": "48b0fb62d3c01baea7181138c7d48edbec9d70ba",
+      "dirty": true
+    },
+    "os": "macos",
+    "arch": "aarch64",
+    "hostname": "Mykhailos-Mac-mini.local",
+    "cpus": 12,
+    "mira_version": "0.3.0",
+    "labels": {
+      "benchmark": "terminal-bench-2-1"
+    }
+  },
+  "summary": {
+    "scored": 9,
+    "passed": 7,
+    "failed": 2,
+    "na": 0,
+    "skipped": 0,
+    "total_tokens": 219327,
+    "total_cost_usd": 1.27877155,
+    "total_tool_calls": 42,
+    "total_duration_ms": 966013
+  }
+}

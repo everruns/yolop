@@ -1,5 +1,13 @@
 # Knowledge Log
 
+## 2026-09-04, Native-agent Terminal-Bench comparison
+
+- The fixed three-task `terra-medium-compare` preset records Yolop with GPT-5.6
+  Terra medium against the native Claude Code Sonnet 5 and Codex adapters.
+- Compatibility installers avoid Harbor bootstrap failures on Apple Silicon;
+  the comparison runs all task containers with the same configurable memory
+  limit and records the resulting nine-case archive under the eval study.
+
 ## 2026-09-03, Background completions are handled once
 
 - [Background execution](specs/background.md): a terminal task snapshot observed

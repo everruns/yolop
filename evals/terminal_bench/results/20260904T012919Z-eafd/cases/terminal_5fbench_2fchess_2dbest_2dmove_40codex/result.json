@@ -1,0 +1,62 @@
+{
+  "eval": "terminal_bench",
+  "sample": "chess-best-move",
+  "target": "codex",
+  "passed": false,
+  "aggregate": 0.5,
+  "scores": [
+    {
+      "scorer": "succeeded",
+      "value": 1.0,
+      "pass": true,
+      "reason": "no error"
+    },
+    {
+      "scorer": "resolved",
+      "value": 0.0,
+      "pass": false,
+      "reason": "tests failed"
+    }
+  ],
+  "transcript": {
+    "final_response": "resolved=False",
+    "iterations": 0,
+    "tool_calls_count": 0,
+    "usage": {
+      "input_tokens": 14483,
+      "output_tokens": 2403,
+      "cache_read_tokens": 101924,
+      "cost_usd": 0.08541480000000001
+    },
+    "timing": {
+      "duration_ms": 90502
+    },
+    "metrics": {
+      "cache_read_tokens": 101924.0,
+      "llm_calls": 0.0,
+      "reward": 0.0,
+      "tool_calls": 0.0
+    },
+    "metadata": {
+      "agent": "codex",
+      "category": "games",
+      "difficulty": "medium",
+      "exception": null,
+      "model": "openai/gpt-5.6-terra",
+      "model_effective": null,
+      "model_requested": "openai/gpt-5.6-terra",
+      "provider": "openai",
+      "provider_effective": null,
+      "provider_requested": "openai",
+      "reasoning_effort": null,
+      "reasoning_effort_effective": null,
+      "reasoning_effort_requested": null,
+      "resolved": false,
+      "reward": 0.0,
+      "stop_reason": "completed",
+      "tools_used": {},
+      "yolop_version": null
+    }
+  },
+  "skipped": false
+}

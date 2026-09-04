@@ -54,6 +54,12 @@ tag = "easy"
 targets = ["openai-gpt-5.6-terra", "anthropic-claude-opus-4.8", "terminus-2",
            "claude-code-opus-4.8", "codex"]
 
+# TERRA MEDIUM COMPARE — a balanced, fixed three-task record across the medium
+# control categories. All three agents get the same tasks and native harness.
+[presets.terra-medium-compare]
+samples = ["modernize-scientific-stack", "chess-best-move", "count-dataset-tokens"]
+targets = ["openai-gpt-5.6-terra-medium", "claude-code-sonnet-5", "codex"]
+
 # FULL — the whole 89-task benchmark on one config; the headline number. Each
 # case saves as it lands, so an interrupted run resumes with
 # `mira run --resume <run_id>`.

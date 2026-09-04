@@ -209,6 +209,24 @@ table bills full `prompt_tokens`, including cache reads that dominate these
 agentic runs, and Terra and Luna have different configured rates. The absolute
 figures are ceilings; the 58.9% delta describes yolop's estimator.
 
+### Yolop vs native agents
+
+Run [`20260904T012919Z-eafd`](results/20260904T012919Z-eafd/report.json) is the
+fixed `terra-medium-compare` record. All nine cases completed without an
+infrastructure error under the same 12 GiB task-container limit.
+
+| agent | model and effort | resolved | cost | summed case wall |
+|---|---|---:|---:|---:|
+| Claude Code 2.1.260 | Sonnet 5, default effort | 3/3 | $0.452 | 6m17s |
+| yolop 0.17.2 | GPT-5.6 Terra, medium | 2/3 | $0.453 | 5m07s |
+| Codex | GPT-5.6 Terra, Harbor default high | 2/3 | $0.374 | 4m42s |
+
+Yolop and Codex both missed `chess-best-move`; every agent passed
+`count-dataset-tokens` and `modernize-scientific-stack`. This is an
+agent-default comparison, not an effort-matched model comparison. It is one
+trial on three tasks, so use it as an effectiveness record and trajectory source,
+not a population-level ranking.
+
 It is selected deterministically by `suites/select_control.py`, no hand-picking:
 tasks needing a GPU or more than 4 GiB are excluded (so the suite runs
 concurrently on an ordinary box), each tier is ordered by `(agent timeout, name)`
@@ -301,7 +319,20 @@ targets.
 | `smoke` | Integration check / validate a new config before a full run | `fix-git`, `cobol-modernization` | gpt-5.6-terra |
 | `control` | The periodic regression run ([Control suite](#control-suite)) | 8 (`control-v1`) | gpt-5.6-terra |
 | `compare` | yolop vs the other terminal agents on identical tasks | the `easy` tier | yolop ×2 + terminus-2 + claude-code + codex |
+| `terra-medium-compare` | fixed three-task record: yolop Terra medium vs Claude Code Sonnet 5 vs Codex | `modernize-scientific-stack`, `chess-best-move`, `count-dataset-tokens` | 3 agents |
 | `full` | The headline number | all 89 | gpt-5.6-terra |
+
+On this Apple Silicon host, enable Rosetta in Colima and give every task a
+12 GiB limit. Codex's x86 code-mode helper needs the memory, while Claude
+Code's native x86 binary is impractically slow under QEMU. Apply the same
+memory limit to every target so the comparison remains resource-symmetric:
+
+```bash
+colima start --memory 16 --vm-type vz --vz-rosetta
+TB_OVERRIDE_MEMORY_MB=12288 TB_MAX_COST_USD=45 \
+  doppler run --project yolop --config ci -- \
+  mira run --preset terra-medium-compare --group-by agent
+```
 
 ### Environment knobs
 
@@ -312,6 +343,7 @@ from the environment:
 |----------|--------|
 | `TB_MAX_COST_USD` | whole-run USD budget across every case (unset = no cap) |
 | `TB_YOLOP_BIN` | yolop binary to upload (default: the musl release build) |
+| `TB_OVERRIDE_MEMORY_MB` | override every task container's memory in MiB, keeping an agent comparison resource-symmetric |
 | `TB_DATASET_DIR` | use a pre-downloaded task tree instead of `.cache/dataset/` |
 | `TB_AGENT_ENV` | comma-separated `KEY=VALUE` forwarded into the agent's environment |
 | `TB_VERIFIER_ENV` | the same, for the verifier phase (it inherits nothing from the agent) |

@@ -37,7 +37,7 @@ CLI flags): `TB_YOLOP_BIN` (yolop binary to upload; default the musl build),
 (pre-downloaded task tree), `TB_AGENT_ENV` / `TB_VERIFIER_ENV` (comma-separated
 `KEY=VALUE` passed into the agent's resp. the verifier's environment),
 `TB_CA_CERT` (CA bundle to install in the container, for sandboxes behind a
-TLS-terminating proxy), `TB_JOB_TIMEOUT`,
+TLS-terminating proxy), `TB_OVERRIDE_MEMORY_MB` (shared task-container memory), `TB_JOB_TIMEOUT`,
 `TB_TIMEOUT_MULTIPLIER`, `TB_KEEP_JOBS=0` (discard retained Harbor job dirs).
 
 stdout carries ONLY protocol JSON (one object per line); logs go to stderr.
@@ -126,6 +126,9 @@ MATRIX: dict[str, dict[str, Any]] = {
     # yolop x OpenAI (default provider)
     "openai-gpt-5.6-luna": {"agent": "yolop", "model": "openai/gpt-5.6-luna"},
     "openai-gpt-5.6-terra": {"agent": "yolop", "model": "openai/gpt-5.6-terra"},
+    "openai-gpt-5.6-terra-medium": {
+        "agent": "yolop", "model": "openai/gpt-5.6-terra", "reasoning_effort": "medium",
+    },
     "openai-gpt-5.6-terra-high": {
         "agent": "yolop", "model": "openai/gpt-5.6-terra", "reasoning_effort": "high",
     },
@@ -147,7 +150,15 @@ MATRIX: dict[str, dict[str, Any]] = {
     # Harbor's own agents, for cross-agent comparison on identical tasks.
     "terminus-2": {"agent": "terminus-2", "model": "openai/gpt-5.6-terra"},
     "claude-code-opus-4.8": {"agent": "claude-code", "model": "anthropic/claude-opus-4-8"},
-    "codex": {"agent": "codex", "model": "openai/gpt-5.6-terra"},
+    "claude-code-sonnet-5": {
+        "agent": "claude-code",
+        "harbor_agent": "harbor_claude:ClaudeCodeCompatibility",
+        "model": "anthropic/claude-sonnet-5",
+    },
+    "codex": {
+        "agent": "codex", "harbor_agent": "harbor_codex:CodexCompatibility",
+        "model": "openai/gpt-5.6-terra",
+    },
 }
 
 # provider (the part before `/` in a model id) -> env var that makes it runnable.
@@ -346,12 +357,13 @@ def _verifier_env_pairs() -> list[str]:
 def build_command(task: Task, spec: dict, job_dir: Path, *, jobs_dir: Path) -> list[str]:
     cfg = {**DEFAULTS, **spec}
     agent = cfg.get("agent", "yolop")
+    harbor_agent = cfg.get("harbor_agent") or (YOLOP_AGENT_IMPORT_PATH if agent == "yolop" else agent)
     cmd = [
         harbor_bin(), "run",
         "-p", str(task.path),
         "--jobs-dir", str(jobs_dir),
         "--job-name", job_dir.name,
-        "--agent", YOLOP_AGENT_IMPORT_PATH if agent == "yolop" else agent,
+        "--agent", harbor_agent,
         # Mira owns concurrency across cases; one Harbor job is one case, so its
         # own trial concurrency stays at 1.
         "-n", "1",
@@ -360,6 +372,10 @@ def build_command(task: Task, spec: dict, job_dir: Path, *, jobs_dir: Path) -> l
     ]
     if cfg.get("model"):
         cmd += ["--model", cfg["model"]]
+    if cfg.get("agent_setup_timeout_multiplier") is not None:
+        cmd += ["--agent-setup-timeout-multiplier", str(cfg["agent_setup_timeout_multiplier"])]
+    if (memory_mb := _int("TB_OVERRIDE_MEMORY_MB", None)) is not None:
+        cmd += ["--override-memory-mb", str(memory_mb)]
     if agent == "yolop":
         cmd += ["--ak", f"binary_path={YOLOP_BIN}"]
         if cfg.get("max_cost_usd") is not None:

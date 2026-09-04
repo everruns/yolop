@@ -1,0 +1,62 @@
+{
+  "eval": "terminal_bench",
+  "sample": "count-dataset-tokens",
+  "target": "claude-code-sonnet-5",
+  "passed": true,
+  "aggregate": 1.0,
+  "scores": [
+    {
+      "scorer": "succeeded",
+      "value": 1.0,
+      "pass": true,
+      "reason": "no error"
+    },
+    {
+      "scorer": "resolved",
+      "value": 1.0,
+      "pass": true,
+      "reason": "tests passed"
+    }
+  ],
+  "transcript": {
+    "final_response": "resolved=True",
+    "iterations": 0,
+    "tool_calls_count": 0,
+    "usage": {
+      "input_tokens": 20260,
+      "output_tokens": 3833,
+      "cache_read_tokens": 304728,
+      "cost_usd": 0.1568836
+    },
+    "timing": {
+      "duration_ms": 143250
+    },
+    "metrics": {
+      "cache_read_tokens": 304728.0,
+      "llm_calls": 0.0,
+      "reward": 1.0,
+      "tool_calls": 0.0
+    },
+    "metadata": {
+      "agent": "claude-code",
+      "category": "model-training",
+      "difficulty": "medium",
+      "exception": null,
+      "model": "anthropic/claude-sonnet-5",
+      "model_effective": null,
+      "model_requested": "anthropic/claude-sonnet-5",
+      "provider": "anthropic",
+      "provider_effective": null,
+      "provider_requested": "anthropic",
+      "reasoning_effort": null,
+      "reasoning_effort_effective": null,
+      "reasoning_effort_requested": null,
+      "resolved": true,
+      "reward": 1.0,
+      "stop_reason": "completed",
+      "tools_used": {},
+      "yolop_version": null
+    }
+  },
+  "skipped": false
+}
