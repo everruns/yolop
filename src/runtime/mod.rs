@@ -3373,6 +3373,14 @@ impl everruns_host::RuntimeProviderStore for YolopProviderStore {
     }
 }
 
+fn set_sandbox_environment_context(
+    registry: &EnvironmentContextRegistry,
+    mode: crate::config::SandboxMode,
+) {
+    registry.set("sandbox_mode", mode.as_str());
+    registry.set("network_access", crate::exec::sandbox::network_access(mode));
+}
+
 pub async fn build_with_options(
     workspace_root: PathBuf,
     provider: ProviderChoice,
@@ -3717,7 +3725,7 @@ pub async fn build_with_options(
     // their how-to prose has earned its place this turn.
     let tool_reveals = Arc::new(RevealedTools::new());
     let environment_context = EnvironmentContextRegistry::default();
-    environment_context.set("sandbox_mode", sandbox_mode.as_str());
+    set_sandbox_environment_context(&environment_context, sandbox_mode);
     capabilities.register(ToolRevealCapability::new(tool_reveals.clone()));
     capabilities.register(SessionCapability);
     capabilities.register(AgentInstructionsCapability);
@@ -5522,7 +5530,8 @@ mod tests {
                     let prompt = message.content_as_text();
                     prompt.contains("Emit independent tool calls together")
                         && prompt.contains("keep calls whose inputs depend")
-                        && prompt.contains("Piggyback title, todo, and status updates")
+                        && prompt.contains("todos only for substantial tracked multi-step work")
+                        && prompt.contains("Piggyback bookkeeping in the batch")
                 }))
         );
     }
@@ -8713,6 +8722,42 @@ mod tests {
     }
 
     #[test]
+    fn system_prompt_leaves_network_access_to_live_environment_context() {
+        assert!(!SYSTEM_PROMPT.contains("shell sandbox lacks network"));
+    }
+
+    #[test]
+    fn system_prompt_limits_todos_to_substantial_tracked_work() {
+        let workflow = SYSTEM_PROMPT
+            .split("## Workflow")
+            .nth(1)
+            .and_then(|tail| tail.split("## Safety").next())
+            .expect("workflow section should be present")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        assert!(workflow.contains("Use todos only for substantial tracked multi-step work"));
+        assert!(workflow.contains("never simple, short, or single-output tasks"));
+    }
+
+    #[test]
+    fn sandbox_context_reports_effective_network_access() {
+        let registry = EnvironmentContextRegistry::default();
+        set_sandbox_environment_context(&registry, crate::config::SandboxMode::DangerFullAccess);
+
+        let context = registry.snapshot();
+        assert_eq!(
+            context.get("sandbox_mode").map(String::as_str),
+            Some("danger-full-access")
+        );
+        assert_eq!(
+            context.get("network_access").map(String::as_str),
+            Some("enabled")
+        );
+    }
+
+    #[test]
     fn system_prompt_requires_verification_before_finishing_edits() {
         let workflow = SYSTEM_PROMPT
             .split("## Workflow")
@@ -8739,11 +8784,7 @@ mod tests {
             .join(" ");
 
         assert!(prompt.contains("Emit independent tool calls together"));
-        assert!(
-            prompt.contains(
-                "One script per coherent shell phase; unexpected failures return nonzero"
-            )
-        );
+        assert!(prompt.contains("One coherent shell script per phase; failures return nonzero"));
     }
 
     #[test]

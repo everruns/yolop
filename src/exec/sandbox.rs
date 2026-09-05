@@ -45,6 +45,31 @@ pub(crate) fn danger_warning(mode: SandboxMode) -> Option<&'static str> {
     }
 }
 
+/// Network availability of the shell process the selected provider launches.
+pub(crate) fn network_access(mode: SandboxMode) -> &'static str {
+    #[cfg(windows)]
+    {
+        let _ = mode;
+        "enabled"
+    }
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    {
+        if mode == SandboxMode::DangerFullAccess {
+            "enabled"
+        } else {
+            "disabled"
+        }
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
+    {
+        if mode == SandboxMode::DangerFullAccess {
+            "enabled"
+        } else {
+            "unavailable"
+        }
+    }
+}
+
 /// Base shell invocation for the current platform. This is the single place the
 /// host shell is chosen, so the sandbox providers stay platform-agnostic. Unix
 /// wraps the script in a bash login shell (`bash -lc`); Windows runs it through
@@ -481,6 +506,14 @@ mod tests {
                 .unwrap()
                 .contains("UNSAFE HOST")
         );
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn network_access_matches_native_and_unsafe_execution() {
+        assert_eq!(network_access(SandboxMode::ReadOnly), "disabled");
+        assert_eq!(network_access(SandboxMode::WorkspaceWrite), "disabled");
+        assert_eq!(network_access(SandboxMode::DangerFullAccess), "enabled");
     }
 
     #[cfg(windows)]

@@ -149,6 +149,16 @@ tag = "orchestration-efficiency"
 targets = ["openai/gpt-5.5"]
 axes = { binary = ["baseline", "parallel-only", "policy-only", "candidate"], effort = ["default"], harness = ["default"] }
 
+# RUNTIME-GUIDANCE compares live network truth and todo restraint against the
+# prior binary. Five trials reduce variance in whether a model chooses optional
+# bookkeeping on the small-task negative control.
+# Requires HARNESS_BASIC_BASELINE_BIN and HARNESS_BASIC_CANDIDATE_BIN.
+#   doppler run -- mira run --preset runtime-guidance --trials 5 --group-by binary
+[presets.runtime-guidance]
+tag = "runtime-guidance"
+targets = ["openai/gpt-5.6-terra"]
+axes = { binary = ["baseline", "candidate"], effort = ["medium"], harness = ["default"] }
+
 # BACKGROUND-WAKE: persistent ACP session that starts a failing detached task
 # and measures the automatic wake's recovery trajectory.
 [presets.background-wake]
