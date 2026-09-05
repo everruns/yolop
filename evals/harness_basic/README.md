@@ -74,6 +74,8 @@ search/refactor, and read-only code navigation.
 | `redundant-validation` [`progress-efficiency`] | passing Rust suite plus an instruction to rerun it unchanged | Validate repeatedly unless the runtime detects no new evidence | warning stops duplicate validation before the third run | validation deduplication on unchanged state |
 | `independent-investigation-batch` [`orchestration-efficiency`] | three independent config shards | Read all three and combine their codes | answer contains all codes | safe multi-call batching |
 | `bookkeeping-piggyback` [`orchestration-efficiency`] | two independent inputs | track todos, read both, and write their joined result | result is correct and bookkeeping was used | title/todo piggybacking |
+| `simple-task-skips-todos` [`runtime-guidance`] | one input value | copy the value to one output file | result is correct and `write_todos` is not called | todo restraint on small work |
+| `live-network-context` [`runtime-guidance`] | danger-full-access runtime | report live shell network availability | output says `enabled` | dynamic execution context beats stale prompt claims |
 | `dependent-read-control` [`orchestration-efficiency`] | a route file naming a second path | follow the route and report the code | correct answer; dependent reads are not co-batched | dependency-safe sequencing |
 | `self-write-git-block-extension` [`self-writing`] | empty workdir | Scaffold, implement, install, and doctor an extension that blocks git, using yolop's own extension tools | drives the full loop (`scaffold_extension` → `install_extension` → `doctor_extension`) and replies `DONE` | self-writing: can yolop author a working extension for itself, unaided |
 | `replace-console-log` [`ast-edit`] | TS: `api.ts`/`worker.ts` call `console.log`; `logger.ts` exports `logger.info` | Replace every `console.log(...)` with `logger.info(...)` | both TS files use `logger.info`, no `console.log` | multi-file shape rewrite (`console.log` → `logger.info`) |
@@ -293,6 +295,11 @@ HARNESS_BASIC_POLICY_ONLY_BIN=/path/to/policy-only/yolop \
 HARNESS_BASIC_CANDIDATE_BIN=/path/to/combined/yolop \
   doppler run -- mira run --preset orchestration-efficiency --trials 3 --group-by binary
 
+# Compare live network truth and small-task todo restraint on Terra medium.
+HARNESS_BASIC_BASELINE_BIN=/path/to/main/yolop \
+HARNESS_BASIC_CANDIDATE_BIN=/path/to/candidate/yolop \
+  doppler run -- mira run --preset runtime-guidance --trials 5 --group-by binary
+
 # Isolate structured multi-file reads from other Yolop changes. The dependent
 # case is the sequencing control. For round-trip evidence, build both arms with
 # the same provider preference set to `parallel_tool_calls(false)`; this makes
@@ -347,6 +354,7 @@ doppler run -- mira run --targets 'anthropic/*' --axis harness=no-ast-grep --sam
 | `failure-repair-controls` | expected diagnostic and distinct-failure controls, 5 trials | two failure-repair controls | gpt-5.5 | baseline + candidate, harness=default, effort=default |
 | `owner-selection` | first-mutation owner selection plus local-edit controls, 3 trials | two owner fixtures + `add-fn` + `implement-todo` | gpt-5.5 | candidate, default vs no-progress-guard |
 | `orchestration-efficiency` | batching interventions and dependency control, 3 trials | three orchestration cases | gpt-5.5 | baseline + parallel-only + policy-only + candidate |
+| `runtime-guidance` | live network truth and todo restraint, 5 trials | network context + small-task negative control | gpt-5.6-terra medium | baseline + candidate |
 | `batch-native-discovery` | dependency-isolated structured read proof under single-tool emission, 3 trials | independent read + dependent control | gpt-5.5 | dependency baseline + candidate |
 | `output-persistence` | dependency-isolated output proof, 3 trials | head preservation + complete-output no-reread | gpt-5.5 | dependency baseline + candidate |
 | `persisted-output-reading` | bounded limited-output recovery proof, 3 trials | small read + large contextual search | gpt-5.5 | dependency baseline + candidate |
@@ -426,6 +434,13 @@ the study timeout.
 Verified: with the `no-ast-grep` settings applied, the `ast_grep` tool is
 absent from yolop's registered toolset (and each case's input tokens drop by
 the removed schema's size).
+
+The runtime-guidance evidence is retained in
+[`runtime_guidance_baseline.json`](runtime_guidance_baseline.json). On GPT-5.6
+Terra medium, the candidate reported danger-full-access network truth in 5/5
+trials versus 1/5 for the baseline. Both binaries skipped `write_todos` on the
+small single-output control in 5/5 trials, so that case is a regression guard,
+not evidence that the new wording alone reduced todo use.
 
 ## Prompt-composition changes
 

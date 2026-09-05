@@ -70,6 +70,9 @@ the next command.
 the private Yolop temporary directory. This prevents a workspace below `/tmp`
 from inheriting a broader writable ancestor.
 `danger-full-access` runs directly on the host and is surfaced as `UNSAFE HOST`.
+The model-visible `<environment_context>` reports both the effective
+`sandbox_mode` and whether shell `network_access` is enabled, disabled, or
+unavailable. Stable system-prompt text does not duplicate these live values.
 
 Approval policies are independent: `untrusted` gates commands outside a
 conservative read-only allowlist; `on-failure` gates a full-access retry after a

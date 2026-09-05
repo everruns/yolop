@@ -1,5 +1,14 @@
 # Knowledge Log
 
+## 2026-09-04, Runtime guidance follows effective execution
+
+- [System prompt composition](specs/system-prompt.md): shell network access is
+  reported from the effective sandbox mode instead of a static prompt claim.
+- Todos are reserved for substantial multi-step work that benefits from state
+  tracking; simple, short, and single-output tasks skip them.
+- The five-trial Terra medium A/B moved live network-context accuracy from 1/5
+  to 5/5. Both binaries skipped todos on the small-task control in 5/5 trials.
+
 ## 2026-09-04, Native-agent Terminal-Bench comparison
 
 - The fixed three-task `terra-medium-compare` preset records Yolop with GPT-5.6

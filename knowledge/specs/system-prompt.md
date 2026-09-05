@@ -96,6 +96,11 @@ value yolop failed to compute.
 State the capability, not the instruction: whether a diagram is worth drawing is
 the model's call.
 
+Execution constraints follow the same ownership rule. The trailing
+`<environment_context>` reports the effective `sandbox_mode` and
+`network_access`; stable prompt prose must not make categorical claims about
+either because both vary by host and configuration.
+
 Keep these fields *static per host*. Live values that change mid-session, the
 terminal width, the current scroll position, would rewrite the prefix on every
 resize and cost the cached prefix that `AGENTS.md`'s placement exists to
@@ -181,8 +186,14 @@ reasoned about.
 Yolop asks providers for parallel tool calling and tells the agent to emit
 independent calls together. A call whose arguments depend on an earlier result
 stays in a later model round. Title, todo, and live-status updates piggyback on
-substantive tool batches when independent work is ready; they remain ordinary
-runtime tools, so event replay and every host keep the same semantics.
+substantive tool batches when independent work is ready. Todos are reserved for
+substantial multi-step work whose state needs tracking across turns; simple,
+short, and single-output tasks skip them. They remain ordinary runtime tools,
+so event replay and every host keep the same semantics.
+
+The `runtime-guidance` study owns the matched network-context and small-task
+todo controls on GPT-5.6 Terra medium. Network truth must improve without
+causing todo use on the negative control.
 
 The `orchestration-efficiency` study compares the provider affordance, the
 dependency-aware prompt policy, and their combination. On the initial gpt-5.5

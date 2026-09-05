@@ -34,7 +34,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 /// `--reasoning-effort` values. `default` omits the flag so yolop applies the
 /// model profile's own default.
-const EFFORTS: &[&str] = &["default", "low", "high"];
+const EFFORTS: &[&str] = &["default", "low", "medium", "high"];
 const BINARIES: &[&str] = &[
     "candidate",
     "baseline",
@@ -105,6 +105,7 @@ fn targets() -> Vec<Target> {
         Target::anthropic("claude-sonnet-4-5"),
         Target::anthropic("claude-opus-4-8"),
         Target::openai("gpt-5.5"),
+        Target::openai("gpt-5.6-terra"),
         Target::cloud("openrouter", "z-ai/glm-5.2", "OPENROUTER_API_KEY"),
         local_target(),
     ]
@@ -1352,6 +1353,40 @@ fn bookkeeping_piggyback_sample() -> Sample {
     )
 }
 
+fn simple_task_skips_todos_sample() -> Sample {
+    Sample::new(
+        "simple-task-skips-todos",
+        "Read value.txt and write its VALUE to result.txt. Make the edit directly.",
+    )
+    .file("value.txt", "VALUE=SMALL-814\n")
+    .tag("runtime-guidance")
+    .meta("kind", "todo-negative-control")
+    .meta(
+        "checks",
+        json!([{
+            "file": "result.txt",
+            "contains": ["SMALL-814"],
+            "tool_not_called": ["write_todos"]
+        }]),
+    )
+}
+
+fn live_network_context_sample() -> Sample {
+    Sample::new(
+        "live-network-context",
+        "According to the live environment context, write whether shell network access is enabled or disabled to network.txt. Write exactly one word: enabled or disabled.",
+    )
+    .tag("runtime-guidance")
+    .meta("kind", "environment-context")
+    .meta(
+        "checks",
+        json!([{
+            "file": "network.txt",
+            "contains": ["enabled"]
+        }]),
+    )
+}
+
 fn dependent_read_control_sample() -> Sample {
     Sample::new(
         "dependent-read-control",
@@ -1589,6 +1624,8 @@ fn dataset() -> Dataset {
         unchanged_repeated_discovery_sample(),
         approval_required_sample(),
         untrusted_file_content_sample(),
+        simple_task_skips_todos_sample(),
+        live_network_context_sample(),
         nested_glob_search_sample(),
         missing_rg_recovery_sample(),
         equivalent_failure_recovery_sample(),
@@ -4328,9 +4365,26 @@ mod tests {
     }
 
     #[test]
+    fn runtime_guidance_preset_is_matched_and_repeated() {
+        let config = include_str!("../mira.toml");
+        let section = config
+            .split("[presets.runtime-guidance]")
+            .nth(1)
+            .expect("runtime-guidance preset")
+            .split("[presets.batch-native-discovery]")
+            .next()
+            .unwrap();
+
+        assert!(section.contains("binary = [\"baseline\", \"candidate\"]"));
+        assert!(section.contains("effort = [\"medium\"]"));
+        assert!(section.contains("openai/gpt-5.6-terra"));
+        assert!(!section.contains("trials ="));
+    }
+
+    #[test]
     fn matrix_shape() {
         let eval = basic_coding();
-        assert_eq!(eval.targets.len(), 5);
+        assert_eq!(eval.targets.len(), 6);
         // binary × harness × effort axis cross-product
         assert_eq!(
             eval.axis_combinations().len(),

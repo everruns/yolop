@@ -190,6 +190,8 @@ impl Capability for CodingCliEnvironmentCapability {
   <git_user>Git user name</git_user>
   <git_email>Git user email</git_email>
   <git_current_branch>branch or short commit</git_current_branch>
+  <contribution name=\"sandbox_mode\">workspace-write</contribution>
+  <contribution name=\"network_access\">disabled</contribution>
 </environment_context>"
                 .to_string(),
         )
@@ -1980,6 +1982,7 @@ mod tests {
             git_current_branch: Some("feature<context>".to_string()),
             worktree_path: None,
             contributions: BTreeMap::from([
+                ("network_access".to_string(), "disabled".to_string()),
                 ("sandbox_mode".to_string(), "workspace-write".to_string()),
                 ("unsafe<name>".to_string(), "value & more".to_string()),
             ]),
@@ -2006,6 +2009,9 @@ mod tests {
         assert!(
             rendered
                 .contains("  <contribution name=\"sandbox_mode\">workspace-write</contribution>\n")
+        );
+        assert!(
+            rendered.contains("  <contribution name=\"network_access\">disabled</contribution>\n")
         );
         assert!(rendered.contains(
             "  <contribution name=\"unsafe&lt;name&gt;\">value &amp; more</contribution>\n"
