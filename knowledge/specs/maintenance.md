@@ -89,6 +89,33 @@ The `everruns-*` family is yolop's single most consequential dependency vector:
 
 These crates ship together from one upstream workspace and are designed to be used at the same version. Yolop pins them at a single minor version. Mixing minor versions across the family is a soft API break and is not allowed without an explicit reason recorded in the PR.
 
+Every `everruns-*` requirement in `Cargo.toml` is an exact `=` pin, and the pins
+are lifted as one set, never one crate at a time. The reason is that the family's
+crates depend on each other by caret, so a caret in yolop only constrains the
+committed lockfile: `cargo install yolop` re-resolves and can pick a combination
+that was never built together. Upstream versions the family per-crate and treats
+`#[doc(hidden)]` items as private, so a *patch* release can and does change a
+signature another family crate calls. Host 0.20.4 did exactly that, adding a
+required `turn_id` to `Runtime::append_accepted_inputs` while the published
+`everruns` facade still called the two-arg form and accepted host `^0.20.3`;
+caret ranges resolved the two together and every fresh install failed to compile,
+though the lockfile build stayed green. Exact pins make the resolved set the
+reviewed set.
+
+A family bump is therefore a single change that moves every pin together and is
+validated by a from-scratch resolution, not only by `cargo build`. Generating a
+lockfile from an empty project carrying the same requirements is the cheap check
+that `cargo install yolop` still resolves. When one crate in a batch is
+unadoptable, the whole batch waits: the rest of the batch requires it directly or
+transitively, so a partial bump reintroduces the untested combination it was
+meant to avoid.
+
+The `everruns` facade is load-bearing despite the note beside it in `Cargo.toml`:
+its `local` feature is the only supported route to the SQLite, git-workspace, and
+durable-log backends, because the standalone `everruns-local` crate's latest
+release is yanked. A facade that lags the rest of the family therefore gates the
+whole family, and the lag is worth reporting upstream rather than working around.
+
 Beyond the everruns family, dependency hygiene means:
 
 - no known CVEs in the tree (`cargo audit` when available, plus the repo's Dependabot alerts)
