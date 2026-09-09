@@ -69,7 +69,7 @@ base64 = "0.23"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4.6", features = ["derive"] }
 crossterm = "0.29"
-dirs = "6"
+dirs = "7"
 eventsource-stream = "0.2"
 # Toolchain-free crates.io extension install: fetch + unpack a `.crate`
 # (gzip'd tar) natively, no cargo/rustc. Pure-Rust backends (miniz_oxide),
