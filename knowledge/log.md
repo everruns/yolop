@@ -1,5 +1,18 @@
 # Knowledge Log
 
+## 2026-09-09, Everruns versions are exact pins lifted as a set
+
+- [Maintenance](specs/maintenance.md): every `everruns-*` requirement is an exact
+  `=` pin, lifted for the whole family in one change and validated by a
+  from-scratch resolution, not only by a lockfile build.
+- Host 0.20.4 changed a `#[doc(hidden)]` signature in a patch release that the
+  published `everruns` facade 0.19.1 still calls the old way. Caret ranges
+  resolved both together, so `cargo install yolop` stopped compiling while CI
+  stayed green on the committed lockfile.
+- The 2026-09-09 upstream batch is unadoptable until the facade is republished:
+  every crate in it needs host `^0.20.4` directly or transitively, and the
+  facade's `local` feature has no substitute now that `everruns-local` is yanked.
+
 ## 2026-09-04, Runtime guidance follows effective execution
 
 - [System prompt composition](specs/system-prompt.md): shell network access is
