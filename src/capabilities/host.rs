@@ -689,11 +689,11 @@ impl Capability for ModelsCapability {
 // Discovery, not how-to: without this the model does not know it may retune the
 // live session at all. When to escalate effort, and not thrashing the model
 // mid-task, are judgement calls left to the model.
-pub(crate) const MODELS_PROMPT: &str = "<capability id=\"models\">\n\
-    `set_reasoning_effort`, `set_model`, and `set_provider` apply next turn. For partial \
-    model names, call `search_models`, show ambiguous matches, and never guess an ID. \
-    Unknown effort levels return accepted values.\n\
-    </capability>";
+/// Raw text on purpose: the host wraps `system_prompt_addition` in `<capability>`
+/// tags once, so tags here would render twice.
+pub(crate) const MODELS_PROMPT: &str = "`set_reasoning_effort`, `set_model`, and `set_provider` apply \
+    next turn. For partial model names, call `search_models`, show ambiguous matches, \
+    and never guess an ID. Unknown effort levels return accepted values.";
 
 fn setup_command_arg() -> CommandArg {
     let mut suggestions = vec![
@@ -1867,6 +1867,10 @@ mod tests {
         // The agent is told these tools exist so it uses them instead of asking
         // the user to type a slash command.
         let prompt = capability.system_prompt_addition().expect("setup prompt");
+        // system_prompt_addition is raw text: the host wraps it once. Tags here
+        // would render twice (see agent_commands, client_commands).
+        assert!(!prompt.contains("<capability"));
+        assert!(!prompt.contains("</capability>"));
         assert!(prompt.contains("set_reasoning_effort"));
         assert!(prompt.contains("set_model"));
         assert!(prompt.contains("search_models"));
