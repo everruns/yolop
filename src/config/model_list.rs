@@ -75,14 +75,14 @@ impl ModelEntry {
         }
     }
 
-    /// One-line rendering for pickers and `yolop config models list`.
+    /// One-line identity rendering for pickers and `yolop config models list`.
+    /// Effort is never part of the name: it lives in the separate effort
+    /// selector, and the pinned `effort` is applied as the default when this
+    /// entry is selected.
     pub fn display(&self) -> String {
         match &self.label {
             Some(label) => label.clone(),
-            None => match &self.effort {
-                Some(effort) => format!("{}/{} {effort}", self.provider, self.model),
-                None => format!("{}/{}", self.provider, self.model),
-            },
+            None => format!("{}/{}", self.provider, self.model),
         }
     }
 }
@@ -249,6 +249,6 @@ mod tests {
         let entry = ModelEntry::new("openai", "gpt-5.6-sol").with_effort("high");
         assert_eq!(entry.key(), "openai:gpt-5.6-sol");
         assert_eq!(entry.spec(), "gpt-5.6-sol high");
-        assert_eq!(entry.display(), "openai/gpt-5.6-sol high");
+        assert_eq!(entry.display(), "openai/gpt-5.6-sol");
     }
 }
