@@ -800,6 +800,113 @@ impl App {
         }
     }
 
+    /// Click support for the setup overlay option lists: a left click on an
+    /// option row selects it and confirms, the same as moving to it with the
+    /// keyboard and pressing Enter. The click is fed through tuika's
+    /// [`SelectState`](tuika::components::SelectState) mouse handling against
+    /// the same list body the fullscreen renderer draws (panel border and
+    /// padding plus the picker header lines), with the scroll window derived
+    /// the same centered way the renderer derives it, so clicks map to rows
+    /// exactly as drawn, including windowed lists. Returns true when the click
+    /// was consumed; anything outside the option rows falls through so
+    /// transcript selection and status buttons keep working.
+    pub(crate) async fn handle_setup_mouse(&mut self, mouse: MouseEvent, area: Rect) -> bool {
+        if !matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
+            return false;
+        }
+        let Some(picker) = setup_picker(self) else {
+            return false;
+        };
+        let len = picker.options.len();
+        if len == 0 {
+            return false;
+        }
+        // Mirror draw_setup_picker: bordered panel, one column of horizontal
+        // padding, header lines, then the option rows.
+        let panel = setup_panel_rect(area);
+        let list_top = panel
+            .y
+            .saturating_add(1)
+            .saturating_add(picker.header.len() as u16);
+        let content_bottom = panel.y.saturating_add(panel.height.saturating_sub(1));
+        let list_height = picker
+            .viewport
+            .unwrap_or(len as u16)
+            .min(content_bottom.saturating_sub(list_top));
+        if list_height == 0 {
+            return false;
+        }
+        let bounds = Rect {
+            x: panel.x.saturating_add(2),
+            y: list_top,
+            width: panel.width.saturating_sub(4),
+            height: list_height,
+        };
+        // The renderer centers the scroll window on the selection, so derive
+        // the same first visible row before hit-testing.
+        let first_visible = tuika::components::VirtualWindow::around(
+            len,
+            list_height as usize,
+            Some(picker.selected),
+        )
+        .start();
+        let Some(event) = tuika::translate_event(CrosstermEvent::Mouse(mouse)) else {
+            return false;
+        };
+        let mut state = tuika::components::SelectState::new();
+        state.select(Some(picker.selected));
+        if state.handle_mouse(&event, len, bounds, first_visible) != tuika::InputOutcome::Submitted
+        {
+            return false;
+        }
+        let index = state.selected().unwrap_or(picker.selected).min(len - 1);
+        enum Choice {
+            Provider,
+            Credential(String),
+            Model(String),
+            ListedModel,
+            Effort,
+        }
+        let choice = match &mut self.setup {
+            Some(SetupStep::Provider { selected }) => {
+                *selected = index;
+                Choice::Provider
+            }
+            Some(SetupStep::Credential {
+                provider, selected, ..
+            }) => {
+                *selected = index;
+                Choice::Credential(provider.clone())
+            }
+            Some(SetupStep::PickModel {
+                provider,
+                selected,
+                custom: None,
+                ..
+            }) => {
+                *selected = index;
+                Choice::Model(provider.clone())
+            }
+            Some(SetupStep::PickListedModel { selected, .. }) => {
+                *selected = index;
+                Choice::ListedModel
+            }
+            Some(SetupStep::PickEffort { selected, .. }) => {
+                *selected = index;
+                Choice::Effort
+            }
+            _ => return false,
+        };
+        match choice {
+            Choice::Provider => self.confirm_provider(index).await,
+            Choice::Credential(provider) => self.confirm_credential(provider, index).await,
+            Choice::Model(provider) => self.confirm_model(provider, index).await,
+            Choice::ListedModel => self.confirm_listed_model(index).await,
+            Choice::Effort => self.confirm_effort(index).await,
+        }
+        true
+    }
+
     pub(crate) async fn handle_provider_key(&mut self, key: KeyEvent, selected: usize) {
         match key.code {
             KeyCode::Esc => {
