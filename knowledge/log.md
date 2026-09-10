@@ -1,5 +1,18 @@
 # Knowledge Log
 
+## 2026-09-10, A repaired turn is judged by what it sent
+
+- [Reasoning effort](specs/reasoning-effort.md): the mandated-reasoning repair
+  keys off the effort the rejected *request* carried, not the effort the model
+  names, and retries with the level the model already chose.
+- A mid-turn `set_model` onto an endpoint that mandates reasoning is exactly the
+  case the two differ: turn controls are captured at turn start and cannot be
+  revised mid-turn (EVE-595), so the request goes out with no effort while the
+  model already names one. Reading the model made the repair decline on the one
+  failure it was built for.
+- All four levels (`minimal`, `low`, `medium`, `high`) are accepted by
+  OpenRouter's muse endpoint, so the rejection was never about the level.
+
 ## 2026-09-10, Reasoning effort is merged from every source that knows
 
 - [Reasoning effort](specs/reasoning-effort.md): the effort scale resolves

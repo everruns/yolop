@@ -114,22 +114,36 @@ pub(crate) fn is_reasoning_required_error(message: &str) -> bool {
 /// The effort to retry a mandatory-reasoning failure with, or `None` when the
 /// failure is not one this can fix.
 ///
-/// A turn that already carried an effort is not retried: the endpoint rejected
-/// a request that named a level, so sending another one only spends a second
-/// turn on the same error. The user is pointed at the picker instead.
+/// `sent_effort` is what the *rejected request* carried, which is not always
+/// what the model names. A turn's controls are captured when it starts and a
+/// mid-turn `set_model` cannot revise them (EVE-595), so a switch onto an
+/// endpoint that mandates reasoning fails with no effort on the wire while the
+/// model already names one. Keying off the request repairs that turn; keying
+/// off the model would decline, seeing a level the provider never received.
+///
+/// A request that did carry an effort is not retried: the endpoint rejected a
+/// level it was given, so sending another spends a second turn on the same
+/// error. The user is pointed at the picker instead.
 pub(crate) fn recovery_effort(
     error: &str,
-    current_effort: Option<&str>,
-    profile_default: Option<&str>,
+    sent_effort: Option<&str>,
+    preferred: Option<&str>,
 ) -> Option<String> {
-    if current_effort.is_some() || !is_reasoning_required_error(error) {
+    if sent_effort.is_some() || !is_reasoning_required_error(error) {
         return None;
     }
-    Some(
-        profile_default
-            .unwrap_or(DEFAULT_REQUIRED_EFFORT)
-            .to_string(),
-    )
+    Some(preferred.unwrap_or(DEFAULT_REQUIRED_EFFORT).to_string())
+}
+
+/// The reasoning effort a built message carries, i.e. what the provider
+/// actually received.
+pub(crate) fn sent_reasoning_effort(input: &InputMessage) -> Option<&'static str> {
+    input
+        .controls
+        .as_ref()
+        .and_then(|controls| controls.reasoning.as_ref())
+        .and_then(|reasoning| reasoning.effort)
+        .map(|effort| effort.as_str())
 }
 
 /// Set `effort` on an already-built input message, so a turn can be retried
@@ -148,7 +162,8 @@ pub(crate) fn apply_reasoning_effort(input: &mut InputMessage, effort: &str) {
 }
 
 /// What to tell the user when a mandatory-reasoning failure cannot be repaired
-/// automatically, i.e. the turn already named an effort the endpoint rejected.
+/// automatically, i.e. the request already named an effort the endpoint
+/// rejected.
 pub(crate) fn reasoning_error_hint(error: &str, current_effort: Option<&str>) -> Option<String> {
     if !is_reasoning_required_error(error) {
         return None;
@@ -239,7 +254,7 @@ mod tests {
     }
 
     #[test]
-    fn a_turn_that_already_named_an_effort_is_not_retried() {
+    fn a_request_that_already_named_an_effort_is_not_retried() {
         let error = "Reasoning is mandatory for this endpoint and cannot be disabled.";
         assert_eq!(recovery_effort(error, Some("low"), Some("medium")), None);
         let hint = reasoning_error_hint(error, Some("low")).expect("rejected effort earns a hint");
@@ -247,6 +262,36 @@ mod tests {
             hint.contains("/effort"),
             "hint should point at the picker: {hint}"
         );
+    }
+
+    /// The gate is what the provider received, not what the model names: a
+    /// turn sent before a mid-turn `set_model` carries no effort even though
+    /// the model now has one, and that turn is exactly the one to repair.
+    #[test]
+    fn a_request_sent_without_an_effort_is_retried_with_the_level_the_model_names() {
+        let error = "Reasoning is mandatory for this endpoint and cannot be disabled.";
+
+        assert_eq!(
+            recovery_effort(error, None, Some("low")).as_deref(),
+            Some("low")
+        );
+    }
+
+    #[test]
+    fn the_effort_a_message_carries_is_readable() {
+        use everruns_core::{ContentPart, MessageRole};
+
+        let mut input = InputMessage {
+            role: MessageRole::User,
+            content: vec![ContentPart::text("hello")],
+            controls: None,
+            metadata: None,
+            tags: vec![],
+        };
+        assert_eq!(sent_reasoning_effort(&input), None);
+
+        apply_reasoning_effort(&mut input, "high");
+        assert_eq!(sent_reasoning_effort(&input), Some("high"));
     }
 
     #[test]

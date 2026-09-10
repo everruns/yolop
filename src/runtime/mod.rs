@@ -2317,22 +2317,37 @@ where
     let Some(error) = turn_failure(&first) else {
         return first;
     };
+    // What the model names comes first: on a mid-turn `set_model` the level is
+    // already chosen and only the in-flight request missed it, so the retry
+    // honors that choice instead of overwriting it with a profile default.
+    let chosen = model.reasoning_effort();
     let Some(effort) = reasoning::recovery_effort(
         &error,
-        model.reasoning_effort().as_deref(),
-        model.default_reasoning_effort().as_deref(),
+        reasoning::sent_reasoning_effort(&input),
+        chosen
+            .as_deref()
+            .or(model.default_reasoning_effort().as_deref()),
     ) else {
         return first;
     };
 
-    if let Err(err) = model.select_reasoning_effort(&effort).await {
-        tracing::warn!("could not apply reasoning effort {effort} after {error}: {err:#}");
-        return first;
+    // Only a model with no level of its own is given one; the rest of the time
+    // this is the model's own setting reaching a request that predated it.
+    if chosen.is_none() {
+        if let Err(err) = model.select_reasoning_effort(&effort).await {
+            tracing::warn!("could not apply reasoning effort {effort} after {error}: {err:#}");
+            return first;
+        }
+        notice(format!(
+            "{} requires reasoning; reasoning effort set to {effort} and the turn retried.",
+            model.model_id()
+        ));
+    } else {
+        notice(format!(
+            "{} requires reasoning; the turn was retried with reasoning effort {effort}.",
+            model.model_id()
+        ));
     }
-    notice(format!(
-        "{} requires reasoning; reasoning effort set to {effort} and the turn retried.",
-        model.model_id()
-    ));
 
     let mut retry = input;
     reasoning::apply_reasoning_effort(&mut retry, &effort);
@@ -8781,6 +8796,93 @@ mod tests {
         // Nothing to anchor on degrades to that same mark rather than hiding
         // the turn's output.
         assert_eq!(agent_output_start(&[], 7, true), 7);
+    }
+
+    /// A model switched *mid-turn* lands on an endpoint that mandates
+    /// reasoning while the in-flight turn's controls were captured before the
+    /// switch (mid-turn effort changes are EVE-595). The model state names an
+    /// effort, the request that failed did not, and the repair keys off the
+    /// request.
+    #[tokio::test]
+    async fn a_turn_sent_before_the_model_gained_an_effort_is_retried_with_it() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let sessions = tempfile::tempdir().expect("sessions");
+        let settings = Arc::new(crate::config::SettingsStore::open(
+            sessions.path().join("settings.toml"),
+        ));
+        settings
+            .set_token("openrouter".to_string(), "test-key".to_string())
+            .expect("store an openrouter token");
+        let built = build_with_options(
+            workspace.path().to_path_buf(),
+            ProviderChoice::OpenRouter {
+                model: "meta/muse-spark-1.3-contributor".to_string(),
+                base_url: DEFAULT_OPENROUTER_BASE_URL.to_string(),
+                // What `set_model` left behind mid-turn: the level is on the
+                // model, but the turn already in flight never carried it.
+                reasoning_effort: Some("low".to_string()),
+            },
+            None,
+            sessions.path().to_path_buf(),
+            settings,
+            BuildOptions::default(),
+        )
+        .await
+        .expect("build runtime");
+        let model = built.model;
+
+        let seen = Arc::new(StdMutex::new(Vec::<Option<String>>::new()));
+        let recorded = seen.clone();
+        let run = move |input: InputMessage| {
+            let recorded = recorded.clone();
+            async move {
+                let effort = input
+                    .controls
+                    .as_ref()
+                    .and_then(|controls| controls.reasoning.as_ref())
+                    .and_then(|reasoning| reasoning.effort)
+                    .map(|effort| effort.as_str().to_string());
+                recorded.lock().expect("recorded").push(effort.clone());
+                Ok(everruns_host::TurnResult {
+                    response: String::new(),
+                    iterations: 1,
+                    tool_calls_count: 1,
+                    success: effort.is_some(),
+                    error: effort.is_none().then(|| {
+                        "LLM error: provider 'openrouter': OpenAI Responses API error \
+                         (400 Bad Request): {\"error\":{\"message\":\"Reasoning is mandatory for \
+                         this endpoint and cannot be disabled.\",\"code\":400}}"
+                            .to_string()
+                    }),
+                    stop_reason: if effort.is_some() {
+                        everruns_core::turn::TurnStopReason::EndTurn
+                    } else {
+                        everruns_core::turn::TurnStopReason::Error
+                    },
+                    turn_id: everruns_provider::typed_id::TurnId::new(),
+                })
+            }
+        };
+
+        // The turn as the runtime captured it before the switch: no controls.
+        let stale = InputMessage {
+            role: MessageRole::User,
+            content: vec![ContentPart::text("switch model to muse")],
+            controls: None,
+            metadata: None,
+            tags: vec![],
+        };
+        let notice = |_: String| {};
+        let result = run_with_reasoning_recovery(&model, stale, &notice, run)
+            .await
+            .expect("the retried turn");
+
+        assert!(result.success);
+        assert_eq!(
+            *seen.lock().expect("recorded"),
+            vec![None, Some("low".to_string())],
+            "the retry carries the level the model already names, not a fresh guess"
+        );
     }
 
     /// The reported failure, end to end at the turn seam: OpenRouter rejects a
