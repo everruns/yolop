@@ -6,6 +6,8 @@
 
 pub mod background_wake;
 mod compaction_checkpoint;
+pub(crate) mod discovered_profiles;
+pub(crate) mod reasoning;
 pub mod session;
 pub mod session_log;
 
@@ -1722,19 +1724,10 @@ impl ProviderChoice {
             .and_then(|config| reasoning_effort_value(&config.default))
     }
 
+    /// The effort scale for the current model. See
+    /// [`merged_reasoning_effort_config`] for the merge order.
     fn reasoning_effort_config(&self) -> Option<ReasoningEffortConfig> {
-        self.model_profile()?.reasoning_effort
-    }
-
-    fn model_profile(&self) -> Option<ModelProfile> {
-        match self {
-            Self::Codex { model, .. } => crate::drivers::codex::model_profile(model),
-            _ => {
-                let resolved = self.model_without_stored_key();
-                local_model_profile(&resolved.provider_type, &resolved.model)
-                    .or_else(|| get_model_profile(&resolved.provider_type, &resolved.model))
-            }
-        }
+        self.reasoning_effort_config_for_model(self.model_id())
     }
 
     fn reasoning_effort_value(&self) -> Option<&Option<String>> {
@@ -1966,25 +1959,39 @@ impl ProviderChoice {
                 allowed.join(", ")
             ));
         }
-        reasoning_effort_value(&config.default)
-            .ok_or_else(|| {
-                anyhow!(
-                    "model {} has an invalid profile default",
-                    self.model_label_for(model)
-                )
-            })
-            .map(Some)
+        Ok(self.auto_reasoning_effort_for_model(model))
+    }
+
+    /// The effort yolop selects for `model` when the user has named none.
+    ///
+    /// Deliberately narrower than [`Self::reasoning_effort_config_for_model`]:
+    /// a provider catalog saying a model *accepts* efforts is not the same as
+    /// the turn needing one, and sending a level the user never chose would
+    /// change how models behave whose own default is fine. So this reads only
+    /// the curated profile and yolop's reasoning-required families, never the
+    /// discovered catalog.
+    fn auto_reasoning_effort_for_model(&self, model: &str) -> Option<String> {
+        match self {
+            Self::Codex { .. } => crate::drivers::codex::model_profile(model)
+                .and_then(|profile| profile.reasoning_effort),
+            _ => {
+                let resolved = self.model_without_stored_key_for_model(model);
+                profile_reasoning_effort_config(&resolved.provider_type, &resolved.model)
+            }
+        }
+        .and_then(|config| reasoning_effort_value(&config.default))
     }
 
     fn reasoning_effort_config_for_model(&self, model: &str) -> Option<ReasoningEffortConfig> {
         match self {
-            Self::Codex { .. } => crate::drivers::codex::model_profile(model),
+            // Codex speaks to its own driver profile, not a provider catalog.
+            Self::Codex { .. } => crate::drivers::codex::model_profile(model)
+                .and_then(|profile| profile.reasoning_effort),
             _ => {
                 let resolved = self.model_without_stored_key_for_model(model);
-                get_model_profile(&resolved.provider_type, &resolved.model)
+                merged_reasoning_effort_config(&resolved.provider_type, &resolved.model)
             }
         }
-        .and_then(|profile| profile.reasoning_effort)
     }
 
     fn model_label_for(&self, model: &str) -> String {
@@ -2360,9 +2367,40 @@ static GPT_5_6_PROFILE: LazyLock<ModelProfile> = LazyLock::new(|| {
     profile
 });
 
-fn profile_default_reasoning_effort(provider_type: &DriverId, model: &str) -> Option<String> {
+/// The reasoning-effort scale for a model, merged across every source that
+/// knows something about it:
+///
+/// 1. the curated profile registry (plus yolop's local overrides), which is
+///    authoritative wherever it describes the model;
+/// 2. what the provider itself advertised at discovery, which is how a gateway
+///    catalog covers models the registry has never seen
+///    ([`discovered_profiles`]);
+/// 3. yolop's own metadata for reasoning-required families
+///    ([`reasoning::fallback_reasoning_effort_config`]), so a model whose
+///    endpoint rejects a turn without reasoning has a scale and a default even
+///    before any discovery call has run.
+fn merged_reasoning_effort_config(
+    provider_type: &DriverId,
+    model: &str,
+) -> Option<ReasoningEffortConfig> {
+    profile_reasoning_effort_config(provider_type, model)
+        .or_else(|| discovered_profiles::reasoning_effort_config(provider_type, model))
+}
+
+/// The two layers yolop will act on by itself: the curated profile registry,
+/// then the reasoning-required families. What a provider merely advertises is
+/// not here — see [`ProviderChoice::auto_reasoning_effort_for_model`].
+fn profile_reasoning_effort_config(
+    provider_type: &DriverId,
+    model: &str,
+) -> Option<ReasoningEffortConfig> {
     model_profile(provider_type, model)
-        .and_then(|profile| profile.reasoning_effort.clone())
+        .and_then(|profile| profile.reasoning_effort)
+        .or_else(|| reasoning::fallback_reasoning_effort_config(provider_type, model))
+}
+
+fn profile_default_reasoning_effort(provider_type: &DriverId, model: &str) -> Option<String> {
+    profile_reasoning_effort_config(provider_type, model)
         .and_then(|config| reasoning_effort_value(&config.default))
 }
 
@@ -2996,6 +3034,13 @@ impl ModelState {
         )
             .await
             .map_err(|_| anyhow!("{provider_name} model availability check timed out; the turn was not started and is safe to resume"))??;
+
+        // The catalog this check already paid for is also where a gateway
+        // describes models the curated registry has never seen, so keep it
+        // rather than reading it once for an availability answer.
+        if let Some(models) = discovered.as_deref() {
+            discovered_profiles::remember(&resolved.provider_type, models);
+        }
 
         if let Some(models) = discovered
             && !models.iter().any(|model| model.model_id == model_id)
@@ -7172,8 +7217,9 @@ mod tests {
             };
             let next = provider.resolve_model_spec(model).unwrap();
 
-            let profile = next.model_profile().expect("gpt-5.6 variant profile");
-            let efforts = profile.reasoning_effort.expect("reasoning effort config");
+            let efforts = next
+                .reasoning_effort_config()
+                .expect("gpt-5.6 variant reasoning effort config");
             assert_eq!(
                 reasoning_effort_value(&efforts.default).as_deref(),
                 Some("medium")
@@ -8615,6 +8661,117 @@ mod tests {
                 .and_then(|controls| controls.reasoning)
                 .and_then(|reasoning| reasoning.effort),
             Some(ReasoningEffort::Medium)
+        );
+    }
+
+    /// The report that started this: `openrouter/meta/muse-spark-1.3-contributor`
+    /// is in no profile registry, so the turn went out with no reasoning at all
+    /// and OpenRouter answered "Reasoning is mandatory for this endpoint and
+    /// cannot be disabled", while `/effort` had nothing to offer as a fix.
+    #[test]
+    fn reasoning_required_openrouter_model_selects_and_sends_an_effort() {
+        let next = ProviderChoice::default_openrouter()
+            .resolve_model_spec("meta/muse-spark-1.3-contributor")
+            .unwrap();
+
+        assert_eq!(next.reasoning_effort(), Some("medium"));
+        assert_eq!(
+            next.input_message("hello")
+                .controls
+                .and_then(|controls| controls.reasoning)
+                .and_then(|reasoning| reasoning.effort),
+            Some(ReasoningEffort::Medium)
+        );
+        let options = next
+            .reasoning_effort_options()
+            .into_iter()
+            .map(|option| option.value)
+            .collect::<Vec<_>>();
+        assert_eq!(options, vec!["low", "medium", "high"]);
+    }
+
+    /// An explicit effort still wins over the family default, and an effort the
+    /// scale does not carry is still rejected.
+    #[test]
+    fn reasoning_required_model_accepts_an_explicit_effort() {
+        let base = ProviderChoice::default_openrouter();
+        let next = base
+            .resolve_model_spec("meta/muse-spark-1.3-contributor high")
+            .unwrap();
+        assert_eq!(next.reasoning_effort(), Some("high"));
+
+        let err = base
+            .resolve_model_spec("meta/muse-spark-1.3-contributor turbo")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("low, medium, high"), "unexpected error: {err}");
+    }
+
+    /// What the provider advertised at discovery covers models no registry
+    /// describes, and it is what `/effort` offers for them — without becoming
+    /// an effort yolop sends on its own.
+    #[test]
+    fn discovered_provider_metadata_fills_the_effort_scale_it_does_not_choose_one() {
+        discovered_profiles::remember(
+            &DriverId::OpenRouter,
+            &[everruns_provider::DiscoveredModel {
+                model_id: "test-vendor/gateway-reasoner".to_string(),
+                display_name: None,
+                created_at: None,
+                owned_by: None,
+                capabilities: vec!["chat".to_string()],
+                // Advertises High only, so an answer from this layer is
+                // unmistakable.
+                discovered_profile: Some(discovered_profiles::advertised_profile_for_test()),
+            }],
+        );
+        let base = ProviderChoice::default_openrouter();
+
+        let gateway = base
+            .resolve_model_spec("test-vendor/gateway-reasoner")
+            .unwrap();
+        assert_eq!(
+            gateway
+                .reasoning_effort_options()
+                .into_iter()
+                .map(|option| option.value)
+                .collect::<Vec<_>>(),
+            vec!["high"],
+            "the picker offers what the provider advertised"
+        );
+        assert_eq!(
+            gateway.reasoning_effort(),
+            None,
+            "a catalog says the model accepts efforts, not that yolop should choose one"
+        );
+
+        // The advertised scale is also what an explicit choice is checked
+        // against.
+        assert_eq!(
+            base.resolve_model_spec("test-vendor/gateway-reasoner high")
+                .unwrap()
+                .reasoning_effort(),
+            Some("high")
+        );
+        let err = base
+            .resolve_model_spec("test-vendor/gateway-reasoner minimal")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("supports reasoning efforts: high"), "{err}");
+    }
+
+    /// A model the curated registry does describe keeps the registry's answer.
+    #[test]
+    fn the_registry_still_owns_the_models_it_describes() {
+        let registry_default = get_model_profile(&DriverId::OpenAI, "gpt-5.5")
+            .and_then(|profile| profile.reasoning_effort)
+            .map(|config| config.default.as_str().to_string());
+        let openai = ProviderChoice::default_openai()
+            .resolve_model_spec("gpt-5.5")
+            .unwrap();
+        assert_eq!(
+            openai.reasoning_effort().map(str::to_string),
+            registry_default
         );
     }
 
