@@ -2313,6 +2313,14 @@ where
     F: Fn(InputMessage) -> Fut,
     Fut: std::future::Future<Output = anyhow::Result<everruns_host::TurnResult>>,
 {
+    // Inputs the host builds itself (a background wake, a resumed turn) do not
+    // come from `input_message`, so they carry no controls at all. Give them
+    // the model's level before the first attempt: the repair below is a
+    // backstop, not the mechanism by which a wake reaches a model that
+    // mandates reasoning.
+    let mut input = input;
+    reasoning::ensure_reasoning_effort(&mut input, model.reasoning_effort().as_deref());
+
     let first = run(input.clone()).await;
     let Some(error) = turn_failure(&first) else {
         return first;
@@ -3810,6 +3818,7 @@ pub async fn build_with_options(
             runtime_cell.clone(),
             local_backends.runtime_backends.session_store.clone(),
             Some(task_registry.clone()),
+            provider_state.clone(),
         ),
         everruns::local::WakeRoutes::new(),
     ));
@@ -8798,11 +8807,80 @@ mod tests {
         assert_eq!(agent_output_start(&[], 7, true), 7);
     }
 
+    /// A wake, a resumed turn, any input the host builds itself: none of them
+    /// go through `input_message`, so they used to reach the provider with no
+    /// reasoning at all. The first attempt now carries the model's level, and
+    /// the repair is left as a backstop rather than the mechanism.
+    #[tokio::test]
+    async fn a_host_built_input_carries_the_models_effort_on_the_first_attempt() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let sessions = tempfile::tempdir().expect("sessions");
+        let settings = Arc::new(crate::config::SettingsStore::open(
+            sessions.path().join("settings.toml"),
+        ));
+        settings
+            .set_token("openrouter".to_string(), "test-key".to_string())
+            .expect("store an openrouter token");
+        let built = build_with_options(
+            workspace.path().to_path_buf(),
+            ProviderChoice::OpenRouter {
+                model: "meta/muse-spark-1.3-contributor".to_string(),
+                base_url: DEFAULT_OPENROUTER_BASE_URL.to_string(),
+                reasoning_effort: Some("medium".to_string()),
+            },
+            None,
+            sessions.path().to_path_buf(),
+            settings,
+            BuildOptions::default(),
+        )
+        .await
+        .expect("build runtime");
+        let model = built.model;
+
+        // Exactly what `input_for_wake` produces: text, provenance tag, no
+        // controls.
+        let mut wake = InputMessage::user("a background task finished");
+        wake.tags.push("automatic_background_wake".to_string());
+
+        let seen = Arc::new(StdMutex::new(Vec::<Option<String>>::new()));
+        let recorded = seen.clone();
+        let run = move |input: InputMessage| {
+            let recorded = recorded.clone();
+            async move {
+                recorded
+                    .lock()
+                    .expect("recorded")
+                    .push(reasoning::sent_reasoning_effort(&input).map(str::to_string));
+                Ok(everruns_host::TurnResult {
+                    response: String::new(),
+                    iterations: 1,
+                    tool_calls_count: 0,
+                    success: true,
+                    error: None,
+                    stop_reason: everruns_core::turn::TurnStopReason::EndTurn,
+                    turn_id: everruns_provider::typed_id::TurnId::new(),
+                })
+            }
+        };
+
+        let notice = |_: String| {};
+        run_with_reasoning_recovery(&model, wake, &notice, run)
+            .await
+            .expect("the wake turn");
+
+        assert_eq!(
+            *seen.lock().expect("recorded"),
+            vec![Some("medium".to_string())],
+            "one attempt, already carrying the model's level"
+        );
+    }
+
     /// A model switched *mid-turn* lands on an endpoint that mandates
-    /// reasoning while the in-flight turn's controls were captured before the
-    /// switch (mid-turn effort changes are EVE-595). The model state names an
-    /// effort, the request that failed did not, and the repair keys off the
-    /// request.
+    /// reasoning. The turn started while the model still named no effort, so
+    /// nothing was on the wire, and the level only exists once the switch has
+    /// run — mid-turn control changes are EVE-595. The repair keys off the
+    /// request, so it sees the empty one and retries with the level the switch
+    /// left behind.
     #[tokio::test]
     async fn a_turn_sent_before_the_model_gained_an_effort_is_retried_with_it() {
         let workspace = tempfile::tempdir().expect("workspace");
@@ -8818,9 +8896,8 @@ mod tests {
             ProviderChoice::OpenRouter {
                 model: "meta/muse-spark-1.3-contributor".to_string(),
                 base_url: DEFAULT_OPENROUTER_BASE_URL.to_string(),
-                // What `set_model` left behind mid-turn: the level is on the
-                // model, but the turn already in flight never carried it.
-                reasoning_effort: Some("low".to_string()),
+                // The turn starts here: no level, so no controls are built.
+                reasoning_effort: None,
             },
             None,
             sessions.path().to_path_buf(),
@@ -8833,16 +8910,22 @@ mod tests {
 
         let seen = Arc::new(StdMutex::new(Vec::<Option<String>>::new()));
         let recorded = seen.clone();
+        let switched = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let model_ref = &model;
         let run = move |input: InputMessage| {
             let recorded = recorded.clone();
+            let switched = switched.clone();
             async move {
-                let effort = input
-                    .controls
-                    .as_ref()
-                    .and_then(|controls| controls.reasoning.as_ref())
-                    .and_then(|reasoning| reasoning.effort)
-                    .map(|effort| effort.as_str().to_string());
+                let effort = reasoning::sent_reasoning_effort(&input).map(str::to_string);
                 recorded.lock().expect("recorded").push(effort.clone());
+                if !switched.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                    // What `set_model` does from inside the turn: the level
+                    // lands on the model, too late for the request in flight.
+                    model_ref
+                        .select_reasoning_effort("low")
+                        .await
+                        .expect("apply the switch");
+                }
                 Ok(everruns_host::TurnResult {
                     response: String::new(),
                     iterations: 1,
@@ -8864,24 +8947,17 @@ mod tests {
             }
         };
 
-        // The turn as the runtime captured it before the switch: no controls.
-        let stale = InputMessage {
-            role: MessageRole::User,
-            content: vec![ContentPart::text("switch model to muse")],
-            controls: None,
-            metadata: None,
-            tags: vec![],
-        };
         let notice = |_: String| {};
-        let result = run_with_reasoning_recovery(&model, stale, &notice, run)
-            .await
-            .expect("the retried turn");
+        let result =
+            run_with_reasoning_recovery(&model, model.input_message("switch model"), &notice, run)
+                .await
+                .expect("the retried turn");
 
         assert!(result.success);
         assert_eq!(
             *seen.lock().expect("recorded"),
             vec![None, Some("low".to_string())],
-            "the retry carries the level the model already names, not a fresh guess"
+            "the retry carries the level the switch left behind, not a fresh guess"
         );
     }
 

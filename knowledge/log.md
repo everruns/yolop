@@ -1,5 +1,15 @@
 # Knowledge Log
 
+## 2026-09-10, A host-built turn carries reasoning too
+
+- [Reasoning effort](specs/reasoning-effort.md): background wakes, resumed turns
+  and child-session messages are assembled by the host, not by `input_message`,
+  so they went to the provider with no reasoning controls at all. They are now
+  given the model's level before the first attempt.
+- A wake onto a mandated-reasoning endpoint therefore failed the same way a
+  first turn once did, and the child-session runner reaches the runtime without
+  the host's turn entry point, so it needed the same treatment separately.
+
 ## 2026-09-10, A repaired turn is judged by what it sent
 
 - [Reasoning effort](specs/reasoning-effort.md): the mandated-reasoning repair
