@@ -2434,7 +2434,7 @@ fn tui_bang_yolop_extensions_uses_attached_control() {
     assert!(tui.wait_or_kill(Duration::from_secs(3)).success());
 }
 
-/// The control-plane prompt block tells the agent to run `yolop <sub> --help`
+/// The `yolop` prompt block tells the agent to run `yolop <sub> --help`
 /// for the grammar, and that invocation went through the attached path and
 /// failed with "attached control failed: expected value at line 1 column 1":
 /// clap prints help inside the child, which never sends a control frame.

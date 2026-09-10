@@ -30,7 +30,7 @@ pub(crate) mod trace;
 pub(crate) use capability::ExtensionCapability;
 pub(crate) use client::{AskSink, StatusSink};
 /// Exported for the always-on prompt-budget test, which measures the shared
-/// control-plane block from the routes a full session registers.
+/// `yolop` block from the routes a full session registers.
 #[cfg(test)]
 pub(crate) use manage::EXTENSIONS_CONTROL_ROUTE;
 pub(crate) use manage::ExtensionsCapability;

@@ -678,7 +678,7 @@ mod tests {
     /// The Bash description must stay free of control-resource vocabulary: it
     /// was hardcoded to `yolop extensions`, which named one of the session's
     /// routes and advertised administration even where none is registered.
-    /// Discovery belongs to the shared control-plane prompt block.
+    /// Discovery belongs to the shared `yolop` prompt block.
     /// The agent half: a composed administration command must carry the notice
     /// on its result, where the model reads it.
     #[tokio::test]

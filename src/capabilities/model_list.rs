@@ -31,7 +31,7 @@ use std::sync::Arc;
 
 pub(crate) const MODEL_LIST_CAPABILITY_ID: &str = "model_list";
 
-/// A constant so the shared control-plane prompt block can be measured against
+/// A constant so the shared `yolop` prompt block can be measured against
 /// the always-on prompt budget without constructing a session.
 pub(crate) const MODEL_LIST_CONTROL_ROUTE: ControlRoute = ControlRoute {
     resource: "models",
