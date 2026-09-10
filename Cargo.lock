@@ -2219,7 +2219,7 @@ dependencies = [
  "futures",
  "globset",
  "inventory",
- "jsonschema",
+ "jsonschema 0.52.1",
  "rand 0.10.2",
  "regex",
  "serde",
@@ -2483,7 +2483,7 @@ dependencies = [
  "everruns-host",
  "everruns-provider",
  "inventory",
- "jsonschema",
+ "jsonschema 0.52.1",
  "serde",
  "serde_json",
  "thiserror 2.0.19",
@@ -4023,12 +4023,40 @@ dependencies = [
  "fraction",
  "getrandom 0.3.4",
  "itoa",
- "jsonschema-regex",
- "jsonschema-value",
+ "jsonschema-regex 0.52.1",
+ "jsonschema-value 0.52.1",
  "num-cmp",
  "num-traits",
  "percent-encoding",
- "referencing",
+ "referencing 0.52.1",
+ "regex",
+ "serde",
+ "serde_json",
+ "strum 0.28.0",
+ "unicode-general-category",
+ "uuid-simd",
+]
+
+[[package]]
+name = "jsonschema"
+version = "0.55.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "49e89c7d35509ab5248f4160addc47098d0f2b09221851bf6234a948f28a70c4"
+dependencies = [
+ "ahash",
+ "bytecount",
+ "data-encoding",
+ "email_address",
+ "fancy-regex 0.19.0",
+ "fraction",
+ "getrandom 0.3.4",
+ "itoa",
+ "jsonschema-regex 0.55.1",
+ "jsonschema-value 0.55.1",
+ "num-cmp",
+ "num-traits",
+ "percent-encoding",
+ "referencing 0.55.1",
  "regex",
  "serde",
  "serde_json",
@@ -4047,6 +4075,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "jsonschema-regex"
+version = "0.55.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6307b5b51216ec9b941b52244c74043fa0b1d6b657b56199f57cb1416d3641c5"
+dependencies = [
+ "regex-syntax",
+]
+
+[[package]]
 name = "jsonschema-value"
 version = "0.52.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4055,6 +4092,22 @@ dependencies = [
  "ahash",
  "bytecount",
  "fraction",
+ "num-cmp",
+ "num-traits",
+ "serde_json",
+ "zmij",
+]
+
+[[package]]
+name = "jsonschema-value"
+version = "0.55.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0230ac05e09c6111e96c147b75c390579f5cbd45654b980c68ac60fe17b3f129"
+dependencies = [
+ "ahash",
+ "bytecount",
+ "fraction",
+ "getrandom 0.3.4",
  "num-cmp",
  "num-traits",
  "serde_json",
@@ -6378,6 +6431,23 @@ name = "referencing"
 version = "0.52.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d38a014525040cdc9893361b7419bcf1f43b7ba7055eabaf6d91d6b75caa8b3f"
+dependencies = [
+ "ahash",
+ "fluent-uri",
+ "getrandom 0.3.4",
+ "hashbrown 0.17.1",
+ "itoa",
+ "micromap",
+ "parking_lot",
+ "percent-encoding",
+ "serde_json",
+]
+
+[[package]]
+name = "referencing"
+version = "0.55.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a196a5b4a8a12f46b6353174df865a05d41a6055aff212ec30877492788618b6"
 dependencies = [
  "ahash",
  "fluent-uri",
@@ -10025,7 +10095,7 @@ dependencies = [
  "image",
  "include_dir",
  "inventory",
- "jsonschema",
+ "jsonschema 0.55.0",
  "landlock",
  "libc",
  "mistralrs",
