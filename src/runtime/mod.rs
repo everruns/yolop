@@ -10242,7 +10242,12 @@ mod tests {
     /// silently.
     #[test]
     fn system_prompt_within_budget() {
-        const MAX_BYTES: usize = 1_360;
+        // 1_440 since #679 spent the previous 1_360 on the output guidance
+        // ("never use the word `seam` or other LLM-isms") and took system.md
+        // to 1_414 without moving the cap, leaving `main` red. Raised to that
+        // plus the ~20 bytes of headroom the cap has always carried, rather
+        // than trimming guidance that was added deliberately.
+        const MAX_BYTES: usize = 1_440;
         assert!(
             SYSTEM_PROMPT.len() <= MAX_BYTES,
             "SYSTEM_PROMPT is {} bytes (~{} tokens), cap is {} bytes",
