@@ -8762,6 +8762,27 @@ mod tests {
         );
     }
 
+    /// A retried turn leaves two attempts in history. The answer is the second
+    /// one; the first is an apology for an error the host repaired.
+    #[test]
+    fn a_retried_turn_reads_its_answer_from_the_re_sent_input() {
+        use everruns_core::Message;
+
+        let messages = vec![
+            Message::user("say pong"),
+            Message::assistant("I encountered an error while processing your request."),
+            Message::user("say pong"),
+            Message::assistant("pong"),
+        ];
+
+        assert_eq!(agent_output_start(&messages, 0, true), 3);
+        // No retry: the host's own pre-turn mark stands.
+        assert_eq!(agent_output_start(&messages, 0, false), 0);
+        // Nothing to anchor on degrades to that same mark rather than hiding
+        // the turn's output.
+        assert_eq!(agent_output_start(&[], 7, true), 7);
+    }
+
     /// The reported failure, end to end at the turn seam: OpenRouter rejects a
     /// muse turn that carries no reasoning
     /// ("Reasoning is mandatory for this endpoint and cannot be disabled"), and
