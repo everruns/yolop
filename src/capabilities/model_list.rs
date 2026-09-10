@@ -470,9 +470,17 @@ fn render_response(action: &ModelListAction, response: &ControlResponse) -> Stri
             " "
         };
         let note = if entry["connected"].as_bool().unwrap_or(true) {
-            String::new()
+            match entry.get("effort").and_then(|effort| effort.as_str()) {
+                // The pinned effort is the default applied on selection, not
+                // part of the model name.
+                Some(effort) => format!("  (effort {effort})"),
+                None => String::new(),
+            }
         } else {
-            "  (no credential)".to_string()
+            match entry.get("effort").and_then(|effort| effort.as_str()) {
+                Some(effort) => format!("  (effort {effort}; no credential)"),
+                None => "  (no credential)".to_string(),
+            }
         };
         lines.push(format!(
             "{marker} {:>2}. {}{note}",

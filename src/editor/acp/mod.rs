@@ -1054,15 +1054,17 @@ mod tests {
             offered_name, "ollama: llama3.2",
             "ACP prefixes the provider group itself, so the name must not repeat it"
         );
-        // An entry that pins a reasoning effort shows it in the name, while the
-        // value stays `provider:model` so the client's "selected" echo matches.
+        // A pinned effort never leaks into the name: effort lives in the
+        // separate reasoning-effort option, and the entry's effort is applied
+        // as the default when that model is selected. The value stays
+        // `provider:model` so the client's "selected" echo matches.
         let with_effort = model["options"]
             .as_array()
             .expect("model options")
             .iter()
             .find(|option| option["value"] == "ollama:qwen2.5-coder")
             .expect("effort-bearing option");
-        assert_eq!(with_effort["name"], "ollama: qwen2.5-coder high");
+        assert_eq!(with_effort["name"], "ollama: qwen2.5-coder");
 
         send_json(
             &mut w,

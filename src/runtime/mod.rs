@@ -3302,10 +3302,13 @@ impl ModelState {
             // `provider:model` id the client echoes back as "selected";
             // `select_model_id` re-applies the entry's effort on the way in.
             //
-            // The name omits the provider: ACP renders these as
-            // `<group>: <name>` with the group already naming the provider, so
-            // `display()` here would read "ollama: ollama/llama3.2".
-            let name = entry.label.clone().unwrap_or_else(|| entry.spec());
+            // The name carries identity only, never the pinned effort: ACP
+            // renders these as `<group>: <name>` with the group already naming
+            // the provider, so `display()` here would read
+            // "ollama: ollama/llama3.2". Effort lives in the separate
+            // reasoning-effort option; `select_model_id` re-applies the
+            // entry's pinned effort as the default on the way in.
+            let name = entry.label.clone().unwrap_or_else(|| entry.model.clone());
             Self::push_model_option(&mut options, &entry.provider, &entry.model, &name);
         }
 
