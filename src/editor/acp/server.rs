@@ -1556,8 +1556,25 @@ async fn run_prompt_once(
     let mut live = handles.events.subscribe();
     let events_before = handles.runtime.events().await.map(|e| e.len()).unwrap_or(0);
     let turn_handles = handles.clone();
-    let turn =
-        tokio::spawn(async move { turn_handles.run_checkpointed_turn(&prompt, input).await });
+    let turn_model = session.model.clone();
+    // Set when the turn was retried with a reasoning effort, so the client's
+    // effort selector is refreshed to the level now in force.
+    let recovered = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let turn_recovered = recovered.clone();
+    let turn_peer = peer.clone();
+    let turn_acp_id = acp_id.clone();
+    let turn = tokio::spawn(async move {
+        let notice = move |text: String| {
+            turn_recovered.store(true, std::sync::atomic::Ordering::SeqCst);
+            turn_peer.session_update(
+                &turn_acp_id,
+                SessionUpdate::AgentMessageChunk(protocol::text_chunk(text)),
+            );
+        };
+        turn_handles
+            .run_turn_with_reasoning_recovery(&turn_model, &prompt, input, &notice)
+            .await
+    });
 
     let mut translator = Translator::new();
     let mut cancel_rx = session.arm_cancel();
@@ -1609,6 +1626,9 @@ async fn run_prompt_once(
     }
 
     let outcome = turn.await;
+    if recovered.load(std::sync::atomic::Ordering::SeqCst) {
+        emit_config_options(&peer, &session).await;
+    }
     if let Some(notice) = handles.checkpoints.take_notice() {
         peer.session_update(
             &acp_id,
@@ -1625,6 +1645,15 @@ async fn run_prompt_once(
                         "turn error: {error}"
                     ))),
                 );
+                if let Some(hint) = crate::runtime::reasoning::reasoning_error_hint(
+                    error,
+                    session.model.reasoning_effort().as_deref(),
+                ) {
+                    peer.session_update(
+                        &acp_id,
+                        SessionUpdate::AgentMessageChunk(protocol::text_chunk(hint)),
+                    );
+                }
             }
             (StopReason::EndTurn, Some(result))
         }

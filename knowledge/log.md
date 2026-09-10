@@ -1,5 +1,39 @@
 # Knowledge Log
 
+## 2026-09-10, A repaired turn is judged by what it sent
+
+- [Reasoning effort](specs/reasoning-effort.md): the mandated-reasoning repair
+  keys off the effort the rejected *request* carried, not the effort the model
+  names, and retries with the level the model already chose.
+- A mid-turn `set_model` onto an endpoint that mandates reasoning is exactly the
+  case the two differ: turn controls are captured at turn start and cannot be
+  revised mid-turn (EVE-595), so the request goes out with no effort while the
+  model already names one. Reading the model made the repair decline on the one
+  failure it was built for.
+- All four levels (`minimal`, `low`, `medium`, `high`) are accepted by
+  OpenRouter's muse endpoint, so the rejection was never about the level.
+
+## 2026-09-10, Reasoning effort is merged from every source that knows
+
+- [Reasoning effort](specs/reasoning-effort.md): the effort scale resolves
+  through the curated profile registry, then what the provider advertised at
+  discovery, then Yolop's own list of reasoning-required families. Each layer
+  only fills what the one above left empty, and only the registry and the
+  required families supply an effort Yolop sends on its own: an advertised
+  scale offers levels, it does not choose one.
+- A gateway model the registry has never seen used to lose the control twice:
+  `/effort` offered nothing, and the turn went out with no reasoning, which
+  OpenRouter rejects with "Reasoning is mandatory for this endpoint and cannot
+  be disabled" on `meta/muse-spark-1.3-contributor`.
+- That rejection now repairs itself once, in the shared turn entry point so the
+  TUI, `--print` and ACP all get it: the model's default effort is selected, the
+  user is told, and the same input is sent again. A turn that already named an
+  effort is not retried, it surfaces with a hint naming the control that fixes
+  it.
+- Verified against the live endpoint: a request with no `reasoning` field is
+  accepted, `effort: "none"` and the driver's bare `reasoning.exclude: true` are
+  what it refuses, and the same request with an effort succeeds.
+
 ## 2026-09-10, Everruns 0.20 facade adopted
 
 - The family moved to the 2026-09-09 batch plus `everruns` 0.20.0 and

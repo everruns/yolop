@@ -6,6 +6,8 @@
 
 pub mod background_wake;
 mod compaction_checkpoint;
+pub(crate) mod discovered_profiles;
+pub(crate) mod reasoning;
 pub mod session;
 pub mod session_log;
 
@@ -1722,19 +1724,10 @@ impl ProviderChoice {
             .and_then(|config| reasoning_effort_value(&config.default))
     }
 
+    /// The effort scale for the current model. See
+    /// [`merged_reasoning_effort_config`] for the merge order.
     fn reasoning_effort_config(&self) -> Option<ReasoningEffortConfig> {
-        self.model_profile()?.reasoning_effort
-    }
-
-    fn model_profile(&self) -> Option<ModelProfile> {
-        match self {
-            Self::Codex { model, .. } => crate::drivers::codex::model_profile(model),
-            _ => {
-                let resolved = self.model_without_stored_key();
-                local_model_profile(&resolved.provider_type, &resolved.model)
-                    .or_else(|| get_model_profile(&resolved.provider_type, &resolved.model))
-            }
-        }
+        self.reasoning_effort_config_for_model(self.model_id())
     }
 
     fn reasoning_effort_value(&self) -> Option<&Option<String>> {
@@ -1966,25 +1959,39 @@ impl ProviderChoice {
                 allowed.join(", ")
             ));
         }
-        reasoning_effort_value(&config.default)
-            .ok_or_else(|| {
-                anyhow!(
-                    "model {} has an invalid profile default",
-                    self.model_label_for(model)
-                )
-            })
-            .map(Some)
+        Ok(self.auto_reasoning_effort_for_model(model))
+    }
+
+    /// The effort yolop selects for `model` when the user has named none.
+    ///
+    /// Deliberately narrower than [`Self::reasoning_effort_config_for_model`]:
+    /// a provider catalog saying a model *accepts* efforts is not the same as
+    /// the turn needing one, and sending a level the user never chose would
+    /// change how models behave whose own default is fine. So this reads only
+    /// the curated profile and yolop's reasoning-required families, never the
+    /// discovered catalog.
+    fn auto_reasoning_effort_for_model(&self, model: &str) -> Option<String> {
+        match self {
+            Self::Codex { .. } => crate::drivers::codex::model_profile(model)
+                .and_then(|profile| profile.reasoning_effort),
+            _ => {
+                let resolved = self.model_without_stored_key_for_model(model);
+                profile_reasoning_effort_config(&resolved.provider_type, &resolved.model)
+            }
+        }
+        .and_then(|config| reasoning_effort_value(&config.default))
     }
 
     fn reasoning_effort_config_for_model(&self, model: &str) -> Option<ReasoningEffortConfig> {
         match self {
-            Self::Codex { .. } => crate::drivers::codex::model_profile(model),
+            // Codex speaks to its own driver profile, not a provider catalog.
+            Self::Codex { .. } => crate::drivers::codex::model_profile(model)
+                .and_then(|profile| profile.reasoning_effort),
             _ => {
                 let resolved = self.model_without_stored_key_for_model(model);
-                get_model_profile(&resolved.provider_type, &resolved.model)
+                merged_reasoning_effort_config(&resolved.provider_type, &resolved.model)
             }
         }
-        .and_then(|profile| profile.reasoning_effort)
     }
 
     fn model_label_for(&self, model: &str) -> String {
@@ -2286,6 +2293,99 @@ impl ProviderChoice {
     }
 }
 
+/// The recovery itself, with the turn taken as an argument so it is testable
+/// without a live provider.
+///
+/// The repair is to select the model's default effort (from the merged profile
+/// metadata, else a mid-scale level) and send the same input again — the model
+/// keeps the effort afterwards, so the next turn is legal too, and the user is
+/// told what changed rather than finding a setting they never chose. Exactly one
+/// retry: a rejection of a turn that *did* name an effort is a choice only the
+/// user can make, and is left to surface with its hint
+/// ([`reasoning::reasoning_error_hint`]).
+pub(crate) async fn run_with_reasoning_recovery<F, Fut>(
+    model: &ModelState,
+    input: InputMessage,
+    notice: &(dyn Fn(String) + Send + Sync),
+    run: F,
+) -> anyhow::Result<everruns_host::TurnResult>
+where
+    F: Fn(InputMessage) -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<everruns_host::TurnResult>>,
+{
+    let first = run(input.clone()).await;
+    let Some(error) = turn_failure(&first) else {
+        return first;
+    };
+    // What the model names comes first: on a mid-turn `set_model` the level is
+    // already chosen and only the in-flight request missed it, so the retry
+    // honors that choice instead of overwriting it with a profile default.
+    let chosen = model.reasoning_effort();
+    let Some(effort) = reasoning::recovery_effort(
+        &error,
+        reasoning::sent_reasoning_effort(&input),
+        chosen
+            .as_deref()
+            .or(model.default_reasoning_effort().as_deref()),
+    ) else {
+        return first;
+    };
+
+    // Only a model with no level of its own is given one; the rest of the time
+    // this is the model's own setting reaching a request that predated it.
+    if chosen.is_none() {
+        if let Err(err) = model.select_reasoning_effort(&effort).await {
+            tracing::warn!("could not apply reasoning effort {effort} after {error}: {err:#}");
+            return first;
+        }
+        notice(format!(
+            "{} requires reasoning; reasoning effort set to {effort} and the turn retried.",
+            model.model_id()
+        ));
+    } else {
+        notice(format!(
+            "{} requires reasoning; the turn was retried with reasoning effort {effort}.",
+            model.model_id()
+        ));
+    }
+
+    let mut retry = input;
+    reasoning::apply_reasoning_effort(&mut retry, &effort);
+    run(retry).await
+}
+
+/// Where a host should start reading this turn's agent output.
+///
+/// Normally the history length captured before the turn. After a
+/// reasoning-effort retry the failed attempt is also in history, and its
+/// assistant text is an apology for an error the host went on to repair, so the
+/// answer starts after the last user message: the input the retry re-sent.
+pub(crate) fn agent_output_start(
+    messages: &[everruns_core::Message],
+    before: usize,
+    retried: bool,
+) -> usize {
+    if !retried {
+        return before;
+    }
+    messages
+        .iter()
+        .rposition(|message| message.role == everruns_core::MessageRole::User)
+        .map(|index| index + 1)
+        .unwrap_or(before)
+}
+
+/// The provider-facing error of a finished turn, whether it failed by `Err` or
+/// by an unsuccessful [`everruns_host::TurnResult`]. `None` for a turn that
+/// succeeded.
+fn turn_failure(result: &anyhow::Result<everruns_host::TurnResult>) -> Option<String> {
+    match result {
+        Err(error) => Some(format!("{error:#}")),
+        Ok(turn) if !turn.success => turn.error.clone(),
+        Ok(_) => None,
+    }
+}
+
 fn env_non_empty(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|value| !value.is_empty())
 }
@@ -2360,9 +2460,40 @@ static GPT_5_6_PROFILE: LazyLock<ModelProfile> = LazyLock::new(|| {
     profile
 });
 
-fn profile_default_reasoning_effort(provider_type: &DriverId, model: &str) -> Option<String> {
+/// The reasoning-effort scale for a model, merged across every source that
+/// knows something about it:
+///
+/// 1. the curated profile registry (plus yolop's local overrides), which is
+///    authoritative wherever it describes the model;
+/// 2. what the provider itself advertised at discovery, which is how a gateway
+///    catalog covers models the registry has never seen
+///    ([`discovered_profiles`]);
+/// 3. yolop's own metadata for reasoning-required families
+///    ([`reasoning::fallback_reasoning_effort_config`]), so a model whose
+///    endpoint rejects a turn without reasoning has a scale and a default even
+///    before any discovery call has run.
+fn merged_reasoning_effort_config(
+    provider_type: &DriverId,
+    model: &str,
+) -> Option<ReasoningEffortConfig> {
+    profile_reasoning_effort_config(provider_type, model)
+        .or_else(|| discovered_profiles::reasoning_effort_config(provider_type, model))
+}
+
+/// The two layers yolop will act on by itself: the curated profile registry,
+/// then the reasoning-required families. What a provider merely advertises is
+/// not here — see [`ProviderChoice::auto_reasoning_effort_for_model`].
+fn profile_reasoning_effort_config(
+    provider_type: &DriverId,
+    model: &str,
+) -> Option<ReasoningEffortConfig> {
     model_profile(provider_type, model)
-        .and_then(|profile| profile.reasoning_effort.clone())
+        .and_then(|profile| profile.reasoning_effort)
+        .or_else(|| reasoning::fallback_reasoning_effort_config(provider_type, model))
+}
+
+fn profile_default_reasoning_effort(provider_type: &DriverId, model: &str) -> Option<String> {
+    profile_reasoning_effort_config(provider_type, model)
         .and_then(|config| reasoning_effort_value(&config.default))
 }
 
@@ -2756,6 +2887,26 @@ impl RuntimeHandles {
         Ok(result?)
     }
 
+    /// Run a turn, repairing the one provider rejection the host can repair
+    /// itself: an endpoint that mandates reasoning refusing a turn that carried
+    /// no reasoning effort.
+    ///
+    /// Every host that starts a turn goes through here (TUI, `--print`, ACP), so
+    /// the repair is not a property of one surface. `notice` is how that surface
+    /// tells the user what changed.
+    pub(crate) async fn run_turn_with_reasoning_recovery(
+        &self,
+        model: &ModelState,
+        prompt: &str,
+        input: InputMessage,
+        notice: &(dyn Fn(String) + Send + Sync),
+    ) -> anyhow::Result<everruns_host::TurnResult> {
+        run_with_reasoning_recovery(model, input, notice, move |input| async move {
+            self.run_checkpointed_turn(prompt, input).await
+        })
+        .await
+    }
+
     /// Provider-reported tokens consumed by one agent turn. Completion gates
     /// use the durable event stream so TUI, print, and ACP share one budget
     /// accounting rule.
@@ -2996,6 +3147,13 @@ impl ModelState {
         )
             .await
             .map_err(|_| anyhow!("{provider_name} model availability check timed out; the turn was not started and is safe to resume"))??;
+
+        // The catalog this check already paid for is also where a gateway
+        // describes models the curated registry has never seen, so keep it
+        // rather than reading it once for an availability answer.
+        if let Some(models) = discovered.as_deref() {
+            discovered_profiles::remember(&resolved.provider_type, models);
+        }
 
         if let Some(models) = discovered
             && !models.iter().any(|model| model.model_id == model_id)
@@ -7172,8 +7330,9 @@ mod tests {
             };
             let next = provider.resolve_model_spec(model).unwrap();
 
-            let profile = next.model_profile().expect("gpt-5.6 variant profile");
-            let efforts = profile.reasoning_effort.expect("reasoning effort config");
+            let efforts = next
+                .reasoning_effort_config()
+                .expect("gpt-5.6 variant reasoning effort config");
             assert_eq!(
                 reasoning_effort_value(&efforts.default).as_deref(),
                 Some("medium")
@@ -8615,6 +8774,320 @@ mod tests {
                 .and_then(|controls| controls.reasoning)
                 .and_then(|reasoning| reasoning.effort),
             Some(ReasoningEffort::Medium)
+        );
+    }
+
+    /// A retried turn leaves two attempts in history. The answer is the second
+    /// one; the first is an apology for an error the host repaired.
+    #[test]
+    fn a_retried_turn_reads_its_answer_from_the_re_sent_input() {
+        use everruns_core::Message;
+
+        let messages = vec![
+            Message::user("say pong"),
+            Message::assistant("I encountered an error while processing your request."),
+            Message::user("say pong"),
+            Message::assistant("pong"),
+        ];
+
+        assert_eq!(agent_output_start(&messages, 0, true), 3);
+        // No retry: the host's own pre-turn mark stands.
+        assert_eq!(agent_output_start(&messages, 0, false), 0);
+        // Nothing to anchor on degrades to that same mark rather than hiding
+        // the turn's output.
+        assert_eq!(agent_output_start(&[], 7, true), 7);
+    }
+
+    /// A model switched *mid-turn* lands on an endpoint that mandates
+    /// reasoning while the in-flight turn's controls were captured before the
+    /// switch (mid-turn effort changes are EVE-595). The model state names an
+    /// effort, the request that failed did not, and the repair keys off the
+    /// request.
+    #[tokio::test]
+    async fn a_turn_sent_before_the_model_gained_an_effort_is_retried_with_it() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let sessions = tempfile::tempdir().expect("sessions");
+        let settings = Arc::new(crate::config::SettingsStore::open(
+            sessions.path().join("settings.toml"),
+        ));
+        settings
+            .set_token("openrouter".to_string(), "test-key".to_string())
+            .expect("store an openrouter token");
+        let built = build_with_options(
+            workspace.path().to_path_buf(),
+            ProviderChoice::OpenRouter {
+                model: "meta/muse-spark-1.3-contributor".to_string(),
+                base_url: DEFAULT_OPENROUTER_BASE_URL.to_string(),
+                // What `set_model` left behind mid-turn: the level is on the
+                // model, but the turn already in flight never carried it.
+                reasoning_effort: Some("low".to_string()),
+            },
+            None,
+            sessions.path().to_path_buf(),
+            settings,
+            BuildOptions::default(),
+        )
+        .await
+        .expect("build runtime");
+        let model = built.model;
+
+        let seen = Arc::new(StdMutex::new(Vec::<Option<String>>::new()));
+        let recorded = seen.clone();
+        let run = move |input: InputMessage| {
+            let recorded = recorded.clone();
+            async move {
+                let effort = input
+                    .controls
+                    .as_ref()
+                    .and_then(|controls| controls.reasoning.as_ref())
+                    .and_then(|reasoning| reasoning.effort)
+                    .map(|effort| effort.as_str().to_string());
+                recorded.lock().expect("recorded").push(effort.clone());
+                Ok(everruns_host::TurnResult {
+                    response: String::new(),
+                    iterations: 1,
+                    tool_calls_count: 1,
+                    success: effort.is_some(),
+                    error: effort.is_none().then(|| {
+                        "LLM error: provider 'openrouter': OpenAI Responses API error \
+                         (400 Bad Request): {\"error\":{\"message\":\"Reasoning is mandatory for \
+                         this endpoint and cannot be disabled.\",\"code\":400}}"
+                            .to_string()
+                    }),
+                    stop_reason: if effort.is_some() {
+                        everruns_core::turn::TurnStopReason::EndTurn
+                    } else {
+                        everruns_core::turn::TurnStopReason::Error
+                    },
+                    turn_id: everruns_provider::typed_id::TurnId::new(),
+                })
+            }
+        };
+
+        // The turn as the runtime captured it before the switch: no controls.
+        let stale = InputMessage {
+            role: MessageRole::User,
+            content: vec![ContentPart::text("switch model to muse")],
+            controls: None,
+            metadata: None,
+            tags: vec![],
+        };
+        let notice = |_: String| {};
+        let result = run_with_reasoning_recovery(&model, stale, &notice, run)
+            .await
+            .expect("the retried turn");
+
+        assert!(result.success);
+        assert_eq!(
+            *seen.lock().expect("recorded"),
+            vec![None, Some("low".to_string())],
+            "the retry carries the level the model already names, not a fresh guess"
+        );
+    }
+
+    /// The reported failure, end to end at the turn seam: OpenRouter rejects a
+    /// muse turn that carries no reasoning
+    /// ("Reasoning is mandatory for this endpoint and cannot be disabled"), and
+    /// the host repairs it instead of handing the user a dead turn.
+    #[tokio::test]
+    async fn mandatory_reasoning_rejection_is_retried_with_an_effort() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let sessions = tempfile::tempdir().expect("sessions");
+        let settings = Arc::new(crate::config::SettingsStore::open(
+            sessions.path().join("settings.toml"),
+        ));
+        settings
+            .set_token("openrouter".to_string(), "test-key".to_string())
+            .expect("store an openrouter token");
+        let built = build_with_options(
+            workspace.path().to_path_buf(),
+            ProviderChoice::OpenRouter {
+                model: "meta/muse-spark-1.3-contributor".to_string(),
+                base_url: "https://openrouter.ai/api/v1".to_string(),
+                // The state the report was filed from: a model the profile
+                // registry has never seen, with no effort selected.
+                reasoning_effort: None,
+            },
+            None,
+            sessions.path().to_path_buf(),
+            settings,
+            BuildOptions::default(),
+        )
+        .await
+        .expect("build runtime");
+        let model = built.model;
+
+        let seen = Arc::new(std::sync::Mutex::new(Vec::<Option<String>>::new()));
+        let recorded = seen.clone();
+        let run = move |input: InputMessage| {
+            let recorded = recorded.clone();
+            async move {
+                let effort = input
+                    .controls
+                    .as_ref()
+                    .and_then(|controls| controls.reasoning.as_ref())
+                    .and_then(|reasoning| reasoning.effort)
+                    .map(|effort| effort.as_str().to_string());
+                recorded.lock().expect("recorded").push(effort.clone());
+                Ok(everruns_host::TurnResult {
+                    response: String::new(),
+                    iterations: 1,
+                    tool_calls_count: 0,
+                    success: effort.is_some(),
+                    error: effort.is_none().then(|| {
+                        "LLM error: provider 'openrouter': OpenAI Responses API error \
+                         (400 Bad Request): {\"error\":{\"message\":\"Reasoning is mandatory for \
+                         this endpoint and cannot be disabled.\",\"code\":400}}"
+                            .to_string()
+                    }),
+                    stop_reason: if effort.is_some() {
+                        everruns_core::turn::TurnStopReason::EndTurn
+                    } else {
+                        everruns_core::turn::TurnStopReason::Error
+                    },
+                    turn_id: everruns_provider::typed_id::TurnId::new(),
+                })
+            }
+        };
+
+        let notices = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let recorded_notices = notices.clone();
+        let notice = move |text: String| {
+            recorded_notices.lock().expect("notices").push(text);
+        };
+        let result =
+            run_with_reasoning_recovery(&model, model.input_message("hello"), &notice, run)
+                .await
+                .expect("the retried turn");
+
+        assert!(result.success, "the retry must be the turn the user gets");
+        assert_eq!(
+            *seen.lock().expect("recorded"),
+            vec![None, Some("medium".to_string())],
+            "the first turn is the one the user asked for; only the retry adds reasoning"
+        );
+        assert_eq!(
+            model.reasoning_effort().as_deref(),
+            Some("medium"),
+            "the effort sticks, so the next turn is legal too"
+        );
+        let lines = notices.lock().expect("notices").clone();
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("requires reasoning") && line.contains("medium")),
+            "the user is told what changed: {lines:?}"
+        );
+    }
+
+    /// The report that started this: `openrouter/meta/muse-spark-1.3-contributor`
+    /// is in no profile registry, so the turn went out with no reasoning at all
+    /// and OpenRouter answered "Reasoning is mandatory for this endpoint and
+    /// cannot be disabled", while `/effort` had nothing to offer as a fix.
+    #[test]
+    fn reasoning_required_openrouter_model_selects_and_sends_an_effort() {
+        let next = ProviderChoice::default_openrouter()
+            .resolve_model_spec("meta/muse-spark-1.3-contributor")
+            .unwrap();
+
+        assert_eq!(next.reasoning_effort(), Some("medium"));
+        assert_eq!(
+            next.input_message("hello")
+                .controls
+                .and_then(|controls| controls.reasoning)
+                .and_then(|reasoning| reasoning.effort),
+            Some(ReasoningEffort::Medium)
+        );
+        let options = next
+            .reasoning_effort_options()
+            .into_iter()
+            .map(|option| option.value)
+            .collect::<Vec<_>>();
+        assert_eq!(options, vec!["low", "medium", "high"]);
+    }
+
+    /// An explicit effort still wins over the family default, and an effort the
+    /// scale does not carry is still rejected.
+    #[test]
+    fn reasoning_required_model_accepts_an_explicit_effort() {
+        let base = ProviderChoice::default_openrouter();
+        let next = base
+            .resolve_model_spec("meta/muse-spark-1.3-contributor high")
+            .unwrap();
+        assert_eq!(next.reasoning_effort(), Some("high"));
+
+        let err = base
+            .resolve_model_spec("meta/muse-spark-1.3-contributor turbo")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("low, medium, high"), "unexpected error: {err}");
+    }
+
+    /// What the provider advertised at discovery covers models no registry
+    /// describes, and it is what `/effort` offers for them — without becoming
+    /// an effort yolop sends on its own.
+    #[test]
+    fn discovered_provider_metadata_fills_the_effort_scale_it_does_not_choose_one() {
+        discovered_profiles::remember(
+            &DriverId::OpenRouter,
+            &[everruns_provider::DiscoveredModel {
+                model_id: "test-vendor/gateway-reasoner".to_string(),
+                display_name: None,
+                created_at: None,
+                owned_by: None,
+                capabilities: vec!["chat".to_string()],
+                // Advertises High only, so an answer from this layer is
+                // unmistakable.
+                discovered_profile: Some(discovered_profiles::advertised_profile_for_test()),
+            }],
+        );
+        let base = ProviderChoice::default_openrouter();
+
+        let gateway = base
+            .resolve_model_spec("test-vendor/gateway-reasoner")
+            .unwrap();
+        assert_eq!(
+            gateway
+                .reasoning_effort_options()
+                .into_iter()
+                .map(|option| option.value)
+                .collect::<Vec<_>>(),
+            vec!["high"],
+            "the picker offers what the provider advertised"
+        );
+        assert_eq!(
+            gateway.reasoning_effort(),
+            None,
+            "a catalog says the model accepts efforts, not that yolop should choose one"
+        );
+
+        // The advertised scale is also what an explicit choice is checked
+        // against.
+        assert_eq!(
+            base.resolve_model_spec("test-vendor/gateway-reasoner high")
+                .unwrap()
+                .reasoning_effort(),
+            Some("high")
+        );
+        let err = base
+            .resolve_model_spec("test-vendor/gateway-reasoner minimal")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("supports reasoning efforts: high"), "{err}");
+    }
+
+    /// A model the curated registry does describe keeps the registry's answer.
+    #[test]
+    fn the_registry_still_owns_the_models_it_describes() {
+        let registry_default = get_model_profile(&DriverId::OpenAI, "gpt-5.5")
+            .and_then(|profile| profile.reasoning_effort)
+            .map(|config| config.default.as_str().to_string());
+        let openai = ProviderChoice::default_openai()
+            .resolve_model_spec("gpt-5.5")
+            .unwrap();
+        assert_eq!(
+            openai.reasoning_effort().map(str::to_string),
+            registry_default
         );
     }
 
