@@ -4,7 +4,9 @@
 // module boundary here small; capability implementations live in submodules.
 
 pub(crate) mod agent_commands;
-pub(crate) mod approval;
+// `pub` rather than `pub(crate)`: `BuiltRuntime` hands hosts the session's
+// pending soft-approval so a pause is visible in the UI.
+pub mod approval;
 pub(crate) mod ast_grep;
 pub(crate) mod attribution;
 pub(crate) mod background;

@@ -97,3 +97,17 @@ Merge with `gh pr merge --squash` after CI is green and a final comment sweep is
 clean; give async reviewer bots at least 2 minutes after CI turns green. Do not
 enable auto-merge — bots can post after the last push. After the merge lands,
 watch main CI for the merge commit and fix or revert promptly if it fails.
+
+## Approval
+
+Asking to ship is the approval for shipping. Pushing the branch, opening the
+PR, and squash-merging it once the bar above is met are what this workflow
+exists to do, so run them without a `request_approval` pause and note the
+grant once with `record_approval`. Soft approval otherwise treats those as
+outward-facing and stops in front of them, which is how a run ends on
+"Squash-merging." and waits for a "do this" that adds nothing: the gate that
+actually protects the merge is green CI and a clean sweep, not a second yes.
+
+The grant covers this change through its merge and nothing else. Anything
+destructive or outside that path — force-pushing, rewriting history, reverting
+on main, touching another PR — still needs the question.
