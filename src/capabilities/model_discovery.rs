@@ -88,6 +88,11 @@ pub(crate) async fn discover_provider_models(
             model.model_id = bare.to_string();
         }
     }
+    // Whatever the provider said about these models is metadata the effort
+    // selector and per-turn defaults cannot ask for themselves (they are
+    // synchronous); cache it while we have it. Kept before the chat filter so
+    // the record matches the catalog, not this call's presentation.
+    crate::runtime::discovered_profiles::remember(&target.provider_type, &models);
     let mut models = retain_chat_models(models);
     models.sort_by(|a, b| {
         b.created_at

@@ -1,5 +1,26 @@
 # Knowledge Log
 
+## 2026-09-10, Reasoning effort is merged from every source that knows
+
+- [Reasoning effort](specs/reasoning-effort.md): the effort scale resolves
+  through the curated profile registry, then what the provider advertised at
+  discovery, then Yolop's own list of reasoning-required families. Each layer
+  only fills what the one above left empty, and only the registry and the
+  required families supply an effort Yolop sends on its own: an advertised
+  scale offers levels, it does not choose one.
+- A gateway model the registry has never seen used to lose the control twice:
+  `/effort` offered nothing, and the turn went out with no reasoning, which
+  OpenRouter rejects with "Reasoning is mandatory for this endpoint and cannot
+  be disabled" on `meta/muse-spark-1.3-contributor`.
+- That rejection now repairs itself once, in the shared turn entry point so the
+  TUI, `--print` and ACP all get it: the model's default effort is selected, the
+  user is told, and the same input is sent again. A turn that already named an
+  effort is not retried, it surfaces with a hint naming the control that fixes
+  it.
+- Verified against the live endpoint: a request with no `reasoning` field is
+  accepted, `effort: "none"` and the driver's bare `reasoning.exclude: true` are
+  what it refuses, and the same request with an effort succeeds.
+
 ## 2026-09-10, Everruns 0.20 facade adopted
 
 - The family moved to the 2026-09-09 batch plus `everruns` 0.20.0 and
