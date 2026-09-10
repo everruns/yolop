@@ -401,6 +401,7 @@ Manage servers from the CLI with `yolop mcp`, or from a session with `/mcp`:
 yolop mcp list --scope effective
 yolop mcp add linear --scope global --type http --url https://mcp.linear.app/mcp --auth-mode oauth --oauth-provider-id linear
 yolop mcp enable linear --scope global
+yolop mcp login linear
 yolop mcp remove linear --scope global
 ```
 

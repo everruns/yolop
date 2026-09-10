@@ -319,6 +319,14 @@ enum McpCommand {
         #[arg(short = 'C', long = "cwd")]
         cwd: Option<PathBuf>,
     },
+    /// Log in to a remote MCP server with the OAuth browser flow.
+    Login {
+        /// Server name.
+        name: String,
+        /// Workspace root for workspace/effective config.
+        #[arg(short = 'C', long = "cwd")]
+        cwd: Option<PathBuf>,
+    },
     /// Add or replace an MCP server.
     Add {
         /// Scope to write (`global` or `workspace`).
@@ -1129,7 +1137,7 @@ async fn run_models_pull(_spec: &str) -> Result<()> {
     ))
 }
 
-fn run_mcp_command(command: McpCommand) -> Result<()> {
+async fn run_mcp_command(command: McpCommand) -> Result<()> {
     use crate::config::mcp::{McpServerEntry, McpServerSummary};
     use everruns_core::{McpServerTransportType, ScopedMcpServer};
     use std::collections::HashMap;
@@ -1195,6 +1203,43 @@ fn run_mcp_command(command: McpCommand) -> Result<()> {
                     );
                 }
             }
+            Ok(())
+        }
+        McpCommand::Login { name, cwd } => {
+            let servers = store(cwd)?
+                .effective()
+                .map_err(anyhow::Error::msg)?
+                .servers
+                .into_iter()
+                .find(|server| server.name == *name && server.effective)
+                .with_context(|| format!("MCP server `{name}` was not found in effective scope"))?;
+            let scoped = &servers.server.server;
+            if scoped.transport_type != McpServerTransportType::Http {
+                return Err(anyhow::Error::msg(format!(
+                    "MCP server `{name}` is a stdio server; OAuth login only applies to remote HTTP servers"
+                )));
+            }
+            let provider_key = scoped
+                .oauth_provider_id
+                .clone()
+                .unwrap_or_else(|| name.clone());
+            println!("Opening the browser to log in to MCP server `{name}` ...");
+            let prepared = auth::mcp_oauth_login::prepare_login(&scoped.url, None, None).await?;
+            println!(
+                "If the browser did not open, visit this URL:\n{}\n",
+                prepared.authorize_url
+            );
+            if let Err(error) = auth::oauth_flow::open_browser(prepared.authorize_url.as_str()) {
+                eprintln!("warning: could not open the browser: {error:#}");
+            }
+            println!("Waiting for the browser login to complete ...");
+            let tokens = auth::mcp_oauth_login::complete_login(prepared).await?;
+            let fallback = PathBuf::from("/dev/null/yolop");
+            let connections_path = connectors::default_connections_path()
+                .unwrap_or_else(|| fallback.join("connections.toml"));
+            let connections = connectors::ConnectionStore::open(connections_path);
+            auth::mcp_oauth::save_tokens(&connections, &provider_key, tokens)?;
+            println!("Logged in to MCP server `{name}`.");
             Ok(())
         }
         McpCommand::Show { name, scope, cwd } => {
@@ -1351,7 +1396,7 @@ async fn run_command(command: Commands) -> Result<()> {
             println!("{}", version::VERSION_LINE);
             Ok(())
         }
-        Commands::Mcp(args) => run_mcp_command(args.command),
+        Commands::Mcp(args) => run_mcp_command(args.command).await,
         Commands::Weights(args) => run_weights_command(args.command).await,
         Commands::TuikaGallery => run_tuika_gallery(),
         #[cfg(target_os = "linux")]
@@ -2452,6 +2497,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mcp_login_unknown_server_errors() {
+        let cwd = std::env::temp_dir().join("yolop-mcp-login-unknown-server");
+        std::fs::create_dir_all(&cwd).expect("create temp cwd");
+        let error = run_mcp_command(McpCommand::Login {
+            name: "definitely-not-a-server".to_string(),
+            cwd: Some(cwd),
+        })
+        .await
+        .expect_err("unknown server errors");
+        assert!(
+            error
+                .to_string()
+                .contains("was not found in effective scope"),
+            "unexpected error: {error:#}"
+        );
+    }
+
+    #[tokio::test]
     async fn detached_management_commands_dispatch() {
         let registry = detached_cli_registry().expect("build detached CLI registry");
         for argv in [
@@ -2480,6 +2543,7 @@ mod tests {
             vec!["yolop", "mcp", "show", "demo"],
             vec!["yolop", "mcp", "enable", "demo"],
             vec!["yolop", "mcp", "disable", "demo"],
+            vec!["yolop", "mcp", "login", "demo"],
         ] {
             Cli::try_parse_from(argv).expect("parse MCP command");
         }
