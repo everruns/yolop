@@ -20,7 +20,7 @@ pub(crate) const YOLOP_PR_ATTRIBUTION: &str = "Produced by [yolop](https://everr
 /// without a `SystemPromptContext`.
 pub(crate) fn yolop_attribution_prompt() -> String {
     format!(
-        "\
+        "<capability id=\"{ATTRIBUTION_CAPABILITY_ID}\">\n\
 ## Attribution
 
 When you create or amend commits for changes you made, keep the user's
@@ -31,7 +31,7 @@ When creating or editing pull request descriptions with `gh`, add this
 footer once:
 {YOLOP_PR_ATTRIBUTION}
 
-Do not add duplicate attribution or session links."
+Do not add duplicate attribution or session links.\n</capability>"
     )
 }
 
@@ -88,6 +88,8 @@ mod tests {
             .await
             .expect("enabled attribution prompt");
         assert!(enabled.contains(YOLOP_ATTRIBUTION_TRAILER));
+        assert!(enabled.starts_with("<capability id=\"yolop_attribution\">\n"));
+        assert!(enabled.trim_end().ends_with("</capability>"));
         assert_eq!(
             YOLOP_PR_ATTRIBUTION,
             "Produced by [yolop](https://everruns.com/yolop)"
