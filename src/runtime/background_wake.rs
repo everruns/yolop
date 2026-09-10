@@ -343,12 +343,16 @@ impl WakeRunner {
 
 /// Register a live host session with Everruns' route registry and translate
 /// raw route messages into Yolop's authenticated wake representation.
-pub fn register_host_route(
+///
+/// Async because `WakeRoutes::register` waits out a synchronous fallback turn
+/// already in flight for this session before handing over the route; going live
+/// underneath one would leave two loops driving the same session.
+pub async fn register_host_route(
     runner: Arc<HostRoutedRunner<WakeRunner>>,
     session_id: SessionId,
 ) -> (WakeSender, WakeReceiver) {
     let routes = runner.routes().clone();
-    let mut raw = routes.register(session_id);
+    let mut raw = routes.register(session_id).await;
     let (wake_tx, wake_rx) = mpsc::unbounded_channel();
     let bridge_tx = wake_tx.clone();
     let bridge_runner = runner.clone();
@@ -719,7 +723,7 @@ mod tests {
     async fn upstream_router_delivers_an_enriched_host_wake() {
         let session_id = SessionId::from_seed(910_001);
         let runner = Arc::new(HostRoutedRunner::new(runner(), WakeRoutes::new()));
-        let (_, mut wakes) = register_host_route(runner.clone(), session_id);
+        let (_, mut wakes) = register_host_route(runner.clone(), session_id).await;
 
         runner
             .send_message(session_id, "for host")
@@ -750,8 +754,8 @@ mod tests {
         let session_a = SessionId::from_seed(910_005);
         let session_b = SessionId::from_seed(910_006);
         let runner = Arc::new(HostRoutedRunner::new(runner(), WakeRoutes::new()));
-        let (_, rx_a) = register_host_route(runner.clone(), session_a);
-        let (_, rx_b) = register_host_route(runner.clone(), session_b);
+        let (_, rx_a) = register_host_route(runner.clone(), session_a).await;
+        let (_, rx_b) = register_host_route(runner.clone(), session_b).await;
 
         let routable = runner
             .routable_session_ids()

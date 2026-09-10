@@ -303,17 +303,14 @@ fn save_workspace_mcp_settings(path: &Path, settings: &WorkspaceMcpSettings) -> 
     std::fs::write(path, bytes).map_err(|err| format!("write {}: {err}", path.display()))
 }
 
+// `auth_mode` needs no normalizing here: everruns-core 0.19.1 renamed the
+// serialized form of `McpServerAuthMode::OAuth` from `o_auth` to `oauth` and
+// kept `o_auth` as a serde alias, so both spellings deserialize on their own.
 fn normalize_server_entry_value(mut value: JsonValue) -> JsonValue {
-    if let JsonValue::Object(object) = &mut value {
-        if let Some(transport_type) = object.remove("transport_type") {
-            object.entry("type".to_string()).or_insert(transport_type);
-        }
-        if object.get("auth_mode").and_then(JsonValue::as_str) == Some("oauth") {
-            object.insert(
-                "auth_mode".to_string(),
-                JsonValue::String("o_auth".to_string()),
-            );
-        }
+    if let JsonValue::Object(object) = &mut value
+        && let Some(transport_type) = object.remove("transport_type")
+    {
+        object.entry("type".to_string()).or_insert(transport_type);
     }
     value
 }

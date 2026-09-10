@@ -1,5 +1,24 @@
 # Knowledge Log
 
+## 2026-09-10, Everruns 0.20 facade adopted
+
+- The family moved to the 2026-09-09 batch plus `everruns` 0.20.0 and
+  `everruns-host` 0.20.5, the facade release that fixed the call site behind the
+  install break recorded on 2026-09-09. The exact pins moved as one set and were
+  validated by compiling a from-scratch resolution, not only the lockfile.
+- `WakeRoutes::register` is now async: it waits out a synchronous fallback turn
+  already in flight for the same session, so `register_host_route` awaits it
+  rather than going live underneath one and driving a session from two loops.
+- Explicit compaction can return native items the narrow `CompactOutputItem`
+  shapes do not model. The codex driver passes `CompactOutputItem::ProviderItem`
+  through verbatim so reasoning and other provider state survive a checkpoint
+  reload instead of being dropped.
+- `McpServerAuthMode::OAuth` now serializes as `oauth` rather than `o_auth`,
+  with `o_auth` kept as a read alias, so existing settings files still parse and
+  newly written ones use the canonical spelling. Yolop's own `oauth` -> `o_auth`
+  rewrite on the MCP settings read path is obsolete and removed. A compile
+  passes either way; only a test asserting the on-disk text caught this.
+
 ## 2026-09-09, Everruns versions are exact pins lifted as a set
 
 - [Maintenance](specs/maintenance.md): every `everruns-*` requirement is an exact

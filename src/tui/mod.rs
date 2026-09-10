@@ -5251,6 +5251,7 @@ mod tests {
                 model: None,
                 iteration: Some(3),
                 phase: None,
+                reasoning_state: None,
             },
         );
 
