@@ -2689,11 +2689,19 @@ fn resolve_capability_dependencies(caps: &mut Vec<CapabilityRef>, edges: &[(&str
     }
 }
 
-fn push_before_environment_context(caps: &mut Vec<CapabilityRef>, cap: CapabilityRef) {
-    if let Some(index) = caps
+/// Late capabilities (control-plane, user hooks) sit with the rest of the
+/// capabilities: before agent-instructions, which changes more often, and
+/// environment context, which is per-turn volatile. Keeps the prompt prefix
+/// cacheable in `capabilities, agent-instructions, environment` order.
+fn push_before_trailing_context(caps: &mut Vec<CapabilityRef>, cap: CapabilityRef) {
+    let index = caps
         .iter()
-        .position(|c| c.capability_id() == ENVIRONMENT_CONTEXT_CAPABILITY_ID)
-    {
+        .position(|c| c.capability_id() == AGENT_INSTRUCTIONS_CAPABILITY_ID)
+        .or_else(|| {
+            caps.iter()
+                .position(|c| c.capability_id() == ENVIRONMENT_CONTEXT_CAPABILITY_ID)
+        });
+    if let Some(index) = index {
         caps.insert(index, cap);
     } else {
         caps.push(cap);
@@ -2712,7 +2720,7 @@ fn enable_control_plane(
     routes: &[crate::control::ControlRoute],
 ) -> Option<crate::control::ControlPlaneCapability> {
     let capability = crate::control::ControlPlaneCapability::new(routes)?;
-    push_before_environment_context(
+    push_before_trailing_context(
         caps,
         CapabilityRef::new(crate::control::CONTROL_PLANE_CAPABILITY_ID),
     );
@@ -2730,7 +2738,7 @@ fn coding_harness_capabilities(
     );
     ensure_harness_capability_dependencies(&mut caps);
     if let Some(config) = hook_config {
-        push_before_environment_context(
+        push_before_trailing_context(
             &mut caps,
             CapabilityRef::with_config(USER_HOOKS_CAPABILITY_ID, config),
         );
@@ -10169,7 +10177,11 @@ mod tests {
                 .unwrap_or_else(|| panic!("{id} should be enabled"))
         };
 
-        assert!(position(USER_HOOKS_CAPABILITY_ID) < position(ENVIRONMENT_CONTEXT_CAPABILITY_ID));
+        assert!(position(USER_HOOKS_CAPABILITY_ID) < position(AGENT_INSTRUCTIONS_CAPABILITY_ID));
+        assert!(
+            position(AGENT_INSTRUCTIONS_CAPABILITY_ID)
+                < position(ENVIRONMENT_CONTEXT_CAPABILITY_ID)
+        );
         assert_eq!(position(ENVIRONMENT_CONTEXT_CAPABILITY_ID), ids.len() - 1);
     }
 
@@ -10268,12 +10280,16 @@ mod tests {
             .iter()
             .position(|cap| cap.capability_id() == CONTROL_PLANE_CAPABILITY_ID)
             .expect("the harness must enable the control plane, not just register it");
-        // Environment context stays last so the prompt prefix remains cacheable.
-        if let Some(environment) = caps
-            .iter()
-            .position(|cap| cap.capability_id() == ENVIRONMENT_CONTEXT_CAPABILITY_ID)
-        {
-            assert!(position < environment);
+        // Capabilities, then agent-instructions, then environment context, so the
+        // prompt prefix remains cacheable.
+        if let (Some(instructions), Some(environment)) = (
+            caps.iter()
+                .position(|cap| cap.capability_id() == AGENT_INSTRUCTIONS_CAPABILITY_ID),
+            caps.iter()
+                .position(|cap| cap.capability_id() == ENVIRONMENT_CONTEXT_CAPABILITY_ID),
+        ) {
+            assert!(position < instructions);
+            assert!(instructions < environment);
         }
     }
 
