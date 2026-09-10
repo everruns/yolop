@@ -13,6 +13,14 @@
 //   * record each granted approval with `record_approval`, which lands a
 //     `tool.completed` line in the per-session `events.jsonl` audit log.
 //
+// The pause itself is a tool call, `request_approval`, not just prose. A model
+// that ends its turn on a sentence like "Squash-merging." has paused as far as
+// the loop is concerned, but nothing distinguishes that from a finished answer:
+// the user sees a turn that stopped mid-thought and has to guess that yolop is
+// waiting on them. Routing the pause through a tool gives the host a fact to
+// render, and the audit log a record of what was asked, not only of what was
+// granted.
+//
 // The paranoia level is central configuration (`approval_mode` in
 // settings.toml, see `crate::config::ApprovalMode`), surfaced in the status
 // bar, switchable with `/setup approval <level>` and — because users address
@@ -28,9 +36,53 @@ use everruns_core::{Capability, CapabilityStatus, SystemPromptContext};
 use everruns_core::{Tool, ToolExecutionResult};
 use everruns_provider::{BuiltinTool, DeferrablePolicy, ToolCall, ToolDefinition};
 use serde_json::{Value, json};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 pub(crate) const APPROVAL_CAPABILITY_ID: &str = "yolop_approval";
+
+/// A critical action yolop has stopped in front of, waiting for the user to
+/// say yes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingApproval {
+    /// What yolop will do once approved.
+    pub action: String,
+    /// The question put to the user, already phrased for display.
+    pub question: String,
+}
+
+/// The one pending approval a session can be holding.
+///
+/// Shared between the capability's tools and the host: `request_approval`
+/// sets it, `record_approval` clears it, and the host reads it when a turn
+/// ends so a pause is visible rather than looking like a turn that died.
+#[derive(Clone, Default)]
+pub struct PendingApprovalStore {
+    inner: Arc<Mutex<Option<PendingApproval>>>,
+}
+
+impl PendingApprovalStore {
+    /// Raise a pause. `request_approval` owns this in production; the TUI's
+    /// own tests use it to stand in for a model that paused.
+    pub(crate) fn set(&self, pending: PendingApproval) {
+        *self.inner.lock().expect("pending approval lock") = Some(pending);
+    }
+
+    fn clear(&self) {
+        *self.inner.lock().expect("pending approval lock") = None;
+    }
+
+    /// What the session is waiting on, without consuming it. A pause outlives
+    /// the turn that raised it: it is answered by the user's next message, not
+    /// by the turn ending.
+    pub fn peek(&self) -> Option<PendingApproval> {
+        self.inner.lock().expect("pending approval lock").clone()
+    }
+
+    /// Drop a pause the user has now answered, whichever way they answered.
+    pub fn resolve(&self) {
+        self.clear();
+    }
+}
 
 /// Render the `<soft_approval>` system-prompt block for a given level.
 /// Pure so the per-mode branch logic is unit-testable without a
@@ -61,23 +113,24 @@ Soft-approval is active at level {level}.\n\
 {threshold}\n\
 \n\
 How to operate:\n\
-- Plan first, then BATCH the safe steps and run them without pausing. Do NOT \
-ask for approval before every tool call — that defeats the purpose. Read-only \
-inspection (reading, listing, grepping, status checks) never needs approval.\n\
-- When you reach a critical action, STOP before running it. Briefly justify it \
-to the user (what you will do, why, and what is at risk — the \"proof\"), then \
-ask for approval in one short question and wait.\n\
-- A plain affirmative reply (\"yes\", \"approved\", \"go ahead\", \"do it\") is \
-the approval; a negative or hesitant reply is not. There is no separate \
-approval UI — consent is spoken in chat.\n\
-- Immediately after the user approves, call `record_approval` with a concise \
-description of exactly what was approved, then carry it out. This writes the \
-approval to the session audit log.\n\
-- One approval covers the specific action described, not unrelated later \
-actions. If the user pre-authorizes a category (\"you don't need to ask for \
-git commits\"), honor it for that category without re-asking.\n\
-- If the user asks to change how cautious you are (\"be more careful\", \"stop \
-asking\", \"yolo mode\"), call `set_approval_mode` to update the level.\n\
+- Plan, then BATCH the safe steps and run them without pausing. Do NOT ask \
+before every tool call; read-only inspection never needs approval.\n\
+- At a critical action, STOP: say briefly what you will do, why, and what is \
+at risk, then call `request_approval` with that action and one short question, \
+and end your turn. That call IS the pause, and the only signal to the user \
+that you are waiting.\n\
+- NEVER announce a critical action and then stop without it. \"Squash-merging.\" \
+as your last words reads as a turn that died, not as a question. Ask, or act; \
+never narrate and halt.\n\
+- A plain affirmative (\"yes\", \"go ahead\", \"do it\") is the approval; a \
+negative or hesitant reply is not. Consent is spoken in chat.\n\
+- Immediately after they approve, call `record_approval` with what was \
+approved, then carry it out. This writes it to the session audit log.\n\
+- One approval covers that action, not later ones. Honor a pre-authorized \
+category (\"no need to ask for commits\") without re-asking, and a workflow the \
+user invoked by name pre-authorizes the actions it exists to perform: run \
+those without pausing and note the grant once with `record_approval`.\n\
+- If the user asks you to be more or less cautious, call `set_approval_mode`.\n\
 </soft_approval>",
         level = mode.as_str(),
     ))
@@ -88,6 +141,8 @@ pub(crate) struct ApprovalCapability {
     pub(crate) config: Arc<dyn ConfigService>,
     /// Concrete store for the `set_approval_mode` write tool.
     pub(crate) settings: Arc<SettingsStore>,
+    /// Shared with the host so a pause is rendered, not merely spoken.
+    pub(crate) pending: PendingApprovalStore,
 }
 
 #[async_trait]
@@ -122,7 +177,12 @@ impl Capability for ApprovalCapability {
 
     fn tools(&self) -> Vec<Box<dyn Tool>> {
         vec![
-            Box::new(RecordApprovalTool),
+            Box::new(RequestApprovalTool {
+                pending: self.pending.clone(),
+            }),
+            Box::new(RecordApprovalTool {
+                pending: self.pending.clone(),
+            }),
             Box::new(SetApprovalModeTool {
                 settings: self.settings.clone(),
             }),
@@ -136,7 +196,9 @@ impl Capability for ApprovalCapability {
 /// tool itself only echoes the record back; the durable audit entry is the
 /// `tool.completed` event this call produces in the per-session `events.jsonl`
 /// log, which captures the arguments, output, and timestamp.
-struct RecordApprovalTool;
+struct RecordApprovalTool {
+    pending: PendingApprovalStore,
+}
 
 const FALLBACK_APPROVAL_ACTION: &str = "the pending critical action approved in the conversation";
 
@@ -224,12 +286,100 @@ impl Tool for RecordApprovalTool {
     async fn execute(&self, arguments: Value) -> ToolExecutionResult {
         let action = approval_action(&arguments);
         let detail = non_empty_str(arguments.get("detail"));
+        // Consent has been given, so the session is no longer waiting on the
+        // user. Clearing here rather than on the next turn keeps the host from
+        // showing a pause that has already been answered.
+        self.pending.resolve();
         ToolExecutionResult::success(json!({
             "ok": true,
             "recorded": true,
             "action": action,
             "detail": detail,
             "message": format!("approval recorded: {action}"),
+        }))
+    }
+}
+
+/// Pauses in front of a critical action and asks the user for approval.
+///
+/// Calling this is what makes the pause legible: the host reads
+/// [`PendingApprovalStore`] when the turn ends and tells the user it is
+/// waiting on them, instead of leaving a turn that stopped mid-sentence.
+struct RequestApprovalTool {
+    pending: PendingApprovalStore,
+}
+
+const FALLBACK_APPROVAL_QUESTION: &str = "Go ahead?";
+
+#[async_trait]
+impl Tool for RequestApprovalTool {
+    fn narrate(
+        &self,
+        tool_call: &ToolCall,
+        phase: ToolNarrationPhase,
+        locale: Option<&str>,
+        _ctx: everruns_core::tool_narration::ToolNarrationContext<'_>,
+    ) -> Option<String> {
+        let _ = locale;
+        let action = arg_str(&tool_call.arguments, &["action"]).map(|value| truncate(value, 48));
+        Some(stable_labeled("Ask approval", action, phase))
+    }
+
+    fn name(&self) -> &str {
+        "request_approval"
+    }
+    fn display_name(&self) -> Option<&str> {
+        Some("Ask approval")
+    }
+    fn description(&self) -> &str {
+        // Deliberately terse: this tool can never be deferred behind
+        // `tool_search` (the model has to find it at the instant it decides to
+        // pause), so every byte here is paid on every turn.
+        "Pause before a critical action and ask the user to approve it. Call this INSTEAD of \
+         announcing it and stopping: the call is what tells the user you are waiting. End your \
+         turn right after. Logged; no secrets."
+    }
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "description": "The action awaiting approval, e.g. \"squash-merge PR #677\"."
+                },
+                "question": {
+                    "type": "string",
+                    "description": "One short question for the user, e.g. \"CI is green. Merge it?\""
+                }
+            },
+            "required": ["action"],
+            "additionalProperties": false
+        })
+    }
+
+    fn to_definition(&self) -> ToolDefinition {
+        non_deferrable_builtin(self)
+    }
+
+    async fn execute(&self, arguments: Value) -> ToolExecutionResult {
+        let action = approval_action(&arguments).to_string();
+        let question = arguments
+            .get("question")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(FALLBACK_APPROVAL_QUESTION)
+            .to_string();
+        self.pending.set(PendingApproval {
+            action: action.clone(),
+            question: question.clone(),
+        });
+        ToolExecutionResult::success(json!({
+            "ok": true,
+            "awaiting_approval": true,
+            "action": action,
+            "question": question,
+            "message": "waiting for the user to approve; end your turn now",
         }))
     }
 }
@@ -340,6 +490,13 @@ mod tests {
         // The core behaviors must be spelled out.
         assert!(normal.contains("BATCH"));
         assert!(normal.contains("record_approval"));
+        // The pause is a tool call, and announcing instead of asking is the
+        // failure this block exists to prevent.
+        assert!(normal.contains("request_approval"));
+        assert!(normal.contains("NEVER announce a critical action"));
+        // A workflow the user invoked can carry the pre-authorization, which
+        // is what keeps `/ship` from stopping in front of its own merge.
+        assert!(normal.contains("a workflow the user invoked by name"));
         assert!(normal.ends_with("</soft_approval>"));
 
         let protective = render_approval_block(ApprovalMode::Protective).expect("protective block");
@@ -348,15 +505,19 @@ mod tests {
     }
 
     #[test]
-    fn capability_exposes_both_tools() {
+    fn capability_exposes_its_tools() {
         let (_tmp, settings) = store_in_tmp();
         let cap = ApprovalCapability {
             config: settings.clone(),
             settings,
+            pending: PendingApprovalStore::default(),
         };
         let tools = cap.tools();
         let names: Vec<String> = tools.iter().map(|t| t.name().to_string()).collect();
-        assert_eq!(names, vec!["record_approval", "set_approval_mode"]);
+        assert_eq!(
+            names,
+            vec!["request_approval", "record_approval", "set_approval_mode"]
+        );
         assert!(
             tools.iter().all(|tool| {
                 matches!(tool.to_definition().deferrable(), DeferrablePolicy::Never)
@@ -371,6 +532,7 @@ mod tests {
         let cap = ApprovalCapability {
             config: settings.clone(),
             settings: settings.clone(),
+            pending: PendingApprovalStore::default(),
         };
         let ctx =
             SystemPromptContext::without_file_store(everruns_provider::typed_id::SessionId::new());
@@ -387,7 +549,9 @@ mod tests {
 
     #[tokio::test]
     async fn record_approval_echoes_action() {
-        let tool = RecordApprovalTool;
+        let tool = RecordApprovalTool {
+            pending: PendingApprovalStore::default(),
+        };
 
         let res = tool
             .execute(json!({ "action": "force-push feature/x", "detail": "git push -f" }))
@@ -401,13 +565,76 @@ mod tests {
 
     #[tokio::test]
     async fn record_approval_accepts_empty_arguments_after_spoken_consent() {
-        let tool = RecordApprovalTool;
+        let tool = RecordApprovalTool {
+            pending: PendingApprovalStore::default(),
+        };
         let res = tool.execute(json!({})).await;
         let ToolExecutionResult::Success(value) = res else {
             panic!("expected success");
         };
         assert_eq!(value["action"], FALLBACK_APPROVAL_ACTION);
         assert!(value["detail"].is_null());
+    }
+
+    #[tokio::test]
+    async fn request_approval_publishes_the_pause_for_the_host() {
+        let pending = PendingApprovalStore::default();
+        let tool = RequestApprovalTool {
+            pending: pending.clone(),
+        };
+        assert_eq!(pending.peek(), None);
+
+        let res = tool
+            .execute(json!({
+                "action": "squash-merge PR #677",
+                "question": "CI is green and no comments are open. Merge it?",
+            }))
+            .await;
+        let ToolExecutionResult::Success(value) = res else {
+            panic!("expected success");
+        };
+        assert_eq!(value["awaiting_approval"], true);
+        assert_eq!(
+            pending.peek(),
+            Some(PendingApproval {
+                action: "squash-merge PR #677".into(),
+                question: "CI is green and no comments are open. Merge it?".into(),
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn request_approval_without_a_question_still_reads_as_a_question() {
+        let pending = PendingApprovalStore::default();
+        let tool = RequestApprovalTool {
+            pending: pending.clone(),
+        };
+        tool.execute(json!({ "action": "deploy to production" }))
+            .await;
+        assert_eq!(
+            pending.peek().map(|p| p.question),
+            Some(FALLBACK_APPROVAL_QUESTION.to_string())
+        );
+    }
+
+    /// Consent ends the pause: the host must not go on telling the user it is
+    /// waiting for an answer they have already given.
+    #[tokio::test]
+    async fn recording_an_approval_clears_the_pause() {
+        let pending = PendingApprovalStore::default();
+        RequestApprovalTool {
+            pending: pending.clone(),
+        }
+        .execute(json!({ "action": "squash-merge PR #677" }))
+        .await;
+        assert!(pending.peek().is_some());
+
+        RecordApprovalTool {
+            pending: pending.clone(),
+        }
+        .execute(json!({ "action": "squash-merge PR #677" }))
+        .await;
+        assert_eq!(pending.peek(), None);
     }
 
     #[tokio::test]

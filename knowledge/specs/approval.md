@@ -64,6 +64,38 @@ contributes a `<soft_approval>` block to the system prompt:
   user-granted category exemption ("you don't need to ask for commits") is
   honored without re-asking.
 
+### The pause is a tool call
+
+Prose alone cannot express a pause. A model that ends its turn on
+"Squash-merging." has stopped, but the loop, the transcript, and the user all
+see the same thing they would see if it had finished: text, then nothing. The
+user is left to guess that yolop is waiting on them, and the usual guess is
+that the turn broke.
+
+So pausing means calling `request_approval` with the action and the question,
+and ending the turn there. The call is the pause. It gives the host a fact to
+render (`PendingApprovalStore`, read when a turn ends, surfaced as an explicit
+waiting line) and the audit log a record of what was *asked*, not only of what
+was granted. `record_approval` clears the pause, as does the user's next
+message: either way they have answered.
+
+The prompt names the failure directly, because it is the one models actually
+make: never announce a critical action and then stop without the call. Ask, or
+act; never narrate and halt.
+
+### Workflows carry their own grant
+
+A workflow the user invoked by name is the user asking for the actions that
+workflow exists to perform, so its instructions may pre-authorize them; the
+model honors that the same way it honors a spoken category exemption, and
+notes it once with `record_approval`. [`/ship`](../../.agents/skills/ship/SKILL.md)
+does this for pushing, opening the PR, and the squash-merge: soft approval
+otherwise stops in front of all three as outward-facing, and a ship run ends
+on "Squash-merging." waiting for a second yes that adds nothing. The gate that
+protects that merge is green CI and a clean comment sweep, not a confirmation.
+A grant reaches only the path its workflow covers; anything destructive or
+outside it still needs the question.
+
 Reading the level live means `/setup approval` and `set_approval_mode` take
 effect on the very next turn without a restart.
 

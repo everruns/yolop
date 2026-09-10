@@ -1,5 +1,21 @@
 # Knowledge Log
 
+## 2026-09-10, A soft-approval pause is a tool call
+
+- [Approval](specs/approval.md): pausing before a critical action now means
+  calling `request_approval` and ending the turn there. Prose could not express
+  a pause: a turn ending on "Squash-merging." looks exactly like a turn that
+  finished, so the user reads a working gate as a broken agent and answers with
+  a "do this" that carries no information.
+- The call gives the host a fact to render and the audit log a record of what
+  was asked, not only of what was granted. The prompt names the announce-then-
+  stop failure directly, because it is the one models actually make.
+- A workflow the user invoked by name may pre-authorize the actions it exists
+  to perform. `/ship` does that for push, PR, and squash-merge: soft approval
+  treated all three as outward-facing and stopped in front of them, while the
+  skill told the model to merge once CI was green. The two instructions
+  contradicted each other and the model resolved it differently each run.
+
 ## 2026-09-10, A host-built turn carries reasoning too
 
 - [Reasoning effort](specs/reasoning-effort.md): background wakes, resumed turns
