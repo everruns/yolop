@@ -28,14 +28,14 @@ use std::sync::Arc;
 
 pub(crate) const CLIENT_COMMANDS_CAPABILITY_ID: &str = "yolop_client_commands";
 
-pub(crate) const CLIENT_COMMANDS_PROMPT: &str = r#"<capability id="yolop_client_commands">
-Terminal commands, all runnable with `run_command`: `/help`, `/tools`, `/mcp`,
+/// Raw text on purpose: the host wraps `system_prompt_addition` in `<capability>`
+/// tags once, so tags here would render twice.
+pub(crate) const CLIENT_COMMANDS_PROMPT: &str = r#"Terminal commands, all runnable with `run_command`: `/help`, `/tools`, `/mcp`,
 `/cwd`, `/status [compact|expanded|toggle]`, `/model [id]`, `/effort [level]`,
 `/clear`, `/quit` (`/exit` alias). Run them on prose requests such as "exit",
 "clear the screen", "show tools", "switch model", "restart MCP", "reconnect MCP",
 or "refresh MCP" (`/mcp reload`), "log in to an MCP server" (`/mcp login <name>`);
-never invent a manager window. `/shell` is typed-only; use `bash`.
-</capability>"#;
+never invent a manager window. `/shell` is typed-only; use `bash`."#;
 
 pub(crate) struct ClientCommandsCapability {
     ui: Arc<dyn HostUi>,
@@ -186,6 +186,7 @@ fn arg(name: &str, required: bool) -> CommandArg {
 mod tests {
     use super::*;
     use crate::tui::host_ui::RecordingUi;
+    use everruns_core::SystemPromptContext;
     use everruns_provider::typed_id::SessionId;
 
     #[test]
@@ -204,6 +205,36 @@ mod tests {
 
     /// The terminal commands are ordinary registry entries; `run_command` finds
     /// them there rather than in a list this capability hands the model.
+    #[tokio::test]
+    async fn prompt_addition_is_raw_text_without_capability_wrapper() {
+        let capability = ClientCommandsCapability::new(Arc::new(RecordingUi::default()));
+        let addition = capability.system_prompt_addition().expect("prompt");
+        assert!(
+            !addition.contains("<capability"),
+            "system_prompt_addition must not embed <capability> tags: {addition:?}"
+        );
+        assert!(
+            !addition.contains("</capability>"),
+            "system_prompt_addition must not embed </capability>: {addition:?}"
+        );
+
+        let ctx = SystemPromptContext::without_file_store(SessionId::new());
+        let contribution = capability
+            .system_prompt_contribution(&ctx)
+            .await
+            .expect("contribution");
+        assert_eq!(
+            contribution.matches("<capability").count(),
+            1,
+            "assembled prompt must wrap exactly once: {contribution:?}"
+        );
+        assert_eq!(
+            contribution.matches("</capability>").count(),
+            1,
+            "assembled prompt must close exactly once: {contribution:?}"
+        );
+    }
+
     #[test]
     fn capability_contributes_terminal_commands() {
         let capability = ClientCommandsCapability::new(Arc::new(RecordingUi::default()));

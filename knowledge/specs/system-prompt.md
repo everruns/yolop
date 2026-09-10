@@ -53,6 +53,15 @@ duplicating the tool description; delete it. `progress_guard` and `repo_map` are
 the reference cases for the second row: both emit their guidance inside the
 result, at the moment it applies, so neither needs a block.
 
+### Capability blocks wrap exactly once
+
+`system_prompt_addition` returns raw text and the host wraps it in
+`<capability>` tags once, so an addition that embeds its own tags renders
+twice. Override `system_prompt_contribution` only when custom wrapping is
+needed, and then wrap exactly once. Raw-text prompt constants carry a
+regression test asserting the addition holds no tags and the assembled
+contribution wraps exactly once.
+
 ### Discovery is always on; how-to is reveal-gated
 
 `tool_search` hides deferred tools' parameter schemas until the model asks for
