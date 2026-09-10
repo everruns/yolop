@@ -2767,6 +2767,10 @@ pub struct BuiltRuntime {
     pub model: ModelState,
     pub goal_store: Arc<GoalStore>,
     pub user_ask_store: Arc<UserAskStore>,
+    /// The critical action the session is waiting on the user to approve, if
+    /// any. Hosts read it when a turn ends so a soft-approval pause is shown
+    /// as a pause rather than as a turn that stopped mid-sentence.
+    pub pending_approval: crate::capabilities::approval::PendingApprovalStore,
     /// Whether the experimental `yolop_user_ask` capability was enabled.
     pub user_ask_enabled: bool,
     pub worktree: Arc<WorktreeManager>,
@@ -4282,9 +4286,11 @@ pub async fn build_with_options(
     ));
     // Soft approval — spoken-consent guidance + audit tool, gated by the
     // central `approval_mode` setting (read live each turn).
+    let pending_approval = crate::capabilities::approval::PendingApprovalStore::default();
     capabilities.register(ApprovalCapability {
         config: settings.clone(),
         settings: settings.clone(),
+        pending: pending_approval.clone(),
     });
     // Hard approval gate — the enforcement half of the same `approval_mode`.
     // Only registered when the host can service an interactive prompt (ACP);
@@ -4659,6 +4665,7 @@ pub async fn build_with_options(
         task_schedule_store,
         goal_store,
         user_ask_store,
+        pending_approval,
         user_ask_enabled,
         worktree,
     })
@@ -10235,7 +10242,12 @@ mod tests {
     /// silently.
     #[test]
     fn system_prompt_within_budget() {
-        const MAX_BYTES: usize = 1_360;
+        // 1_440 since #679 spent the previous 1_360 on the output guidance
+        // ("never use the word `seam` or other LLM-isms") and took system.md
+        // to 1_414 without moving the cap, leaving `main` red. Raised to that
+        // plus the ~20 bytes of headroom the cap has always carried, rather
+        // than trimming guidance that was added deliberately.
+        const MAX_BYTES: usize = 1_440;
         assert!(
             SYSTEM_PROMPT.len() <= MAX_BYTES,
             "SYSTEM_PROMPT is {} bytes (~{} tokens), cap is {} bytes",

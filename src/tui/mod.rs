@@ -317,6 +317,12 @@ pub struct App {
     activity_scroll_metrics: (usize, usize),
     goal_store: Arc<GoalStore>,
     user_ask_store: Arc<UserAskStore>,
+    /// The critical action soft approval has stopped in front of, if any. Read
+    /// when a turn ends so the pause is shown as a pause.
+    pending_approval: crate::capabilities::approval::PendingApprovalStore,
+    /// The pause already announced, so a turn that ends without resolving it
+    /// does not repeat the notice.
+    awaiting_approval: Option<crate::capabilities::approval::PendingApproval>,
     user_ask_enabled: bool,
     completion_budget: crate::session_state::task_completion::CompletionBudget,
     worktree: Arc<WorktreeManager>,
@@ -708,6 +714,7 @@ impl App {
         let should_setup = runtime.startup.setup_recommended;
         let goal_store = runtime.goal_store.clone();
         let user_ask_store = runtime.user_ask_store.clone();
+        let pending_approval = runtime.pending_approval.clone();
         let user_ask_enabled = runtime.user_ask_enabled;
         let session_id = runtime.handles.session_id;
         let session_store = runtime.handles.session_store.clone();
@@ -791,6 +798,8 @@ impl App {
             activity_scroll_metrics: (0, 0),
             goal_store,
             user_ask_store,
+            pending_approval,
+            awaiting_approval: None,
             user_ask_enabled,
             completion_budget: Default::default(),
             worktree: runtime.worktree,
@@ -1411,6 +1420,27 @@ impl App {
         });
     }
 
+    /// Say out loud that the turn ended on a soft-approval pause.
+    ///
+    /// Without this the turn simply stops: the model's own last words are
+    /// whatever it chose to say, which reads the same whether it finished or
+    /// is waiting on a yes. `request_approval` is the fact that separates the
+    /// two, so surface it, and only once per pause — the answer arrives in the
+    /// user's next message, not at the end of this turn.
+    fn announce_pending_approval(&mut self) {
+        let Some(pending) = self.pending_approval.peek() else {
+            return;
+        };
+        if self.awaiting_approval.as_ref() == Some(&pending) {
+            return;
+        }
+        self.push_system(format!(
+            "⏸ waiting for your approval — {} · {} (reply \"yes\" to proceed)",
+            pending.action, pending.question
+        ));
+        self.awaiting_approval = Some(pending);
+    }
+
     fn begin_compact_turn(&mut self, started_at: Instant) {
         if self.work_display != WorkDisplayMode::Compact {
             return;
@@ -1909,6 +1939,7 @@ impl App {
                     if self.start_next_queued_turn() {
                         return Ok(());
                     }
+                    self.announce_pending_approval();
                     self.after_turn_goal_check().await;
                     if !self.busy {
                         self.after_turn_user_ask_check(result).await;
@@ -3009,6 +3040,11 @@ impl App {
         }
         let image_count = self.pending_images.len();
         let display = crate::tui::input::image_input::user_display_text(&display_text, image_count);
+        // The user has spoken, so whatever soft approval was waiting on is
+        // answered now — approved, refused, or overtaken by a new ask. Either
+        // way the session is no longer blocked on them.
+        self.pending_approval.resolve();
+        self.awaiting_approval = None;
         self.push_user(display.clone());
         let images = std::mem::take(&mut self.pending_images);
         if self.busy {
@@ -7174,6 +7210,52 @@ flowchart TD
         app: App,
         _workspace: tempfile::TempDir,
         _sessions: tempfile::TempDir,
+    }
+
+    /// A soft-approval pause is invisible unless the host says so: the
+    /// model's own last words read the same whether it finished or is waiting
+    /// on a yes. Announce it once, and stop announcing once the user answers.
+    #[tokio::test]
+    async fn a_soft_approval_pause_is_announced_once_and_cleared_by_the_reply() {
+        let mut test = app_with_llmsim().await;
+        let pending = test.app.pending_approval.clone();
+        assert!(pending.peek().is_none());
+
+        test.app.announce_pending_approval();
+        assert!(
+            !system_lines(&test.app).iter().any(|l| l.contains("⏸")),
+            "nothing is pending, so nothing should be announced"
+        );
+
+        // What `request_approval` leaves behind when the model pauses.
+        pending.set(crate::capabilities::approval::PendingApproval {
+            action: "squash-merge PR #677".into(),
+            question: "CI is green. Merge it?".into(),
+        });
+
+        test.app.announce_pending_approval();
+        test.app.announce_pending_approval();
+        let waiting: Vec<String> = system_lines(&test.app)
+            .into_iter()
+            .filter(|line| line.contains("waiting for your approval"))
+            .collect();
+        assert_eq!(waiting.len(), 1, "announced more than once: {waiting:?}");
+        assert!(waiting[0].contains("squash-merge PR #677"));
+        assert!(waiting[0].contains("CI is green. Merge it?"));
+
+        // The user answering ends the pause, whichever way they answered.
+        test.app.set_input_text("no, hold off".into());
+        test.app.submit_input().await;
+        assert!(test.app.pending_approval.peek().is_none());
+        assert!(test.app.awaiting_approval.is_none());
+    }
+
+    fn system_lines(app: &App) -> Vec<String> {
+        app.lines
+            .iter()
+            .filter(|line| matches!(line.author, Author::System))
+            .map(|line| line.text.clone())
+            .collect()
     }
 
     #[tokio::test]
