@@ -1,6 +1,47 @@
 # Changelog
 
+All notable user-visible changes to yolop are recorded here.
+
+The format follows the [release spec](./knowledge/specs/release.md): one section per
+released version, newest first, with a `### Highlights` summary, an optional
+`### Breaking Changes` block (required for MINOR/MAJOR with breakage), and a
+mechanical `### What's Changed` list of merged PRs.
+
+Releases are cut via [`/release`](./.agents/skills/release/SKILL.md), which
+tags the version and publishes to crates.io and the Homebrew tap.
+
+## [0.17.3] - 2026-09-10
+
+### Highlights
+
+- Fullscreen turns compact their activity by default. `--no-compact-work` keeps the expanded narration and tool rows for anyone who prefers the old projection.
+- `yolop mcp` is a complete configuration surface: `mcp show <name>` inspects global, workspace, or effective scope, and `disable` is its own command instead of `enable --disable`.
+- Fresh `cargo install yolop` works again. Every `everruns-*` requirement is pinned exactly, so a from-scratch resolve picks the set that was actually built and reviewed, and that set is now the everruns 0.20 facade release.
+- Reasoning effort resolves from every source that knows about it, curated registry, then provider-advertised parameters, then the reasoning-required families, so a model the registry has never seen keeps its `/effort` control and repairs a mandated-reasoning rejection once on its own.
+- The runtime stops doing work twice: a background task the foreground turn already reported no longer wakes a duplicate turn, and the environment context reports the shell's real network access instead of a stale no-network claim.
+- `web_fetch` reaches public URLs again, and MCP restart/reconnect/reload land on the typed `mcp reload` command.
+
+### What's Changed
+
+* fix(runtime): resolve reasoning effort from every source that knows ([#671](https://github.com/everruns/yolop/pull/671)) by @chaliy
+* chore(deps): adopt the everruns 0.20 facade release ([#670](https://github.com/everruns/yolop/pull/670)) by @chaliy
+* fix(deps): pin the everruns family to exact versions ([#666](https://github.com/everruns/yolop/pull/666)) by @chaliy
+* fix(runtime): align execution guidance ([#664](https://github.com/everruns/yolop/pull/664)) by @chaliy
+* test(evals): add native agent comparison ([#663](https://github.com/everruns/yolop/pull/663)) by @chaliy
+* fix(runtime): dedupe background completion wakes ([#662](https://github.com/everruns/yolop/pull/662)) by @chaliy
+* feat(mcp): complete configuration CLI ([#661](https://github.com/everruns/yolop/pull/661)) by @chaliy
+* chore(deps): bump jsonschema from 0.51.0 to 0.52.1 ([#660](https://github.com/everruns/yolop/pull/660)) by @dependabot
+* chore(deps): bump the cargo-minor-and-patch group with 2 updates ([#659](https://github.com/everruns/yolop/pull/659)) by @dependabot
+* feat(tui): enable compact work by default ([#658](https://github.com/everruns/yolop/pull/658)) by @chaliy
+* fix(tui): remove agent status tool ([#657](https://github.com/everruns/yolop/pull/657)) by @chaliy
+* fix: restore web fetch and direct MCP reload ([#656](https://github.com/everruns/yolop/pull/656)) by @chaliy
+* fix(config): reduce repeated model help probes ([#655](https://github.com/everruns/yolop/pull/655)) by @chaliy
+
+**Full Changelog**: https://github.com/everruns/yolop/compare/v0.17.2...v0.17.3
+
 ## [0.17.2] - 2026-08-31
+
+### What's Changed
 
 * feat(config): unify configuration commands ([#639](https://github.com/everruns/yolop/pull/639)) by @chaliy
 * feat(worktree): make auto initialization model-driven ([#640](https://github.com/everruns/yolop/pull/640)) by @chaliy
@@ -16,15 +57,7 @@
 * feat(cli): manage hooks and skills with commands ([#650](https://github.com/everruns/yolop/pull/650)) by @chaliy
 * feat(cli): add realistic help examples ([#651](https://github.com/everruns/yolop/pull/651)) by @chaliy
 
-All notable user-visible changes to yolop are recorded here.
-
-The format follows the [release spec](./knowledge/specs/release.md): one section per
-released version, newest first, with a `### Highlights` summary, an optional
-`### Breaking Changes` block (required for MINOR/MAJOR with breakage), and a
-mechanical `### What's Changed` list of merged PRs.
-
-Releases are cut via [`/release`](./.agents/skills/release/SKILL.md), which
-tags the version and publishes to crates.io and the Homebrew tap.
+**Full Changelog**: https://github.com/everruns/yolop/compare/v0.17.1...v0.17.2
 
 ## [0.17.1] - 2026-08-27
 
