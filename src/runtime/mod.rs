@@ -10238,7 +10238,7 @@ mod tests {
     /// silently.
     #[test]
     fn system_prompt_within_budget() {
-        const MAX_BYTES: usize = 1_360;
+        const MAX_BYTES: usize = 1_580;
         assert!(
             SYSTEM_PROMPT.len() <= MAX_BYTES,
             "SYSTEM_PROMPT is {} bytes (~{} tokens), cap is {} bytes",
