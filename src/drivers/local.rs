@@ -365,6 +365,7 @@ mod tests {
             tool_call_id: None,
             phase: None,
             reasoning: Vec::new(),
+            configuration_update: None,
         }
     }
 
