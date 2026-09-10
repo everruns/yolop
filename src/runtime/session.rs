@@ -22,7 +22,7 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::exec::tools::{BashTool, Workspace};
 use crate::runtime::background_wake::WakeMessage;
-use crate::runtime::{ModelState, RuntimeHandles, reasoning};
+use crate::runtime::{ModelState, RuntimeHandles, attestation, reasoning};
 use crate::tui::transcript::{
     Author, ChatLine, DeltaRouter, TurnEvent, assistant_lines_since, handle_live_event,
     lines_for_event_with_router, lines_for_replayed_event, remember_write_todos_args,
@@ -484,6 +484,15 @@ fn turn_failure_lines(error: &str, current_effort: Option<&str>) -> Vec<ChatLine
             text: hint,
         });
     }
+    // Stopgap guidance for the OpenRouter attestation gate. Move this behind
+    // the upstream structured error once everruns-openrouter reports the
+    // gate as a first-class kind instead of a JSON string.
+    if let Some(hint) = attestation::attestation_error_hint(error) {
+        lines.push(ChatLine {
+            author: Author::System,
+            text: hint,
+        });
+    }
     lines
 }
 
@@ -702,6 +711,30 @@ mod tests {
         assert_eq!(
             turn_failure_lines("connection reset by peer", None).len(),
             1
+        );
+    }
+
+    /// The transcript an OpenRouter attestation gate leaves behind: the raw
+    /// error, then the way out with a clean confirm URL.
+    #[test]
+    fn an_attestation_gate_names_the_missing_confirmation() {
+        let error = "LLM error: provider 'openrouter': OpenAI Responses error \
+            (403 Forbidden): \"{\\\"error\\\":{\\\"message\\\":\\\"This model requires you to \
+            complete the following before use: 18+ age confirmation. Confirm at \
+            https://openrouter.ai/settings/preferences.\\\",\\\"code\\\":403,\\\"metadata\\\":{\\\"missing_attestation_types\\\":[\\\"age_18plus\\\"]}}}\"";
+
+        let lines = turn_failure_lines(error, None);
+
+        assert_eq!(lines.len(), 2, "the error, then the way out: {lines:?}");
+        assert!(lines.iter().all(|line| line.author == Author::System));
+        assert!(lines[0].text.starts_with("turn error: "));
+        assert!(
+            lines[1].text.contains("age_18plus")
+                && lines[1]
+                    .text
+                    .contains("https://openrouter.ai/settings/preferences"),
+            "the hint names the gate and the confirm page: {}",
+            lines[1].text
         );
     }
 
