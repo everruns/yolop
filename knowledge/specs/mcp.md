@@ -93,7 +93,7 @@ Credentials for a server are resolved per request by the runtime's
 3. Literal `headers` in the config (with `${VAR}` expansion), applied by the
    transport regardless of the provider.
 
-**OAuth login** (`/mcp login <name>`, remote HTTP servers) is discovery-based:
+**OAuth login** (`/mcp login <name>`, or `yolop mcp login <name>` headlessly, remote HTTP servers) is discovery-based:
 protected-resource metadata (RFC 9728) → authorization-server metadata
 (RFC 8414 / OpenID discovery) → dynamic client registration (RFC 7591) when the
 server offers it → authorization code + PKCE (RFC 7636) through the browser with
