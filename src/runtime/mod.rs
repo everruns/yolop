@@ -2293,6 +2293,84 @@ impl ProviderChoice {
     }
 }
 
+/// The recovery itself, with the turn taken as an argument so it is testable
+/// without a live provider.
+///
+/// The repair is to select the model's default effort (from the merged profile
+/// metadata, else a mid-scale level) and send the same input again — the model
+/// keeps the effort afterwards, so the next turn is legal too, and the user is
+/// told what changed rather than finding a setting they never chose. Exactly one
+/// retry: a rejection of a turn that *did* name an effort is a choice only the
+/// user can make, and is left to surface with its hint
+/// ([`reasoning::reasoning_error_hint`]).
+pub(crate) async fn run_with_reasoning_recovery<F, Fut>(
+    model: &ModelState,
+    input: InputMessage,
+    notice: &(dyn Fn(String) + Send + Sync),
+    run: F,
+) -> anyhow::Result<everruns_host::TurnResult>
+where
+    F: Fn(InputMessage) -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<everruns_host::TurnResult>>,
+{
+    let first = run(input.clone()).await;
+    let Some(error) = turn_failure(&first) else {
+        return first;
+    };
+    let Some(effort) = reasoning::recovery_effort(
+        &error,
+        model.reasoning_effort().as_deref(),
+        model.default_reasoning_effort().as_deref(),
+    ) else {
+        return first;
+    };
+
+    if let Err(err) = model.select_reasoning_effort(&effort).await {
+        tracing::warn!("could not apply reasoning effort {effort} after {error}: {err:#}");
+        return first;
+    }
+    notice(format!(
+        "{} requires reasoning; reasoning effort set to {effort} and the turn retried.",
+        model.model_id()
+    ));
+
+    let mut retry = input;
+    reasoning::apply_reasoning_effort(&mut retry, &effort);
+    run(retry).await
+}
+
+/// Where a host should start reading this turn's agent output.
+///
+/// Normally the history length captured before the turn. After a
+/// reasoning-effort retry the failed attempt is also in history, and its
+/// assistant text is an apology for an error the host went on to repair, so the
+/// answer starts after the last user message: the input the retry re-sent.
+pub(crate) fn agent_output_start(
+    messages: &[everruns_core::Message],
+    before: usize,
+    retried: bool,
+) -> usize {
+    if !retried {
+        return before;
+    }
+    messages
+        .iter()
+        .rposition(|message| message.role == everruns_core::MessageRole::User)
+        .map(|index| index + 1)
+        .unwrap_or(before)
+}
+
+/// The provider-facing error of a finished turn, whether it failed by `Err` or
+/// by an unsuccessful [`everruns_host::TurnResult`]. `None` for a turn that
+/// succeeded.
+fn turn_failure(result: &anyhow::Result<everruns_host::TurnResult>) -> Option<String> {
+    match result {
+        Err(error) => Some(format!("{error:#}")),
+        Ok(turn) if !turn.success => turn.error.clone(),
+        Ok(_) => None,
+    }
+}
+
 fn env_non_empty(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|value| !value.is_empty())
 }
@@ -2792,6 +2870,26 @@ impl RuntimeHandles {
         }
         self.checkpoints.apply_queued_confirmation().await;
         Ok(result?)
+    }
+
+    /// Run a turn, repairing the one provider rejection the host can repair
+    /// itself: an endpoint that mandates reasoning refusing a turn that carried
+    /// no reasoning effort.
+    ///
+    /// Every host that starts a turn goes through here (TUI, `--print`, ACP), so
+    /// the repair is not a property of one surface. `notice` is how that surface
+    /// tells the user what changed.
+    pub(crate) async fn run_turn_with_reasoning_recovery(
+        &self,
+        model: &ModelState,
+        prompt: &str,
+        input: InputMessage,
+        notice: &(dyn Fn(String) + Send + Sync),
+    ) -> anyhow::Result<everruns_host::TurnResult> {
+        run_with_reasoning_recovery(model, input, notice, move |input| async move {
+            self.run_checkpointed_turn(prompt, input).await
+        })
+        .await
     }
 
     /// Provider-reported tokens consumed by one agent turn. Completion gates
@@ -8661,6 +8759,101 @@ mod tests {
                 .and_then(|controls| controls.reasoning)
                 .and_then(|reasoning| reasoning.effort),
             Some(ReasoningEffort::Medium)
+        );
+    }
+
+    /// The reported failure, end to end at the turn seam: OpenRouter rejects a
+    /// muse turn that carries no reasoning
+    /// ("Reasoning is mandatory for this endpoint and cannot be disabled"), and
+    /// the host repairs it instead of handing the user a dead turn.
+    #[tokio::test]
+    async fn mandatory_reasoning_rejection_is_retried_with_an_effort() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let sessions = tempfile::tempdir().expect("sessions");
+        let settings = Arc::new(crate::config::SettingsStore::open(
+            sessions.path().join("settings.toml"),
+        ));
+        settings
+            .set_token("openrouter".to_string(), "test-key".to_string())
+            .expect("store an openrouter token");
+        let built = build_with_options(
+            workspace.path().to_path_buf(),
+            ProviderChoice::OpenRouter {
+                model: "meta/muse-spark-1.3-contributor".to_string(),
+                base_url: "https://openrouter.ai/api/v1".to_string(),
+                // The state the report was filed from: a model the profile
+                // registry has never seen, with no effort selected.
+                reasoning_effort: None,
+            },
+            None,
+            sessions.path().to_path_buf(),
+            settings,
+            BuildOptions::default(),
+        )
+        .await
+        .expect("build runtime");
+        let model = built.model;
+
+        let seen = Arc::new(std::sync::Mutex::new(Vec::<Option<String>>::new()));
+        let recorded = seen.clone();
+        let run = move |input: InputMessage| {
+            let recorded = recorded.clone();
+            async move {
+                let effort = input
+                    .controls
+                    .as_ref()
+                    .and_then(|controls| controls.reasoning.as_ref())
+                    .and_then(|reasoning| reasoning.effort)
+                    .map(|effort| effort.as_str().to_string());
+                recorded.lock().expect("recorded").push(effort.clone());
+                Ok(everruns_host::TurnResult {
+                    response: String::new(),
+                    iterations: 1,
+                    tool_calls_count: 0,
+                    success: effort.is_some(),
+                    error: effort.is_none().then(|| {
+                        "LLM error: provider 'openrouter': OpenAI Responses API error \
+                         (400 Bad Request): {\"error\":{\"message\":\"Reasoning is mandatory for \
+                         this endpoint and cannot be disabled.\",\"code\":400}}"
+                            .to_string()
+                    }),
+                    stop_reason: if effort.is_some() {
+                        everruns_core::turn::TurnStopReason::EndTurn
+                    } else {
+                        everruns_core::turn::TurnStopReason::Error
+                    },
+                    turn_id: everruns_provider::typed_id::TurnId::new(),
+                })
+            }
+        };
+
+        let notices = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let recorded_notices = notices.clone();
+        let notice = move |text: String| {
+            recorded_notices.lock().expect("notices").push(text);
+        };
+        let result =
+            run_with_reasoning_recovery(&model, model.input_message("hello"), &notice, run)
+                .await
+                .expect("the retried turn");
+
+        assert!(result.success, "the retry must be the turn the user gets");
+        assert_eq!(
+            *seen.lock().expect("recorded"),
+            vec![None, Some("medium".to_string())],
+            "the first turn is the one the user asked for; only the retry adds reasoning"
+        );
+        assert_eq!(
+            model.reasoning_effort().as_deref(),
+            Some("medium"),
+            "the effort sticks, so the next turn is legal too"
+        );
+        let lines = notices.lock().expect("notices").clone();
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("requires reasoning") && line.contains("medium")),
+            "the user is told what changed: {lines:?}"
         );
     }
 

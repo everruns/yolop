@@ -2364,7 +2364,15 @@ async fn collect_print_turn(
     if automatic {
         input = session_state::task_completion::tag_continuation(input);
     }
-    let result = handles.run_checkpointed_turn(prompt, input).await?;
+    let retried = std::sync::atomic::AtomicBool::new(false);
+    let notice = |notice: String| {
+        retried.store(true, std::sync::atomic::Ordering::SeqCst);
+        eprintln!("{notice}");
+    };
+    let result = handles
+        .run_turn_with_reasoning_recovery(model, prompt, input, &notice)
+        .await?;
+    let retried = retried.load(std::sync::atomic::Ordering::SeqCst);
     if let Some(notice) = handles.checkpoints.take_notice() {
         eprintln!("{notice}");
     }
@@ -2375,7 +2383,10 @@ async fn collect_print_turn(
         .unwrap_or_default();
 
     let mut output = Vec::new();
-    for msg in messages.iter().skip(before_msgs) {
+    for msg in messages
+        .iter()
+        .skip(runtime::agent_output_start(&messages, before_msgs, retried))
+    {
         if msg.role == MessageRole::Agent
             && !msg.has_tool_calls()
             && let Some(text) = msg.text()
@@ -2390,6 +2401,11 @@ async fn collect_print_turn(
         && let Some(err) = &result.error
     {
         eprintln!("turn error: {err}");
+        if let Some(hint) =
+            runtime::reasoning::reasoning_error_hint(err, model.reasoning_effort().as_deref())
+        {
+            eprintln!("{hint}");
+        }
     }
     Ok(PrintTurn { result, output })
 }

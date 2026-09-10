@@ -28,6 +28,14 @@ Reasoning is mandatory for this endpoint and cannot be disabled.
 
 Two answers exist for the same question, and Yolop was reading only one of them.
 
+The rejection is narrower than the message suggests, confirmed against the live
+endpoint: a request with no `reasoning` field at all is accepted, and so is one
+naming an effort. What OpenRouter refuses is reasoning it reads as switched off,
+which is `effort: "none"` and, on this endpoint, the bare
+`reasoning.exclude: true` the OpenRouter driver always sends to keep provider
+reasoning private. Naming an effort is therefore the fix available to Yolop, and
+`none` is never one of the levels offered for such a surface.
+
 ## What
 
 ### The effort scale is merged, not taken from a single source
@@ -74,6 +82,12 @@ When a turn fails and the provider says reasoning is mandatory, and the turn
 carried no effort, Yolop selects the model's default effort, tells the user what
 it changed, and sends the same input again. The effort sticks to the model, so
 the next turn is legal too and the status bar shows the level rather than `n/a`.
+The failed attempt stays in history but its assistant text, an apology for the
+error the host went on to repair, is not shown as the turn's answer.
+
+The repair belongs to the turn, not to one surface: the TUI, `--print`, and ACP
+all start turns through the same entry point and all get it, ACP also refreshing
+the client's effort selector to the level now in force.
 
 Exactly one retry, and only for a turn that named no effort. A rejection of a
 turn that *did* name a level is a choice only the user can make, so it surfaces
@@ -92,8 +106,9 @@ with the failure and a hint naming the control that fixes it (`/effort`, or
   effort surface resolves through, and
   `ProviderChoice::auto_reasoning_effort_for_model` owns the narrower question of
   which effort Yolop selects unasked.
-- `crate::runtime::session` owns the one-shot retry, and it is the only place
-  that changes the model behind the user's back.
+- `RuntimeHandles::run_turn_with_reasoning_recovery` owns the one-shot retry and
+  is the entry point every host starts a turn through; it is the only place that
+  changes the model behind the user's back.
 
 ## Related
 

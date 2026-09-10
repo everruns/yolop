@@ -244,13 +244,19 @@ impl Session {
             let turn_handles = handles.clone();
             let turn_model = model.clone();
             let notices = tx.clone();
+            let retried = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let turn_retried = retried.clone();
             let mut turn = tokio::spawn(async move {
-                run_with_reasoning_recovery(&turn_model, input, &notices, move |input| {
-                    let handles = turn_handles.clone();
-                    let prompt = prompt.clone();
-                    async move { handles.run_checkpointed_turn(&prompt, input).await }
-                })
-                .await
+                let notice = move |text: String| {
+                    turn_retried.store(true, std::sync::atomic::Ordering::SeqCst);
+                    let _ = notices.send(TurnEvent::Lines(vec![ChatLine {
+                        author: Author::System,
+                        text,
+                    }]));
+                };
+                turn_handles
+                    .run_turn_with_reasoning_recovery(&turn_model, &prompt, input, &notice)
+                    .await
             });
 
             let mut emitted_events = HashSet::new();
@@ -371,7 +377,16 @@ impl Session {
                 .unwrap_or_default();
 
             // Assistant text from the turn.
-            let mut out = assistant_lines_since(&messages, before);
+            // After a reasoning retry the failed attempt is in history too;
+            // its apology is not this turn's answer.
+            let mut out = assistant_lines_since(
+                &messages,
+                crate::runtime::agent_output_start(
+                    &messages,
+                    before,
+                    retried.load(std::sync::atomic::Ordering::SeqCst),
+                ),
+            );
             if out.is_empty() && !response.response.is_empty() {
                 out.push(ChatLine {
                     author: Author::Assistant,
@@ -468,69 +483,6 @@ impl Session {
 /// Drain any persisted events (from `runtime.events()`) that the broadcast
 /// receiver may have missed — used after a `Lagged` recv error and once more at
 /// end-of-turn so the transcript is never missing tool/reason completion lines.
-/// Run a turn, and repair the one provider rejection the host can repair
-/// itself: an endpoint that mandates reasoning refusing a turn that carried no
-/// reasoning effort.
-///
-/// The repair is to select the model's default effort (from the merged profile
-/// metadata, else a mid-scale level) and send the same input again — the model
-/// keeps the effort afterwards, so the next turn is legal too, and the user is
-/// told what changed rather than finding a setting they never chose. Exactly
-/// one retry: a rejection of a turn that *did* name an effort is a choice only
-/// the user can make, and is left to surface with its hint.
-///
-/// `run` is the turn itself, taken as an argument so the recovery is testable
-/// without a live provider.
-async fn run_with_reasoning_recovery<F, Fut>(
-    model: &ModelState,
-    input: InputMessage,
-    notices: &mpsc::UnboundedSender<TurnEvent>,
-    run: F,
-) -> Result<everruns_host::TurnResult>
-where
-    F: Fn(InputMessage) -> Fut,
-    Fut: std::future::Future<Output = Result<everruns_host::TurnResult>>,
-{
-    let first = run(input.clone()).await;
-    let Some(error) = turn_failure(&first) else {
-        return first;
-    };
-    let Some(effort) = reasoning::recovery_effort(
-        &error,
-        model.reasoning_effort().as_deref(),
-        model.default_reasoning_effort().as_deref(),
-    ) else {
-        return first;
-    };
-
-    if let Err(err) = model.select_reasoning_effort(&effort).await {
-        tracing::warn!("could not apply reasoning effort {effort} after {error}: {err:#}");
-        return first;
-    }
-    let _ = notices.send(TurnEvent::Lines(vec![ChatLine {
-        author: Author::System,
-        text: format!(
-            "{} requires reasoning; reasoning effort set to {effort} and the turn retried.",
-            model.model_id()
-        ),
-    }]));
-
-    let mut retry = input;
-    reasoning::apply_reasoning_effort(&mut retry, &effort);
-    run(retry).await
-}
-
-/// The provider-facing error of a finished turn, whether it failed by `Err` or
-/// by an unsuccessful [`everruns_host::TurnResult`]. `None` for a turn that
-/// succeeded.
-fn turn_failure(result: &Result<everruns_host::TurnResult>) -> Option<String> {
-    match result {
-        Err(error) => Some(format!("{error:#}")),
-        Ok(turn) if !turn.success => turn.error.clone(),
-        Ok(_) => None,
-    }
-}
-
 async fn catch_up_events(
     handles: &RuntimeHandles,
     session_id: SessionId,
@@ -718,99 +670,6 @@ mod tests {
                 .expect("messages")
                 .is_empty(),
             "the rejected ask must remain resumable instead of entering history"
-        );
-    }
-
-    /// The reported failure, end to end at the turn seam: OpenRouter rejects a
-    /// muse turn that carries no reasoning
-    /// ("Reasoning is mandatory for this endpoint and cannot be disabled"), and
-    /// the host repairs it instead of handing the user a dead turn.
-    #[tokio::test]
-    async fn mandatory_reasoning_rejection_is_retried_with_an_effort() {
-        let workspace = tempfile::tempdir().expect("workspace");
-        let sessions = tempfile::tempdir().expect("sessions");
-        let settings = Arc::new(crate::config::SettingsStore::open(
-            sessions.path().join("settings.toml"),
-        ));
-        settings
-            .set_token("openrouter".to_string(), "test-key".to_string())
-            .expect("store an openrouter token");
-        let built = crate::runtime::build_with_options(
-            workspace.path().to_path_buf(),
-            crate::runtime::ProviderChoice::OpenRouter {
-                model: "meta/muse-spark-1.3-contributor".to_string(),
-                base_url: "https://openrouter.ai/api/v1".to_string(),
-                // The state the report was filed from: a model the profile
-                // registry has never seen, with no effort selected.
-                reasoning_effort: None,
-            },
-            None,
-            sessions.path().to_path_buf(),
-            settings,
-            crate::runtime::BuildOptions::default(),
-        )
-        .await
-        .expect("build runtime");
-        let model = built.model;
-
-        let seen = Arc::new(std::sync::Mutex::new(Vec::<Option<String>>::new()));
-        let recorded = seen.clone();
-        let run = move |input: InputMessage| {
-            let recorded = recorded.clone();
-            async move {
-                let effort = input
-                    .controls
-                    .as_ref()
-                    .and_then(|controls| controls.reasoning.as_ref())
-                    .and_then(|reasoning| reasoning.effort)
-                    .map(|effort| effort.as_str().to_string());
-                recorded.lock().expect("recorded").push(effort.clone());
-                Ok(everruns_host::TurnResult {
-                    response: String::new(),
-                    iterations: 1,
-                    tool_calls_count: 0,
-                    success: effort.is_some(),
-                    error: effort.is_none().then(|| {
-                        "LLM error: provider 'openrouter': OpenAI Responses API error \
-                         (400 Bad Request): {\"error\":{\"message\":\"Reasoning is mandatory for \
-                         this endpoint and cannot be disabled.\",\"code\":400}}"
-                            .to_string()
-                    }),
-                    stop_reason: if effort.is_some() {
-                        everruns_core::turn::TurnStopReason::EndTurn
-                    } else {
-                        everruns_core::turn::TurnStopReason::Error
-                    },
-                    turn_id: everruns_provider::typed_id::TurnId::new(),
-                })
-            }
-        };
-
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        let result = run_with_reasoning_recovery(&model, model.input_message("hello"), &tx, run)
-            .await
-            .expect("the retried turn");
-
-        assert!(result.success, "the retry must be the turn the user gets");
-        assert_eq!(
-            *seen.lock().expect("recorded"),
-            vec![None, Some("medium".to_string())],
-            "the first turn is the one the user asked for; only the retry adds reasoning"
-        );
-        assert_eq!(
-            model.reasoning_effort().as_deref(),
-            Some("medium"),
-            "the effort sticks, so the next turn is legal too"
-        );
-        let mut lines = Vec::new();
-        while let Ok(TurnEvent::Lines(batch)) = rx.try_recv() {
-            lines.extend(batch.into_iter().map(|line| line.text));
-        }
-        assert!(
-            lines
-                .iter()
-                .any(|line| line.contains("requires reasoning") && line.contains("medium")),
-            "the user is told what changed: {lines:?}"
         );
     }
 
