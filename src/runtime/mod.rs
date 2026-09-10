@@ -3656,7 +3656,7 @@ pub async fn build_with_options(
         everruns::local::WakeRoutes::new(),
     ));
     let (background_wake_tx, background_wake_rx) =
-        crate::runtime::background_wake::register_host_route(wake_runner.clone(), session_id);
+        crate::runtime::background_wake::register_host_route(wake_runner.clone(), session_id).await;
     let project_id = coordination_project_id(&canonical_root);
     let coordination_host = coordination_config
         .map(|config| {

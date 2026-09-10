@@ -753,6 +753,11 @@ enum CodexInputItem {
         r#type: String,
         encrypted_content: String,
     },
+    /// Complete provider item preserved verbatim. Explicit compaction can
+    /// return reasoning and other native items whose shape the variants above
+    /// do not model; re-serializing the original value keeps that state intact
+    /// across a checkpoint reload instead of dropping it.
+    ProviderItem(serde_json::Value),
 }
 
 #[derive(Debug, Serialize)]
@@ -858,7 +863,7 @@ fn compose_input(
     compacted_context: Option<&ProviderOpaqueContext>,
     transcript_input: Vec<CodexInputItem>,
 ) -> Vec<CodexInputItem> {
-    let Some(ProviderOpaqueContext::OpenResponsesCompact { output }) = compacted_context else {
+    let Some(ProviderOpaqueContext::OpenResponsesCompact { output, .. }) = compacted_context else {
         return transcript_input;
     };
 
@@ -899,6 +904,7 @@ fn compact_output_item(item: &CompactOutputItem) -> CodexInputItem {
             r#type: "compaction".to_string(),
             encrypted_content: encrypted_content.clone(),
         },
+        CompactOutputItem::ProviderItem(value) => CodexInputItem::ProviderItem(value.clone()),
     }
 }
 
@@ -1681,6 +1687,7 @@ mod tests {
     #[test]
     fn compacted_context_is_preserved_in_order_before_raw_suffix() {
         let context = ProviderOpaqueContext::OpenResponsesCompact {
+            reasoning_state: None,
             output: vec![
                 CompactOutputItem::Message {
                     role: "user".to_string(),
@@ -1708,6 +1715,36 @@ mod tests {
     }
 
     #[test]
+    fn compacted_context_passes_native_provider_items_through_verbatim() {
+        // Explicit compaction returns reasoning and other native items the
+        // narrow message/compaction shapes cannot represent. Dropping or
+        // reshaping them would lose provider state across a checkpoint reload.
+        let native_reasoning = json!({
+            "type": "reasoning",
+            "id": "rs_123",
+            "encrypted_content": "opaque-reasoning",
+            "summary": [{ "type": "summary_text", "text": "thought about it" }]
+        });
+        let context = ProviderOpaqueContext::OpenResponsesCompact {
+            reasoning_state: None,
+            output: vec![
+                CompactOutputItem::ProviderItem(native_reasoning.clone()),
+                CompactOutputItem::Compaction {
+                    encrypted_content: "opaque-checkpoint".to_string(),
+                },
+            ],
+        };
+
+        assert_eq!(
+            serde_json::to_value(compose_input(Some(&context), Vec::new())).unwrap(),
+            json!([
+                native_reasoning,
+                { "type": "compaction", "encrypted_content": "opaque-checkpoint" }
+            ])
+        );
+    }
+
+    #[test]
     fn reports_the_codex_model_context_window_to_runtime_policy() {
         let driver = test_driver("http://127.0.0.1:1/responses".to_string());
 
@@ -1728,6 +1765,7 @@ mod tests {
             &driver,
             &ProviderEndpoint::default(),
             CompactRequest {
+                reasoning_state: None,
                 model: "gpt-5.6".to_string(),
                 input: vec![everruns_provider::compact::CompactInputItem::Message {
                     role: "user".to_string(),
@@ -1780,6 +1818,7 @@ mod tests {
         let cooldown = Duration::from_secs(30 * 60);
         let driver = test_driver_with_compaction_policy(responses_url, cooldown, clock);
         let request = CompactRequest {
+            reasoning_state: None,
             model: "gpt-5.6".to_string(),
             input: vec![everruns_provider::compact::CompactInputItem::Message {
                 role: "user".to_string(),
@@ -1852,6 +1891,7 @@ mod tests {
                 .compact(
                     &ProviderEndpoint::default(),
                     CompactRequest {
+                        reasoning_state: None,
                         model: "gpt-5.6".to_string(),
                         input: Vec::new(),
                         previous_response_id: None,
@@ -1895,6 +1935,7 @@ mod tests {
                 &driver,
                 &ProviderEndpoint::default(),
                 CompactRequest {
+                    reasoning_state: None,
                     model: "gpt-5.6".to_string(),
                     input: Vec::new(),
                     previous_response_id: None,
@@ -1920,6 +1961,7 @@ mod tests {
         )]);
         let driver = test_driver(responses_url);
         let request = CompactRequest {
+            reasoning_state: None,
             model: "gpt-5.6".to_string(),
             input: Vec::new(),
             previous_response_id: None,
@@ -2227,6 +2269,7 @@ mod tests {
         message.tool_call_id = Some("call_1".to_string());
         let (_, input) = build_input(&[
             LlmMessage {
+                configuration_update: None,
                 role: LlmMessageRole::Assistant,
                 content: LlmMessageContent::Text(String::new()),
                 tool_calls: Some(vec![ToolCall {
@@ -2302,6 +2345,7 @@ mod tests {
         orphaned_result.tool_call_id = Some("call_missing_call".to_string());
         let (_, input) = build_input(&[
             LlmMessage {
+                configuration_update: None,
                 role: LlmMessageRole::Assistant,
                 content: LlmMessageContent::Text(String::new()),
                 tool_calls: Some(vec![

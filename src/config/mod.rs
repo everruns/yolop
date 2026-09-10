@@ -1815,10 +1815,7 @@ Authorization = "Bearer ${LINEAR_API_KEY}"
         save_to(&path, &snapshot).expect("save");
         let on_disk = std::fs::read_to_string(&path).expect("read");
         assert!(on_disk.contains("[mcp.servers.linear]"), "got: {on_disk}");
-        assert!(
-            on_disk.contains(r#"auth_mode = "o_auth""#),
-            "got: {on_disk}"
-        );
+        assert!(on_disk.contains(r#"auth_mode = "oauth""#), "got: {on_disk}");
     }
 
     #[test]
