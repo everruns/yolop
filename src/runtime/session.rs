@@ -22,7 +22,7 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::exec::tools::{BashTool, Workspace};
 use crate::runtime::background_wake::WakeMessage;
-use crate::runtime::{ModelState, RuntimeHandles};
+use crate::runtime::{ModelState, RuntimeHandles, reasoning};
 use crate::tui::transcript::{
     Author, ChatLine, DeltaRouter, TurnEvent, assistant_lines_since, handle_live_event,
     lines_for_event_with_router, lines_for_replayed_event, remember_write_todos_args,
@@ -242,10 +242,22 @@ impl Session {
             };
 
             let turn_handles = handles.clone();
-            let mut turn =
-                tokio::spawn(
-                    async move { turn_handles.run_checkpointed_turn(&prompt, input).await },
-                );
+            let turn_model = model.clone();
+            let notices = tx.clone();
+            let retried = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let turn_retried = retried.clone();
+            let mut turn = tokio::spawn(async move {
+                let notice = move |text: String| {
+                    turn_retried.store(true, std::sync::atomic::Ordering::SeqCst);
+                    let _ = notices.send(TurnEvent::Lines(vec![ChatLine {
+                        author: Author::System,
+                        text,
+                    }]));
+                };
+                turn_handles
+                    .run_turn_with_reasoning_recovery(&turn_model, &prompt, input, &notice)
+                    .await
+            });
 
             let mut emitted_events = HashSet::new();
             let mut delta_router = DeltaRouter::default();
@@ -365,7 +377,16 @@ impl Session {
                 .unwrap_or_default();
 
             // Assistant text from the turn.
-            let mut out = assistant_lines_since(&messages, before);
+            // After a reasoning retry the failed attempt is in history too;
+            // its apology is not this turn's answer.
+            let mut out = assistant_lines_since(
+                &messages,
+                crate::runtime::agent_output_start(
+                    &messages,
+                    before,
+                    retried.load(std::sync::atomic::Ordering::SeqCst),
+                ),
+            );
             if out.is_empty() && !response.response.is_empty() {
                 out.push(ChatLine {
                     author: Author::Assistant,
@@ -375,10 +396,7 @@ impl Session {
             if !response.success
                 && let Some(err) = &response.error
             {
-                out.push(ChatLine {
-                    author: Author::System,
-                    text: format!("turn error: {err}"),
-                });
+                out.extend(turn_failure_lines(err, model.reasoning_effort().as_deref()));
             }
             let _ = tx.send(TurnEvent::Lines(out));
             let success = response.success;
@@ -452,6 +470,23 @@ impl Session {
 /// Drain any persisted events (from `runtime.events()`) that the broadcast
 /// receiver may have missed — used after a `Lagged` recv error and once more at
 /// end-of-turn so the transcript is never missing tool/reason completion lines.
+/// How a failed turn reads in the transcript: the provider's own message, plus,
+/// when the failure is one a control can fix, the control that fixes it. A
+/// provider that mandates reasoning states it in prose the user cannot act on.
+fn turn_failure_lines(error: &str, current_effort: Option<&str>) -> Vec<ChatLine> {
+    let mut lines = vec![ChatLine {
+        author: Author::System,
+        text: format!("turn error: {error}"),
+    }];
+    if let Some(hint) = reasoning::reasoning_error_hint(error, current_effort) {
+        lines.push(ChatLine {
+            author: Author::System,
+            text: hint,
+        });
+    }
+    lines
+}
+
 async fn catch_up_events(
     handles: &RuntimeHandles,
     session_id: SessionId,
@@ -639,6 +674,34 @@ mod tests {
                 .expect("messages")
                 .is_empty(),
             "the rejected ask must remain resumable instead of entering history"
+        );
+    }
+
+    /// The transcript a mandated-reasoning failure leaves behind when the host
+    /// could not repair it, asserted on the presentation model rather than a
+    /// terminal buffer.
+    #[test]
+    fn an_unfixable_reasoning_failure_names_the_control_that_fixes_it() {
+        let error = "LLM error: provider 'openrouter': OpenAI Responses API error \
+             (400 Bad Request): {\"error\":{\"message\":\"Reasoning is mandatory for this \
+             endpoint and cannot be disabled.\",\"code\":400}}";
+
+        let lines = turn_failure_lines(error, Some("low"));
+
+        assert_eq!(lines.len(), 2, "the error, then the way out: {lines:?}");
+        assert!(lines.iter().all(|line| line.author == Author::System));
+        assert!(lines[0].text.starts_with("turn error: "));
+        assert!(
+            lines[1].text.contains("rejected reasoning effort `low`")
+                && lines[1].text.contains("/effort"),
+            "the hint names the rejected level and the control: {}",
+            lines[1].text
+        );
+
+        // Failures nothing in the UI can fix stay one line.
+        assert_eq!(
+            turn_failure_lines("connection reset by peer", None).len(),
+            1
         );
     }
 
