@@ -15,6 +15,19 @@
   treated all three as outward-facing and stopped in front of them, while the
   skill told the model to merge once CI was green. The two instructions
   contradicted each other and the model resolved it differently each run.
+## 2026-09-10, The control-plane capability merges into yolop
+
+- [Yolop framing](specs/yolop.md): `control_plane` (session administration) and
+  `yolop` (self-address framing) are now one capability. Two prompt blocks with
+  one job between them meant two registrations, two harness positions, and two
+  owners for the same `<capability>` surface.
+- `ControlPlaneCapability` in `src/control.rs` is deleted.
+  `YolopCapability` in `src/capabilities/yolop.rs` contributes the single
+  block: framing always, plus the administration section listing only the
+  routes actually registered. `enable_yolop` in the runtime replaces
+  `enable_control_plane` and registers exactly one instance at session setup.
+- The always-on prompt budget cap moves from 6,400 to 6,800 bytes (actual
+  6,593); the framing text accounts for the growth.
 
 ## 2026-09-10, A host-built turn carries reasoning too
 
