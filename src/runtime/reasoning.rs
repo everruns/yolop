@@ -161,6 +161,22 @@ pub(crate) fn apply_reasoning_effort(input: &mut InputMessage, effort: &str) {
     input.controls = Some(controls);
 }
 
+/// Give a host-built message the model's reasoning level when it carries none.
+///
+/// A wake, a resumed turn and a child-session message are assembled by the host
+/// rather than by `ProviderChoice::input_message`, so they carry no controls at
+/// all and reach an endpoint that mandates reasoning with nothing on the wire.
+/// An effort already on the message is left alone: it is the more specific
+/// answer.
+pub(crate) fn ensure_reasoning_effort(input: &mut InputMessage, effort: Option<&str>) {
+    if sent_reasoning_effort(input).is_some() {
+        return;
+    }
+    if let Some(effort) = effort {
+        apply_reasoning_effort(input, effort);
+    }
+}
+
 /// What to tell the user when a mandatory-reasoning failure cannot be repaired
 /// automatically, i.e. the request already named an effort the endpoint
 /// rejected.
@@ -275,6 +291,34 @@ mod tests {
             recovery_effort(error, None, Some("low")).as_deref(),
             Some("low")
         );
+    }
+
+    #[test]
+    fn a_host_built_message_is_given_the_models_level_only_when_it_has_none() {
+        use everruns_core::{ContentPart, MessageRole};
+
+        let wake = || InputMessage {
+            role: MessageRole::User,
+            content: vec![ContentPart::text("a background task finished")],
+            controls: None,
+            metadata: None,
+            tags: vec!["automatic_background_wake".to_string()],
+        };
+
+        let mut input = wake();
+        ensure_reasoning_effort(&mut input, Some("medium"));
+        assert_eq!(sent_reasoning_effort(&input), Some("medium"));
+
+        // A level already on the message is the more specific answer.
+        let mut input = wake();
+        apply_reasoning_effort(&mut input, "high");
+        ensure_reasoning_effort(&mut input, Some("medium"));
+        assert_eq!(sent_reasoning_effort(&input), Some("high"));
+
+        // A model with no level of its own leaves the message as it was.
+        let mut input = wake();
+        ensure_reasoning_effort(&mut input, None);
+        assert_eq!(sent_reasoning_effort(&input), None);
     }
 
     #[test]

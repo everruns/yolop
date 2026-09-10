@@ -29,7 +29,7 @@ use everruns_provider::{AgentLoopError, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex, OnceLock, Weak};
+use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
 use tokio::sync::{Mutex as AsyncMutex, mpsc};
 
 /// Sender half of a session's wake channel. The `LocalPlatformStore`'s
@@ -248,6 +248,11 @@ pub struct WakeRunner {
     sessions: Arc<dyn RuntimeSessionStore>,
     tasks: Option<Arc<dyn SessionTaskRegistry>>,
     child_turn_locks: Mutex<HashMap<SessionId, Arc<AsyncMutex<()>>>>,
+    /// The live model selection, read for its reasoning level. A child-session
+    /// message is assembled here rather than by `input_message` and does not
+    /// pass through the host's turn entry point, so this is the only place it
+    /// can learn the level an endpoint that mandates reasoning requires.
+    provider: Arc<RwLock<crate::runtime::ProviderChoice>>,
 }
 
 impl WakeRunner {
@@ -255,13 +260,25 @@ impl WakeRunner {
         runtime: Arc<OnceLock<Weak<InProcessRuntime>>>,
         sessions: Arc<dyn RuntimeSessionStore>,
         tasks: Option<Arc<dyn SessionTaskRegistry>>,
+        provider: Arc<RwLock<crate::runtime::ProviderChoice>>,
     ) -> Self {
         Self {
             runtime,
             sessions,
             tasks,
             child_turn_locks: Mutex::new(HashMap::new()),
+            provider,
         }
+    }
+
+    /// The reasoning level the session's model names, for messages this runner
+    /// builds itself.
+    fn reasoning_effort(&self) -> Option<String> {
+        self.provider
+            .read()
+            .expect("provider lock poisoned")
+            .reasoning_effort()
+            .map(str::to_string)
     }
 
     fn runtime(&self) -> Result<Arc<InProcessRuntime>> {
@@ -597,10 +614,12 @@ impl LocalSessionRunner for WakeRunner {
         }
         let turn_lock = self.child_turn_lock(session_id);
         let _guard = turn_lock.lock().await;
-        let result = self
-            .runtime()?
-            .run_turn(session_id, input_for_wake(&wake))
-            .await?;
+        let mut input = input_for_wake(&wake);
+        crate::runtime::reasoning::ensure_reasoning_effort(
+            &mut input,
+            self.reasoning_effort().as_deref(),
+        );
+        let result = self.runtime()?.run_turn(session_id, input).await?;
         if result.success {
             Ok(())
         } else {
@@ -716,7 +735,45 @@ mod tests {
 
     fn runner() -> WakeRunner {
         let backends = HostBackends::in_memory();
-        WakeRunner::new(Arc::new(OnceLock::new()), backends.session_store, None)
+        WakeRunner::new(
+            Arc::new(OnceLock::new()),
+            backends.session_store,
+            None,
+            Arc::new(RwLock::new(crate::runtime::ProviderChoice::Sim)),
+        )
+    }
+
+    /// A child-session message is built here and never passes the host's turn
+    /// entry point, so this is where it has to pick up the model's level.
+    #[test]
+    fn a_child_session_message_carries_the_models_reasoning_level() {
+        let runner = WakeRunner::new(
+            Arc::new(OnceLock::new()),
+            HostBackends::in_memory().session_store,
+            None,
+            Arc::new(RwLock::new(crate::runtime::ProviderChoice::OpenRouter {
+                model: "meta/muse-spark-1.3-contributor".to_string(),
+                base_url: "https://openrouter.ai/api/v1".to_string(),
+                reasoning_effort: Some("medium".to_string()),
+            })),
+        );
+
+        let mut input = input_for_wake(&WakeMessage::coordination("[automatic] continue"));
+        assert!(input.controls.is_none(), "a wake is built without controls");
+
+        crate::runtime::reasoning::ensure_reasoning_effort(
+            &mut input,
+            runner.reasoning_effort().as_deref(),
+        );
+
+        assert_eq!(
+            input
+                .controls
+                .and_then(|controls| controls.reasoning)
+                .and_then(|reasoning| reasoning.effort)
+                .map(|effort| effort.as_str()),
+            Some("medium")
+        );
     }
 
     #[tokio::test]

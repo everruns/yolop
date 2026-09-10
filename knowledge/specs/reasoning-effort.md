@@ -76,6 +76,19 @@ pre-turn availability check and the `/model` browser. Before any discovery call
 has run the layer is simply empty, which is why layer 3 exists: a model whose
 endpoint mandates reasoning has a scale and a default from the first turn.
 
+### Every turn carries the level, however it was built
+
+A typed turn gets its controls from `ProviderChoice::input_message`, but a
+background wake, a resumed turn and a child-session message are assembled by the
+host and carry no controls at all. They used to reach the provider with nothing
+on the wire, so a wake on an endpoint that mandates reasoning failed exactly as
+a first turn once did. Any such message is now given the model's level before it
+is sent: at the shared turn entry point for the hosts, and in the child-session
+runner, which dispatches to the runtime without passing through it.
+
+The repair below is the backstop for what that cannot reach, not the mechanism
+by which a wake gets its reasoning.
+
 ### A mandated-reasoning rejection repairs itself once
 
 When a turn fails and the provider says reasoning is mandatory, and the turn
@@ -116,8 +129,11 @@ untouched.
   `ProviderChoice::auto_reasoning_effort_for_model` owns the narrower question of
   which effort Yolop selects unasked.
 - `RuntimeHandles::run_turn_with_reasoning_recovery` owns the one-shot retry and
-  is the entry point every host starts a turn through; it is the only place that
-  changes the model behind the user's back.
+  the level given to a host-built input; it is the entry point every host starts
+  a turn through, and the only place that changes the model behind the user's
+  back.
+- `background_wake::WakeRunner` owns the same for child-session messages, which
+  reach the runtime without that entry point.
 
 ## Related
 
