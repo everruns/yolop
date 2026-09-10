@@ -173,7 +173,7 @@ impl HostUi for RecordingUi {
             UiCommand::ManageMcp { .. } => {
                 vec![
                     "active MCP servers: none".into(),
-                    "usage: /mcp [reload | login <name> | enable|disable|remove <name> [global|workspace]]"
+                    "usage: /mcp [reload | login <name> | add <name> ... | enable|disable|remove <name> [global|workspace]] [--no-reload]"
                         .into(),
                 ]
             }

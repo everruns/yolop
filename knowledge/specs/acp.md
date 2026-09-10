@@ -253,10 +253,11 @@ runtime's sandboxed execution boundary.
 
 Secret-entry tools are different. The connector `connect` tool is omitted in
 ACP because its arguments carry credentials through the transcript. Connector
-discovery and disconnection remain available. `upsert_mcp_server` accepts
-environment placeholders such as `${MCP_TOKEN}`, but rejects literal values in
-credential-bearing header and environment fields; browser OAuth remains
-available through `/mcp login`.
+discovery and disconnection remain available. MCP mutations are CLI-only: there are no mutation model
+tools, so servers are added, removed, enabled, or disabled with `yolop mcp ...` (files on disk) or
+`/mcp ...` via run_command (live session, which reloads by default and accepts `--no-reload` to defer).
+Secrets belong in environment placeholders such as `${MCP_TOKEN}`; literals at the CLI are the operator's
+explicit choice. Browser OAuth remains available through `yolop mcp login` and `/mcp login`.
 
 ACP cannot replace or retract the transcript already displayed by its client.
 Checkpoint commands and `manage_checkpoint` therefore expose workspace restore

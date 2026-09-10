@@ -1,5 +1,5 @@
 use crate::config::{Settings, SettingsStore, default_settings_path};
-use everruns_core::{ScopedMcpServer, ScopedMcpServers};
+use everruns_core::{McpServerAuthMode, McpServerTransportType, ScopedMcpServer, ScopedMcpServers};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value as JsonValue;
 use std::collections::BTreeMap;
@@ -217,6 +217,28 @@ impl McpConfigStore {
             .into_iter()
             .find(|summary| summary.scope == scope && summary.name == name)
             .ok_or_else(|| format!("MCP server '{name}' not found"))
+    }
+}
+
+/// Transport aliases shared by `yolop mcp add` and `/mcp add`: legacy SSE
+/// servers ride the streamable HTTP transport.
+pub(crate) fn parse_mcp_transport(value: &str) -> Result<McpServerTransportType, String> {
+    match value.to_ascii_lowercase().as_str() {
+        "stdio" => Ok(McpServerTransportType::Stdio),
+        "http" | "sse" => Ok(McpServerTransportType::Http),
+        other => Err(format!("unknown transport `{other}` (stdio|http|sse)")),
+    }
+}
+
+/// Auth aliases shared by `yolop mcp add` and `/mcp add`.
+pub(crate) fn parse_mcp_auth(value: &str) -> Result<McpServerAuthMode, String> {
+    match value.to_ascii_lowercase().as_str() {
+        "none" => Ok(McpServerAuthMode::None),
+        "bearer" | "api_key" | "api-key" => Ok(McpServerAuthMode::ApiKey),
+        "oauth" | "o_auth" => Ok(McpServerAuthMode::OAuth),
+        other => Err(format!(
+            "unknown auth mode `{other}` (none|bearer|api_key|oauth)"
+        )),
     }
 }
 
