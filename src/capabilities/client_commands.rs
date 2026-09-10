@@ -34,7 +34,8 @@ pub(crate) const CLIENT_COMMANDS_PROMPT: &str = r#"Terminal commands, all runnab
 `/cwd`, `/status [compact|expanded|toggle]`, `/model [id]`, `/effort [level]`,
 `/clear`, `/quit` (`/exit` alias). Run them on prose requests such as "exit",
 "clear the screen", "show tools", "switch model", "restart MCP", "reconnect MCP",
-or "refresh MCP" (`/mcp reload`), "log in to an MCP server" (`/mcp login <name>`);
+or "refresh MCP" (`/mcp reload`), "log in to an MCP server" (`/mcp login <name>`),
+    "add/remove/enable/disable an MCP server" (`/mcp <verb> <name>`, reloads live unless `--no-reload`);
 never invent a manager window. `/shell` is typed-only; use `bash`."#;
 
 pub(crate) struct ClientCommandsCapability {
@@ -107,7 +108,7 @@ fn command_descriptors() -> Vec<CommandDescriptor> {
         cmd("tools", "list available tools", &[]),
         cmd(
             "mcp",
-            "list/reload/login or enable/disable/remove MCP servers live",
+            "add/list/reload/login or enable/disable/remove MCP servers live",
             &[opt("action")],
         ),
         cmd("cwd", "show workspace root", &[]),

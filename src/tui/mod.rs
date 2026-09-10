@@ -3454,8 +3454,7 @@ impl App {
         }
     }
 
-    const MCP_USAGE: &'static str =
-        "usage: /mcp [reload | login <name> | enable|disable|remove <name> [global|workspace]]";
+    const MCP_USAGE: &'static str = "usage: /mcp [reload | login <name> | add <name> [global|workspace] --type <stdio|http|sse> [options] [--login] | enable|disable|remove <name> [global|workspace]] [--no-reload]";
 
     async fn manage_mcp_command(&mut self, raw: Option<&str>) {
         let Some(raw) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
@@ -3464,7 +3463,7 @@ impl App {
                     .map(|p| p.display().to_string())
                     .unwrap_or_else(|| "the yolop config dir".to_string());
                 self.push_system(format!(
-                    "no MCP servers configured (add them with `yolop mcp add`, .mcp.json in the workspace root, or {global})"
+                    "no MCP servers configured (add them with `/mcp add`, `yolop mcp add`, .mcp.json in the workspace root, or {global})"
                 ));
             } else {
                 self.push_system(format!(
@@ -3476,11 +3475,13 @@ impl App {
             return;
         };
 
-        let mut parts = raw.split_whitespace();
+        let raw_parts: Vec<&str> = raw.split_whitespace().collect();
+        let no_reload = raw_parts.contains(&"--no-reload");
+        let mut parts = raw_parts.into_iter().filter(|part| *part != "--no-reload");
         let action = parts.next().unwrap_or_default();
 
         // `reload` re-reads config from disk (picking up `yolop mcp add`,
-        // hand edits, or the agent's own config tools) and applies it live.
+        // hand edits, or `/mcp add`) and applies it live.
         if action == "reload" {
             if parts.next().is_some() {
                 self.push_system(Self::MCP_USAGE.into());
@@ -3501,6 +3502,11 @@ impl App {
                 Some(name) => self.mcp_login(name).await,
                 None => self.push_system(Self::MCP_USAGE.into()),
             }
+            return;
+        }
+
+        if action == "add" {
+            self.mcp_add_command(parts.collect(), no_reload).await;
             return;
         }
 
@@ -3544,7 +3550,15 @@ impl App {
             }
         };
         match result {
-            Ok(message) => self.reload_mcp_and_report(Some(message)).await,
+            Ok(message) => {
+                if no_reload {
+                    self.push_system(format!(
+                        "{message} (saved; live reload skipped: --no-reload)"
+                    ));
+                } else {
+                    self.reload_mcp_and_report(Some(message)).await;
+                }
+            }
             Err(error) => self.push_system(format!("failed to update MCP config: {error}")),
         }
     }
@@ -3554,6 +3568,148 @@ impl App {
     /// (so fullscreen and inline both stay conversational if the browser is
     /// invisible), best-effort opens the browser, and completes in the
     /// background — same pattern as Codex login.
+    async fn mcp_add_command(&mut self, args: Vec<&str>, no_reload: bool) {
+        use crate::config::mcp::{
+            McpConfigScope, McpServerEntry, parse_mcp_auth, parse_mcp_transport,
+        };
+        use everruns_core::{McpServerAuthMode, McpServerTransportType, ScopedMcpServer};
+
+        let mut args = args.into_iter();
+        let Some(name) = args.next() else {
+            self.push_system(Self::MCP_USAGE.into());
+            return;
+        };
+        let mut scope = McpConfigScope::Global;
+        let mut transport = McpServerTransportType::Stdio;
+        let mut command: Option<String> = None;
+        let mut command_args: Vec<String> = Vec::new();
+        let mut url: Option<String> = None;
+        let mut headers: Vec<(String, String)> = Vec::new();
+        let mut env: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        let mut auth = McpServerAuthMode::None;
+        let mut provider: Option<String> = None;
+        let mut disabled = false;
+        let mut login = false;
+        let mut positional = 0;
+        let mut usage_error: Option<String> = None;
+        for arg in args {
+            if usage_error.is_some() {
+                break;
+            }
+            if arg == "--login" {
+                login = true;
+            } else if arg == "--disabled" || arg == "--disable" {
+                disabled = true;
+            } else if arg == "--no-reload" {
+                // Filtered before dispatch; accepted here so flag order never matters.
+            } else if let Some(value) = arg
+                .strip_prefix("--type=")
+                .or(arg.strip_prefix("--transport="))
+            {
+                match parse_mcp_transport(value) {
+                    Ok(parsed) => transport = parsed,
+                    Err(error) => usage_error = Some(format!("error: {error}")),
+                }
+            } else if let Some(value) = arg.strip_prefix("--command=") {
+                command = Some(value.to_string());
+            } else if let Some(value) = arg.strip_prefix("--arg=") {
+                command_args.push(value.to_string());
+            } else if let Some(value) = arg.strip_prefix("--url=") {
+                url = Some(value.to_string());
+            } else if let Some(value) = arg.strip_prefix("--header=") {
+                match value.split_once('=') {
+                    Some((key, val)) => {
+                        headers.push((key.to_string(), val.to_string()));
+                    }
+                    None => {
+                        usage_error = Some(format!("`{value}` is not KEY=VALUE (--header)"));
+                    }
+                }
+            } else if let Some(value) = arg.strip_prefix("--env=") {
+                match value.split_once('=') {
+                    Some((key, val)) => {
+                        env.insert(key.to_string(), val.to_string());
+                    }
+                    None => {
+                        usage_error = Some(format!("`{value}` is not KEY=VALUE (--env)"));
+                    }
+                }
+            } else if let Some(value) = arg.strip_prefix("--auth=") {
+                match parse_mcp_auth(value) {
+                    Ok(parsed) => auth = parsed,
+                    Err(error) => usage_error = Some(format!("error: {error}")),
+                }
+            } else if let Some(value) = arg.strip_prefix("--provider=") {
+                provider = Some(value.to_string());
+            } else if arg.starts_with("--") {
+                usage_error = Some(format!("unknown flag `{arg}`"));
+            } else if positional == 0 && (arg == "global" || arg == "workspace") {
+                scope = if arg == "global" {
+                    McpConfigScope::Global
+                } else {
+                    McpConfigScope::Workspace
+                };
+                positional += 1;
+            } else {
+                usage_error = Some(format!("unexpected `{arg}`"));
+            }
+        }
+        if let Some(error) = usage_error {
+            self.push_system(format!("error: {error}\n{}", Self::MCP_USAGE));
+            return;
+        }
+        let (transport_type, url) = match transport {
+            McpServerTransportType::Http => {
+                let Some(url) = url else {
+                    self.push_system("error: remote servers need `--url=<https-url>`".into());
+                    return;
+                };
+                (McpServerTransportType::Http, url)
+            }
+            McpServerTransportType::Stdio => {
+                if command.is_none() {
+                    self.push_system("error: stdio servers need `--command=<bin>`".into());
+                    return;
+                }
+                (McpServerTransportType::Stdio, url.unwrap_or_default())
+            }
+        };
+        let store =
+            crate::config::mcp::McpConfigStore::default_for_workspace(&self.startup.workspace_root);
+        let entry = McpServerEntry {
+            enabled: !disabled,
+            server: ScopedMcpServer {
+                transport_type,
+                command,
+                args: command_args,
+                env,
+                url,
+                headers: headers.into_iter().collect(),
+                auth_mode: auth,
+                oauth_provider_id: provider,
+                ..Default::default()
+            },
+        };
+        if let Err(error) = store.upsert(scope, name, entry) {
+            self.push_system(format!("error: {error}"));
+            return;
+        }
+        let scope_label = format!("{scope:?}").to_lowercase();
+        let message = format!("added MCP server `{name}` ({scope_label}), live");
+        // A requested login needs the live server, so it implies a reload.
+        if login || !no_reload {
+            self.reload_mcp_and_report(Some(message)).await;
+        } else {
+            self.push_system(format!(
+                "{message} (saved; live reload skipped: --no-reload)"
+            ));
+            return;
+        }
+        if login {
+            self.mcp_login(name).await;
+        }
+    }
+
     async fn mcp_login(&mut self, name: &str) {
         let servers = crate::config::mcp::load_mcp_servers(
             &self.settings.snapshot(),
@@ -3561,7 +3717,7 @@ impl App {
         );
         let Some(server) = servers.get(name) else {
             self.push_system(format!(
-                "MCP server `{name}` is not configured or is disabled; add it and run `/mcp reload` first"
+                "MCP server `{name}` is not configured or is disabled; add it with `/mcp add` first"
             ));
             return;
         };
@@ -9845,6 +10001,101 @@ flowchart TD
                 .any(|line| line.text.contains("stdio server")
                     && line.text.contains("OAuth login only applies")),
             "stdio server should be rejected before any browser flow: {:?}",
+            app.lines
+        );
+    }
+
+    #[tokio::test]
+    async fn mcp_add_stdio_server_goes_live() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.dispatch_command_for_test("mcp add cli-add workspace --command=true")
+            .await;
+        // The slash add saves and reloads by default: the prelude plus the
+        // live report naming the new server.
+        assert!(
+            app.lines.iter().any(|line| line
+                .text
+                .contains("added MCP server `cli-add` (workspace), live")),
+            "missing add report: {:?}",
+            app.lines
+        );
+        assert!(
+            app.lines
+                .iter()
+                .any(|line| line.text.contains("active MCP servers")
+                    && line.text.contains("cli-add")),
+            "added server is not live: {:?}",
+            app.lines
+        );
+    }
+
+    #[tokio::test]
+    async fn mcp_add_no_reload_defers_liveness() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.dispatch_command_for_test("mcp add cli-staged workspace --command=true --no-reload")
+            .await;
+        assert!(
+            app.lines
+                .iter()
+                .any(|line| line.text.contains("live reload skipped: --no-reload")),
+            "missing skip report: {:?}",
+            app.lines
+        );
+        // Saved on disk but never swapped into the session: no live report.
+        assert!(
+            !app.lines
+                .iter()
+                .any(|line| line.text.contains("active MCP servers")),
+            "reload happened despite --no-reload: {:?}",
+            app.lines
+        );
+        // Deferral, not denial: an explicit reload picks the staged server up.
+        app.lines.clear();
+        app.dispatch_command_for_test("mcp reload").await;
+        assert!(
+            app.lines
+                .iter()
+                .any(|line| line.text.contains("active MCP servers")
+                    && line.text.contains("cli-staged")),
+            "staged server never went live: {:?}",
+            app.lines
+        );
+    }
+
+    #[tokio::test]
+    async fn mcp_disable_no_reload_defers_until_reload() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.dispatch_command_for_test("mcp add cli-live workspace --command=true")
+            .await;
+        app.lines.clear();
+        app.dispatch_command_for_test("mcp disable cli-live workspace --no-reload")
+            .await;
+        assert!(
+            app.lines
+                .iter()
+                .any(|line| line.text.contains("live reload skipped: --no-reload")),
+            "missing skip report: {:?}",
+            app.lines
+        );
+        // No live swap happened for the disable either.
+        assert!(
+            !app.lines
+                .iter()
+                .any(|line| line.text.contains("active MCP servers")),
+            "reload happened despite --no-reload: {:?}",
+            app.lines
+        );
+        // The deferred disable applies on the next explicit reload.
+        app.lines.clear();
+        app.dispatch_command_for_test("mcp reload").await;
+        assert!(
+            app.lines
+                .iter()
+                .any(|line| line.text.contains("active MCP servers: none")),
+            "disabled server still live after reload: {:?}",
             app.lines
         );
     }

@@ -4275,7 +4275,6 @@ pub async fn build_with_options(
     capabilities.register(YolopCapability);
     capabilities.register(YolopMcpCapability {
         store: Arc::new(McpConfigStore::default_for_workspace(&canonical_root)),
-        allow_literal_credentials: !matches!(options.client_ui, ClientUiContext::Acp),
     });
     // `progress_guard` — runtime-visible warnings when tool use stops making
     // observable progress.

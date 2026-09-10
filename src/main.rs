@@ -269,7 +269,7 @@ enum Commands {
 #[derive(Args, Debug)]
 struct McpArgs {
     #[command(subcommand)]
-    command: McpCommand,
+    command: Box<McpCommand>,
 }
 
 #[derive(Args, Debug)]
@@ -349,6 +349,14 @@ enum McpCommand {
         /// Header as KEY=VALUE. Repeat for multiple headers.
         #[arg(long = "header", value_parser = parse_key_value)]
         headers: Vec<(String, String)>,
+
+        /// Environment variable as KEY=VALUE. Repeat for multiple entries.
+        #[arg(long = "env", value_parser = parse_key_value)]
+        env: Vec<(String, String)>,
+
+        /// After saving, immediately start the OAuth browser login for the server.
+        #[arg(long = "login")]
+        login: bool,
         /// Auth mode (`bearer`, `oauth`, or `none`).
         #[arg(long)]
         auth_mode: Option<String>,
@@ -1150,6 +1158,44 @@ async fn run_mcp_command(command: McpCommand) -> Result<()> {
         Ok(McpConfigStore::default_for_workspace(&workspace_root))
     }
 
+    async fn login_mcp_server(cwd: Option<PathBuf>, name: &str) -> anyhow::Result<()> {
+        let servers = store(cwd)?
+            .effective()
+            .map_err(anyhow::Error::msg)?
+            .servers
+            .into_iter()
+            .find(|server| server.name == *name && server.effective)
+            .with_context(|| format!("MCP server `{name}` was not found in effective scope"))?;
+        let scoped = &servers.server.server;
+        if scoped.transport_type != McpServerTransportType::Http {
+            return Err(anyhow::Error::msg(format!(
+                "MCP server `{name}` is a stdio server; OAuth login only applies to remote HTTP servers"
+            )));
+        }
+        let provider_key = scoped
+            .oauth_provider_id
+            .clone()
+            .unwrap_or_else(|| name.to_string());
+        println!("Opening the browser to log in to MCP server `{name}` ...");
+        let prepared = auth::mcp_oauth_login::prepare_login(&scoped.url, None, None).await?;
+        println!(
+            "If the browser did not open, visit this URL:\n{}\n",
+            prepared.authorize_url
+        );
+        if let Err(error) = auth::oauth_flow::open_browser(prepared.authorize_url.as_str()) {
+            eprintln!("warning: could not open the browser: {error:#}");
+        }
+        println!("Waiting for the browser login to complete ...");
+        let tokens = auth::mcp_oauth_login::complete_login(prepared).await?;
+        let fallback = PathBuf::from("/dev/null/yolop");
+        let connections_path = connectors::default_connections_path()
+            .unwrap_or_else(|| fallback.join("connections.toml"));
+        let connections = connectors::ConnectionStore::open(connections_path);
+        auth::mcp_oauth::save_tokens(&connections, &provider_key, tokens)?;
+        println!("Logged in to MCP server `{name}`.");
+        Ok(())
+    }
+
     fn write_scope(scope: McpScopeArg) -> Result<McpConfigScope> {
         match scope {
             McpScopeArg::Global => Ok(McpConfigScope::Global),
@@ -1205,43 +1251,7 @@ async fn run_mcp_command(command: McpCommand) -> Result<()> {
             }
             Ok(())
         }
-        McpCommand::Login { name, cwd } => {
-            let servers = store(cwd)?
-                .effective()
-                .map_err(anyhow::Error::msg)?
-                .servers
-                .into_iter()
-                .find(|server| server.name == *name && server.effective)
-                .with_context(|| format!("MCP server `{name}` was not found in effective scope"))?;
-            let scoped = &servers.server.server;
-            if scoped.transport_type != McpServerTransportType::Http {
-                return Err(anyhow::Error::msg(format!(
-                    "MCP server `{name}` is a stdio server; OAuth login only applies to remote HTTP servers"
-                )));
-            }
-            let provider_key = scoped
-                .oauth_provider_id
-                .clone()
-                .unwrap_or_else(|| name.clone());
-            println!("Opening the browser to log in to MCP server `{name}` ...");
-            let prepared = auth::mcp_oauth_login::prepare_login(&scoped.url, None, None).await?;
-            println!(
-                "If the browser did not open, visit this URL:\n{}\n",
-                prepared.authorize_url
-            );
-            if let Err(error) = auth::oauth_flow::open_browser(prepared.authorize_url.as_str()) {
-                eprintln!("warning: could not open the browser: {error:#}");
-            }
-            println!("Waiting for the browser login to complete ...");
-            let tokens = auth::mcp_oauth_login::complete_login(prepared).await?;
-            let fallback = PathBuf::from("/dev/null/yolop");
-            let connections_path = connectors::default_connections_path()
-                .unwrap_or_else(|| fallback.join("connections.toml"));
-            let connections = connectors::ConnectionStore::open(connections_path);
-            auth::mcp_oauth::save_tokens(&connections, &provider_key, tokens)?;
-            println!("Logged in to MCP server `{name}`.");
-            Ok(())
-        }
+        McpCommand::Login { name, cwd } => login_mcp_server(cwd, &name).await,
         McpCommand::Show { name, scope, cwd } => {
             let store = store(cwd)?;
             let server = store
@@ -1269,24 +1279,29 @@ async fn run_mcp_command(command: McpCommand) -> Result<()> {
             args,
             url,
             headers,
+            env,
+            login,
             auth_mode,
             oauth_provider_id,
             disabled,
             cwd,
         } => {
-            let transport = transport_type.to_ascii_lowercase();
-            let server = match transport.as_str() {
-                "stdio" => ScopedMcpServer {
+            let env: HashMap<String, String> = env.into_iter().collect();
+            let transport_type = crate::config::mcp::parse_mcp_transport(&transport_type)
+                .map_err(anyhow::Error::msg)?;
+            let server = match transport_type {
+                McpServerTransportType::Stdio => ScopedMcpServer {
                     transport_type: McpServerTransportType::Stdio,
                     command: Some(command.context("--command is required for stdio MCP servers")?),
                     args,
-                    env: HashMap::new(),
+                    env,
                     ..ScopedMcpServer::default()
                 },
-                "http" | "sse" => ScopedMcpServer {
+                McpServerTransportType::Http => ScopedMcpServer {
                     transport_type: McpServerTransportType::Http,
                     url: url.context("--url is required for remote MCP servers")?,
                     headers: headers.into_iter().collect(),
+                    env,
                     auth_mode: auth_mode
                         .as_deref()
                         .map(parse_mcp_auth_mode)
@@ -1295,11 +1310,8 @@ async fn run_mcp_command(command: McpCommand) -> Result<()> {
                     oauth_provider_id,
                     ..ScopedMcpServer::default()
                 },
-                other => anyhow::bail!(
-                    "unsupported MCP transport `{other}`; expected stdio, http, or sse"
-                ),
             };
-            let store = store(cwd)?;
+            let store = store(cwd.clone())?;
             let _summary = store
                 .upsert(
                     write_scope(scope)?,
@@ -1318,6 +1330,9 @@ async fn run_mcp_command(command: McpCommand) -> Result<()> {
             println!(
                 "restart or start a new yolop session for MCP connection changes to take effect"
             );
+            if login {
+                login_mcp_server(cwd, &name).await?;
+            }
             Ok(())
         }
         McpCommand::Remove { scope, name, cwd } => {
@@ -1380,14 +1395,7 @@ fn mcp_scope_label(scope: McpConfigScope) -> &'static str {
 }
 
 fn parse_mcp_auth_mode(value: &str) -> Result<everruns_core::McpServerAuthMode> {
-    match value.to_ascii_lowercase().as_str() {
-        "none" => Ok(everruns_core::McpServerAuthMode::None),
-        "bearer" | "api_key" | "api-key" => Ok(everruns_core::McpServerAuthMode::ApiKey),
-        "oauth" | "o_auth" => Ok(everruns_core::McpServerAuthMode::OAuth),
-        other => anyhow::bail!(
-            "unsupported auth mode `{other}`; expected none, bearer/api_key, or oauth"
-        ),
-    }
+    crate::config::mcp::parse_mcp_auth(value).map_err(anyhow::Error::msg)
 }
 
 async fn run_command(command: Commands) -> Result<()> {
@@ -1396,7 +1404,7 @@ async fn run_command(command: Commands) -> Result<()> {
             println!("{}", version::VERSION_LINE);
             Ok(())
         }
-        Commands::Mcp(args) => run_mcp_command(args.command).await,
+        Commands::Mcp(args) => run_mcp_command(*args.command).await,
         Commands::Weights(args) => run_weights_command(args.command).await,
         Commands::TuikaGallery => run_tuika_gallery(),
         #[cfg(target_os = "linux")]
@@ -2497,6 +2505,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mcp_add_env_entries_persist() {
+        let dir = tempfile::tempdir().expect("temp cwd");
+        let cwd = dir.path().join("work");
+        std::fs::create_dir_all(&cwd).expect("create temp cwd");
+        run_mcp_command(McpCommand::Add {
+            scope: McpScopeArg::Workspace,
+            name: "env-demo".to_string(),
+            transport_type: "stdio".to_string(),
+            command: Some("true".to_string()),
+            args: Vec::new(),
+            url: None,
+            headers: Vec::new(),
+            env: vec![("TOKEN".to_string(), "abc".to_string())],
+            login: false,
+            auth_mode: None,
+            oauth_provider_id: None,
+            disabled: false,
+            cwd: Some(cwd.clone()),
+        })
+        .await
+        .expect("add persists env");
+        let servers = McpConfigStore::default_for_workspace(&cwd)
+            .effective()
+            .expect("read back effective config")
+            .servers;
+        let saved = servers
+            .iter()
+            .find(|server| server.name == "env-demo")
+            .expect("added server is present");
+        assert_eq!(
+            saved.server.server.env.get("TOKEN").map(String::as_str),
+            Some("abc")
+        );
+    }
+
+    #[tokio::test]
     async fn mcp_login_unknown_server_errors() {
         let cwd = std::env::temp_dir().join("yolop-mcp-login-unknown-server");
         std::fs::create_dir_all(&cwd).expect("create temp cwd");
@@ -2544,6 +2588,29 @@ mod tests {
             vec!["yolop", "mcp", "enable", "demo"],
             vec!["yolop", "mcp", "disable", "demo"],
             vec!["yolop", "mcp", "login", "demo"],
+            vec![
+                "yolop",
+                "mcp",
+                "add",
+                "demo",
+                "--type",
+                "stdio",
+                "--command",
+                "true",
+            ],
+            vec![
+                "yolop",
+                "mcp",
+                "add",
+                "demo",
+                "--type",
+                "http",
+                "--url",
+                "https://example.test/mcp",
+                "--env",
+                "TOKEN=abc",
+                "--login",
+            ],
         ] {
             Cli::try_parse_from(argv).expect("parse MCP command");
         }
