@@ -89,7 +89,7 @@ Notes:
   attaches to the live session, rather than by tool schemas that would cost
   context every turn. It still meets the rest of this contract: live effect,
   no confirmation overlay, one shared implementation behind the CLI, `/command`,
-  and control plane. Discoverability comes from the single control-plane prompt
+  and control plane. Discoverability comes from the single `yolop` prompt
   block described in [`extensions.md`](./extensions.md), not from per-capability
   prompt text.
 - `run_command` runs on every host and dispatches the whole registry, not a

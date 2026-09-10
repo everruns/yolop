@@ -361,11 +361,12 @@ the notice reaches the agent in the result and the user in the transcript, so
 neither has to infer which of the two forms ran. Help and version administer
 nothing and draw no notice.
 
-Discovery is one shared system-prompt block owned by the control plane, not the
-Bash tool description and not a per-capability contribution: `ControlPlaneCapability`
+Discovery is one shared system-prompt block owned by the `yolop` capability, not
+the Bash tool description and not a per-capability contribution: `YolopCapability`
 renders every route registered in the session from its `ControlRoute::summary`,
 states the direct-invocation rules once, and points at `yolop <subcommand> --help`.
-A session with no registered route contributes nothing, so the prompt never names
+A session with no registered route contributes the framing only, so the prompt never
+names
 a surface that session lacks. A capability contributing a CLI route therefore
 supplies one summary clause and no prompt prose of its own. The
 capability-contributed Clap definition remains the canonical grammar and

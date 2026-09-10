@@ -38,7 +38,7 @@ use tokio::sync::mpsc::UnboundedSender;
 pub const EXTENSIONS_CAPABILITY_ID: &str = "extensions";
 const EXTENSIONS_COMMAND_NAME: &str = "extensions";
 
-/// A constant so the shared control-plane prompt block can be measured against
+/// A constant so the shared `yolop` prompt block can be measured against
 /// the always-on prompt budget without constructing a session.
 pub(crate) const EXTENSIONS_CONTROL_ROUTE: ControlRoute = ControlRoute {
     resource: EXTENSIONS_CAPABILITY_ID,

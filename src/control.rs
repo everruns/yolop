@@ -54,10 +54,10 @@ pub struct ControlRoute {
     pub cli_subcommand: &'static str,
     pub read_only_operations: &'static [&'static str],
     /// One clause naming what the subcommand administers, rendered into the
-    /// single shared control-plane prompt block. Capabilities contribute this
-    /// datum only: the prose, the attachment rules, and the discovery pointer
-    /// are written once in `ControlPlaneCapability`, so a new CLI route adds a
-    /// line rather than a prompt section of its own.
+    /// single shared `yolop` prompt block. Capabilities contribute this datum
+    /// only: the framing, the attachment rules, and the discovery pointer are
+    /// written once in `YolopCapability` (`src/capabilities/yolop.rs`), so a
+    /// new CLI route adds a line rather than a prompt section of its own.
     pub summary: &'static str,
 }
 
@@ -281,72 +281,6 @@ impl ControlService for ControlRegistry {
             .get(&request.resource)
             .map(|capability| capability.render_control(&request.action, response))
             .unwrap_or_else(|| response.render_default())
-    }
-}
-
-pub const CONTROL_PLANE_CAPABILITY_ID: &str = "control_plane";
-
-/// The single system-prompt contribution describing attached administration.
-///
-/// Administration is deliberately not a set of model tools (their schemas would
-/// cost context every turn), so the agent has to learn the affordance some other
-/// way. It is stated once, here, and derived from the routes actually registered
-/// in this session: a session without a control route registers no capability
-/// and says nothing, and a new `ControlCapability` is described by its own
-/// `ControlRoute::summary` without touching this text or adding a block of its
-/// own. The Bash tool description stays free of resource-specific vocabulary.
-pub struct ControlPlaneCapability {
-    prompt: String,
-}
-
-impl ControlPlaneCapability {
-    /// `None` when nothing is registered, so the block is never a promise the
-    /// session cannot keep.
-    pub fn new(routes: &[ControlRoute]) -> Option<Self> {
-        if routes.is_empty() {
-            return None;
-        }
-        // No `<capability>` wrapper here: the default
-        // `Capability::system_prompt_contribution` wraps this text in
-        // `<capability id="control_plane">` when it assembles the prompt.
-        let mut prompt = String::from(
-            "Administer this session by running `yolop <subcommand> ...` in the foreground bash \
-             tool: it attaches to the running session and takes effect live. Run \
-             `yolop <subcommand> --help` for the operations; there are no equivalent tools.\n",
-        );
-        for route in routes {
-            prompt.push_str(&format!(
-                "- `{}`, {}\n",
-                route.cli_subcommand, route.summary
-            ));
-        }
-        prompt.push_str(
-            "Invoke directly: shell composition loses attachment. Do not repeat `--help`.",
-        );
-        Some(Self { prompt })
-    }
-}
-
-#[async_trait]
-impl Capability for ControlPlaneCapability {
-    fn id(&self) -> &str {
-        CONTROL_PLANE_CAPABILITY_ID
-    }
-
-    fn name(&self) -> &str {
-        "Control plane"
-    }
-
-    fn description(&self) -> &str {
-        "Attached administration of the running session through the `yolop` CLI."
-    }
-
-    fn system_prompt_addition(&self) -> Option<&str> {
-        Some(&self.prompt)
-    }
-
-    fn tools(&self) -> Vec<Box<dyn everruns_core::Tool>> {
-        Vec::new()
     }
 }
 
@@ -752,58 +686,6 @@ mod tests {
         assert_eq!(invocation.request.resource, "extensions");
         assert_eq!(invocation.request.action["operation"], "enable");
         assert_eq!(invocation.request.action["name"], "demo");
-    }
-
-    #[test]
-    fn control_plane_prompt_is_absent_without_registered_routes() {
-        assert!(ControlPlaneCapability::new(&[]).is_none());
-    }
-
-    /// Drives the real assembly entry point (`system_prompt_contribution`, what
-    /// the runtime calls when it builds the prompt), not just the constructor:
-    /// the default wraps the addition, so the block must not wrap itself.
-    #[tokio::test]
-    async fn control_plane_contribution_is_wrapped_exactly_once() {
-        let registry = service();
-        let capability = ControlPlaneCapability::new(&ControlService::routes(&registry))
-            .expect("a registered route contributes the block");
-        let ctx = everruns_core::capabilities::SystemPromptContext::without_file_store(
-            everruns_provider::typed_id::SessionId::new(),
-        );
-        let contribution = capability
-            .system_prompt_contribution(&ctx)
-            .await
-            .expect("the capability contributes to the assembled prompt");
-        assert_eq!(contribution.matches("<capability id=").count(), 1);
-        assert!(contribution.starts_with("<capability id=\"control_plane\">\n"));
-        assert!(contribution.ends_with("</capability>"));
-        assert!(contribution.contains("- `extensions`, administer extension packages"));
-    }
-
-    #[test]
-    fn control_plane_prompt_lists_every_registered_route() {
-        let registry = service();
-        let capability = ControlPlaneCapability::new(&ControlService::routes(&registry))
-            .expect("a registered route contributes the block");
-        let prompt = capability
-            .system_prompt_addition()
-            .expect("the block is the capability's contribution");
-        assert!(prompt.contains("- `extensions`, administer extension packages"));
-        // Discovery points at the contributed help, not at a duplicated grammar.
-        assert!(prompt.contains("`yolop <subcommand> --help`"));
-        assert!(prompt.contains("loses attachment"));
-    }
-
-    #[test]
-    fn control_plane_prompt_discourages_repeated_help_probes() {
-        let registry = service();
-        let capability = ControlPlaneCapability::new(&ControlService::routes(&registry))
-            .expect("a registered route contributes the block");
-        let prompt = capability
-            .system_prompt_addition()
-            .expect("the block is the capability's contribution");
-
-        assert!(prompt.contains("Do not repeat `--help`"));
     }
 
     #[test]
