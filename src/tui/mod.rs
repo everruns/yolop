@@ -2069,9 +2069,13 @@ impl App {
                     self.handle_key(key).await;
                 }
                 CrosstermEvent::Mouse(mouse) => {
+                    let area = terminal.get_frame().area();
                     if self.render_mode.is_fullscreen() {
                         if let Some(shape) = self.update_link_pointer(mouse) {
                             let _ = pointer::write(&mut std::io::stdout(), shape);
+                        }
+                        if self.setup.is_some() && self.handle_setup_mouse(mouse, area).await {
+                            continue;
                         }
                         if self.handle_fullscreen_scroll(mouse.kind) {
                             continue;
@@ -2080,7 +2084,6 @@ impl App {
                             continue;
                         }
                     }
-                    let area = terminal.get_frame().area();
                     if self.handle_mouse(mouse, area) {
                         return Ok(());
                     }
@@ -11479,6 +11482,59 @@ flowchart TD
                 .iter()
                 .any(|line| line.text == "setup complete: openai/gpt-5.4 high"),
             "effort modal should report completion: {:?}",
+            app.lines
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn effort_picker_click_confirms_clicked_option() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.lines.clear();
+        app.setup = None;
+
+        app.handle_command("setup token openai sk-test").await;
+        app.run_setup_command(Some("provider openai"))
+            .await
+            .expect("set openai provider");
+        app.run_setup_command(Some("model gpt-5.4"))
+            .await
+            .expect("set openai model");
+        app.lines.clear();
+        app.dispatch_command_for_test("effort high").await;
+
+        assert!(matches!(
+            app.setup,
+            Some(SetupStep::PickEffort { selected: 3, .. })
+        ));
+        let options = app.model.reasoning_effort_options();
+        assert!(options.len() > 1);
+        let expected = options[0].value.clone();
+
+        // Click the first option row: one border line plus the header lines,
+        // mirroring the fullscreen SelectList layout.
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 120,
+            height: 36,
+        };
+        let picker = render::setup_picker(app).expect("effort picker renders");
+        let panel = render::setup_panel_rect(area);
+        let mouse = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: panel.x + 2,
+            row: panel.y + 1 + picker.header.len() as u16,
+            modifiers: KeyModifiers::empty(),
+        };
+
+        assert!(app.handle_setup_mouse(mouse, area).await);
+        assert!(app.setup.is_none());
+        assert!(
+            app.lines
+                .iter()
+                .any(|line| line.text == format!("setup complete: openai/gpt-5.4 {expected}")),
+            "click should confirm the clicked effort option: {:?}",
             app.lines
         );
     }
