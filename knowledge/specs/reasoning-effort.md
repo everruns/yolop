@@ -89,10 +89,19 @@ The repair belongs to the turn, not to one surface: the TUI, `--print`, and ACP
 all start turns through the same entry point and all get it, ACP also refreshing
 the client's effort selector to the level now in force.
 
-Exactly one retry, and only for a turn that named no effort. A rejection of a
-turn that *did* name a level is a choice only the user can make, so it surfaces
-with the failure and a hint naming the control that fixes it (`/effort`, or
-`/model` to switch models). Every other provider failure is untouched.
+Exactly one retry, and only for a request that named no effort. What counts is
+what the *request* carried, not what the model names. A turn's controls are
+captured when it starts and a mid-turn `set_model` cannot revise them (see
+[`conversational-control.md`](./conversational-control.md), EVE-595), so
+switching onto an endpoint that mandates reasoning fails with no effort on the
+wire while the model already names one. Keying off the request repairs that
+turn, and the retry honors the level the model already names rather than
+overwriting it with a default.
+
+A rejection of a request that *did* name a level is a choice only the user can
+make, so it surfaces with the failure and a hint naming the control that fixes
+it (`/effort`, or `/model` to switch models). Every other provider failure is
+untouched.
 
 ## Ownership boundary
 
