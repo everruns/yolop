@@ -32,14 +32,14 @@ use std::sync::Arc;
 
 pub(crate) const AGENT_COMMANDS_CAPABILITY_ID: &str = "yolop_agent_commands";
 
-pub(crate) const AGENT_COMMANDS_PROMPT: &str = r#"<capability id="yolop_agent_commands">
-`run_command` runs any slash command this session registers, not a fixed subset:
+/// Raw text on purpose: the host wraps `system_prompt_addition` in `<capability>`
+/// tags once, so tags here would render twice.
+pub(crate) const AGENT_COMMANDS_PROMPT: &str = r#"`run_command` runs any slash command this session registers, not a fixed subset:
 `/setup status|login|reauthenticate <provider>`, `/background`, `/undo`,
 `/rewind`, `/goal`, and whatever else the host registers. Use `command: help`
 for the live list; an unknown name returns the available ones. Prefer running a
 command over telling the user to type it. Skill commands activate by prompt, so
-follow the skill instead. The result carries the command's own output.
-</capability>"#;
+follow the skill instead. The result carries the command's own output."#;
 
 /// Registry port for `run_command`: list the commands this session actually has
 /// and execute one through the runtime, the same path a typed slash command
@@ -346,7 +346,9 @@ impl CommandDispatch for EmptyCommandDispatch {
 mod tests {
     use super::*;
     use crate::tui::host_ui::{RecordingUi, UiCommand};
+    use everruns_core::SystemPromptContext;
     use everruns_core::command::CommandArg;
+    use everruns_provider::typed_id::SessionId;
     use std::sync::Mutex;
 
     /// Registry stand-in: records what was executed and answers from a fixed
@@ -455,6 +457,36 @@ mod tests {
                 .to_string(),
             other => panic!("expected Success, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn prompt_addition_is_raw_text_without_capability_wrapper() {
+        let capability = AgentCommandsCapability::new(Arc::new(EmptyCommandDispatch), None);
+        let addition = capability.system_prompt_addition().expect("prompt");
+        assert!(
+            !addition.contains("<capability"),
+            "system_prompt_addition must not embed <capability> tags: {addition:?}"
+        );
+        assert!(
+            !addition.contains("</capability>"),
+            "system_prompt_addition must not embed </capability>: {addition:?}"
+        );
+
+        let ctx = SystemPromptContext::without_file_store(SessionId::new());
+        let contribution = capability
+            .system_prompt_contribution(&ctx)
+            .await
+            .expect("contribution");
+        assert_eq!(
+            contribution.matches("<capability").count(),
+            1,
+            "assembled prompt must wrap exactly once: {contribution:?}"
+        );
+        assert_eq!(
+            contribution.matches("</capability>").count(),
+            1,
+            "assembled prompt must close exactly once: {contribution:?}"
+        );
     }
 
     #[test]
