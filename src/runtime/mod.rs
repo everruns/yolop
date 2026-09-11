@@ -2475,11 +2475,12 @@ static GPT_5_6_PROFILE: LazyLock<ModelProfile> = LazyLock::new(|| {
 /// The reasoning-effort scale for a model, merged across every source that
 /// knows something about it:
 ///
-/// 1. the curated profile registry (plus yolop's local overrides), which is
-///    authoritative wherever it describes the model;
-/// 2. what the provider itself advertised at discovery, which is how a gateway
-///    catalog covers models the registry has never seen
-///    ([`discovered_profiles`]);
+/// 1. what the provider itself advertised at discovery: the gateway catalog is
+///    what knows a model's real scale (for example OpenRouter's
+///    `reasoning.supported_efforts`), so it wins wherever it describes the
+///    model ([`discovered_profiles`]);
+/// 2. the curated profile registry (plus yolop's local overrides), which is
+///    the fallback for models with nothing advertised on record;
 /// 3. yolop's own metadata for reasoning-required families
 ///    ([`reasoning::fallback_reasoning_effort_config`]), so a model whose
 ///    endpoint rejects a turn without reasoning has a scale and a default even
@@ -2488,8 +2489,21 @@ fn merged_reasoning_effort_config(
     provider_type: &DriverId,
     model: &str,
 ) -> Option<ReasoningEffortConfig> {
-    profile_reasoning_effort_config(provider_type, model)
-        .or_else(|| discovered_profiles::reasoning_effort_config(provider_type, model))
+    merge_reasoning_effort_config(
+        discovered_profiles::reasoning_effort_config(provider_type, model),
+        profile_reasoning_effort_config(provider_type, model),
+    )
+}
+
+/// Prefer what the provider advertised at discovery; the hardcoded registry
+/// (plus the reasoning-required fallback inside
+/// [`profile_reasoning_effort_config`]) is the fallback for models with
+/// nothing advertised on record.
+fn merge_reasoning_effort_config(
+    advertised: Option<ReasoningEffortConfig>,
+    hardcoded: Option<ReasoningEffortConfig>,
+) -> Option<ReasoningEffortConfig> {
+    advertised.or(hardcoded)
 }
 
 /// The two layers yolop will act on by itself: the curated profile registry,
@@ -9087,10 +9101,13 @@ mod tests {
     /// is in no profile registry, so the turn went out with no reasoning at all
     /// and OpenRouter answered "Reasoning is mandatory for this endpoint and
     /// cannot be disabled", while `/effort` had nothing to offer as a fix.
+    /// A probe id from the same `muse-spark` family stands in for the real one
+    /// here: the discovery cache is process-wide, so the real id belongs to
+    /// the discovery-seeding test below and sharing it would race.
     #[test]
     fn reasoning_required_openrouter_model_selects_and_sends_an_effort() {
         let next = ProviderChoice::default_openrouter()
-            .resolve_model_spec("meta/muse-spark-1.3-contributor")
+            .resolve_model_spec("meta/muse-spark-9.9-fallback-probe")
             .unwrap();
 
         assert_eq!(next.reasoning_effort(), Some("medium"));
@@ -9115,15 +9132,143 @@ mod tests {
     fn reasoning_required_model_accepts_an_explicit_effort() {
         let base = ProviderChoice::default_openrouter();
         let next = base
-            .resolve_model_spec("meta/muse-spark-1.3-contributor high")
+            .resolve_model_spec("meta/muse-spark-9.9-fallback-probe high")
             .unwrap();
         assert_eq!(next.reasoning_effort(), Some("high"));
 
         let err = base
-            .resolve_model_spec("meta/muse-spark-1.3-contributor turbo")
+            .resolve_model_spec("meta/muse-spark-9.9-fallback-probe turbo")
             .unwrap_err()
             .to_string();
         assert!(err.contains("low, medium, high"), "unexpected error: {err}");
+    }
+
+    /// The catalog copy only patches the driver's generic scale: anything else
+    /// recorded means the driver (or a narrower advertisement) already speaks,
+    /// and other providers and models never match.
+    #[test]
+    fn catalog_scale_override_covers_only_the_unmapped_driver_scale() {
+        let generic = ReasoningEffortConfig {
+            values: [
+                ReasoningEffort::Low,
+                ReasoningEffort::Medium,
+                ReasoningEffort::High,
+            ]
+            .into_iter()
+            .map(|value| ReasoningEffortValue {
+                name: format!("{value:?}"),
+                value,
+            })
+            .collect(),
+            default: ReasoningEffort::Medium,
+        };
+        let corrected = discovered_profiles::catalog_scale_override(
+            &DriverId::OpenRouter,
+            "meta/muse-spark-1.3-contributor",
+            &generic,
+        )
+        .expect("the generic driver scale must be corrected");
+        assert_eq!(corrected.default, ReasoningEffort::Medium);
+        assert_eq!(
+            corrected
+                .values
+                .into_iter()
+                .map(|value| value.value)
+                .collect::<Vec<_>>(),
+            vec![
+                ReasoningEffort::Minimal,
+                ReasoningEffort::Low,
+                ReasoningEffort::Medium,
+                ReasoningEffort::High,
+                ReasoningEffort::Xhigh,
+            ]
+        );
+
+        let mut narrower = generic.clone();
+        narrower.values.pop();
+        assert!(
+            discovered_profiles::catalog_scale_override(
+                &DriverId::OpenRouter,
+                "meta/muse-spark-1.3-contributor",
+                &narrower,
+            )
+            .is_none()
+        );
+        assert!(
+            discovered_profiles::catalog_scale_override(
+                &DriverId::OpenAI,
+                "meta/muse-spark-1.3-contributor",
+                &generic,
+            )
+            .is_none()
+        );
+        assert!(
+            discovered_profiles::catalog_scale_override(
+                &DriverId::OpenRouter,
+                "meta/some-other-model",
+                &generic,
+            )
+            .is_none()
+        );
+    }
+
+    /// The real muse-spark id, as the driver records it: `everruns-openrouter
+    /// 0.18.3` drops the catalog's `supported_efforts`, so the lookup
+    /// substitutes the catalog-verified levels instead of the driver's fixed
+    /// low/medium/high. `max` stays unoffered: it has no `ReasoningEffort`
+    /// variant yet.
+    #[test]
+    fn muse_spark_advertisement_uses_catalog_levels() {
+        // What the driver records for every reasoning model: the fixed scale,
+        // with the catalog's levels dropped.
+        let mut driver_record = discovered_profiles::advertised_profile_for_test();
+        driver_record.reasoning_effort = Some(ReasoningEffortConfig {
+            values: [
+                ReasoningEffort::Low,
+                ReasoningEffort::Medium,
+                ReasoningEffort::High,
+            ]
+            .into_iter()
+            .map(|value| ReasoningEffortValue {
+                name: format!("{value:?}"),
+                value,
+            })
+            .collect(),
+            default: ReasoningEffort::Medium,
+        });
+        discovered_profiles::remember(
+            &DriverId::OpenRouter,
+            &[everruns_provider::DiscoveredModel {
+                model_id: "meta/muse-spark-1.3-contributor".to_string(),
+                display_name: None,
+                created_at: None,
+                owned_by: None,
+                capabilities: vec!["chat".to_string()],
+                discovered_profile: Some(driver_record),
+            }],
+        );
+
+        let options = ProviderChoice::default_openrouter()
+            .resolve_model_spec("meta/muse-spark-1.3-contributor")
+            .expect("the real model id must resolve")
+            .reasoning_effort_options()
+            .into_iter()
+            .map(|option| option.value)
+            .collect::<Vec<_>>();
+        assert_eq!(options, vec!["minimal", "low", "medium", "high", "xhigh"]);
+        assert_eq!(
+            ProviderChoice::default_openrouter()
+                .resolve_model_spec("meta/muse-spark-1.3-contributor xhigh")
+                .unwrap()
+                .reasoning_effort(),
+            Some("xhigh"),
+        );
+        assert!(
+            ProviderChoice::default_openrouter()
+                .resolve_model_spec("meta/muse-spark-1.3-contributor max")
+                .is_err(),
+            "max has no ReasoningEffort variant yet, so it stays unoffered"
+        );
     }
 
     /// What the provider advertised at discovery covers models no registry
@@ -9179,9 +9324,50 @@ mod tests {
         assert!(err.contains("supports reasoning efforts: high"), "{err}");
     }
 
-    /// A model the curated registry does describe keeps the registry's answer.
+    /// What the provider advertised at discovery wins over the hardcoded
+    /// registry: the gateway catalog is what knows a model's real scale (for
+    /// example OpenRouter's `reasoning.supported_efforts`), while the registry
+    /// is the fallback for models with nothing advertised on record.
     #[test]
-    fn the_registry_still_owns_the_models_it_describes() {
+    fn advertised_scale_wins_over_hardcoded() {
+        let advertised = ReasoningEffortConfig {
+            values: vec![ReasoningEffortValue {
+                value: ReasoningEffort::Xhigh,
+                name: "Xhigh".to_string(),
+            }],
+            default: ReasoningEffort::Xhigh,
+        };
+        let hardcoded = ReasoningEffortConfig {
+            values: vec![ReasoningEffortValue {
+                value: ReasoningEffort::Medium,
+                name: "Medium".to_string(),
+            }],
+            default: ReasoningEffort::Medium,
+        };
+        assert_eq!(
+            merge_reasoning_effort_config(Some(advertised.clone()), Some(hardcoded.clone()))
+                .expect("two scales must merge to one")
+                .default,
+            ReasoningEffort::Xhigh,
+            "the advertised scale wins when both sources describe the model"
+        );
+        assert_eq!(
+            merge_reasoning_effort_config(None, Some(hardcoded.clone()))
+                .expect("the hardcoded scale must survive alone")
+                .default,
+            ReasoningEffort::Medium,
+            "the registry stays the fallback while nothing is advertised"
+        );
+        assert!(
+            merge_reasoning_effort_config(None, None).is_none(),
+            "no source means no scale"
+        );
+    }
+
+    /// A registry model with nothing advertised on record keeps the registry's
+    /// answer: the curated profile is the fallback, not the owner.
+    #[test]
+    fn the_registry_covers_models_with_nothing_advertised() {
         let registry_default = get_model_profile(&DriverId::OpenAI, "gpt-5.5")
             .and_then(|profile| profile.reasoning_effort)
             .map(|config| config.default.as_str().to_string());
