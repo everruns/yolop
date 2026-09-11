@@ -1326,10 +1326,8 @@ fn classify_tool_call(tool_call: &ToolCall) -> ToolClass {
 
 fn static_tool_class(name: &str) -> Option<ToolClass> {
     match name {
-        "read_file" | "read_many_files" | "grep_files" | "repo_map" | "search_sessions"
-        | "ast_grep" | "list_directory" | "stat_file" | "tool_search" => {
-            Some(ToolClass::Exploration)
-        }
+        "read_file" | "read_many_files" | "grep_files" | "repo_map" | "ast_grep"
+        | "list_directory" | "stat_file" | "tool_search" => Some(ToolClass::Exploration),
         "write_file" | "edit_file" | "delete_file" | "ast_edit" => Some(ToolClass::Mutation),
         "get_task" | "list_tasks" => Some(ToolClass::Waiting),
         _ => None,
@@ -1510,12 +1508,13 @@ fn exploration_signature(tool_call: &ToolCall) -> Option<String> {
                 .unwrap_or_default();
             Some(format!("grep_files:{path_pattern}:{pattern}"))
         }
-        "read_many_files" | "repo_map" | "search_sessions" | "ast_grep" | "list_directory"
-        | "stat_file" => Some(format!(
-            "{}:{}",
-            tool_call.name,
-            normalize_value(&tool_call.arguments)
-        )),
+        "read_many_files" | "repo_map" | "ast_grep" | "list_directory" | "stat_file" => {
+            Some(format!(
+                "{}:{}",
+                tool_call.name,
+                normalize_value(&tool_call.arguments)
+            ))
+        }
         "bash" => {
             let command = tool_call
                 .arguments

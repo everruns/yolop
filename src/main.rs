@@ -1591,6 +1591,12 @@ fn detached_cli_registry() -> Result<control::CliRegistry> {
     registry.register(Arc::new(capabilities::SkillManagementCapability::new(
         capabilities::SkillDirs::resolve(&workspace, None),
     )))?;
+    let sessions_dir = runtime::session_log::default_sessions_dir()
+        .ok()
+        .unwrap_or_else(|| workspace.join(".yolop").join("sessions"));
+    registry.register(Arc::new(capabilities::SessionsCapability::detached(
+        sessions_dir,
+    )))?;
     Ok(registry)
 }
 

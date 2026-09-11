@@ -31,8 +31,8 @@ pub(crate) mod narration;
 pub(crate) mod progress_guard;
 pub(crate) mod repo_map;
 pub(crate) mod session_coordination;
-pub(crate) mod session_history;
 pub(crate) mod session_tasks_override;
+pub(crate) mod sessions;
 pub(crate) mod setup_cli;
 pub(crate) mod skill_registry;
 pub mod skills;
@@ -82,7 +82,7 @@ pub(crate) use session_coordination::{
     CoordinationConfig, CoordinationHost, CoordinationStore, SESSION_COORDINATION_CAPABILITY_ID,
     SessionCoordinationCapability, coordination_project_id,
 };
-pub(crate) use session_history::{SESSION_HISTORY_CAPABILITY_ID, SessionHistoryCapability};
+pub(crate) use sessions::{SESSIONS_CAPABILITY_ID, SessionsCapability};
 pub(crate) use setup_cli::SetupCliCapability;
 pub(crate) use skills::{SkillDirs, SkillManagementCapability};
 pub(crate) use tool_approval::{ApprovalDecision, ToolApprovalCapability, ToolApprover};
