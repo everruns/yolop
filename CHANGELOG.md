@@ -10,6 +10,53 @@ mechanical `### What's Changed` list of merged PRs.
 Releases are cut via [`/release`](./.agents/skills/release/SKILL.md), which
 tags the version and publishes to crates.io and the Homebrew tap.
 
+## [0.18.0] - 2026-09-11
+
+### Highlights
+
+- `yolop sessions` CLI replaces the `search_sessions` model tool, with `search` and `list` subcommands.
+- Capability names unify behind CLI routes: `yolop` prefix stripped to bare IDs, MCP/provider/model self-configuration moves through CLI control routes.
+- First-class env-context entries with `--env-context` flag and Paseo detection.
+- OpenRouter attestation-gate guidance, account gates surfaced as links, plus `yolop mcp login` for remote OAuth servers.
+- Root-managed cancellation with automatic conflict choice, and upstream v0.25.0 cone batch adoption.
+
+### Breaking Changes
+
+- The `search_sessions` model tool is removed; use `yolop sessions search` and `yolop sessions list` via Bash instead. The `session_history` capability id is renamed to `sessions`.
+- `yolop_*` capability IDs are stripped to bare IDs; settings overrides using the old names fail validation, rename them to the bare IDs.
+- Model-invoked mutation tools are removed in favor of CLI routes: use `yolop mcp`, `yolop connectors`, `yolop sessions`, and provider/model commands via Bash instead of `list_mcp_servers`, `set_reasoning_effort`/`search_models`/`set_model`/`set_provider`, and connector list/get/connect/disconnect tools.
+
+### What's Changed
+
+* refactor(capabilities): state when repo_map and repo_symbols are unavailable ([#695](https://github.com/everruns/yolop/pull/695)) by @chaliy
+* feat(deps): adopt upstream v0.25.0 cone batch ([#694](https://github.com/everruns/yolop/pull/694)) by @chaliy
+* feat(capabilities): unify MCP, provider, and coordination names behind CLI routes ([#693](https://github.com/everruns/yolop/pull/693)) by @chaliy
+* chore(ci): parallelize live-smoke across providers ([#692](https://github.com/everruns/yolop/pull/692)) by @chaliy
+* feat(sessions): replace search_sessions with sessions CLI ([#691](https://github.com/everruns/yolop/pull/691)) by @chaliy
+* feat(env-context): first-class entries with --env-context flag and Paseo detection ([#690](https://github.com/everruns/yolop/pull/690)) by @chaliy
+* feat(coordination): root-managed cancellation and automatic conflict choice ([#689](https://github.com/everruns/yolop/pull/689)) by @chaliy
+* fix(mcp): stop advertising /mcp when the command is unknown ([#688](https://github.com/everruns/yolop/pull/688)) by @chaliy
+* fix(runtime): prefer advertised reasoning-effort scales, keep curated registry as fallback ([#687](https://github.com/everruns/yolop/pull/687)) by @chaliy
+* fix(runtime): surface OpenRouter account gates as links and redirects ([#686](https://github.com/everruns/yolop/pull/686)) by @chaliy
+* MCP mutations go through CLI with auto-reload ([#685](https://github.com/everruns/yolop/pull/685)) by @chaliy
+* refactor(capabilities): merge control-plane and domain tags into one block ([#684](https://github.com/everruns/yolop/pull/684)) by @chaliy
+* fix(approval): make a soft-approval pause a tool call, and let /ship merge ([#683](https://github.com/everruns/yolop/pull/683)) by @chaliy
+* fix(models): strip pinned effort from model option names ([#682](https://github.com/everruns/yolop/pull/682)) by @chaliy
+* fix(capabilities): wrap attribution prompt in capability tags ([#681](https://github.com/everruns/yolop/pull/681)) by @chaliy
+* fix(runtime): order control-plane before agent-instructions ([#680](https://github.com/everruns/yolop/pull/680)) by @chaliy
+* fix(prompt): avoid seam and other LLM-isms in output ([#679](https://github.com/everruns/yolop/pull/679)) by @chaliy
+* fix(capabilities): remove duplicate capability tags from system prompt ([#678](https://github.com/everruns/yolop/pull/678)) by @chaliy
+* feat(mcp): add yolop mcp login command ([#677](https://github.com/everruns/yolop/pull/677)) by @chaliy
+* feat(runtime): guide users through OpenRouter attestation gate ([#676](https://github.com/everruns/yolop/pull/676)) by @chaliy
+* fix(runtime): give host-built turns the model's reasoning level ([#675](https://github.com/everruns/yolop/pull/675)) by @chaliy
+* fix(tui): support mouse clicks in setup option pickers ([#674](https://github.com/everruns/yolop/pull/674)) by @chaliy
+* fix(runtime): judge a repaired turn by the effort it sent ([#673](https://github.com/everruns/yolop/pull/673)) by @chaliy
+* chore(deps): bump dirs from 6.0.0 to 7.0.0 ([#669](https://github.com/everruns/yolop/pull/669)) by @dependabot
+* chore(deps): bump jsonschema from 0.52.1 to 0.55.0 ([#668](https://github.com/everruns/yolop/pull/668)) by @dependabot
+* chore(deps): bump the cargo-minor-and-patch group across 1 directory with 2 updates ([#667](https://github.com/everruns/yolop/pull/667)) by @dependabot
+
+**Full Changelog**: https://github.com/everruns/yolop/compare/v0.17.3...v0.18.0
+
 ## [0.17.3] - 2026-09-10
 
 ### Highlights
