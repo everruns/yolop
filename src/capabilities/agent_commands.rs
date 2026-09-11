@@ -243,13 +243,25 @@ impl Tool for RunCommandTool {
     }
 
     fn description(&self) -> &str {
-        "Execute any slash command this session registers, on behalf of a natural-language user \
-         request: `setup` (`command: setup`, `args: [reauthenticate, codex_browser]`), \
-         `background`, `undo`, `redo`, `rewind`, `goal`, and in the terminal also help, tools, \
-         mcp, cwd, status, model, effort, clear, and quit. Use `command: help` to list the live \
-         command set; an unknown name returns the available ones. Accepts command names with or \
-         without the leading slash; `exit` is an alias for `quit`. Skill commands activate by \
-         prompt and `shell` is typed-only, so neither runs here."
+        // Terminal-only commands (help, tools, mcp, ...) exist only when a host UI
+        // is attached. ACP and --print omit ClientCommandsCapability, so naming
+        // them here prompts a doomed run_command that fails with unknown command.
+        if self.ui.is_some() {
+            "Execute any slash command this session registers, on behalf of a natural-language user \
+             request: `setup` (`command: setup`, `args: [reauthenticate, codex_browser]`), \
+             `background`, `undo`, `redo`, `rewind`, `goal`, and in the terminal also `help`, `tools`, \
+             `mcp`, `cwd`, `status`, `model`, `effort`, `clear`, and `quit`. Use `command: help` to list the live \
+             command set; an unknown name returns the available ones. Accepts command names with or \
+             without the leading slash; `exit` is an alias for `quit`. Skill commands activate by \
+             prompt and `shell` is typed-only, so neither runs here."
+        } else {
+            "Execute any slash command this session registers, on behalf of a natural-language user \
+             request: `setup` (`command: setup`, `args: [reauthenticate, codex_browser]`), \
+             `background`, `undo`, `redo`, `rewind`, `goal`, and whatever else this session registers. \
+             Use `command: help` to list the live command set; an unknown name returns the available \
+             ones. Accepts command names with or without the leading slash. Skill commands activate \
+             by prompt and `shell` is typed-only, so neither runs here."
+        }
     }
 
     fn parameters_schema(&self) -> Value {
@@ -261,14 +273,23 @@ impl Tool for RunCommandTool {
                 // live registry validates the name at execution time.
                 "command": {
                     "type": "string",
-                    "description": "Slash command name, with or without the leading slash, \
-                                    e.g. `setup`, `background`, `mcp`, `model`. Use `help` to list them."
+                    "description": if self.ui.is_some() {
+                        "Slash command name, with or without the leading slash, \
+                         e.g. `setup`, `background`, `mcp`, `model`. Use `help` to list them."
+                    } else {
+                        "Slash command name, with or without the leading slash, \
+                         e.g. `setup`, `background`. Use `help` to list them."
+                    }
                 },
                 "args": {
                     "type": "array",
                     "items": { "type": "string" },
-                    "description": "Ordered command arguments, e.g. [`reload`] for /mcp, \
-                                    [`openai/gpt-5.4`] for /model, or [`reauthenticate`, `codex_browser`] for /setup."
+                    "description": if self.ui.is_some() {
+                        "Ordered command arguments, e.g. [`reload`] for /mcp, \
+                         [`openai/gpt-5.4`] for /model, or [`reauthenticate`, `codex_browser`] for /setup."
+                    } else {
+                        "Ordered command arguments, e.g. [`reauthenticate`, `codex_browser`] for /setup."
+                    }
                 }
             },
             "required": ["command"],
@@ -719,5 +740,41 @@ mod tests {
         assert!(result.is_success(), "tool result: {result:?}");
         assert_eq!(dispatch.executed(), vec![("quit".to_string(), None)]);
         assert!(ui.take().is_empty());
+    }
+
+    /// Without a host UI (ACP, --print) ClientCommandsCapability is omitted, so
+    /// the tool description must not name terminal-only commands like /mcp.
+    /// Naming them prompts a doomed run_command that fails with unknown command.
+    #[tokio::test]
+    async fn run_command_description_is_host_aware() {
+        let headless = headless_tool(RecordingDispatch::registry());
+        let terminal = terminal_tool(
+            RecordingDispatch::registry(),
+            Arc::new(RecordingUi::default()),
+        );
+
+        for name in ["mcp", "/mcp", "/model", "/tools", "/cwd"] {
+            assert!(
+                !headless.description().contains(name),
+                "headless description must not advertise {name}: {}",
+                headless.description()
+            );
+        }
+        assert!(
+            headless.description().contains("Use `command: help`"),
+            "headless description must still point at the live list"
+        );
+        let schema = headless.parameters_schema();
+        let schema_text = serde_json::to_string(&schema).expect("schema serializes");
+        assert!(
+            !schema_text.contains("/mcp") && !schema_text.contains("`mcp`"),
+            "headless schema must not use /mcp examples: {schema_text}"
+        );
+
+        assert!(
+            terminal.description().contains("`mcp`"),
+            "terminal description keeps the /mcp path: {}",
+            terminal.description()
+        );
     }
 }
