@@ -43,12 +43,14 @@ reasoning private. Naming an effort is therefore the fix available to Yolop, and
 The scale `/effort` offers, and the scale an explicitly requested effort is
 validated against, come from the first source that describes the model:
 
-1. **The curated registry** (plus Yolop's local profile overrides). Authoritative
-   wherever it speaks: it is reviewed data about a specific model.
-2. **What the provider advertised at discovery.** Gateways describe their own
-   catalog: OpenRouter's `/models` carries `supported_parameters`, and its driver
-   turns that into a profile per model. This is how a model the registry has
-   never seen still gets a scale.
+1. **What the provider advertised at discovery.** Gateways describe their own
+   catalog: OpenRouter's `/models` carries `supported_parameters` plus a
+   `reasoning` block naming the actual effort levels (`supported_efforts`) and
+   the default. The gateway catalog is what knows a model's real scale, so the
+   advertisement wins wherever one is on record.
+2. **The curated registry** (plus Yolop's local profile overrides). Reviewed
+   data about a specific model, and the fallback for models with nothing
+   advertised on record.
 3. **Yolop's reasoning-required families.** Model families whose endpoints reject
    a turn carrying no reasoning, listed by family prefix so a new point release
    or pricing tier is covered the day it ships rather than at the next dependency
@@ -57,12 +59,23 @@ validated against, come from the first source that describes the model:
    reached through a gateway that requires it and through its vendor's own API
    that does not is described once, for the surface that requires it.
 
-Each layer only fills what the one above left empty. Discovery never overrides a
-registry answer, and Yolop's own metadata never overrides either.
+Each layer only fills what the one above left empty. The registry never
+overrides an advertisement, and Yolop's own metadata never overrides either.
+
+Driver mappings bound layer 1: `everruns-openrouter 0.18.3` maps every
+reasoning model to fixed low/medium/high and drops the catalog's
+`reasoning.supported_efforts`, so `catalog_scale_override` in
+`src/runtime/discovered_profiles.rs` carries the hand-verified scale for the
+affected models (currently only `meta/muse-spark-1.3-contributor`: minimal,
+low, medium, high, xhigh, default medium). It applies only while the recorded
+advertisement is still exactly the driver's generic scale, so it yields the
+moment the driver maps the real levels. `max` stays unoffered until
+`ReasoningEffort` grows a variant for it. Re-verify against OpenRouter
+`/models` before extending the table.
 
 ### Offering a level is not choosing one
 
-Only layers 1 and 3 supply the effort Yolop selects by itself for a model the
+Only layers 2 and 3 supply the effort Yolop selects by itself for a model the
 user has given none. A provider catalog saying a model *accepts* efforts is not
 the same as its endpoint needing one, and sending a level the user never chose
 changes how a model behaves whose own default is fine. So a discovered scale
