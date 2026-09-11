@@ -396,7 +396,7 @@ impl Session {
             if !response.success
                 && let Some(err) = &response.error
             {
-                out.extend(turn_failure_lines(err, model.reasoning_effort().as_deref()));
+                out = failed_turn_transcript(out, err, model.reasoning_effort().as_deref());
             }
             let _ = tx.send(TurnEvent::Lines(out));
             let success = response.success;
@@ -467,35 +467,48 @@ impl Session {
     }
 }
 
-/// Drain any persisted events (from `runtime.events()`) that the broadcast
-/// receiver may have missed — used after a `Lagged` recv error and once more at
-/// end-of-turn so the transcript is never missing tool/reason completion lines.
-/// How a failed turn reads in the transcript: the provider's own message, plus,
-/// when the failure is one a control can fix, the control that fixes it. A
-/// provider that mandates reasoning states it in prose the user cannot act on.
-fn turn_failure_lines(error: &str, current_effort: Option<&str>) -> Vec<ChatLine> {
-    let mut lines = vec![ChatLine {
+/// Actionable follow-ups for a failed turn: a control (`/effort`) or an
+/// OpenRouter account/policy page the user can open. Shared by the TUI,
+/// `--print`, and ACP so every host names the same way out.
+pub(crate) fn turn_failure_hints(error: &str, current_effort: Option<&str>) -> Vec<String> {
+    let mut hints = Vec::new();
+    if let Some(hint) = reasoning::reasoning_error_hint(error, current_effort) {
+        hints.push(hint);
+    }
+    // Stopgap classifiers for OpenRouter account gates. Move these behind
+    // the upstream structured error once everruns-openrouter reports the
+    // gates as first-class kinds instead of JSON strings.
+    hints.extend(attestation::openrouter_error_hints(error));
+    hints
+}
+
+/// How a failed turn reads in the transcript: drop a generic everruns
+/// apology when a real hint exists, then the way out (Assistant, so compact
+/// work and markdown links both see it), then the provider's own message.
+fn failed_turn_transcript(
+    assistant: Vec<ChatLine>,
+    error: &str,
+    current_effort: Option<&str>,
+) -> Vec<ChatLine> {
+    let hints = turn_failure_hints(error, current_effort);
+    let mut lines = assistant;
+    if !hints.is_empty() {
+        lines.retain(|line| !attestation::is_generic_provider_apology(&line.text));
+        lines.extend(hints.into_iter().map(|text| ChatLine {
+            author: Author::Assistant,
+            text,
+        }));
+    }
+    lines.push(ChatLine {
         author: Author::System,
         text: format!("turn error: {error}"),
-    }];
-    if let Some(hint) = reasoning::reasoning_error_hint(error, current_effort) {
-        lines.push(ChatLine {
-            author: Author::System,
-            text: hint,
-        });
-    }
-    // Stopgap guidance for the OpenRouter attestation gate. Move this behind
-    // the upstream structured error once everruns-openrouter reports the
-    // gate as a first-class kind instead of a JSON string.
-    if let Some(hint) = attestation::attestation_error_hint(error) {
-        lines.push(ChatLine {
-            author: Author::System,
-            text: hint,
-        });
-    }
+    });
     lines
 }
 
+/// Drain any persisted events (from `runtime.events()`) that the broadcast
+/// receiver may have missed — used after a `Lagged` recv error and once more at
+/// end-of-turn so the transcript is never missing tool/reason completion lines.
 async fn catch_up_events(
     handles: &RuntimeHandles,
     session_id: SessionId,
@@ -695,27 +708,28 @@ mod tests {
              (400 Bad Request): {\"error\":{\"message\":\"Reasoning is mandatory for this \
              endpoint and cannot be disabled.\",\"code\":400}}";
 
-        let lines = turn_failure_lines(error, Some("low"));
+        let lines = failed_turn_transcript(Vec::new(), error, Some("low"));
 
-        assert_eq!(lines.len(), 2, "the error, then the way out: {lines:?}");
-        assert!(lines.iter().all(|line| line.author == Author::System));
-        assert!(lines[0].text.starts_with("turn error: "));
+        assert_eq!(lines.len(), 2, "the way out, then the error: {lines:?}");
+        assert_eq!(lines[0].author, Author::Assistant);
+        assert_eq!(lines[1].author, Author::System);
         assert!(
-            lines[1].text.contains("rejected reasoning effort `low`")
-                && lines[1].text.contains("/effort"),
+            lines[0].text.contains("rejected reasoning effort `low`")
+                && lines[0].text.contains("/effort"),
             "the hint names the rejected level and the control: {}",
-            lines[1].text
+            lines[0].text
         );
+        assert!(lines[1].text.starts_with("turn error: "));
 
         // Failures nothing in the UI can fix stay one line.
         assert_eq!(
-            turn_failure_lines("connection reset by peer", None).len(),
+            failed_turn_transcript(Vec::new(), "connection reset by peer", None).len(),
             1
         );
     }
 
-    /// The transcript an OpenRouter attestation gate leaves behind: the raw
-    /// error, then the way out with a clean confirm URL.
+    /// The transcript an OpenRouter attestation gate leaves behind: a labeled
+    /// confirm link the TUI can render, then the raw error for diagnosis.
     #[test]
     fn an_attestation_gate_names_the_missing_confirmation() {
         let error = "LLM error: provider 'openrouter': OpenAI Responses error \
@@ -723,19 +737,74 @@ mod tests {
             complete the following before use: 18+ age confirmation. Confirm at \
             https://openrouter.ai/settings/preferences.\\\",\\\"code\\\":403,\\\"metadata\\\":{\\\"missing_attestation_types\\\":[\\\"age_18plus\\\"]}}}\"";
 
-        let lines = turn_failure_lines(error, None);
-
-        assert_eq!(lines.len(), 2, "the error, then the way out: {lines:?}");
-        assert!(lines.iter().all(|line| line.author == Author::System));
-        assert!(lines[0].text.starts_with("turn error: "));
-        assert!(
-            lines[1].text.contains("age_18plus")
-                && lines[1]
-                    .text
-                    .contains("https://openrouter.ai/settings/preferences"),
-            "the hint names the gate and the confirm page: {}",
-            lines[1].text
+        let lines = failed_turn_transcript(
+            vec![ChatLine {
+                author: Author::Assistant,
+                text: "There is a misconfiguration with the AI provider. Please contact support."
+                    .into(),
+            }],
+            error,
+            None,
         );
+
+        assert_eq!(
+            lines.len(),
+            2,
+            "the apology is replaced by the way out: {lines:?}"
+        );
+        assert_eq!(lines[0].author, Author::Assistant);
+        assert_eq!(lines[1].author, Author::System);
+        assert!(
+            lines[0].text.contains("18+ age confirmation")
+                && lines[0].text.contains(
+                    "[OpenRouter preferences](https://openrouter.ai/settings/preferences)"
+                ),
+            "the hint names the gate and a labeled confirm page: {}",
+            lines[0].text
+        );
+        assert!(lines[1].text.starts_with("turn error: "));
+    }
+
+    /// The transcript an OpenRouter data-policy block leaves behind: a labeled
+    /// privacy-settings link, not a generic "try again later".
+    #[test]
+    fn a_guardrail_block_names_the_privacy_setting() {
+        let error = "LLM error: provider 'openrouter': OpenAI Responses API error \
+            (404 Not Found): {\"error\":{\"message\":\"0 endpoints out of 1 requested are \
+            available matching your guardrail restrictions and data policy. We removed them \
+            for the following reasons:\\nPaid model training violation (account settings): 1 \
+            endpoint excluded; configurable at https://openrouter.ai/settings/privacy\",\"code\":404,\
+            \"metadata\":{\"ineligibility_reasons\":[{\"reason\":\"paid-model-training-violation-by-account\",\
+            \"count\":1,\"configure_url\":\"https://openrouter.ai/settings/privacy\"}],\
+            \"failed_routing_step\":\"Filter by Guardrails\"}}";
+
+        let lines = failed_turn_transcript(
+            vec![ChatLine {
+                author: Author::Assistant,
+                text:
+                    "I encountered an error while processing your request. Please try again later."
+                        .into(),
+            }],
+            error,
+            None,
+        );
+
+        assert_eq!(
+            lines.len(),
+            2,
+            "the apology is replaced by the way out: {lines:?}"
+        );
+        assert_eq!(lines[0].author, Author::Assistant);
+        assert_eq!(lines[1].author, Author::System);
+        assert!(
+            lines[0].text.contains("paid-model training")
+                && lines[0].text.contains(
+                    "[OpenRouter privacy settings](https://openrouter.ai/settings/privacy)"
+                ),
+            "the hint names the policy and a labeled settings page: {}",
+            lines[0].text
+        );
+        assert!(lines[1].text.starts_with("turn error: "));
     }
 
     #[tokio::test]
