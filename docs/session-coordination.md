@@ -50,7 +50,7 @@ a running session, invoke `yolop coordination ...` directly through foreground
 Bash. The host recognizes that conservative command shape and carries a typed
 request to the live capability over the attached control channel.
 
-The CLI covers discovery, dispatch, completion, and worker availability:
+The CLI covers discovery, dispatch, completion, cancellation, and worker availability:
 
 ```bash
 yolop coordination list
@@ -58,6 +58,7 @@ yolop coordination list --json
 yolop coordination status
 yolop coordination dispatch --title Inspect parser --request Inspect parser behavior and add tests
 yolop coordination complete --status succeeded --summary Parser fixed --validation cargo test passed --artifact https://example.test/pr/1
+yolop coordination cancel --task-id <task-id> --reason Superseded by newer plan
 yolop coordination accept
 yolop coordination drain
 ```
@@ -76,7 +77,15 @@ another session by supplying a session ID.
 atomically and creates a `session_dispatch` task in the coordinator's existing
 task registry. The worker receives an authenticated automatic prompt and must
 invoke `yolop coordination complete` from its own attached session. Completion
-settles the task and wakes the coordinator with the durable result.
+settles the task and wakes the coordinator with the durable result. Every dispatch
+records parent (coordinator) and child (worker) session IDs in the success
+payload and status views. When no worker is available, dispatch fails instead
+of creating an untracked process: spawn one with the `spawn_agent` tool (same
+project, accepting coordination work) or start a session with
+`yolop coordination accept`, then retry dispatch. The owning coordinator can
+cancel its running assignment with `yolop coordination cancel`, which fails
+the coordinator task, releases the worker for new work, and delivers a one-shot
+cancellation inbox message to the worker.
 
 If no eligible worker is live, dispatch fails visibly. This version does not
 launch a new operating-system process. Process supervision and pool sizing are

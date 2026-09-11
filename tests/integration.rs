@@ -113,6 +113,7 @@ fn coordination_cli_advertises_dispatch_and_completion() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("dispatch"), "stdout={stdout}");
     assert!(stdout.contains("complete"), "stdout={stdout}");
+    assert!(stdout.contains("cancel"), "stdout={stdout}");
     assert!(
         stdout.contains("yolop coordination dispatch --title 'Add parser tests'"),
         "stdout={stdout}"
@@ -2434,7 +2435,7 @@ fn tui_bang_yolop_extensions_uses_attached_control() {
     assert!(tui.wait_or_kill(Duration::from_secs(3)).success());
 }
 
-/// The `yolop` prompt block tells the agent to run `yolop <sub> --help`
+/// The control-plane prompt block tells the agent to run `yolop <sub> --help`
 /// for the grammar, and that invocation went through the attached path and
 /// failed with "attached control failed: expected value at line 1 column 1":
 /// clap prints help inside the child, which never sends a control frame.
