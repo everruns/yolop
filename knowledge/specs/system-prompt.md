@@ -107,8 +107,11 @@ the model's call.
 
 Execution constraints follow the same ownership rule. The trailing
 `<environment_context>` reports the effective `sandbox_mode` and
-`network_access`; stable prompt prose must not make categorical claims about
-either because both vary by host and configuration.
+`network_access` as first-class tags, plus the connecting editor as `editor`
+in ACP sessions (`paseo/dev`, another client name, or `unknown`) and any
+operator `--env-context KEY=VALUE` entries. Stable prompt prose must not make
+categorical claims about any of these because all vary by host, client, and
+configuration.
 
 Keep these fields *static per host*. Live values that change mid-session, the
 terminal width, the current scroll position, would rewrite the prefix on every

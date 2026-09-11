@@ -1,5 +1,17 @@
 # Knowledge Log
 
+## 2026-09-11, First-class environment context and Paseo detection
+
+Environment context entries now render as first-class tags
+(`<sandbox_mode>`, `<network_access>`, `<editor>`, plus operator
+`--env-context KEY=VALUE` entries) instead of
+`<contribution name=...>` wrappers. ACP `initialize` detects the editor
+identity from `client_info.name` (Paseo sends `Paseo`), then `_meta` vendor
+keys, then `YOLOP_ACP_CLIENT`, and every session renders it as the reserved
+`editor` entry (`paseo/dev`, or `unknown`). CLI defaults apply in all modes;
+protocol detection wins on the `editor` key. Specs: `system-prompt.md`,
+`acp.md`.
+
 ## 2026-09-10, A soft-approval pause is a tool call
 
 - [Approval](specs/approval.md): pausing before a critical action now means

@@ -159,9 +159,21 @@ struct Cli {
     /// the TUI. Editors such as Zed spawn `yolop --acp` and drive it as an
     /// external agent. Builds one runtime per ACP session (cwd comes from the
     /// client); the `-C/--cwd`, `--print`, and `--session` flags are
-    /// ignored in this mode. See `knowledge/specs/acp.md`.
+    /// ignored in this mode. `--env-context` still applies as session
+    /// defaults. See `knowledge/specs/acp.md`.
     #[arg(long, conflicts_with = "print")]
     acp: bool,
+
+    /// Add an entry to the `<environment_context>` block of the system
+    /// prompt, as `KEY=VALUE`. Repeatable; on duplicate keys the last
+    /// occurrence wins. Keys must be 1-64 chars of `[A-Za-z0-9_.-]`
+    /// starting with a letter or `_`, and must not collide with fixed
+    /// capability fields (`cwd`, `shell`, `client_ui`, ...). Values appear
+    /// in the prompt in cleartext, so do not pass secrets unless intended.
+    /// Applies to interactive, `--print`, and `--acp` runs alike; in ACP
+    /// sessions the protocol-detected `editor` entry wins over this flag.
+    #[arg(long = "env-context", global = true, value_name = "KEY=VALUE")]
+    env_context: Vec<String>,
 
     /// Offer the loopback provider setup page to ACP clients for this run: an
     /// extra authentication method, plus a link posted when a session opens
@@ -840,6 +852,10 @@ async fn async_main(crash_reporter: &crash_report::CrashReporter) -> Result<()> 
     for note in notes {
         eprintln!("yolop: {note}");
     }
+    // Operator environment context: repeatable KEY=VALUE, last wins on
+    // duplicate keys. Parse failures are hard errors in every mode.
+    let extra_environment_context = capabilities::host::merge_env_context_pairs(&cli.env_context)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     let resume_session_id = match cli.session.as_deref() {
         Some(raw) => Some(
@@ -873,6 +889,7 @@ async fn async_main(crash_reporter: &crash_report::CrashReporter) -> Result<()> 
             sessions_dir,
             sandbox_mode_override,
             setup_page,
+            extra_environment_context,
         )
         .await;
     }
@@ -907,6 +924,7 @@ async fn async_main(crash_reporter: &crash_report::CrashReporter) -> Result<()> 
             },
             initial_prompt: cli.print.clone(),
             sandbox_mode_override,
+            extra_environment_context,
             ..Default::default()
         },
     )
@@ -2854,6 +2872,7 @@ mod tests {
             print: None,
             images: vec![],
             acp: false,
+            env_context: vec![],
             config_dir: None,
             data_dir: None,
             acp_setup_page: false,
@@ -2967,6 +2986,7 @@ mod tests {
             print: None,
             images: vec![],
             acp: false,
+            env_context: vec![],
             config_dir: None,
             data_dir: None,
             acp_setup_page: false,

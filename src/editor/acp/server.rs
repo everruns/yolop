@@ -49,8 +49,8 @@ use super::bridge::{Translator, tool_kind};
 use super::modes;
 use super::protocol::{
     self, AgentCapabilities, AuthMethod, AuthenticateParams, AuthenticateResult, AvailableCommand,
-    AvailableCommandInput, ConfigOptionUpdate, CurrentModeUpdate, InitializeParams,
-    InitializeResult, LoadSessionParams, LoadSessionResult, McpCapabilities, McpServer,
+    AvailableCommandInput, ConfigOptionUpdate, CurrentModeUpdate, Implementation, InitializeParams,
+    InitializeResult, LoadSessionParams, LoadSessionResult, McpCapabilities, McpServer, Meta,
     NewSessionParams, NewSessionResult, PermissionOption, PermissionOptionKind, PromptCapabilities,
     PromptParams, PromptResult, RequestPermissionOutcome, RequestPermissionParams, SessionConfigId,
     SessionConfigOption, SessionConfigOptionCategory, SessionConfigSelectOption,
@@ -58,6 +58,9 @@ use super::protocol::{
     SetSessionConfigOptionResponse, SetSessionModeParams, SetSessionModeResult, StopReason,
     ToolCall, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind,
     UnstructuredCommandInput,
+};
+use crate::capabilities::host::{
+    ACP_CLIENT_ENV_OVERRIDE, EDITOR_CONTEXT_UNKNOWN, EditorClientIdentity,
 };
 
 /// How often the prompt loop wakes to check whether the turn task finished,
@@ -98,6 +101,52 @@ pub trait RuntimeFactory: Send + Sync + 'static {
         client_mcp_servers: ScopedMcpServers,
         tool_approver: Option<Arc<dyn ToolApprover>>,
     ) -> Result<BuiltRuntime>;
+
+    /// Record the editor identity from `initialize`, so later `session/new`
+    /// calls render the reserved `editor` context entry. The default is a
+    /// no-op, which leaves the entry at `unknown`.
+    fn note_client_identity(&self, _identity: EditorClientIdentity) {}
+}
+
+/// Detect the connecting editor for one ACP `initialize` call.
+/// Priority: `client_info.name`, then `_meta` vendor keys, then the
+/// `YOLOP_ACP_CLIENT` process env override (tests and manual launches).
+fn detect_client_identity(
+    client_info: Option<&Implementation>,
+    meta: Option<&Meta>,
+) -> EditorClientIdentity {
+    if let Some(info) = client_info {
+        let identity = EditorClientIdentity::new(&info.name, Some(&info.version));
+        if identity.raw_name != EDITOR_CONTEXT_UNKNOWN {
+            return identity;
+        }
+    }
+    if let Some(meta) = meta {
+        // Vendor-namespaced hints, e.g. `_meta: {"paseo": {"version": "x"}}`
+        // or `_meta: {"client": "paseo"}` from proxies that strip client_info.
+        for key in ["paseo", "client", "editor"] {
+            if let Some(value) = meta.get(key) {
+                let (name, version) = match value {
+                    serde_json::Value::String(name) => (name.as_str(), None),
+                    serde_json::Value::Object(map) => (
+                        map.get("name")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or(key),
+                        map.get("version").and_then(serde_json::Value::as_str),
+                    ),
+                    _ => continue,
+                };
+                let identity = EditorClientIdentity::new(name, version);
+                if identity.raw_name != EDITOR_CONTEXT_UNKNOWN {
+                    return identity;
+                }
+            }
+        }
+    }
+    std::env::var(ACP_CLIENT_ENV_OVERRIDE)
+        .ok()
+        .and_then(|raw| EditorClientIdentity::from_override(&raw))
+        .unwrap_or_else(EditorClientIdentity::unknown)
 }
 
 /// Translate the ACP `mcpServers` list into the runtime's scoped MCP config.
@@ -372,6 +421,9 @@ where
             {
                 let server = server.clone();
                 async move |params: InitializeParams, responder, _cx| {
+                    let identity =
+                        detect_client_identity(params.client_info.as_ref(), params.meta.as_ref());
+                    server.factory.note_client_identity(identity);
                     responder.respond(handle_initialize(params, server.factory.auth_methods()))
                 }
             },
@@ -1839,6 +1891,81 @@ mod tests {
             value["authMethods"].as_array().map(Vec::len),
             Some(2),
             "the setup page must not be advertised when it is off"
+        );
+    }
+
+    #[test]
+    fn detect_client_identity_prefers_client_info() {
+        let paseo: Implementation = serde_json::from_value(serde_json::json!({
+            "name": "Paseo",
+            "version": "dev",
+        }))
+        .expect("paseo client_info");
+        let identity = detect_client_identity(Some(&paseo), None);
+        assert!(identity.is_paseo);
+        assert_eq!(identity.context_value(), "paseo/dev");
+
+        let zed: Implementation = serde_json::from_value(serde_json::json!({
+            "name": "Zed",
+            "version": "1.0",
+        }))
+        .expect("zed client_info");
+        let identity = detect_client_identity(Some(&zed), None);
+        assert!(!identity.is_paseo);
+        assert_eq!(identity.context_value(), "zed/1.0");
+    }
+
+    #[test]
+    fn detect_client_identity_falls_back_to_meta() {
+        let mut meta = Meta::new();
+        meta.insert("paseo".to_string(), serde_json::json!({"version": "9.9"}));
+        let identity = detect_client_identity(None, Some(&meta));
+        assert!(identity.is_paseo);
+        assert_eq!(identity.context_value(), "paseo/9.9");
+
+        let mut meta = Meta::new();
+        meta.insert(
+            "client".to_string(),
+            serde_json::Value::String("zed".to_string()),
+        );
+        let identity = detect_client_identity(None, Some(&meta));
+        assert!(!identity.is_paseo);
+        assert_eq!(identity.context_value(), "zed");
+
+        // client_info wins over meta.
+        let zed: Implementation = serde_json::from_value(serde_json::json!({
+            "name": "Zed",
+            "version": "1.0",
+        }))
+        .expect("zed client_info");
+        let mut meta = Meta::new();
+        meta.insert("paseo".to_string(), serde_json::json!({"version": "9.9"}));
+        let identity = detect_client_identity(Some(&zed), Some(&meta));
+        assert_eq!(identity.context_value(), "zed/1.0");
+    }
+
+    #[test]
+    fn detect_client_identity_env_override_then_unknown() {
+        let key = crate::capabilities::host::ACP_CLIENT_ENV_OVERRIDE;
+        let prior = std::env::var(key).ok();
+        // SAFETY: single-threaded by test isolation; restored below.
+        unsafe {
+            std::env::set_var(key, "paseo:7.7");
+        }
+        assert_eq!(
+            detect_client_identity(None, None).context_value(),
+            "paseo/7.7"
+        );
+        // SAFETY: restoring the prior value before returning.
+        unsafe {
+            match prior {
+                Some(value) => std::env::set_var(key, value),
+                None => std::env::remove_var(key),
+            }
+        }
+        assert_eq!(
+            detect_client_identity(None, None),
+            EditorClientIdentity::unknown()
         );
     }
 
