@@ -32,12 +32,13 @@ impl Capability for McpCapability {
         Some("Extensibility")
     }
 
-    // No system-prompt contribution: mutations live on the command path
-    // (`yolop mcp ...`, `/mcp ...` via run_command), documented there.
+    // No system-prompt contribution: mutations live on the CLI command path
+    // (`yolop mcp ...` everywhere, `/mcp ...` terminal-only via run_command),
+    // documented there.
 
     fn tools(&self) -> Vec<Box<dyn Tool>> {
-        // Mutations are CLI-only (`yolop mcp ...` and `/mcp ...` reached through
-        // run_command). The model gets the read-only list; nothing here competes
+        // Mutations are CLI-only (`yolop mcp ...` everywhere, `/mcp ...`
+        // terminal-only reached through run_command). The model gets the read-only list; nothing here competes
         // with the command path, so there is no second reload story to forget.
         vec![Box::new(ListMcpServersTool {
             store: self.store.clone(),
