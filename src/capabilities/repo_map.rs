@@ -133,11 +133,16 @@ impl Tool for RepoMapTool {
         Some("Repo map")
     }
 
+    // Orientation note: without this, the model pages through large files with sed
+    // or shells out to grep for a first look. State the entry point explicitly:
+    // map first, then read the targeted regions.
     fn description(&self) -> &str {
         "Build a compact, grouped multi-language symbol map for the workspace or a subpath. \
          All arguments are optional; omit unused fields and omit `limit` for compact output. \
          The limit defaults to 50 without `query` and 200 with it; `max_file_bytes` defaults \
-         to 524288. Use this for broad orientation before targeted grep/read."
+         to 524288. Use this for broad orientation before targeted grep/read. \
+         Start here for unfamiliar code instead of paging through large files or \
+         shelling out for a first look."
     }
 
     fn parameters_schema(&self) -> Value {

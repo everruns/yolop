@@ -165,10 +165,13 @@ impl Tool for AstGrepTool {
         Some("AST grep")
     }
 
+    // Boundary note: the model reaches for shell grep/sed out of habit even for
+    // structural code tasks, so the description states the split explicitly:
+    // structural patterns here, plain text search for literals and docs.
     fn description(&self) -> &str {
         "Search workspace code with ast-grep structural patterns. Prefer this over repeated file \
          reads when locating functions, impl blocks, call shapes, field access, or repeated \
-         structural constructs. Supports Rust, Python, TypeScript/TSX, JavaScript/JSX, C#, Go, \
+         structural constructs. Choose it over line-oriented text search when matching code structure; for literal strings, comments, or docs, plain text search is more effective. Supports Rust, Python, TypeScript/TSX, JavaScript/JSX, C#, Go, \
          CSS, HTML, and Bash."
     }
 
