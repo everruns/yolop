@@ -1329,3 +1329,17 @@ wording, formatting, and link fixes do not need entries.
   rather than safetensors, and its chat template must emit JSON tool calls
   inside `<tool_call>`; the engine cannot parse the `<function=…>` XML variant,
   which disqualifies Qwen3-Coder.
+
+## 2026-09-10, Coordination gains root-managed cancellation
+
+- `session-coordination` stays routing only for process lifecycle: workers are
+  spawned outside the capability, for example with `spawn_agent`, and the
+  capability records parent (coordinator) and child (worker) session IDs on
+  every assignment.
+- New `coordination cancel` lets the owning coordinator fail its running
+  assignment, release the worker, and deliver a one-shot cancellation inbox
+  message to the worker. Completion stays worker to coordinator, cancellation
+  is coordinator to worker.
+- Dispatch failure now tells the root to spawn via `spawn_agent` (same
+  project, accepting coordination work) instead of suggesting a bare CLI
+  accept that would create an untracked process.

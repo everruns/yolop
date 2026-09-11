@@ -8,7 +8,11 @@ description: Defines local coordinator and worker session orchestration.
 
 Status: first local transport implemented. Live opt-in workers can receive
 durable assignments and return explicit completion to a coordinator. Worker
-process supervision is not yet owned by Yolop.
+processes are spawned and owned outside the capability (for example with the
+`spawn_agent` tool, which creates linked child sessions with their own
+history); the capability routes to those live workers, records parent and
+child session IDs on every assignment, and lets the owning coordinator manage
+running work with cancel.
 
 ## Ownership
 
@@ -35,15 +39,16 @@ profile is the intended way to define a standing coordinator or worker.
 The capability contributes no model tools. Coordinator and worker agents use
 the ordinary foreground Bash tool to invoke `yolop coordination ...`, matching
 extension administration and the shared attached-control contract. The
-contributed CLI covers `list`, `status`, `dispatch`, `complete`, `accept`, and
+contributed CLI covers `list`, `status`, `dispatch`, `complete`, `cancel`, `accept`, and
 `drain`; `/coordination` parses the same action grammar. Multiword payload
 fields consume unquoted words until the next option, preserving the control
 plane's conservative direct-invocation grammar.
 
 The attached host derives session identity and role. `dispatch` requires a
 coordinator or combined role, `complete` requires a worker or combined role and
-an active assignment, and availability changes operate only on the attached
-host. Detached execution is read-only and may only list presence. Attached
+an active assignment, `cancel` requires a coordinator or combined role and
+ownership of the running assignment, and availability changes operate only on
+the attached host. Detached execution is read-only and may only list presence. Attached
 lists are project-scoped; detached lists are an operator view across projects.
 
 ## Identity and selection
@@ -57,7 +62,9 @@ cannot select itself.
 Selection is deterministic after heartbeat ordering and reserves the worker
 with a compare-and-set update. An explicit target goes through the same checks.
 One worker therefore cannot accept two concurrent assignments even when two
-coordinators race.
+coordinators race. Each assignment records its owner as the parent session and
+its worker as the child session, so roots can list and manage their own
+children through status views and cancel.
 
 ## Protocol
 
