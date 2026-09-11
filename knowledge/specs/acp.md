@@ -35,9 +35,9 @@ ACP protocol version: **1** (integer).
 
 | Method | Direction | Behaviour |
 |--------|-----------|-----------|
-| `initialize` | client → agent | Negotiates protocol version and advertises agent capabilities. Echoes the client's version when supported, else advertises v1. |
+| `initialize` | client → agent | Negotiates protocol version and advertises agent capabilities. Echoes the client's version when supported, else advertises v1. Detects the editor identity from `client_info.name` (Paseo sends `Paseo`), then `_meta` vendor keys, then `YOLOP_ACP_CLIENT`; stored per connection and rendered as the reserved `editor` context entry (`paseo/dev`, or `unknown`) in every later session. |
 | `authenticate` | client → agent | Runs an advertised agent-handled login. Yolop currently advertises browser-based ChatGPT/Codex OAuth and OpenRouter PKCE login; other API-key providers continue to use inherited environment variables or `/setup token`. |
-| `session/new` | client → agent | Builds a fresh runtime rooted at the client-supplied `cwd`; returns the everruns session id as the ACP `sessionId`. |
+| `session/new` | client → agent | Builds a fresh runtime rooted at the client-supplied `cwd`; returns the everruns session id as the ACP `sessionId`. CLI `--env-context KEY=VALUE` entries apply as session defaults; the detected `editor` entry wins on its reserved key. |
 | `session/load` | client → agent | Rehydrates an existing yolop JSONL session for the supplied `sessionId` and `cwd`, replays persisted conversation history as `session/update` notifications, and then returns success. |
 | `session/prompt` | client → agent | Runs one turn, or executes a recognised `/command`; streams `session/update`s, and resolves a `stopReason`. |
 | `session/cancel` | client → agent | Notification. Abandons the in-flight turn for that session and resolves the prompt with `stopReason: "cancelled"`. |

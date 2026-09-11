@@ -3411,6 +3411,14 @@ pub struct BuildOptions {
     /// elapsed budget; production leaves this `None` and uses
     /// [`provider_recovery_config`].
     pub provider_retry_config: Option<everruns_provider::llm_retry::LlmRetryConfig>,
+    /// Operator-defined environment context entries (`--env-context
+    /// KEY=VALUE`). Applied over sandbox builtins; the ACP editor identity
+    /// (below) wins over these on the reserved `editor` key.
+    pub extra_environment_context: Vec<(String, String)>,
+    /// Detected ACP editor identity, rendered as the reserved `editor`
+    /// context entry. Set per session by the ACP host; `None` everywhere
+    /// else, which omits the entry entirely.
+    pub editor_context_value: Option<String>,
 }
 
 impl Default for BuildOptions {
@@ -3427,6 +3435,8 @@ impl Default for BuildOptions {
             tool_approver: None,
             provider_stall_timeout: None,
             provider_retry_config: None,
+            extra_environment_context: Vec::new(),
+            editor_context_value: None,
         }
     }
 }
@@ -3571,6 +3581,22 @@ fn set_sandbox_environment_context(
 ) {
     registry.set("sandbox_mode", mode.as_str());
     registry.set("network_access", crate::exec::sandbox::network_access(mode));
+}
+
+/// Merge operator and protocol entries over the sandbox builtins. Later
+/// sources win: CLI `--env-context` defaults over builtins, then the
+/// protocol-detected `editor` value over both on its reserved key.
+fn apply_extra_environment_context(
+    registry: &EnvironmentContextRegistry,
+    extras: &[(String, String)],
+    editor_context_value: Option<&str>,
+) {
+    for (key, value) in extras {
+        registry.set(key, value);
+    }
+    if let Some(editor) = editor_context_value {
+        registry.set(crate::capabilities::host::EDITOR_CONTEXT_KEY, editor);
+    }
 }
 
 pub async fn build_with_options(
@@ -3919,6 +3945,11 @@ pub async fn build_with_options(
     let tool_reveals = Arc::new(RevealedTools::new());
     let environment_context = EnvironmentContextRegistry::default();
     set_sandbox_environment_context(&environment_context, sandbox_mode);
+    apply_extra_environment_context(
+        &environment_context,
+        &options.extra_environment_context,
+        options.editor_context_value.as_deref(),
+    );
     capabilities.register(ToolRevealCapability::new(tool_reveals.clone()));
     capabilities.register(SessionCapability);
     capabilities.register(AgentInstructionsCapability);
@@ -9331,6 +9362,39 @@ mod tests {
             context.get("network_access").map(String::as_str),
             Some("enabled")
         );
+    }
+
+    #[test]
+    fn extra_environment_context_precedence() {
+        let registry = EnvironmentContextRegistry::default();
+        set_sandbox_environment_context(&registry, crate::config::SandboxMode::ReadOnly);
+        apply_extra_environment_context(
+            &registry,
+            &[
+                ("team".to_string(), "payments".to_string()),
+                ("editor".to_string(), "cli-default".to_string()),
+            ],
+            Some("paseo/dev"),
+        );
+
+        let context = registry.snapshot();
+        assert_eq!(context.get("team").map(String::as_str), Some("payments"));
+        // Protocol detection wins on the reserved key.
+        assert_eq!(context.get("editor").map(String::as_str), Some("paseo/dev"));
+        // Builtins survive alongside extras.
+        assert_eq!(
+            context.get("sandbox_mode").map(String::as_str),
+            Some("read-only")
+        );
+    }
+
+    #[test]
+    fn extra_environment_context_without_editor_omits_entry() {
+        let registry = EnvironmentContextRegistry::default();
+        set_sandbox_environment_context(&registry, crate::config::SandboxMode::ReadOnly);
+        apply_extra_environment_context(&registry, &[], None);
+
+        assert!(!registry.snapshot().contains_key("editor"));
     }
 
     #[test]

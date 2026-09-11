@@ -26,6 +26,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 
 use crate::capabilities::ClientUiContext;
+use crate::capabilities::host::EditorClientIdentity;
 use crate::config::{SandboxMode, SettingsStore};
 use crate::runtime::session_log::{legacy_session_log_path, session_dir_path, session_log_path};
 use crate::runtime::{BuildOptions, BuiltRuntime, ProviderChoice, build_with_options};
@@ -76,6 +77,11 @@ struct ConfigRuntimeFactory {
     sandbox_mode_override: Option<SandboxMode>,
     /// `None` when the setup page is off, so nothing can bind a listener.
     setup_page: Option<setup_page::SetupPageService>,
+    /// Operator `--env-context` defaults, shared across sessions.
+    extra_environment_context: Vec<(String, String)>,
+    /// Editor identity from `initialize`, shared across sessions on this
+    /// connection. `None` until the client initializes.
+    client_identity: std::sync::Mutex<Option<EditorClientIdentity>>,
 }
 
 #[async_trait]
@@ -144,6 +150,17 @@ impl RuntimeFactory for ConfigRuntimeFactory {
         client_mcp_servers: ScopedMcpServers,
         tool_approver: Option<Arc<dyn crate::capabilities::ToolApprover>>,
     ) -> Result<BuiltRuntime> {
+        // ACP sessions always carry the editor entry: detected identity, or
+        // `unknown` when the client never identified itself. It wins over a
+        // CLI `--env-context editor=...` default on the reserved key.
+        let editor_context_value = Some(
+            self.client_identity
+                .lock()
+                .expect("acp client identity poisoned")
+                .clone()
+                .unwrap_or_else(EditorClientIdentity::unknown)
+                .context_value(),
+        );
         build_with_options(
             cwd,
             self.provider.clone(),
@@ -155,10 +172,19 @@ impl RuntimeFactory for ConfigRuntimeFactory {
                 client_mcp_servers,
                 tool_approver,
                 sandbox_mode_override: self.sandbox_mode_override,
+                extra_environment_context: self.extra_environment_context.clone(),
+                editor_context_value,
                 ..BuildOptions::default()
             },
         )
         .await
+    }
+
+    fn note_client_identity(&self, identity: EditorClientIdentity) {
+        *self
+            .client_identity
+            .lock()
+            .expect("acp client identity poisoned") = Some(identity);
     }
 }
 
@@ -171,6 +197,7 @@ pub async fn run_stdio(
     sessions_dir: PathBuf,
     sandbox_mode_override: Option<SandboxMode>,
     setup_page: bool,
+    extra_environment_context: Vec<(String, String)>,
 ) -> Result<()> {
     let factory = Arc::new(ConfigRuntimeFactory {
         provider,
@@ -178,6 +205,8 @@ pub async fn run_stdio(
         settings,
         sessions_dir,
         sandbox_mode_override,
+        extra_environment_context,
+        client_identity: std::sync::Mutex::new(None),
     });
     serve(tokio::io::stdin(), tokio::io::stdout(), factory).await
 }

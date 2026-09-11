@@ -61,6 +61,157 @@ impl EnvironmentContextRegistry {
     }
 }
 
+/// Registry key carrying the connecting editor identity in ACP sessions.
+/// Set from protocol detection, never from fixed capability fields.
+pub(crate) const EDITOR_CONTEXT_KEY: &str = "editor";
+/// Value emitted for [`EDITOR_CONTEXT_KEY`] when the editor is unknown.
+pub(crate) const EDITOR_CONTEXT_UNKNOWN: &str = "unknown";
+/// Process env override for the editor identity, used only when the ACP
+/// handshake carries no identity. Format is `name[:version]`.
+pub(crate) const ACP_CLIENT_ENV_OVERRIDE: &str = "YOLOP_ACP_CLIENT";
+
+/// Fixed capability field names. CLI `--env-context` keys colliding with
+/// these are rejected so rendering can never emit a duplicate tag.
+const RESERVED_ENV_CONTEXT_KEYS: &[&str] = &[
+    "cwd",
+    "client_ui",
+    "ui_capabilities",
+    "repo_root",
+    "git_worktree",
+    "shell",
+    "current_date",
+    "timezone",
+    "git_repo",
+    "git_user",
+    "git_email",
+    "git_current_branch",
+];
+
+/// Check a registry key renders as a first-class `<key>value</key>` tag.
+/// Keys double as XML element names, so they must be valid element names
+/// and must not collide with fixed capability fields.
+pub(crate) fn is_valid_env_context_key(key: &str) -> bool {
+    if key.is_empty() || key.len() > 64 || RESERVED_ENV_CONTEXT_KEYS.contains(&key) {
+        return false;
+    }
+    let mut chars = key.chars();
+    match chars.next() {
+        Some(first) if first.is_ascii_alphabetic() || first == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+}
+
+/// Parse one `--env-context KEY=VALUE` argument. Values land in the system
+/// prompt in cleartext, so callers must surface that in `--help` text.
+pub(crate) fn parse_env_context_pair(arg: &str) -> Result<(String, String), String> {
+    let (key, value) = arg
+        .split_once('=')
+        .ok_or_else(|| format!("invalid --env-context {arg:?}: expected KEY=VALUE"))?;
+    if !is_valid_env_context_key(key) {
+        return Err(format!(
+            "invalid --env-context key {key:?}: use 1-64 chars of [A-Za-z0-9_.-] starting with a letter or '_', avoiding reserved capability fields"
+        ));
+    }
+    if value.is_empty() {
+        return Err(format!(
+            "invalid --env-context {arg:?}: value must not be empty"
+        ));
+    }
+    Ok((key.to_owned(), value.to_owned()))
+}
+
+/// Merge parsed `--env-context` pairs in order; on duplicate keys the last
+/// occurrence wins. Returns the first parse error encountered.
+pub(crate) fn merge_env_context_pairs(raw: &[String]) -> Result<Vec<(String, String)>, String> {
+    let mut merged: Vec<(String, String)> = Vec::new();
+    for arg in raw {
+        let (key, value) = parse_env_context_pair(arg)?;
+        if let Some(existing) = merged.iter_mut().find(|(k, _)| *k == key) {
+            existing.1 = value;
+        } else {
+            merged.push((key, value));
+        }
+    }
+    Ok(merged)
+}
+
+/// Case-insensitive match for the Paseo ACP client name.
+pub(crate) fn is_paseo_client_name(name: &str) -> bool {
+    name.eq_ignore_ascii_case("paseo")
+}
+
+/// Format an editor context value as `{lowercased_name}[/{version}]`.
+pub(crate) fn format_editor_context_value(raw_name: &str, version: Option<&str>) -> String {
+    let name = raw_name.trim().to_lowercase();
+    if name.is_empty() {
+        return EDITOR_CONTEXT_UNKNOWN.to_owned();
+    }
+    match version.map(str::trim).filter(|v| !v.is_empty()) {
+        Some(version) => format!("{name}/{version}"),
+        None => name,
+    }
+}
+
+/// Editor identity detected for one ACP connection.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct EditorClientIdentity {
+    /// Lowercased client name, or `"unknown"` when undetected.
+    pub raw_name: String,
+    pub version: Option<String>,
+    pub is_paseo: bool,
+}
+
+impl EditorClientIdentity {
+    pub(crate) fn unknown() -> Self {
+        Self {
+            raw_name: EDITOR_CONTEXT_UNKNOWN.to_owned(),
+            version: None,
+            is_paseo: false,
+        }
+    }
+
+    pub(crate) fn new(raw_name: &str, version: Option<&str>) -> Self {
+        let name = raw_name.trim().to_lowercase();
+        if name.is_empty() {
+            return Self::unknown();
+        }
+        Self {
+            is_paseo: is_paseo_client_name(&name),
+            raw_name: name,
+            version: version
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(str::to_owned),
+        }
+    }
+
+    /// Parse a `YOLOP_ACP_CLIENT` override of the form `name[:version]`.
+    pub(crate) fn from_override(raw: &str) -> Option<Self> {
+        let raw = raw.trim();
+        if raw.is_empty() {
+            return None;
+        }
+        let (name, version) = match raw.split_once(':') {
+            Some((name, version)) => (name, Some(version)),
+            None => (raw, None),
+        };
+        let identity = Self::new(name, version);
+        if identity.raw_name == EDITOR_CONTEXT_UNKNOWN {
+            None
+        } else {
+            Some(identity)
+        }
+    }
+
+    pub(crate) fn context_value(&self) -> String {
+        if self.raw_name == EDITOR_CONTEXT_UNKNOWN {
+            return EDITOR_CONTEXT_UNKNOWN.to_owned();
+        }
+        format_editor_context_value(&self.raw_name, self.version.as_deref())
+    }
+}
+
 pub(crate) struct CodingCliEnvironmentCapability {
     repo_root: PathBuf,
     active_root: Arc<RwLock<PathBuf>>,
@@ -190,8 +341,8 @@ impl Capability for CodingCliEnvironmentCapability {
   <git_user>Git user name</git_user>
   <git_email>Git user email</git_email>
   <git_current_branch>branch or short commit</git_current_branch>
-  <contribution name=\"sandbox_mode\">workspace-write</contribution>
-  <contribution name=\"network_access\">disabled</contribution>
+  <sandbox_mode>workspace-write</sandbox_mode>
+  <network_access>disabled</network_access>
 </environment_context>"
                 .to_string(),
         )
@@ -258,12 +409,13 @@ fn render_environment_context(context: &EnvironmentContext) -> String {
     {
         push_xml_field(&mut out, "git_current_branch", value);
     }
+    // Registry keys double as tag names, so only valid element names render.
+    // CLI parsing rejects the rest; skipping here keeps a poisoned registry
+    // from producing malformed prompt XML.
     for (key, value) in &context.contributions {
-        out.push_str("  <contribution name=\"");
-        out.push_str(&xml_escape(key));
-        out.push_str("\">");
-        out.push_str(&xml_escape(value));
-        out.push_str("</contribution>\n");
+        if is_valid_env_context_key(key) {
+            push_xml_field(&mut out, key, value);
+        }
     }
     out.push_str("</environment_context>");
     out
@@ -2010,17 +2162,136 @@ mod tests {
             rendered
                 .contains("  <git_current_branch>feature&lt;context&gt;</git_current_branch>\n")
         );
-        assert!(
-            rendered
-                .contains("  <contribution name=\"sandbox_mode\">workspace-write</contribution>\n")
-        );
-        assert!(
-            rendered.contains("  <contribution name=\"network_access\">disabled</contribution>\n")
-        );
-        assert!(rendered.contains(
-            "  <contribution name=\"unsafe&lt;name&gt;\">value &amp; more</contribution>\n"
-        ));
+        assert!(rendered.contains("  <sandbox_mode>workspace-write</sandbox_mode>\n"));
+        assert!(rendered.contains("  <network_access>disabled</network_access>\n"));
+        // Invalid element names cannot render as first-class tags, so the
+        // registry entry is skipped instead of producing malformed XML.
+        assert!(!rendered.contains("unsafe"));
+        assert!(!rendered.contains("value & more"));
         assert!(rendered.ends_with("</environment_context>"));
+    }
+
+    #[test]
+    fn env_context_key_validation() {
+        for key in ["team", "repo_tier", "editor", "_private", "a-b.c_d9"] {
+            assert!(is_valid_env_context_key(key), "{key}");
+        }
+        for key in [
+            "",
+            "9lives",
+            "has space",
+            "unsafe<name>",
+            "a/b",
+            "cwd",
+            "shell",
+            "client_ui",
+            "repo_root",
+            "git_worktree",
+            "current_date",
+            "timezone",
+            "git_repo",
+            "git_user",
+            "git_email",
+            "git_current_branch",
+            "ui_capabilities",
+        ] {
+            assert!(!is_valid_env_context_key(key), "{key}");
+        }
+        assert!(!is_valid_env_context_key(&"k".repeat(65)));
+    }
+
+    #[test]
+    fn env_context_pair_parsing() {
+        assert_eq!(
+            parse_env_context_pair("team=payments"),
+            Ok(("team".to_string(), "payments".to_string()))
+        );
+        assert_eq!(
+            parse_env_context_pair("k=a=b"),
+            Ok(("k".to_string(), "a=b".to_string()))
+        );
+        for arg in [
+            "no-equals",
+            "=value",
+            "9bad=value",
+            "has space=value",
+            "cwd=value",
+            "shell=zsh",
+            "team=",
+        ] {
+            assert!(parse_env_context_pair(arg).is_err(), "{arg}");
+        }
+        // The editor key parses: protocol detection wins over it in ACP
+        // sessions, CLI wins everywhere else.
+        assert_eq!(
+            parse_env_context_pair("editor=paseo/dev"),
+            Ok(("editor".to_string(), "paseo/dev".to_string()))
+        );
+    }
+
+    #[test]
+    fn env_context_pair_merging() {
+        assert_eq!(merge_env_context_pairs(&[]), Ok(vec![]));
+        assert_eq!(
+            merge_env_context_pairs(&[
+                "team=payments".to_string(),
+                "team=platform".to_string(),
+                "tier=prod".to_string(),
+            ]),
+            Ok(vec![
+                ("team".to_string(), "platform".to_string()),
+                ("tier".to_string(), "prod".to_string()),
+            ])
+        );
+        assert!(merge_env_context_pairs(&["bogus".to_string()]).is_err());
+        assert!(merge_env_context_pairs(&["cwd=/x".to_string()]).is_err());
+    }
+
+    #[test]
+    fn editor_identity_detection() {
+        assert!(is_paseo_client_name("Paseo"));
+        assert!(is_paseo_client_name("paseo"));
+        assert!(is_paseo_client_name("PASEO"));
+        assert!(!is_paseo_client_name("zed"));
+        assert!(!is_paseo_client_name(""));
+
+        assert_eq!(
+            format_editor_context_value("Paseo", Some("dev")),
+            "paseo/dev"
+        );
+        assert_eq!(format_editor_context_value("Paseo", None), "paseo");
+        assert_eq!(format_editor_context_value("Paseo", Some("  ")), "paseo");
+        assert_eq!(
+            format_editor_context_value("", None),
+            EDITOR_CONTEXT_UNKNOWN
+        );
+
+        let paseo = EditorClientIdentity::new("Paseo", Some("dev"));
+        assert!(paseo.is_paseo);
+        assert_eq!(paseo.context_value(), "paseo/dev");
+
+        let zed = EditorClientIdentity::new("Zed", Some("1.0"));
+        assert!(!zed.is_paseo);
+        assert_eq!(zed.context_value(), "zed/1.0");
+
+        let unknown = EditorClientIdentity::unknown();
+        assert!(!unknown.is_paseo);
+        assert_eq!(unknown.context_value(), EDITOR_CONTEXT_UNKNOWN);
+        assert_eq!(
+            EditorClientIdentity::new("", None),
+            EditorClientIdentity::unknown()
+        );
+
+        assert_eq!(
+            EditorClientIdentity::from_override("paseo:1.2.3"),
+            Some(EditorClientIdentity::new("paseo", Some("1.2.3")))
+        );
+        assert_eq!(
+            EditorClientIdentity::from_override("zed"),
+            Some(EditorClientIdentity::new("zed", None))
+        );
+        assert_eq!(EditorClientIdentity::from_override(""), None);
+        assert_eq!(EditorClientIdentity::from_override("   "), None);
     }
 
     /// The transcript renderer is what decides what gets drawn, so the list
