@@ -1697,7 +1697,7 @@ async fn run_prompt_once(
                         "turn error: {error}"
                     ))),
                 );
-                if let Some(hint) = crate::runtime::reasoning::reasoning_error_hint(
+                for hint in crate::runtime::session::turn_failure_hints(
                     error,
                     session.model.reasoning_effort().as_deref(),
                 ) {

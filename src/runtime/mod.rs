@@ -7,9 +7,9 @@
 pub mod background_wake;
 mod compaction_checkpoint;
 pub(crate) mod discovered_profiles;
-// Stopgap classifier for the OpenRouter account-attestation gate (403 with
-// `missing_attestation_types`). Replace with the upstream structured error
-// once `everruns-openrouter` reports the gate as a first-class kind.
+// Stopgap classifiers for OpenRouter account gates (403 attestation, 404
+// data-policy / guardrail). Replace with the upstream structured error once
+// `everruns-openrouter` reports those gates as first-class kinds.
 pub(crate) mod attestation;
 pub(crate) mod reasoning;
 pub mod session;

@@ -1,5 +1,18 @@
 # Knowledge Log
 
+## 2026-09-11, OpenRouter account gates get a labeled way out
+
+- [Presentation](specs/presentation.md): OpenRouter failures the user can fix
+  (18+ attestation, data-policy / guardrail blocks) no longer stop on a
+  generic "misconfiguration" or "try again later" plus a JSON blob whose URL
+  terminals cannot autolink. The transcript replaces that apology with an
+  Assistant hint naming the missing confirmation or policy and a labeled
+  markdown link (`OpenRouter preferences`, `OpenRouter privacy settings`).
+  Assistant authorship is what makes the link OSC 8 in the TUI and visible
+  under compact work; a System hint would sit in collapsed details. The raw
+  provider body remains a `turn error:` line. `--print` and ACP emit the same
+  hints. Mandated-reasoning hints already used this shared follow-up list.
+
 ## 2026-09-11, First-class environment context and Paseo detection
 
 Environment context entries now render as first-class tags
