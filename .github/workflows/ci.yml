@@ -275,7 +275,7 @@ jobs:
         # The live provider tests skip themselves here (no API keys and
         # YOLOP_REQUIRE_LIVE_TESTS unset); they run in the `live-smoke` job below.
         run: |
-          cargo llvm-cov --no-report --features yolop-yep/schema --workspace
+          cargo llvm-cov --no-report --locked --features yolop-yep/schema --workspace
           cargo llvm-cov report --lcov --output-path lcov.info
           cargo llvm-cov report --summary-only
 
@@ -295,6 +295,7 @@ jobs:
           path: lcov.info
           if-no-files-found: error
 
+  # Runs parallel with lint/test (needs only changes) so the 3min live leg is off the critical path.
   live-smoke:
     name: Live Provider Smoke (Doppler)
     runs-on: ubuntu-latest
@@ -304,8 +305,8 @@ jobs:
     # run the tests — YOLOP_REQUIRE_LIVE_TESTS=1 (below) turns a missing
     # provider key into a hard failure so the live check can't report green
     # without exercising anything.
-    if: (github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && github.actor != 'dependabot[bot]'
-    needs: [lint, test]
+    if: (github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && github.actor != 'dependabot[bot]' && needs.changes.outputs.rust == 'true'
+    needs: [changes]
     env:
       DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}
     steps:
@@ -330,12 +331,12 @@ jobs:
           shared-key: "debug"
 
       - name: Build the test binary (offline)
-        run: cargo test --no-run --features yolop-yep/schema --test integration
+        run: cargo test --locked --no-run --features yolop-yep/schema --test integration
 
       - name: Live provider smoke tests
         env:
           YOLOP_REQUIRE_LIVE_TESTS: "1"
-        run: doppler run -- cargo test --features yolop-yep/schema --test integration -- --nocapture
+        run: doppler run -- cargo test --locked --features yolop-yep/schema --test integration -- --nocapture
 
   sandbox-contract:
     name: Sandbox Contract (${{ matrix.os }})
@@ -345,8 +346,9 @@ jobs:
     timeout-minutes: 20
     strategy:
       fail-fast: false
+      # Ubuntu sandbox is covered by the test job's full-workspace nextest run; keep this leg macOS-only.
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [macos-latest]
     steps:
       - uses: actions/checkout@v7
 
@@ -359,7 +361,7 @@ jobs:
           shared-key: "sandbox-${{ runner.os }}"
 
       - name: Run sandbox contract suite
-        run: cargo test sandbox -- --nocapture
+        run: cargo test --locked sandbox -- --nocapture
 
   # The (comparatively scarce) Windows runner only spins up when the change
   # actually touches Rust — not on doc- or eval-only changes.
@@ -384,7 +386,7 @@ jobs:
         run: cargo build --locked -p yolop
 
       - name: Sandbox + shell tests
-        run: cargo test -p yolop sandbox -- --nocapture
+        run: cargo test --locked -p yolop sandbox -- --nocapture
 
       - name: Offline smoke (PowerShell shell)
         run: cargo run -p yolop -- --provider llmsim -p "hi"

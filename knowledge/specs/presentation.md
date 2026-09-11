@@ -92,6 +92,14 @@ macOS). The fullscreen host must not also launch the URL from the reported mouse
 event. While mouse capture is active, link hover may set the terminal pointer
 through OSC 22, and must restore the default pointer when the session ends.
 
+Provider failures the user can fix (an OpenRouter account confirmation, a
+data-policy / guardrail block, a mandated reasoning effort) append an
+Assistant hint naming the action and a labeled markdown link, or a slash
+control such as `/effort`. The generic everruns apology ("misconfiguration",
+"try again later") is dropped when a classified hint exists, because it hides
+the action. The raw provider JSON stays as a System `turn error:` line for
+diagnosis. TUI, `--print`, and ACP share the same hints.
+
 Fullscreen mouse text selection is application-owned (mouse capture replaces the
 terminal's native drag-select). A left-drag across the transcript highlights and
 copies via OSC 52 on release. Bare modifier key events, which arrive when the

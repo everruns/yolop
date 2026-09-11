@@ -11,8 +11,9 @@ bounded way to locate a prior run. Requests such as “inspect the recent sessio
 that mentioned this reference” therefore tended to trigger repository searches
 before the referenced evidence had been found.
 
-The default harness includes the read-only `session_history` capability and its
-`search_sessions` tool. It searches newest local session directories first and:
+The default harness includes the read-only `sessions` capability, driven
+through `yolop sessions search` instead of a model tool. It searches newest
+local session directories first and:
 
 - matches case-insensitive text in user/assistant messages and recorded reason
   failures;

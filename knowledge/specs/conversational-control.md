@@ -29,16 +29,18 @@ command, an overlay confirmation, or a next-run-only settings write fail this ba
 ## Required behavior
 
 1. **Live, agent-invocable, no confirmation.** Each control surface listed below
-   exposes a model-facing tool that (a) the agent can call from a natural-language
-   request or autonomously, (b) takes effect on the **live session** (at the latest,
-   the next turn, never "next process run only"), and (c) does not require the user
-   to confirm an interactive overlay.
+   is reachable conversationally, either through a model-facing tool or through the
+   attached CLI (`yolop <subcommand> ...` in the foreground Bash tool), that
+   (a) the agent can call from a natural-language request or autonomously,
+   (b) takes effect on the **live session** (at the latest, the next turn, never
+   "next process run only"), and (c) does not require the user to confirm an
+   interactive overlay.
 
 2. **One implementation, many front-ends.** A control's mutation logic lives in one
-   place; the slash command, any overlay, and the agent tool all route through it.
-   Adding a tool must not fork the logic, it shares the command's code path so
+   place; the slash command, any overlay, and the attached CLI all route through it.
+   Adding a front-end must not fork the logic, it shares the command's code path so
    validation, persistence, and live application are identical. (`SetupController` is
-   the reference: `/setup`, the model picker overlay, and the `set_*` tools all call
+   the reference: `/setup`, the model picker overlay, and `yolop setup ...` all call
    its `change_*` methods.) Model selection applies immediately but is persisted only
    after that model completes a successful turn, so an inaccessible or unsupported
    model does not become the next session's default.
@@ -53,19 +55,22 @@ command, an overlay confirmation, or a next-run-only settings write fail this ba
    smallest change; do not thrash").
 
 5. **New control surfaces inherit this contract.** Any future setting, mode, or
-   resource a user can change in a session ships with its conversational tool in the
-   same change, not as a follow-up. A control that is only a slash command, only an
-   overlay, or only a next-run settings key is incomplete and should be treated as a
-   bug against this spec.
+   resource a user can change in a session ships with its attached CLI
+   (`yolop <subcommand> ...` plus a control route for prompt discovery) in the
+   same change, not as a follow-up. Configuration capabilities do not get
+   model-invoked mutation tools: the CLI keeps secrets and credentials on the
+   human-driven path and out of tool schemas. A control that is only a slash
+   command, only an overlay, or only a next-run settings key is incomplete and
+   should be treated as a bug against this spec.
 
 ## Current control surfaces
 
 | Surface | Conversational tool | Front-ends sharing the logic |
 |---|---|---|
-| Reasoning effort | `set_reasoning_effort` | `/effort` overlay, `/setup effort` |
-| Model | `search_models` / `set_model` | `/model` overlay, `/setup model` |
+| Reasoning effort | `yolop model use <id>:<effort>` (attached CLI) | `/effort` overlay, `/setup effort` |
+| Model | `yolop model use <target>` (attached CLI) | `/model` overlay, `/setup model` |
 | Model list (the menu `/model` and ACP offer) | `yolop config models …` (attached CLI) | `/model` overlay, `[[models]]` in settings |
-| Provider | `set_provider` | `/setup provider` |
+| Provider | `yolop setup login <provider>` (attached CLI) | `/setup provider` |
 | Skills, list | `list_skills` (upstream) | system-prompt listing |
 | Skills, package management | `yolop skills` (attached CLI) | skills control route |
 | Hooks, configuration | `yolop config hooks` (attached CLI) | hooks control route |
@@ -74,17 +79,19 @@ command, an overlay confirmation, or a next-run-only settings write fail this ba
 
 Notes:
 
-- `set_model` / `set_provider` / `set_reasoning_effort` apply to the live session; the
+- `yolop model use` / `yolop setup login` apply to the live session; the
   `/model` and `/effort` overlays still exist for humans, but the agent no longer
   needs them (it does not pre-seed an overlay the user must confirm).
-- `search_models` queries usable providers through the runtime driver registry and
-  returns provider-qualified matches. `set_model` rejects a partial name when it
-  matches discovered models but is not an exact ID for the current provider.
+- `yolop model` (show) lists usable models through the runtime driver registry.
+  `yolop model use` rejects a partial name when it matches discovered models but
+  is not an exact ID for the current provider; append `:effort` to set effort
+  (`yolop model use openai/gpt-5.4:high`). Never guess an ID: list first.
 - `yolop config model show|set|clear` owns persistent model selection, while
   `yolop config models` edits the persisted ordered list. Attached list edits
   also refresh the current session menu; neither command switches the live model.
-- **Attached administration is the deliberate exception to "a model-facing tool".**
-  Extension, coordination, and model-list administration is reachable conversationally by
+- **Attached administration is the rule for configuration, not the exception.**
+  Extension, coordination, model-list, MCP, connector, model, and setup
+  administration is reachable conversationally by
   running `yolop <subcommand> ...` in the foreground Bash tool, which the host
   attaches to the live session, rather than by tool schemas that would cost
   context every turn. It still meets the rest of this contract: live effect,
@@ -103,12 +110,14 @@ Notes:
 
 - **Mid-turn reasoning-effort change** (within a single `run_turn`, not just at the
   next turn boundary) requires upstream `everruns-host` support and is tracked in
-  **EVE-595**. `set_reasoning_effort` delivers turn-boundary escalation today.
+  **EVE-595**. `yolop model use <id>:<effort>` delivers turn-boundary escalation today.
 
 ## Ownership boundary
 
 - This spec owns the conversational-control contract and the inventory above.
-- `crate::capabilities::host` owns `SetupController` and the `set_*` tools.
+- `crate::capabilities::host` owns `SetupController`; model and session
+  configuration reach it through `yolop model ...` and `yolop setup ...`, not
+  through model-invoked tools.
 - `crate::capabilities::skills` owns attached skill package management;
   `crate::capabilities::skill_registry` owns its skills.sh client. The upstream
   `ScopedSkillsCapability` owns model-visible `list_skills` and `activate_skill`

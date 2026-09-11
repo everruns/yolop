@@ -1,8 +1,6 @@
 // Host/example capabilities for yolop: local environment context, bash, and
 // TUI-facing slash commands that mutate this process's provider selection.
 
-use crate::capabilities::model_discovery::search_configured_models;
-use crate::capabilities::narration::stable_labeled;
 use crate::config::service::ConfigService;
 use crate::config::{ApprovalMode, SettingsStore};
 use crate::exec::tools::{BashTool, Workspace};
@@ -13,12 +11,10 @@ use everruns_core::command::{
     CommandArg, CommandDescriptor, CommandExecutionContext, CommandResult, CommandSource,
     ExecuteCommandRequest,
 };
-use everruns_core::tool_narration::{ToolNarrationPhase, arg_str, truncate};
 use everruns_core::{Capability, CapabilityStatus, SystemPromptContext};
 use everruns_core::{Tool, ToolExecutionResult};
 use everruns_host::RuntimeProviderStore;
-use everruns_provider::ToolCall;
-use serde_json::{Value, json};
+use serde_json::json;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -58,6 +54,157 @@ impl EnvironmentContextRegistry {
             .read()
             .expect("environment context registry poisoned")
             .clone()
+    }
+}
+
+/// Registry key carrying the connecting editor identity in ACP sessions.
+/// Set from protocol detection, never from fixed capability fields.
+pub(crate) const EDITOR_CONTEXT_KEY: &str = "editor";
+/// Value emitted for [`EDITOR_CONTEXT_KEY`] when the editor is unknown.
+pub(crate) const EDITOR_CONTEXT_UNKNOWN: &str = "unknown";
+/// Process env override for the editor identity, used only when the ACP
+/// handshake carries no identity. Format is `name[:version]`.
+pub(crate) const ACP_CLIENT_ENV_OVERRIDE: &str = "YOLOP_ACP_CLIENT";
+
+/// Fixed capability field names. CLI `--env-context` keys colliding with
+/// these are rejected so rendering can never emit a duplicate tag.
+const RESERVED_ENV_CONTEXT_KEYS: &[&str] = &[
+    "cwd",
+    "client_ui",
+    "ui_capabilities",
+    "repo_root",
+    "git_worktree",
+    "shell",
+    "current_date",
+    "timezone",
+    "git_repo",
+    "git_user",
+    "git_email",
+    "git_current_branch",
+];
+
+/// Check a registry key renders as a first-class `<key>value</key>` tag.
+/// Keys double as XML element names, so they must be valid element names
+/// and must not collide with fixed capability fields.
+pub(crate) fn is_valid_env_context_key(key: &str) -> bool {
+    if key.is_empty() || key.len() > 64 || RESERVED_ENV_CONTEXT_KEYS.contains(&key) {
+        return false;
+    }
+    let mut chars = key.chars();
+    match chars.next() {
+        Some(first) if first.is_ascii_alphabetic() || first == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+}
+
+/// Parse one `--env-context KEY=VALUE` argument. Values land in the system
+/// prompt in cleartext, so callers must surface that in `--help` text.
+pub(crate) fn parse_env_context_pair(arg: &str) -> Result<(String, String), String> {
+    let (key, value) = arg
+        .split_once('=')
+        .ok_or_else(|| format!("invalid --env-context {arg:?}: expected KEY=VALUE"))?;
+    if !is_valid_env_context_key(key) {
+        return Err(format!(
+            "invalid --env-context key {key:?}: use 1-64 chars of [A-Za-z0-9_.-] starting with a letter or '_', avoiding reserved capability fields"
+        ));
+    }
+    if value.is_empty() {
+        return Err(format!(
+            "invalid --env-context {arg:?}: value must not be empty"
+        ));
+    }
+    Ok((key.to_owned(), value.to_owned()))
+}
+
+/// Merge parsed `--env-context` pairs in order; on duplicate keys the last
+/// occurrence wins. Returns the first parse error encountered.
+pub(crate) fn merge_env_context_pairs(raw: &[String]) -> Result<Vec<(String, String)>, String> {
+    let mut merged: Vec<(String, String)> = Vec::new();
+    for arg in raw {
+        let (key, value) = parse_env_context_pair(arg)?;
+        if let Some(existing) = merged.iter_mut().find(|(k, _)| *k == key) {
+            existing.1 = value;
+        } else {
+            merged.push((key, value));
+        }
+    }
+    Ok(merged)
+}
+
+/// Case-insensitive match for the Paseo ACP client name.
+pub(crate) fn is_paseo_client_name(name: &str) -> bool {
+    name.eq_ignore_ascii_case("paseo")
+}
+
+/// Format an editor context value as `{lowercased_name}[/{version}]`.
+pub(crate) fn format_editor_context_value(raw_name: &str, version: Option<&str>) -> String {
+    let name = raw_name.trim().to_lowercase();
+    if name.is_empty() {
+        return EDITOR_CONTEXT_UNKNOWN.to_owned();
+    }
+    match version.map(str::trim).filter(|v| !v.is_empty()) {
+        Some(version) => format!("{name}/{version}"),
+        None => name,
+    }
+}
+
+/// Editor identity detected for one ACP connection.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct EditorClientIdentity {
+    /// Lowercased client name, or `"unknown"` when undetected.
+    pub raw_name: String,
+    pub version: Option<String>,
+    pub is_paseo: bool,
+}
+
+impl EditorClientIdentity {
+    pub(crate) fn unknown() -> Self {
+        Self {
+            raw_name: EDITOR_CONTEXT_UNKNOWN.to_owned(),
+            version: None,
+            is_paseo: false,
+        }
+    }
+
+    pub(crate) fn new(raw_name: &str, version: Option<&str>) -> Self {
+        let name = raw_name.trim().to_lowercase();
+        if name.is_empty() {
+            return Self::unknown();
+        }
+        Self {
+            is_paseo: is_paseo_client_name(&name),
+            raw_name: name,
+            version: version
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(str::to_owned),
+        }
+    }
+
+    /// Parse a `YOLOP_ACP_CLIENT` override of the form `name[:version]`.
+    pub(crate) fn from_override(raw: &str) -> Option<Self> {
+        let raw = raw.trim();
+        if raw.is_empty() {
+            return None;
+        }
+        let (name, version) = match raw.split_once(':') {
+            Some((name, version)) => (name, Some(version)),
+            None => (raw, None),
+        };
+        let identity = Self::new(name, version);
+        if identity.raw_name == EDITOR_CONTEXT_UNKNOWN {
+            None
+        } else {
+            Some(identity)
+        }
+    }
+
+    pub(crate) fn context_value(&self) -> String {
+        if self.raw_name == EDITOR_CONTEXT_UNKNOWN {
+            return EDITOR_CONTEXT_UNKNOWN.to_owned();
+        }
+        format_editor_context_value(&self.raw_name, self.version.as_deref())
     }
 }
 
@@ -190,8 +337,8 @@ impl Capability for CodingCliEnvironmentCapability {
   <git_user>Git user name</git_user>
   <git_email>Git user email</git_email>
   <git_current_branch>branch or short commit</git_current_branch>
-  <contribution name=\"sandbox_mode\">workspace-write</contribution>
-  <contribution name=\"network_access\">disabled</contribution>
+  <sandbox_mode>workspace-write</sandbox_mode>
+  <network_access>disabled</network_access>
 </environment_context>"
                 .to_string(),
         )
@@ -258,12 +405,13 @@ fn render_environment_context(context: &EnvironmentContext) -> String {
     {
         push_xml_field(&mut out, "git_current_branch", value);
     }
+    // Registry keys double as tag names, so only valid element names render.
+    // CLI parsing rejects the rest; skipping here keeps a poisoned registry
+    // from producing malformed prompt XML.
     for (key, value) in &context.contributions {
-        out.push_str("  <contribution name=\"");
-        out.push_str(&xml_escape(key));
-        out.push_str("\">");
-        out.push_str(&xml_escape(value));
-        out.push_str("</contribution>\n");
+        if is_valid_env_context_key(key) {
+            push_xml_field(&mut out, key, value);
+        }
     }
     out.push_str("</environment_context>");
     out
@@ -360,7 +508,7 @@ fn git_output(workspace_root: &Path, args: &[&str]) -> Option<String> {
 
 // ---------- bash ----------
 
-pub(crate) const CODING_BASH_CAPABILITY_ID: &str = "yolop_bash";
+pub(crate) const CODING_BASH_CAPABILITY_ID: &str = "bash";
 
 pub(crate) struct CodingBashCapability {
     pub(crate) workspace: Workspace,
@@ -548,10 +696,10 @@ pub(crate) struct ModelsCapability {
 }
 
 impl ModelsCapability {
-    /// The shared, cloneable handle the `/setup` command and the model-facing
-    /// `set_*` tools both drive. Everything that mutates the live provider/model
-    /// lives on [`SetupController`] so the slash command and the agent tools
-    /// route through one implementation — there is no second config path.
+    /// The shared, cloneable handle the `/setup` command and the `yolop model ...` /
+    /// `yolop setup ...` commands both drive. Everything that mutates the live
+    /// provider/model lives on [`SetupController`] so the slash command and the
+    /// CLI route through one implementation — there is no second config path.
     fn controller(&self) -> SetupController {
         SetupController {
             provider: self.provider.clone(),
@@ -584,8 +732,8 @@ pub(crate) fn setup_controller(
 /// Live provider/model/effort controller. Holds the same handles as
 /// [`ModelsCapability`] and owns every mutation (`change_provider`,
 /// `change_model`, `change_effort`, tokens, urls, attribution, approval). The
-/// slash command (`execute_command`) and the agent-facing `set_*` tools both
-/// call these methods, so a natural-language request and a typed `/setup`
+/// slash command (`execute_command`) and the `yolop setup ...` commands both
+/// call these methods, so a CLI invocation and a typed `/setup`
 /// apply identically and take effect on the live session.
 #[derive(Clone)]
 pub(crate) struct SetupController {
@@ -626,25 +774,9 @@ impl Capability for ModelsCapability {
     }
 
     fn tools(&self) -> Vec<Box<dyn Tool>> {
-        // The model-facing surface for live session control. Each tool routes
-        // through the same `SetupController` the `/setup` command uses, so a
-        // natural-language request ("switch to high effort", "use gpt-5.4")
-        // applies to the running session exactly like the slash command — no
-        // overlay, no next-run-only deferral. See knowledge/specs/conversational-control.md.
-        vec![
-            Box::new(SetReasoningEffortTool {
-                controller: self.controller(),
-            }),
-            Box::new(SearchModelsTool {
-                settings: self.settings.clone(),
-            }),
-            Box::new(SetModelTool {
-                controller: self.controller(),
-            }),
-            Box::new(SetProviderTool {
-                controller: self.controller(),
-            }),
-        ]
+        // Model and session configuration is CLI-driven (`yolop model ...`,
+        // `yolop setup ...`); no model-invoked mutation tools.
+        Vec::new()
     }
 
     async fn execute_command(
@@ -691,9 +823,7 @@ impl Capability for ModelsCapability {
 // mid-task, are judgement calls left to the model.
 /// Raw text on purpose: the host wraps `system_prompt_addition` in `<capability>`
 /// tags once, so tags here would render twice.
-pub(crate) const MODELS_PROMPT: &str = "`set_reasoning_effort`, `set_model`, and `set_provider` apply \
-    next turn. For partial model names, call `search_models`, show ambiguous matches, \
-    and never guess an ID. Unknown effort levels return accepted values.";
+pub(crate) const MODELS_PROMPT: &str = "Configure models through `yolop model ...` and \n    `yolop setup ...` (foreground Bash) or `/model`, `/setup`, `/effort`. Changes apply \n    next turn. Never guess IDs: run `yolop model` or `yolop setup status` first. Switch \n    with `yolop model use <target>` (label, id, or provider/model with optional `:effort`); \n    authenticate providers with `yolop setup login <provider>.";
 
 fn setup_command_arg() -> CommandArg {
     let mut suggestions = vec![
@@ -891,10 +1021,6 @@ impl SetupController {
             error_code: None,
             error_fields: None,
         })
-    }
-
-    async fn change_model(&self, raw: &str) -> everruns_provider::error::Result<CommandResult> {
-        self.change_model_with_persistence(raw, false).await
     }
 
     async fn change_model_and_persist(
@@ -1312,292 +1438,6 @@ fn failed_result(message: String) -> CommandResult {
     }
 }
 
-// ---------- model-facing live-config tools ----------
-//
-// These expose the `SetupController` mutations as agent tools so the model can
-// reconfigure the running session from a natural-language request (or on its
-// own), instead of asking the user to type `/setup` or confirm an overlay. They
-// reuse the exact `change_*` logic the slash command uses, so behavior — live
-// application, validation, persistence — is identical across both entry points.
-
-/// Map a `change_*` outcome onto a tool result: a failed (but non-erroring)
-/// `CommandResult` becomes a recoverable tool error carrying the same message
-/// (e.g. an unknown effort plus the valid set), so the model can correct itself.
-fn into_tool_result(
-    outcome: everruns_provider::error::Result<CommandResult>,
-) -> ToolExecutionResult {
-    match outcome {
-        Ok(result) if result.success => ToolExecutionResult::success(json!({
-            "success": true,
-            "message": result.message,
-        })),
-        Ok(result) => ToolExecutionResult::tool_error(result.message),
-        Err(err) => ToolExecutionResult::tool_error(err.to_string()),
-    }
-}
-
-fn required_str_arg<'a>(arguments: &'a Value, key: &str) -> Result<&'a str, ToolExecutionResult> {
-    match arguments.get(key).and_then(Value::as_str) {
-        Some(value) if !value.trim().is_empty() => Ok(value.trim()),
-        _ => Err(ToolExecutionResult::tool_error(format!(
-            "'{key}' is required"
-        ))),
-    }
-}
-
-struct SetReasoningEffortTool {
-    controller: SetupController,
-}
-
-#[async_trait]
-impl Tool for SetReasoningEffortTool {
-    fn narrate(
-        &self,
-        tool_call: &ToolCall,
-        phase: ToolNarrationPhase,
-        locale: Option<&str>,
-        _ctx: everruns_core::tool_narration::ToolNarrationContext<'_>,
-    ) -> Option<String> {
-        let _ = locale;
-        let effort = arg_str(&tool_call.arguments, &["effort"]).map(|value| truncate(value, 24));
-        Some(stable_labeled("Set reasoning effort", effort, phase))
-    }
-
-    fn name(&self) -> &str {
-        "set_reasoning_effort"
-    }
-    fn display_name(&self) -> Option<&str> {
-        Some("Set reasoning effort")
-    }
-    fn description(&self) -> &str {
-        "Change the current model's reasoning effort for this session (e.g. escalate to think \
-         harder before a difficult step, or deescalate for cheap follow-ups). Applies on the next \
-         turn — no restart. The valid set is model-specific; if the level is unknown the tool \
-         returns the accepted values so you can retry."
-    }
-    fn parameters_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "effort": {
-                    "type": "string",
-                    "description": "Reasoning-effort level for the active model, e.g. low / medium / high (model-specific)."
-                }
-            },
-            "required": ["effort"],
-            "additionalProperties": false
-        })
-    }
-    async fn execute(&self, arguments: Value) -> ToolExecutionResult {
-        let effort = match required_str_arg(&arguments, "effort") {
-            Ok(value) => value,
-            Err(err) => return err,
-        };
-        into_tool_result(self.controller.change_effort(effort).await)
-    }
-}
-
-struct SearchModelsTool {
-    settings: Arc<SettingsStore>,
-}
-
-#[async_trait]
-impl Tool for SearchModelsTool {
-    fn name(&self) -> &str {
-        "search_models"
-    }
-    fn display_name(&self) -> Option<&str> {
-        Some("Search models")
-    }
-    fn description(&self) -> &str {
-        "Search model IDs and display names across all currently usable providers. Use this before set_model for a partial or unqualified model name."
-    }
-    fn parameters_schema(&self) -> Value {
-        json!({"type":"object","properties":{"query":{"type":"string"}},"required":["query"],"additionalProperties":false})
-    }
-    async fn execute(&self, arguments: Value) -> ToolExecutionResult {
-        let Some(query) = arguments.get("query").and_then(Value::as_str) else {
-            return ToolExecutionResult::tool_error("missing required string 'query'");
-        };
-        if query.trim().is_empty() {
-            return ToolExecutionResult::tool_error("'query' must not be empty");
-        }
-        let result = search_configured_models(&self.settings.snapshot(), query).await;
-        ToolExecutionResult::success(
-            json!({"query":query,"matches":result.matches.into_iter().map(|item| json!({"provider":item.provider,"model":item.model_id,"display_name":item.display_name})).collect::<Vec<_>>(),"providers_searched":result.providers_searched,"provider_errors":result.provider_errors}),
-        )
-    }
-}
-
-struct SetModelTool {
-    controller: SetupController,
-}
-
-#[async_trait]
-impl Tool for SetModelTool {
-    fn narrate(
-        &self,
-        tool_call: &ToolCall,
-        phase: ToolNarrationPhase,
-        locale: Option<&str>,
-        _ctx: everruns_core::tool_narration::ToolNarrationContext<'_>,
-    ) -> Option<String> {
-        let _ = locale;
-        let model = arg_str(&tool_call.arguments, &["model"]).map(|value| truncate(value, 48));
-        Some(stable_labeled("Set model", model, phase))
-    }
-
-    fn name(&self) -> &str {
-        "set_model"
-    }
-    fn display_name(&self) -> Option<&str> {
-        Some("Set model")
-    }
-    fn description(&self) -> &str {
-        "Switch to an exact model ID for the current provider. For a partial name, call search_models first; never pass an unresolved fragment."
-    }
-    fn parameters_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "model": {
-                    "type": "string",
-                    "description": "Model id for the active provider, e.g. `gpt-5.4` or `claude-sonnet-4-5`."
-                },
-                "reasoning_effort": {
-                    "type": "string",
-                    "description": "Optional reasoning-effort level to apply with the model (model-specific)."
-                }
-            },
-            "required": ["model"],
-            "additionalProperties": false
-        })
-    }
-    async fn execute(&self, arguments: Value) -> ToolExecutionResult {
-        let query = match required_str_arg(&arguments, "model") {
-            Ok(value) => value,
-            Err(err) => return err,
-        };
-        let search = search_configured_models(&self.controller.settings.snapshot(), query).await;
-        let current_provider = self
-            .controller
-            .provider
-            .read()
-            .expect("provider lock poisoned")
-            .provider_name()
-            .to_string();
-        let resolved = match resolve_model_match(query, &search.matches) {
-            Ok(model) => Some(model),
-            Err(_) if search.matches.is_empty() => None,
-            Err(message) => return ToolExecutionResult::tool_error(message),
-        };
-        let model_id = resolved.map_or(query, |model| model.model_id.as_str());
-        let spec = match arguments.get("reasoning_effort").and_then(Value::as_str) {
-            Some(effort) if !effort.trim().is_empty() => {
-                format!("{model_id} {}", effort.trim())
-            }
-            _ => model_id.to_string(),
-        };
-        let result = match resolved {
-            Some(model) if model.provider != current_provider => {
-                self.controller
-                    .change_provider(&format!("{} {spec}", model.provider))
-                    .await
-            }
-            _ => self.controller.change_model(&spec).await,
-        };
-        into_tool_result(result)
-    }
-}
-
-fn resolve_model_match<'a>(
-    query: &str,
-    matches: &'a [crate::capabilities::model_discovery::ModelSearchMatch],
-) -> Result<&'a crate::capabilities::model_discovery::ModelSearchMatch, String> {
-    if let Some(exact) = matches.iter().find(|candidate| candidate.model_id == query) {
-        return Ok(exact);
-    }
-    match matches {
-        [model] => Ok(model),
-        [] => Err(format!(
-            "No configured model matches `{query}`. Call search_models to see available models."
-        )),
-        _ => {
-            let choices = matches
-                .iter()
-                .take(5)
-                .map(|model| format!("{}: {}", model.provider, model.model_id))
-                .collect::<Vec<_>>()
-                .join(", ");
-            Err(format!(
-                "Multiple configured models match `{query}`. Top matches: {choices}. Pass one exact model ID to set_model."
-            ))
-        }
-    }
-}
-
-struct SetProviderTool {
-    controller: SetupController,
-}
-
-#[async_trait]
-impl Tool for SetProviderTool {
-    fn narrate(
-        &self,
-        tool_call: &ToolCall,
-        phase: ToolNarrationPhase,
-        locale: Option<&str>,
-        _ctx: everruns_core::tool_narration::ToolNarrationContext<'_>,
-    ) -> Option<String> {
-        let _ = locale;
-        let provider =
-            arg_str(&tool_call.arguments, &["provider"]).map(|value| truncate(value, 24));
-        Some(stable_labeled("Set provider", provider, phase))
-    }
-
-    fn name(&self) -> &str {
-        "set_provider"
-    }
-    fn display_name(&self) -> Option<&str> {
-        Some("Set provider")
-    }
-    fn description(&self) -> &str {
-        "Switch the LLM provider for this session. Applies on the next turn — no restart. \
-         Optionally pin a model for the new provider at the same time. Requires that provider's \
-         credentials to already be configured."
-    }
-    fn parameters_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "provider": {
-                    "type": "string",
-                    "description": "Provider name.",
-                    "enum": SUPPORTED_PROVIDERS
-                },
-                "model": {
-                    "type": "string",
-                    "description": "Optional model id to select for the new provider."
-                }
-            },
-            "required": ["provider"],
-            "additionalProperties": false
-        })
-    }
-    async fn execute(&self, arguments: Value) -> ToolExecutionResult {
-        let provider = match required_str_arg(&arguments, "provider") {
-            Ok(value) => value,
-            Err(err) => return err,
-        };
-        // `change_provider` accepts `provider [model]`, switching both at once.
-        let spec = match arguments.get("model").and_then(Value::as_str) {
-            Some(model) if !model.trim().is_empty() => format!("{provider} {}", model.trim()),
-            _ => provider.to_string(),
-        };
-        into_tool_result(self.controller.change_provider(&spec).await)
-    }
-}
-
 impl ModelsCapability {
     /// True when no provider preference is saved and no API token is set —
     /// either via env var or in the settings file. Used by the TUI at
@@ -1732,32 +1572,7 @@ mod tests {
     use super::*;
     use test_support::test_controller;
 
-    // ---------- live-config tools (set_model / set_provider / set_reasoning_effort) ----------
-
-    #[tokio::test]
-    async fn set_reasoning_effort_tool_applies_live_and_validates() {
-        let (controller, provider, _dir) = test_controller(ProviderChoice::OpenAi {
-            model: "gpt-5.5".to_string(),
-            reasoning_effort: Some("medium".to_string()),
-        });
-        let tool = SetReasoningEffortTool {
-            controller: controller.clone(),
-        };
-
-        // Escalate: the shared handle reflects the new effort immediately.
-        let result = tool.execute(json!({ "effort": "high" })).await;
-        assert!(result.is_success(), "escalate: {result:?}");
-        assert_eq!(provider.read().unwrap().reasoning_effort(), Some("high"));
-
-        // A missing argument is a tool error before anything is mutated.
-        let result = tool.execute(json!({})).await;
-        assert!(result.is_error(), "missing effort should error");
-
-        // An unknown level errors and leaves the prior selection intact.
-        let result = tool.execute(json!({ "effort": "ludicrous" })).await;
-        assert!(result.is_error(), "unknown effort should error");
-        assert_eq!(provider.read().unwrap().reasoning_effort(), Some("high"));
-    }
+    // ---------- live-config persistence (via SetupController; tools removed) ----------
 
     #[tokio::test]
     async fn model_choice_is_persisted_only_after_a_successful_turn() {
@@ -1788,58 +1603,7 @@ mod tests {
     }
 
     #[test]
-    fn model_match_resolution_returns_five_actionable_choices() {
-        use crate::capabilities::model_discovery::ModelSearchMatch;
-
-        let mut matches = vec![ModelSearchMatch {
-            provider: "openrouter".to_string(),
-            model_id: "openrouter/terra".to_string(),
-            display_name: Some("Terra".to_string()),
-        }];
-        assert_eq!(
-            resolve_model_match("terra", &matches).unwrap().model_id,
-            "openrouter/terra"
-        );
-
-        for index in 2..=6 {
-            matches.push(ModelSearchMatch {
-                provider: format!("provider-{index}"),
-                model_id: format!("terra-v{index}"),
-                display_name: Some(format!("Terra v{index}")),
-            });
-        }
-        let error = resolve_model_match("terra", &matches).unwrap_err();
-        assert!(error.contains("openrouter: openrouter/terra"));
-        assert!(error.contains("provider-5: terra-v5"));
-        assert!(!error.contains("provider-6: terra-v6"));
-        assert!(error.contains("Pass one exact model ID to set_model"));
-        assert_eq!(
-            resolve_model_match("terra-v2", &matches).unwrap().provider,
-            "provider-2"
-        );
-    }
-
-    #[tokio::test]
-    async fn set_model_tool_switches_model_and_optional_effort() {
-        let (controller, provider, _dir) = test_controller(ProviderChoice::OpenAi {
-            model: "gpt-5.5".to_string(),
-            reasoning_effort: Some("medium".to_string()),
-        });
-        let tool = SetModelTool { controller };
-
-        let result = tool
-            .execute(json!({ "model": "gpt-5.4", "reasoning_effort": "high" }))
-            .await;
-        assert!(result.is_success(), "set_model: {result:?}");
-        assert_eq!(provider.read().unwrap().model_id(), "gpt-5.4");
-        assert_eq!(provider.read().unwrap().reasoning_effort(), Some("high"));
-
-        let result = tool.execute(json!({})).await;
-        assert!(result.is_error(), "missing model should error");
-    }
-
-    #[test]
-    fn models_capability_exposes_live_config_tools() {
+    fn models_capability_is_cli_driven() {
         let (controller, _provider, _dir) = test_controller(ProviderChoice::Sim);
         let capability = ModelsCapability {
             provider: controller.provider.clone(),
@@ -1848,46 +1612,16 @@ mod tests {
             settings: controller.settings.clone(),
             pending_model_choice: controller.pending_model_choice.clone(),
         };
-        let names: Vec<String> = capability
-            .tools()
-            .iter()
-            .map(|t| t.name().to_string())
-            .collect();
-        for expected in [
-            "set_reasoning_effort",
-            "search_models",
-            "set_model",
-            "set_provider",
-        ] {
-            assert!(
-                names.iter().any(|n| n == expected),
-                "{expected} should be exposed by ModelsCapability: {names:?}"
-            );
-        }
-        // The agent is told these tools exist so it uses them instead of asking
-        // the user to type a slash command.
+        // Model and session configuration goes through `yolop model ...` and
+        // `yolop setup ...`; no model-invoked mutation tools remain.
+        assert!(capability.tools().is_empty());
         let prompt = capability.system_prompt_addition().expect("setup prompt");
         // system_prompt_addition is raw text: the host wraps it once. Tags here
         // would render twice (see agent_commands, client_commands).
         assert!(!prompt.contains("<capability"));
         assert!(!prompt.contains("</capability>"));
-        assert!(prompt.contains("set_reasoning_effort"));
-        assert!(prompt.contains("set_model"));
-        assert!(prompt.contains("search_models"));
-        assert!(prompt.contains("set_provider"));
-    }
-
-    #[tokio::test]
-    async fn set_provider_tool_switches_provider_live() {
-        let (controller, provider, _dir) = test_controller(ProviderChoice::Sim);
-        let tool = SetProviderTool { controller };
-
-        let result = tool.execute(json!({ "provider": "openai" })).await;
-        assert!(result.is_success(), "set_provider: {result:?}");
-        assert_eq!(provider.read().unwrap().provider_name(), "openai");
-
-        let result = tool.execute(json!({ "provider": "nope" })).await;
-        assert!(result.is_error(), "unknown provider should error");
+        assert!(prompt.contains("yolop model"));
+        assert!(prompt.contains("yolop setup"));
     }
 
     #[test]
@@ -2010,17 +1744,136 @@ mod tests {
             rendered
                 .contains("  <git_current_branch>feature&lt;context&gt;</git_current_branch>\n")
         );
-        assert!(
-            rendered
-                .contains("  <contribution name=\"sandbox_mode\">workspace-write</contribution>\n")
-        );
-        assert!(
-            rendered.contains("  <contribution name=\"network_access\">disabled</contribution>\n")
-        );
-        assert!(rendered.contains(
-            "  <contribution name=\"unsafe&lt;name&gt;\">value &amp; more</contribution>\n"
-        ));
+        assert!(rendered.contains("  <sandbox_mode>workspace-write</sandbox_mode>\n"));
+        assert!(rendered.contains("  <network_access>disabled</network_access>\n"));
+        // Invalid element names cannot render as first-class tags, so the
+        // registry entry is skipped instead of producing malformed XML.
+        assert!(!rendered.contains("unsafe"));
+        assert!(!rendered.contains("value & more"));
         assert!(rendered.ends_with("</environment_context>"));
+    }
+
+    #[test]
+    fn env_context_key_validation() {
+        for key in ["team", "repo_tier", "editor", "_private", "a-b.c_d9"] {
+            assert!(is_valid_env_context_key(key), "{key}");
+        }
+        for key in [
+            "",
+            "9lives",
+            "has space",
+            "unsafe<name>",
+            "a/b",
+            "cwd",
+            "shell",
+            "client_ui",
+            "repo_root",
+            "git_worktree",
+            "current_date",
+            "timezone",
+            "git_repo",
+            "git_user",
+            "git_email",
+            "git_current_branch",
+            "ui_capabilities",
+        ] {
+            assert!(!is_valid_env_context_key(key), "{key}");
+        }
+        assert!(!is_valid_env_context_key(&"k".repeat(65)));
+    }
+
+    #[test]
+    fn env_context_pair_parsing() {
+        assert_eq!(
+            parse_env_context_pair("team=payments"),
+            Ok(("team".to_string(), "payments".to_string()))
+        );
+        assert_eq!(
+            parse_env_context_pair("k=a=b"),
+            Ok(("k".to_string(), "a=b".to_string()))
+        );
+        for arg in [
+            "no-equals",
+            "=value",
+            "9bad=value",
+            "has space=value",
+            "cwd=value",
+            "shell=zsh",
+            "team=",
+        ] {
+            assert!(parse_env_context_pair(arg).is_err(), "{arg}");
+        }
+        // The editor key parses: protocol detection wins over it in ACP
+        // sessions, CLI wins everywhere else.
+        assert_eq!(
+            parse_env_context_pair("editor=paseo/dev"),
+            Ok(("editor".to_string(), "paseo/dev".to_string()))
+        );
+    }
+
+    #[test]
+    fn env_context_pair_merging() {
+        assert_eq!(merge_env_context_pairs(&[]), Ok(vec![]));
+        assert_eq!(
+            merge_env_context_pairs(&[
+                "team=payments".to_string(),
+                "team=platform".to_string(),
+                "tier=prod".to_string(),
+            ]),
+            Ok(vec![
+                ("team".to_string(), "platform".to_string()),
+                ("tier".to_string(), "prod".to_string()),
+            ])
+        );
+        assert!(merge_env_context_pairs(&["bogus".to_string()]).is_err());
+        assert!(merge_env_context_pairs(&["cwd=/x".to_string()]).is_err());
+    }
+
+    #[test]
+    fn editor_identity_detection() {
+        assert!(is_paseo_client_name("Paseo"));
+        assert!(is_paseo_client_name("paseo"));
+        assert!(is_paseo_client_name("PASEO"));
+        assert!(!is_paseo_client_name("zed"));
+        assert!(!is_paseo_client_name(""));
+
+        assert_eq!(
+            format_editor_context_value("Paseo", Some("dev")),
+            "paseo/dev"
+        );
+        assert_eq!(format_editor_context_value("Paseo", None), "paseo");
+        assert_eq!(format_editor_context_value("Paseo", Some("  ")), "paseo");
+        assert_eq!(
+            format_editor_context_value("", None),
+            EDITOR_CONTEXT_UNKNOWN
+        );
+
+        let paseo = EditorClientIdentity::new("Paseo", Some("dev"));
+        assert!(paseo.is_paseo);
+        assert_eq!(paseo.context_value(), "paseo/dev");
+
+        let zed = EditorClientIdentity::new("Zed", Some("1.0"));
+        assert!(!zed.is_paseo);
+        assert_eq!(zed.context_value(), "zed/1.0");
+
+        let unknown = EditorClientIdentity::unknown();
+        assert!(!unknown.is_paseo);
+        assert_eq!(unknown.context_value(), EDITOR_CONTEXT_UNKNOWN);
+        assert_eq!(
+            EditorClientIdentity::new("", None),
+            EditorClientIdentity::unknown()
+        );
+
+        assert_eq!(
+            EditorClientIdentity::from_override("paseo:1.2.3"),
+            Some(EditorClientIdentity::new("paseo", Some("1.2.3")))
+        );
+        assert_eq!(
+            EditorClientIdentity::from_override("zed"),
+            Some(EditorClientIdentity::new("zed", None))
+        );
+        assert_eq!(EditorClientIdentity::from_override(""), None);
+        assert_eq!(EditorClientIdentity::from_override("   "), None);
     }
 
     /// The transcript renderer is what decides what gets drawn, so the list

@@ -116,7 +116,7 @@ contributing how-to prose. Discovery text stays ungated, see
 
 The registry reads `tool_search`'s own result rather than mirroring upstream
 state, so it cannot drift from what the model was shown. Gating is meaningless
-without deferral, so `yolop_tool_reveal` is enabled alongside
+without deferral, so `tool_reveal` is enabled alongside
 `TOOL_SEARCH_CAPABILITY_ID`.
 
 ## Non-goals

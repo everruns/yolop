@@ -35,9 +35,9 @@ ACP protocol version: **1** (integer).
 
 | Method | Direction | Behaviour |
 |--------|-----------|-----------|
-| `initialize` | client → agent | Negotiates protocol version and advertises agent capabilities. Echoes the client's version when supported, else advertises v1. |
+| `initialize` | client → agent | Negotiates protocol version and advertises agent capabilities. Echoes the client's version when supported, else advertises v1. Detects the editor identity from `client_info.name` (Paseo sends `Paseo`), then `_meta` vendor keys, then `YOLOP_ACP_CLIENT`; stored per connection and rendered as the reserved `editor` context entry (`paseo/dev`, or `unknown`) in every later session. |
 | `authenticate` | client → agent | Runs an advertised agent-handled login. Yolop currently advertises browser-based ChatGPT/Codex OAuth and OpenRouter PKCE login; other API-key providers continue to use inherited environment variables or `/setup token`. |
-| `session/new` | client → agent | Builds a fresh runtime rooted at the client-supplied `cwd`; returns the everruns session id as the ACP `sessionId`. |
+| `session/new` | client → agent | Builds a fresh runtime rooted at the client-supplied `cwd`; returns the everruns session id as the ACP `sessionId`. CLI `--env-context KEY=VALUE` entries apply as session defaults; the detected `editor` entry wins on its reserved key. |
 | `session/load` | client → agent | Rehydrates an existing yolop JSONL session for the supplied `sessionId` and `cwd`, replays persisted conversation history as `session/update` notifications, and then returns success. |
 | `session/prompt` | client → agent | Runs one turn, or executes a recognised `/command`; streams `session/update`s, and resolves a `stopReason`. |
 | `session/cancel` | client → agent | Notification. Abandons the in-flight turn for that session and resolves the prompt with `stopReason: "cancelled"`. |
@@ -254,10 +254,12 @@ runtime's sandboxed execution boundary.
 Secret-entry tools are different. The connector `connect` tool is omitted in
 ACP because its arguments carry credentials through the transcript. Connector
 discovery and disconnection remain available. MCP mutations are CLI-only: there are no mutation model
-tools, so servers are added, removed, enabled, or disabled with `yolop mcp ...` (files on disk) or
-`/mcp ...` via run_command (live session, which reloads by default and accepts `--no-reload` to defer).
+tools, so servers are added, removed, enabled, or disabled with `yolop mcp ...` (files on disk). In the
+terminal only, `/mcp ...` via run_command reaches the same path (live session, which reloads by default
+and accepts `--no-reload` to defer); ACP has no `/mcp` command, so the agent uses `command: help` to list
+the live set instead of assuming it exists.
 Secrets belong in environment placeholders such as `${MCP_TOKEN}`; literals at the CLI are the operator's
-explicit choice. Browser OAuth remains available through `yolop mcp login` and `/mcp login`.
+explicit choice. Browser OAuth remains available through `yolop mcp login` and, in the terminal only, `/mcp login`.
 
 ACP cannot replace or retract the transcript already displayed by its client.
 Checkpoint commands and `manage_checkpoint` therefore expose workspace restore

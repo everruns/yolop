@@ -71,7 +71,7 @@ const HARNESS_VARIANTS: &[HarnessVariant] = &[
         name: "no-ast-grep",
         settings: "[[capabilities]]\nref = \"ast_grep\"\nenabled = false\n",
     },
-    // Reveal gating (`yolop_tool_reveal`) holds the `config` and `memory` how-to
+    // Reveal gating (`tool_reveal`) holds the `config` and `memory` how-to
     // prose back until `tool_search` loads one of their schemas. Disabling it
     // restores the always-on blocks, which is the A/B for the gate itself: does
     // withholding that prose until the tools are callable cost any task success?
@@ -81,7 +81,7 @@ const HARNESS_VARIANTS: &[HarnessVariant] = &[
     // not a settings toggle.
     HarnessVariant {
         name: "no-tool-reveal",
-        settings: "[[capabilities]]\nref = \"yolop_tool_reveal\"\nenabled = false\n",
+        settings: "[[capabilities]]\nref = \"tool_reveal\"\nenabled = false\n",
     },
 ];
 
@@ -502,10 +502,10 @@ fn prior_session_reference_sample() -> Sample {
         "checks",
         json!([{
             "response_contains": ["processing_error", "60.9"],
-            "tool_called": ["search_sessions"],
+            "tool_called": ["bash"],
             "metric_equals": {
-                "search_sessions_tool_calls": 1.0,
-                "search_sessions_first_exploration": 1.0,
+                "sessions_search_calls": 1.0,
+                "sessions_search_first_exploration": 1.0,
                 "tool_calls_failed": 0.0,
                 "duplicate_exploration_calls": 0.0
             }
@@ -556,7 +556,7 @@ fn overlapping_recent_work_sample() -> Sample {
             {
                 "when_binary": "candidate",
                 "metric_equals": {
-                    "search_sessions_tool_calls": 1.0,
+                    "sessions_search_calls": 1.0,
                     "session_useful_match_recall": 1.0,
                     "session_extra_matches": 0.0
                 },
@@ -1458,7 +1458,7 @@ fn capability_disclosure_release_control_sample() -> Sample {
 fn capability_disclosure_deferred_tool_sample() -> Sample {
     Sample::new(
         "capability-disclosure-deferred-tool",
-        "Use search_sessions exactly once to find the exact marker \
+        "Run `yolop sessions search --query DISCLOSURE_DEFERRED_READY` via bash exactly once to find the exact marker \
          DISCLOSURE_DEFERRED_READY. The returned snippet is the complete evidence: \
          do not read its path or use any second tool. Then reply with exactly \
          DISCLOSURE_DEFERRED_READY.",
@@ -1480,9 +1480,9 @@ fn capability_disclosure_deferred_tool_sample() -> Sample {
         "checks",
         json!([{
             "response_equals": "DISCLOSURE_DEFERRED_READY",
-            "tool_called": ["search_sessions"],
+            "tool_called": ["bash"],
             "metric_equals": {
-                "search_sessions_tool_calls": 1.0,
+                "sessions_search_calls": 1.0,
                 "tool_calls_failed": 0.0
             },
             "metric_at_most": {
@@ -2119,8 +2119,8 @@ struct Mined {
     repo_symbols_tool_calls_failed: u64,
     repo_map_narrowed_after_truncation: u64,
     repo_map_targeted_recovery_after_truncation: u64,
-    search_sessions_tool_calls: u64,
-    search_sessions_first_exploration: u64,
+    sessions_search_calls: u64,
+    sessions_search_first_exploration: u64,
     duplicate_exploration_calls: u64,
     calls_after_progress_warning: u64,
     calls_after_checkpoint_required: u64,
@@ -2421,13 +2421,31 @@ fn is_status_command(command: &str) -> bool {
         || command.starts_with("git diff ")
 }
 
+fn is_sessions_search_call(name: &str, data: &Value) -> bool {
+    if name != "bash" {
+        return false;
+    }
+    let command = normalized_command(&tool_command(data));
+    command.contains("sessions") && command.contains("search")
+}
+
+fn sessions_search_result_sessions(data: &Value) -> Option<Vec<Value>> {
+    let value = tool_result_value(data)?;
+    if let Some(sessions) = value.get("sessions").and_then(Value::as_array) {
+        return Some(sessions.clone());
+    }
+    let stdout = value.get("stdout")?.as_str()?;
+    let parsed: Value = serde_json::from_str(stdout).ok()?;
+    parsed.get("sessions")?.as_array().cloned()
+}
+
 fn classify_tool(data: &Value) -> ToolKind {
     let name = data
         .get("tool_name")
         .and_then(Value::as_str)
         .unwrap_or("unknown");
     match name {
-        "read_file" | "grep_files" | "repo_map" | "search_sessions" | "ast_grep"
+        "read_file" | "grep_files" | "repo_map" | "ast_grep"
         | "list_directory" | "stat_file" => {
             return ToolKind::Exploration;
         }
@@ -2455,6 +2473,8 @@ fn classify_tool(data: &Value) -> ToolKind {
             "git blame",
             "git grep",
             "git ls-files",
+            "yolop sessions search",
+            "yolop sessions list",
         ]
         .iter()
         .any(|prefix| command.starts_with(prefix))
@@ -2725,15 +2745,10 @@ fn parse_events(jsonl: &str) -> Mined {
                         repo_map_recovery_pending = true;
                     }
                 }
-                if name == "search_sessions" {
-                    m.search_sessions_tool_calls += 1;
+                if is_sessions_search_call(name, &data) {
+                    m.sessions_search_calls += 1;
                     m.session_result_bytes += result_bytes;
-                    if let Some(result) = tool_result_value(&data) {
-                        let sessions = result
-                            .get("sessions")
-                            .and_then(Value::as_array)
-                            .cloned()
-                            .unwrap_or_default();
+                    if let Some(sessions) = sessions_search_result_sessions(&data) {
                         let useful = sessions
                             .iter()
                             .filter(|session| {
@@ -2854,8 +2869,8 @@ fn parse_events(jsonl: &str) -> Mined {
                         current_exploration_without_progress = 0;
                     }
                     ToolKind::Exploration => {
-                        if !saw_exploration && name == "search_sessions" {
-                            m.search_sessions_first_exploration = 1;
+                        if !saw_exploration && is_sessions_search_call(name, &data) {
+                            m.sessions_search_first_exploration = 1;
                         }
                         saw_exploration = true;
                         if let Some(fingerprint) =
@@ -3418,12 +3433,12 @@ async fn run_yolop(sample: Sample, cx: RunCx) -> Transcript {
         mined.repo_map_targeted_recovery_after_truncation as f64,
     );
     t.metrics.insert(
-        "search_sessions_tool_calls".into(),
-        mined.search_sessions_tool_calls as f64,
+        "sessions_search_calls".into(),
+        mined.sessions_search_calls as f64,
     );
     t.metrics.insert(
-        "search_sessions_first_exploration".into(),
-        mined.search_sessions_first_exploration as f64,
+        "sessions_search_first_exploration".into(),
+        mined.sessions_search_first_exploration as f64,
     );
     t.metrics.insert(
         "duplicate_exploration_calls".into(),
@@ -3770,7 +3785,7 @@ mod tests {
     #[test]
     fn parse_events_mines_search_efficiency_trajectory() {
         let jsonl = r#"
-{"type":"tool.completed","data":{"tool_name":"search_sessions","success":true,"tool_call_fingerprint":"session-1","result":[{"type":"text","text":"{\"matches\":[]}"}]}}
+        {"type":"tool.completed","data":{"tool_name":"bash","success":true,"result":[{"type":"text","text":"{\"command\":\"yolop sessions search --query QUASAR-9182\",\"exit_code\":0,\"success\":true,\"stdout\":\"{\\\"sessions\\\":[]}\"}"}]}}
 {"type":"tool.completed","data":{"tool_name":"repo_map","success":true,"tool_call_fingerprint":"map-broad","result":[{"type":"text","text":"{\"query\":null,\"truncated\":true}"}]}}
 {"type":"tool.completed","data":{"tool_name":"repo_map","success":true,"tool_call_fingerprint":"map-broad","result":[{"type":"text","text":"{\"query\":null,\"truncated\":true,\"progress_guard_warning\":\"narrow\"}"}]}}
 {"type":"tool.completed","data":{"tool_name":"repo_map","success":true,"tool_call_fingerprint":"map-narrow","result":[{"type":"text","text":"{\"query\":\"answer\",\"truncated\":false}"}]}}
@@ -3778,8 +3793,8 @@ mod tests {
 {"type":"tool.completed","data":{"tool_name":"read_file","success":true,"tool_call_fingerprint":"read-1","result":[{"type":"text","text":"{\"path\":\"/workspace/outputs/call.stdout\",\"content\":\"recovered context\"}"}]}}
 "#;
         let m = parse_events(jsonl);
-        assert_eq!(m.search_sessions_tool_calls, 1);
-        assert_eq!(m.search_sessions_first_exploration, 1);
+        assert_eq!(m.sessions_search_calls, 1);
+        assert_eq!(m.sessions_search_first_exploration, 1);
         assert_eq!(m.duplicate_exploration_calls, 1);
         assert_eq!(m.repo_map_narrowed_after_truncation, 1);
         assert_eq!(m.repo_map_targeted_recovery_after_truncation, 1);
@@ -3790,7 +3805,7 @@ mod tests {
         assert_eq!(m.calls_after_progress_warning, 3);
         assert_eq!(m.inner_tool_failures, 1);
         assert_eq!(m.tool_calls_failed, 1);
-        assert_eq!(m.bash_tool_calls, 1);
+        assert_eq!(m.bash_tool_calls, 2);
         assert_eq!(m.read_file_tool_calls, 1);
         assert_eq!(m.persisted_output_recovery_calls, 1);
         assert_eq!(m.leading_marker_in_bash_result, 1);
@@ -3852,7 +3867,7 @@ mod tests {
     fn parse_events_measures_discovery_reuse_and_session_match_noise() {
         let jsonl = format!(
             r#"{{"type":"tool.completed","data":{{"tool_name":"read_file","success":true,"result":[{{"type":"text","text":"{{\"unchanged_since_last_read\":true}}"}}]}}}}
-{{"type":"tool.completed","data":{{"tool_name":"search_sessions","success":true,"result":[{{"type":"text","text":"{{\"sessions\":[{{\"session_id\":\"{OVERLAP_EVAL_SESSION_ID}\"}},{{\"session_id\":\"session_noise\"}}]}}"}}]}}}}"#
+        {{"type":"tool.completed","data":{{"tool_name":"bash","success":true,"result":[{{"type":"text","text":"{{\"command\":\"yolop sessions search --query QUASAR-9182\",\"exit_code\":0,\"success\":true,\"stdout\":\"{{\\\"sessions\\\":[{{\\\"session_id\\\":\\\"{OVERLAP_EVAL_SESSION_ID}\\\"}},{{\\\"session_id\\\":\\\"session_noise\\\"}}]}}\"}}"}}]}}}}"#,
         );
         let mined = parse_events(&jsonl);
         assert_eq!(mined.unchanged_reuse_responses, 1);

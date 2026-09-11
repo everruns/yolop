@@ -7,9 +7,9 @@
 pub mod background_wake;
 mod compaction_checkpoint;
 pub(crate) mod discovered_profiles;
-// Stopgap classifier for the OpenRouter account-attestation gate (403 with
-// `missing_attestation_types`). Replace with the upstream structured error
-// once `everruns-openrouter` reports the gate as a first-class kind.
+// Stopgap classifiers for OpenRouter account gates (403 attestation, 404
+// data-policy / guardrail). Replace with the upstream structured error once
+// `everruns-openrouter` reports those gates as first-class kinds.
 pub(crate) mod attestation;
 pub(crate) mod reasoning;
 pub mod session;
@@ -35,10 +35,10 @@ use crate::capabilities::{
     LspCapability, MODEL_RUNTIME_CONTEXT_CAPABILITY_ID, MODELS_CAPABILITY_ID, ModelCliCapability,
     ModelRuntimeContextCapability, ModelsCapability, PROGRESS_GUARD_CAPABILITY_ID,
     ProgressGuardCapability, REPO_MAP_CAPABILITY_ID, RepoMapCapability,
-    SESSION_COORDINATION_CAPABILITY_ID, SESSION_HISTORY_CAPABILITY_ID,
-    SessionCoordinationCapability, SessionHistoryCapability, SetupCliCapability,
-    TOOL_ARGUMENT_VALIDATION_CAPABILITY_ID, ToolArgumentValidationCapability,
-    USER_ASK_CAPABILITY_ID, UserAskCapability, WorktreeCapability, coordination_project_id,
+    SESSION_COORDINATION_CAPABILITY_ID, SESSIONS_CAPABILITY_ID, SessionCoordinationCapability,
+    SessionsCapability, SetupCliCapability, TOOL_ARGUMENT_VALIDATION_CAPABILITY_ID,
+    ToolArgumentValidationCapability, USER_ASK_CAPABILITY_ID, UserAskCapability,
+    WorktreeCapability, coordination_project_id,
 };
 use crate::config::capability_settings::{CapabilityCatalog, apply_capability_settings};
 use crate::config::mcp::McpConfigStore;
@@ -2475,11 +2475,12 @@ static GPT_5_6_PROFILE: LazyLock<ModelProfile> = LazyLock::new(|| {
 /// The reasoning-effort scale for a model, merged across every source that
 /// knows something about it:
 ///
-/// 1. the curated profile registry (plus yolop's local overrides), which is
-///    authoritative wherever it describes the model;
-/// 2. what the provider itself advertised at discovery, which is how a gateway
-///    catalog covers models the registry has never seen
-///    ([`discovered_profiles`]);
+/// 1. what the provider itself advertised at discovery: the gateway catalog is
+///    what knows a model's real scale (for example OpenRouter's
+///    `reasoning.supported_efforts`), so it wins wherever it describes the
+///    model ([`discovered_profiles`]);
+/// 2. the curated profile registry (plus yolop's local overrides), which is
+///    the fallback for models with nothing advertised on record;
 /// 3. yolop's own metadata for reasoning-required families
 ///    ([`reasoning::fallback_reasoning_effort_config`]), so a model whose
 ///    endpoint rejects a turn without reasoning has a scale and a default even
@@ -2488,8 +2489,21 @@ fn merged_reasoning_effort_config(
     provider_type: &DriverId,
     model: &str,
 ) -> Option<ReasoningEffortConfig> {
-    profile_reasoning_effort_config(provider_type, model)
-        .or_else(|| discovered_profiles::reasoning_effort_config(provider_type, model))
+    merge_reasoning_effort_config(
+        discovered_profiles::reasoning_effort_config(provider_type, model),
+        profile_reasoning_effort_config(provider_type, model),
+    )
+}
+
+/// Prefer what the provider advertised at discovery; the hardcoded registry
+/// (plus the reasoning-required fallback inside
+/// [`profile_reasoning_effort_config`]) is the fallback for models with
+/// nothing advertised on record.
+fn merge_reasoning_effort_config(
+    advertised: Option<ReasoningEffortConfig>,
+    hardcoded: Option<ReasoningEffortConfig>,
+) -> Option<ReasoningEffortConfig> {
+    advertised.or(hardcoded)
 }
 
 /// The two layers yolop will act on by itself: the curated profile registry,
@@ -2560,7 +2574,7 @@ fn default_coding_harness_capabilities(client_commands: bool) -> Vec<CapabilityR
         CapabilityRef::new(SKILLS_CAPABILITY_ID),
         CapabilityRef::new(HERDR_CAPABILITY_ID),
         CapabilityRef::new(REPO_MAP_CAPABILITY_ID),
-        CapabilityRef::new(SESSION_HISTORY_CAPABILITY_ID),
+        CapabilityRef::new(SESSIONS_CAPABILITY_ID),
         CapabilityRef::new(CHECKPOINT_CAPABILITY_ID),
         CapabilityRef::new(AST_GREP_CAPABILITY_ID),
         // Raw history stays searchable while the runtime persists a canonical
@@ -3411,6 +3425,14 @@ pub struct BuildOptions {
     /// elapsed budget; production leaves this `None` and uses
     /// [`provider_recovery_config`].
     pub provider_retry_config: Option<everruns_provider::llm_retry::LlmRetryConfig>,
+    /// Operator-defined environment context entries (`--env-context
+    /// KEY=VALUE`). Applied over sandbox builtins; the ACP editor identity
+    /// (below) wins over these on the reserved `editor` key.
+    pub extra_environment_context: Vec<(String, String)>,
+    /// Detected ACP editor identity, rendered as the reserved `editor`
+    /// context entry. Set per session by the ACP host; `None` everywhere
+    /// else, which omits the entry entirely.
+    pub editor_context_value: Option<String>,
 }
 
 impl Default for BuildOptions {
@@ -3427,6 +3449,8 @@ impl Default for BuildOptions {
             tool_approver: None,
             provider_stall_timeout: None,
             provider_retry_config: None,
+            extra_environment_context: Vec::new(),
+            editor_context_value: None,
         }
     }
 }
@@ -3571,6 +3595,22 @@ fn set_sandbox_environment_context(
 ) {
     registry.set("sandbox_mode", mode.as_str());
     registry.set("network_access", crate::exec::sandbox::network_access(mode));
+}
+
+/// Merge operator and protocol entries over the sandbox builtins. Later
+/// sources win: CLI `--env-context` defaults over builtins, then the
+/// protocol-detected `editor` value over both on its reserved key.
+fn apply_extra_environment_context(
+    registry: &EnvironmentContextRegistry,
+    extras: &[(String, String)],
+    editor_context_value: Option<&str>,
+) {
+    for (key, value) in extras {
+        registry.set(key, value);
+    }
+    if let Some(editor) = editor_context_value {
+        registry.set(crate::capabilities::host::EDITOR_CONTEXT_KEY, editor);
+    }
 }
 
 pub async fn build_with_options(
@@ -3919,6 +3959,11 @@ pub async fn build_with_options(
     let tool_reveals = Arc::new(RevealedTools::new());
     let environment_context = EnvironmentContextRegistry::default();
     set_sandbox_environment_context(&environment_context, sandbox_mode);
+    apply_extra_environment_context(
+        &environment_context,
+        &options.extra_environment_context,
+        options.editor_context_value.as_deref(),
+    );
     capabilities.register(ToolRevealCapability::new(tool_reveals.clone()));
     capabilities.register(SessionCapability);
     capabilities.register(AgentInstructionsCapability);
@@ -3938,10 +3983,7 @@ pub async fn build_with_options(
         skill_dirs.clone(),
     ));
     capabilities.register(RepoMapCapability::new(workspace_host.clone()));
-    capabilities.register(SessionHistoryCapability::new(
-        sessions_dir.clone(),
-        session_id,
-    ));
+    capabilities.register(SessionsCapability::new(sessions_dir.clone(), session_id));
     capabilities.register(AstGrepCapability::new(workspace_host.clone()));
     // `ast_edit` — structural rewrites with preview-first `dry_run`. Registered
     // for the catalog but intentionally NOT part of the default harness; enable
@@ -4259,11 +4301,10 @@ pub async fn build_with_options(
     // into the system prompt. Persists to the same `settings.toml`; provider/
     // model edits take effect next run. Registered after the catalog is built
     // (see below).
-    capabilities.register(ConnectorsCapability {
-        catalog: connection_catalog,
-        store: connections.clone(),
-        expose_connect_tool: !matches!(options.client_ui, ClientUiContext::Acp),
-    });
+    capabilities.register(ConnectorsCapability::new(
+        connection_catalog,
+        connections.clone(),
+    ));
     // `memory` — global, durable, structured user memory. Its MEMORY.md lives
     // beside settings.toml in the yolop config dir, so a tempdir settings path
     // in tests isolates memory automatically. Only titles are disclosed each
@@ -4717,7 +4758,7 @@ mod tests {
     #[test]
     fn enabled_extensions_are_owned_by_the_reversible_session_layer() {
         let mut harness = vec![
-            CapabilityRef::new("yolop_bash"),
+            CapabilityRef::new("bash"),
             CapabilityRef::new("ext:demo"),
             CapabilityRef::new("ext:other"),
         ];
@@ -4727,7 +4768,7 @@ mod tests {
                 .iter()
                 .map(|capability| capability.capability_id())
                 .collect::<Vec<_>>(),
-            vec!["yolop_bash"]
+            vec!["bash"]
         );
         assert_eq!(
             session
@@ -5004,7 +5045,7 @@ mod tests {
         let caps = default_coding_harness_capabilities(false);
         let validation = caps
             .iter()
-            .find(|capability| capability.capability_id() == "yolop_tool_argument_validation")
+            .find(|capability| capability.capability_id() == "tool_argument_validation")
             .expect("host-side tool argument validation must be enabled");
         let repair = caps
             .iter()
@@ -5133,18 +5174,13 @@ mod tests {
 
         assert!(built.startup.setup_recommended);
         assert_eq!(built.model.provider_name(), "llmsim");
-        assert!(
-            !built.startup.tool_names.contains(&"connect".to_string()),
-            "ACP must not expose model-facing connector credential entry: {:?}",
-            built.startup.tool_names
-        );
-        for connector_tool in ["list_connectors", "get_connector", "disconnect"] {
+        for connector_tool in ["list_connectors", "get_connector", "connect", "disconnect"] {
             assert!(
-                built
+                !built
                     .startup
                     .tool_names
                     .contains(&connector_tool.to_string()),
-                "non-secret connector operations remain available: {:?}",
+                "connector management is CLI-only (`yolop connectors ...`): {:?}",
                 built.startup.tool_names
             );
         }
@@ -5235,7 +5271,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn build_exposes_connector_tools_by_default() {
+    async fn build_keeps_connectors_cli_only() {
         use everruns_host::RuntimeHostAdapter;
 
         let workspace = tempfile::tempdir().expect("workspace");
@@ -5263,11 +5299,11 @@ mod tests {
         );
         for connector_tool in ["list_connectors", "connect", "disconnect", "get_connector"] {
             assert!(
-                built
+                !built
                     .startup
                     .tool_names
                     .contains(&connector_tool.to_string()),
-                "connector tools: {:?}",
+                "connector management is CLI-only (`yolop connectors ...`): {:?}",
                 built.startup.tool_names
             );
         }
@@ -9087,10 +9123,13 @@ mod tests {
     /// is in no profile registry, so the turn went out with no reasoning at all
     /// and OpenRouter answered "Reasoning is mandatory for this endpoint and
     /// cannot be disabled", while `/effort` had nothing to offer as a fix.
+    /// A probe id from the same `muse-spark` family stands in for the real one
+    /// here: the discovery cache is process-wide, so the real id belongs to
+    /// the discovery-seeding test below and sharing it would race.
     #[test]
     fn reasoning_required_openrouter_model_selects_and_sends_an_effort() {
         let next = ProviderChoice::default_openrouter()
-            .resolve_model_spec("meta/muse-spark-1.3-contributor")
+            .resolve_model_spec("meta/muse-spark-9.9-fallback-probe")
             .unwrap();
 
         assert_eq!(next.reasoning_effort(), Some("medium"));
@@ -9115,15 +9154,143 @@ mod tests {
     fn reasoning_required_model_accepts_an_explicit_effort() {
         let base = ProviderChoice::default_openrouter();
         let next = base
-            .resolve_model_spec("meta/muse-spark-1.3-contributor high")
+            .resolve_model_spec("meta/muse-spark-9.9-fallback-probe high")
             .unwrap();
         assert_eq!(next.reasoning_effort(), Some("high"));
 
         let err = base
-            .resolve_model_spec("meta/muse-spark-1.3-contributor turbo")
+            .resolve_model_spec("meta/muse-spark-9.9-fallback-probe turbo")
             .unwrap_err()
             .to_string();
         assert!(err.contains("low, medium, high"), "unexpected error: {err}");
+    }
+
+    /// The catalog copy only patches the driver's generic scale: anything else
+    /// recorded means the driver (or a narrower advertisement) already speaks,
+    /// and other providers and models never match.
+    #[test]
+    fn catalog_scale_override_covers_only_the_unmapped_driver_scale() {
+        let generic = ReasoningEffortConfig {
+            values: [
+                ReasoningEffort::Low,
+                ReasoningEffort::Medium,
+                ReasoningEffort::High,
+            ]
+            .into_iter()
+            .map(|value| ReasoningEffortValue {
+                name: format!("{value:?}"),
+                value,
+            })
+            .collect(),
+            default: ReasoningEffort::Medium,
+        };
+        let corrected = discovered_profiles::catalog_scale_override(
+            &DriverId::OpenRouter,
+            "meta/muse-spark-1.3-contributor",
+            &generic,
+        )
+        .expect("the generic driver scale must be corrected");
+        assert_eq!(corrected.default, ReasoningEffort::Medium);
+        assert_eq!(
+            corrected
+                .values
+                .into_iter()
+                .map(|value| value.value)
+                .collect::<Vec<_>>(),
+            vec![
+                ReasoningEffort::Minimal,
+                ReasoningEffort::Low,
+                ReasoningEffort::Medium,
+                ReasoningEffort::High,
+                ReasoningEffort::Xhigh,
+            ]
+        );
+
+        let mut narrower = generic.clone();
+        narrower.values.pop();
+        assert!(
+            discovered_profiles::catalog_scale_override(
+                &DriverId::OpenRouter,
+                "meta/muse-spark-1.3-contributor",
+                &narrower,
+            )
+            .is_none()
+        );
+        assert!(
+            discovered_profiles::catalog_scale_override(
+                &DriverId::OpenAI,
+                "meta/muse-spark-1.3-contributor",
+                &generic,
+            )
+            .is_none()
+        );
+        assert!(
+            discovered_profiles::catalog_scale_override(
+                &DriverId::OpenRouter,
+                "meta/some-other-model",
+                &generic,
+            )
+            .is_none()
+        );
+    }
+
+    /// The real muse-spark id, as the driver records it: `everruns-openrouter
+    /// 0.18.3` drops the catalog's `supported_efforts`, so the lookup
+    /// substitutes the catalog-verified levels instead of the driver's fixed
+    /// low/medium/high. `max` stays unoffered: it has no `ReasoningEffort`
+    /// variant yet.
+    #[test]
+    fn muse_spark_advertisement_uses_catalog_levels() {
+        // What the driver records for every reasoning model: the fixed scale,
+        // with the catalog's levels dropped.
+        let mut driver_record = discovered_profiles::advertised_profile_for_test();
+        driver_record.reasoning_effort = Some(ReasoningEffortConfig {
+            values: [
+                ReasoningEffort::Low,
+                ReasoningEffort::Medium,
+                ReasoningEffort::High,
+            ]
+            .into_iter()
+            .map(|value| ReasoningEffortValue {
+                name: format!("{value:?}"),
+                value,
+            })
+            .collect(),
+            default: ReasoningEffort::Medium,
+        });
+        discovered_profiles::remember(
+            &DriverId::OpenRouter,
+            &[everruns_provider::DiscoveredModel {
+                model_id: "meta/muse-spark-1.3-contributor".to_string(),
+                display_name: None,
+                created_at: None,
+                owned_by: None,
+                capabilities: vec!["chat".to_string()],
+                discovered_profile: Some(driver_record),
+            }],
+        );
+
+        let options = ProviderChoice::default_openrouter()
+            .resolve_model_spec("meta/muse-spark-1.3-contributor")
+            .expect("the real model id must resolve")
+            .reasoning_effort_options()
+            .into_iter()
+            .map(|option| option.value)
+            .collect::<Vec<_>>();
+        assert_eq!(options, vec!["minimal", "low", "medium", "high", "xhigh"]);
+        assert_eq!(
+            ProviderChoice::default_openrouter()
+                .resolve_model_spec("meta/muse-spark-1.3-contributor xhigh")
+                .unwrap()
+                .reasoning_effort(),
+            Some("xhigh"),
+        );
+        assert!(
+            ProviderChoice::default_openrouter()
+                .resolve_model_spec("meta/muse-spark-1.3-contributor max")
+                .is_err(),
+            "max has no ReasoningEffort variant yet, so it stays unoffered"
+        );
     }
 
     /// What the provider advertised at discovery covers models no registry
@@ -9179,9 +9346,50 @@ mod tests {
         assert!(err.contains("supports reasoning efforts: high"), "{err}");
     }
 
-    /// A model the curated registry does describe keeps the registry's answer.
+    /// What the provider advertised at discovery wins over the hardcoded
+    /// registry: the gateway catalog is what knows a model's real scale (for
+    /// example OpenRouter's `reasoning.supported_efforts`), while the registry
+    /// is the fallback for models with nothing advertised on record.
     #[test]
-    fn the_registry_still_owns_the_models_it_describes() {
+    fn advertised_scale_wins_over_hardcoded() {
+        let advertised = ReasoningEffortConfig {
+            values: vec![ReasoningEffortValue {
+                value: ReasoningEffort::Xhigh,
+                name: "Xhigh".to_string(),
+            }],
+            default: ReasoningEffort::Xhigh,
+        };
+        let hardcoded = ReasoningEffortConfig {
+            values: vec![ReasoningEffortValue {
+                value: ReasoningEffort::Medium,
+                name: "Medium".to_string(),
+            }],
+            default: ReasoningEffort::Medium,
+        };
+        assert_eq!(
+            merge_reasoning_effort_config(Some(advertised.clone()), Some(hardcoded.clone()))
+                .expect("two scales must merge to one")
+                .default,
+            ReasoningEffort::Xhigh,
+            "the advertised scale wins when both sources describe the model"
+        );
+        assert_eq!(
+            merge_reasoning_effort_config(None, Some(hardcoded.clone()))
+                .expect("the hardcoded scale must survive alone")
+                .default,
+            ReasoningEffort::Medium,
+            "the registry stays the fallback while nothing is advertised"
+        );
+        assert!(
+            merge_reasoning_effort_config(None, None).is_none(),
+            "no source means no scale"
+        );
+    }
+
+    /// A registry model with nothing advertised on record keeps the registry's
+    /// answer: the curated profile is the fallback, not the owner.
+    #[test]
+    fn the_registry_covers_models_with_nothing_advertised() {
         let registry_default = get_model_profile(&DriverId::OpenAI, "gpt-5.5")
             .and_then(|profile| profile.reasoning_effort)
             .map(|config| config.default.as_str().to_string());
@@ -9334,6 +9542,39 @@ mod tests {
     }
 
     #[test]
+    fn extra_environment_context_precedence() {
+        let registry = EnvironmentContextRegistry::default();
+        set_sandbox_environment_context(&registry, crate::config::SandboxMode::ReadOnly);
+        apply_extra_environment_context(
+            &registry,
+            &[
+                ("team".to_string(), "payments".to_string()),
+                ("editor".to_string(), "cli-default".to_string()),
+            ],
+            Some("paseo/dev"),
+        );
+
+        let context = registry.snapshot();
+        assert_eq!(context.get("team").map(String::as_str), Some("payments"));
+        // Protocol detection wins on the reserved key.
+        assert_eq!(context.get("editor").map(String::as_str), Some("paseo/dev"));
+        // Builtins survive alongside extras.
+        assert_eq!(
+            context.get("sandbox_mode").map(String::as_str),
+            Some("read-only")
+        );
+    }
+
+    #[test]
+    fn extra_environment_context_without_editor_omits_entry() {
+        let registry = EnvironmentContextRegistry::default();
+        set_sandbox_environment_context(&registry, crate::config::SandboxMode::ReadOnly);
+        apply_extra_environment_context(&registry, &[], None);
+
+        assert!(!registry.snapshot().contains_key("editor"));
+    }
+
+    #[test]
     fn system_prompt_requires_verification_before_finishing_edits() {
         let workflow = SYSTEM_PROMPT
             .split("## Workflow")
@@ -9449,9 +9690,8 @@ mod tests {
             "lsp_definition",
             "lsp_hover",
             "spawn_background",
-            "search_sessions",
             "run_command",
-            "search_models",
+            "search_files",
         ];
         let mut tools = eager
             .iter()
@@ -9506,13 +9746,13 @@ mod tests {
     }
 
     #[test]
-    fn coding_harness_enables_session_history() {
+    fn coding_harness_enables_sessions() {
         let ids = coding_harness_capabilities(false, None, &Settings::default());
 
         assert!(
             ids.iter()
-                .any(|cap| cap.capability_id() == SESSION_HISTORY_CAPABILITY_ID),
-            "search_sessions should be available for grounding prior-session investigations"
+                .any(|cap| cap.capability_id() == SESSIONS_CAPABILITY_ID),
+            "sessions search should be available through the sessions CLI for grounding prior-session investigations"
         );
     }
 
@@ -9726,11 +9966,14 @@ mod tests {
     async fn cold_start_prompt_composition_is_measured_by_component() {
         // Auto mode teaches the model to initialize its session worktree before mutation.
         // Skill scopes now advertise physical directories instead of synthetic roots.
-        const BASELINE_PROMPT_BYTES: usize = 14_496;
+        const BASELINE_PROMPT_BYTES: usize = 14_684;
+        // The +188 over the previous baseline buys control-route discovery for the
+        // `mcp` and `connectors` capabilities (summaries plus read-only operations),
+        // the CLI-only replacements for their removed model-facing tools.
         // Includes the logical model, config, setup, and mandatory skill
         // discovery/activation schemas that are intentionally eager.
         const BASELINE_TOOL_DEFINITION_BYTES: usize = 28_901;
-        const BASELINE_SCHEMA_BYTES: usize = 13_800;
+        const BASELINE_SCHEMA_BYTES: usize = 13_700;
         let workspace = tempfile::tempdir().expect("workspace");
         let sessions = tempfile::tempdir().expect("sessions");
         let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
@@ -9815,7 +10058,9 @@ mod tests {
         // skill discovery/activation eager avoids measured correction rounds.
         // That migration intentionally spent the prior schema savings on
         // list_skills and activate_skill, landing at 13,691 against the old
-        // 13,414 baseline; the guard moves to 13,800 with thin headroom.
+        // 13,414 baseline. Removing the search_sessions tool in favor of the
+        // sessions CLI lands the merged tree at 13,646; the guard moves to
+        // 13,700 with thin headroom.
         assert!(
             schema_bytes <= BASELINE_SCHEMA_BYTES,
             "schema bytes must remain below the historical all-eager surface: {schema_bytes} vs {BASELINE_SCHEMA_BYTES}"
@@ -10122,7 +10367,7 @@ mod tests {
     }
 
     #[test]
-    fn coding_harness_enables_yolop_attribution() {
+    fn coding_harness_enables_attribution() {
         let ids = coding_harness_capabilities(false, None, &Settings::default());
 
         assert!(
@@ -10219,7 +10464,7 @@ mod tests {
         assert!(enabled(TOOL_SEARCH_CAPABILITY_ID));
         assert!(enabled(TOOL_REVEAL_CAPABILITY_ID));
         assert_eq!(
-            TOOL_REVEAL_CAPABILITY_ID, "yolop_tool_reveal",
+            TOOL_REVEAL_CAPABILITY_ID, "tool_reveal",
             "the eval variant's `ref` string tracks this constant"
         );
 
@@ -10236,7 +10481,7 @@ mod tests {
             false,
             None,
         )
-        .expect("`yolop_tool_reveal` should resolve in the capability catalog");
+        .expect("`tool_reveal` should resolve in the capability catalog");
 
         let disabled =
             crate::config::capability_settings::apply_capability_settings(ids, &[override_entry]);
@@ -10341,7 +10586,7 @@ mod tests {
     fn always_on_capability_prompts_within_budget() {
         use crate::capabilities::agent_commands::AGENT_COMMANDS_PROMPT;
         use crate::capabilities::approval::render_approval_block;
-        use crate::capabilities::attribution::yolop_attribution_prompt;
+        use crate::capabilities::attribution::attribution_prompt;
         use crate::capabilities::background::BACKGROUND_SYSTEM_PROMPT;
         use crate::capabilities::client_commands::CLIENT_COMMANDS_PROMPT;
         use crate::capabilities::host::MODELS_PROMPT;
@@ -10364,7 +10609,7 @@ mod tests {
             ("client_commands", CLIENT_COMMANDS_PROMPT.len()),
             ("agent_commands", AGENT_COMMANDS_PROMPT.len()),
             ("setup", MODELS_PROMPT.len()),
-            ("attribution", yolop_attribution_prompt().len()),
+            ("attribution", attribution_prompt().len()),
             (
                 "yolop",
                 YolopCapability::new(&[COORDINATION_CONTROL_ROUTE, EXTENSIONS_CONTROL_ROUTE])

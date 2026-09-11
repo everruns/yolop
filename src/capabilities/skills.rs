@@ -346,7 +346,7 @@ fn write_if_changed(target: &Path, contents: &[u8]) -> std::io::Result<()> {
     std::fs::rename(&tmp, target)
 }
 
-pub(crate) const SKILL_MANAGEMENT_CAPABILITY_ID: &str = "yolop_skill_management";
+pub(crate) const SKILL_MANAGEMENT_CAPABILITY_ID: &str = "skill_management";
 
 /// Detached skill package and registry administration.
 pub(crate) struct SkillManagementCapability {

@@ -4960,6 +4960,63 @@ mod tests {
     }
 
     #[test]
+    fn openrouter_policy_hint_renders_a_clickable_labeled_link() {
+        // Account/policy hints are Assistant markdown so compact work shows
+        // them and the labeled destination survives painting as OSC 8.
+        use ratatui::layout::Position;
+        let mut lines: Vec<Line> = Vec::new();
+        let links = append_chat_lines(
+            &mut lines,
+            &ChatLine {
+                author: Author::Assistant,
+                text: "OpenRouter blocked this model under your data policy (paid-model training). Change the setting at [OpenRouter privacy settings](https://openrouter.ai/settings/privacy) and retry the turn.".to_string(),
+            },
+            120,
+        );
+        let link = links
+            .iter()
+            .find(|item| item.url == "https://openrouter.ai/settings/privacy")
+            .expect("policy hint must yield a BufferLink");
+        let mut buffer = ratatui::buffer::Buffer::empty(Rect::new(0, 0, 140, 4));
+        for (row, line) in lines.iter().enumerate() {
+            let mut x = 0u16;
+            for span in &line.spans {
+                x = buffer.set_span(x, row as u16, span, 140).0;
+            }
+        }
+        hyperlink::apply_buffer_links(
+            &mut buffer,
+            Position { x: 0, y: 0 },
+            &links,
+            hyperlink::LinkPolicy::WEB,
+        );
+        let mut event = tuika::Mouse::at(
+            tuika::MouseKind::Up(tuika::MouseButton::Left),
+            link.start_col + 1,
+            link.line,
+        );
+        event.ctrl = true;
+        assert_eq!(
+            hyperlink::ctrl_click_url(&event, &buffer, Rect::new(0, 0, 140, 4)).as_deref(),
+            Some("https://openrouter.ai/settings/privacy"),
+            "the privacy-settings label must preserve the destination"
+        );
+        let visible: String = lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert!(
+            visible.contains("privacy settings"),
+            "the clickable label is what the user sees: {visible:?}"
+        );
+        assert!(
+            !visible.contains("](https://"),
+            "markdown source must not leak: {visible:?}"
+        );
+    }
+
+    #[test]
     fn transcript_markdown_renders_commonmark_emphasis() {
         // Assistant transcript now flows through tuika's CommonMark renderer, so
         // inline **bold** / *italic* are resolved — the previous line-oriented

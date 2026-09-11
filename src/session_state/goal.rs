@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use std::sync::RwLock;
 use std::time::{Duration, Instant};
 
-pub(crate) const GOAL_CAPABILITY_ID: &str = "yolop_goal";
+pub(crate) const GOAL_CAPABILITY_ID: &str = "goal";
 pub(crate) const GOAL_COMMAND_NAME: &str = "goal";
 /// Internal `execute_command` argument — not user-facing.
 pub(crate) const GOAL_EVALUATE_ARG: &str = "\x00evaluate";
