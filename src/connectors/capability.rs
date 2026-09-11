@@ -337,9 +337,7 @@ mod tests {
     #[tokio::test]
     async fn control_list_reports_providers() {
         let (_tmp, capability) = test_capability();
-        let response = capability
-            .execute_action(&ConnectorsAction::List)
-            .await;
+        let response = capability.execute_action(&ConnectorsAction::List).await;
         let ToolExecutionResult::Success(value) = response else {
             panic!("expected JSON success, got {response:?}");
         };
