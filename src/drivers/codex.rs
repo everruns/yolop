@@ -441,6 +441,23 @@ fn codex_response_error(
             "Codex access was denied. Run `/setup` to sign in again, or choose another provider.",
         );
     }
+    if kind == LlmErrorKind::AttestationRequired
+        && let Some(requirement) =
+            everruns_provider::user_facing_error::parse_attestation_requirement(&body)
+    {
+        let detail = if requirement.missing_types.is_empty() {
+            "additional verification".to_owned()
+        } else {
+            requirement.missing_types.join(", ")
+        };
+        return AgentLoopError::llm_kind(
+            kind,
+            format!(
+                "Codex access requires {detail}. Confirm at {}",
+                requirement.confirm_url
+            ),
+        );
+    }
     AgentLoopError::llm_kind(kind, format!("Codex {operation} error ({status}): {body}"))
 }
 
@@ -1446,6 +1463,39 @@ mod tests {
     use std::sync::Mutex as StdMutex;
     use std::sync::mpsc;
     use std::thread;
+
+    #[test]
+    fn forbidden_attestation_gate_points_at_confirm_url() {
+        let body = "Access requires you to complete the following before use: \
+            https://openrouter.ai/settings/preferences."
+            .to_owned();
+        let err = codex_response_error("chat", StatusCode::FORBIDDEN, body, None);
+        let AgentLoopError::Llm(llm) = err else {
+            panic!("expected LLM error, got {err:?}");
+        };
+        assert_eq!(llm.kind, LlmErrorKind::AttestationRequired);
+        assert!(
+            llm.message
+                .contains("Confirm at https://openrouter.ai/settings/preferences"),
+            "unexpected message: {}",
+            llm.message
+        );
+    }
+
+    #[test]
+    fn forbidden_attestation_metadata_names_missing_types() {
+        let body = r#"{"error":{"code":403,"message":"Access requires you to complete the following before use","metadata":{"missing_attestation_types":["age_18plus"]}}}"#.to_owned();
+        let err = codex_response_error("chat", StatusCode::FORBIDDEN, body, None);
+        let AgentLoopError::Llm(llm) = err else {
+            panic!("expected LLM error, got {err:?}");
+        };
+        assert_eq!(llm.kind, LlmErrorKind::AttestationRequired);
+        assert!(
+            llm.message.contains("age_18plus") && llm.message.contains("Confirm at "),
+            "unexpected message: {}",
+            llm.message
+        );
+    }
 
     #[derive(Default)]
     struct MemoryAuthStore {
