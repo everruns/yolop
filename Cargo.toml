@@ -152,11 +152,16 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # release, while the published `everruns` facade 0.19.1 still calls the two-arg
 # form and accepts host `^0.20.3`. Caret ranges resolved both together and broke
 # every fresh install. Upstream has already fixed the call site in git but has
-# not republished the facade, so 0.20.4 and the whole batch published alongside
-# it (core 0.19.1, platform 0.19.2, provider 0.20.1, mcp 0.19.3, builtins 0.18.6,
-# llmsim 0.18.5, openai/anthropic/meta/openrouter 0.18.3) stay unadoptable: they
-# all require host `^0.20.4` directly or transitively. Lift these pins in one
-# commit once a facade release that compiles against host 0.20.4 is on crates.io.
+# not republished the facade, so the batch published alongside host 0.20.4
+# (core 0.19.1, platform 0.19.2, provider 0.20.1, mcp 0.19.3, builtins 0.18.6,
+# llmsim 0.18.5, openai/anthropic/meta/openrouter 0.18.3) briefly stayed
+# unadoptable: they all require host `^0.20.4` directly or transitively. The
+# `everruns` 0.20.0 facade release closed that hole and this tree adopted that
+# batch. The upstream v0.25.0 product release (core 0.20.0, platform 0.20.0,
+# provider 0.21.0, host 0.20.6, mcp 0.19.4, facade 0.20.1, builtins 0.18.7,
+# drivers and openai/anthropic/meta/openrouter 0.18.4, llmsim 0.18.6,
+# integrations-filesystem 0.18.4 and web-fetch/duckduckgo/parallel/daytona
+# 0.18.3) is the batch this tree adopts.
 # `everruns-local` is not an escape hatch: its latest release (0.18.0) is yanked,
 # so the facade's `local` feature is the only supported route to the SQLite,
 # git-workspace, and durable-log backends.
@@ -169,17 +174,17 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # transports, the driver registry). Adopting it today would collapse two of nine
 # dependencies and route the rest through escape hatches. Revisit when the
 # facade promotes provider registration, MCP, and capability wiring.
-everruns-anthropic = "=0.18.3"
-everruns-core = "=0.19.1"
+everruns-anthropic = "=0.18.4"
+everruns-core = "=0.20.0"
 # The identity/platform family (PlatformStore and friends) moved out of
 # everruns-core into its own crate in 0.17.24; yolop implements PlatformStore
 # to route background-task wakes (src/runtime/background_wake.rs).
-everruns-platform = "=0.19.2"
-everruns-openai = "=0.18.3"
-everruns-meta = "=0.18.3"
+everruns-platform = "=0.20.0"
+everruns-openai = "=0.18.4"
+everruns-meta = "=0.18.4"
 # OpenRouter's first-class driver was split out of everruns-openai into its own
 # crate in 0.13.0; register it alongside openai to keep DriverId::OpenRouter.
-everruns-openrouter = "=0.18.3"
+everruns-openrouter = "=0.18.4"
 # Filesystem persistence comes from the `everruns` facade's `local` feature, not
 # the standalone `everruns-local` crate: same SQLite, git-workspace, and durable
 # log backend, re-exported under `everruns::local`. `everruns-local` is not a
@@ -187,37 +192,37 @@ everruns-openrouter = "=0.18.3"
 # its latest release (0.18.0) is yanked outright.
 # Only the `local` feature is wanted; the facade's provider and capability
 # re-exports would duplicate the direct dependencies below.
-everruns = { version = "=0.20.0", default-features = false, features = ["local"] }
-everruns-mcp = { version = "=0.19.3", features = ["stdio"] }
+everruns = { version = "=0.20.1", default-features = false, features = ["local"] }
+everruns-mcp = { version = "=0.19.4", features = ["stdio"] }
 # `mcp-stdio` lets yolop talk to local-process MCP servers; the hosted
 # everruns server/worker never enable it (knowledge/specs/mcp.md, upstream runtime-mcp.md D2).
 #
 # everruns-host replaces everruns-runtime, which upstream deleted in #3101 as a
 # 0.18 breaking change. Every host symbol yolop used moved here unchanged except
 # EventBus, which the canonical event log replaces.
-everruns-host = { version = "=0.20.5", features = ["mcp-stdio"] }
+everruns-host = { version = "=0.20.6", features = ["mcp-stdio"] }
 # DirectEgressService, which yolop uses for MCP OAuth discovery, is host's own
 # `direct-egress` module; `mcp-stdio` already turns that feature on. The
 # standalone everruns-http crate that used to carry it is yanked on crates.io,
 # and a yanked dependency would make yolop unpublishable.
 # #3182 completed the library boundary cleanup: driver/model/provider types
 # and the built-in capabilities left everruns-core for their own crates.
-everruns-provider = "=0.20.1"
-everruns-builtins = "=0.18.6"
+everruns-provider = "=0.21.0"
+everruns-builtins = "=0.18.7"
 everruns-capability = "=0.18.1"
 # Yolop ships `--provider llmsim` as a user-facing offline mode, not just a test
 # fixture, so the simulator is a production dependency. 0.18 split it into the
 # production-safe `everruns-llmsim`; `everruns-test-support` documents itself as
 # test-only and must not be used from production code. The `host` feature carries
 # the runtime-builder extension trait.
-everruns-llmsim = { version = "=0.18.5", features = ["host"] }
+everruns-llmsim = { version = "=0.18.6", features = ["host"] }
 # Filesystem and web-fetch capability implementations moved out of
 # everruns-core into their own integration crates (#3119).
-everruns-integrations-filesystem = "=0.18.3"
-everruns-integrations-web-fetch = "=0.18.2"
-everruns-integrations-duckduckgo = "=0.18.2"
-everruns-integrations-parallel = "=0.18.2"
-everruns-integrations-daytona = "=0.18.2"
+everruns-integrations-filesystem = "=0.18.4"
+everruns-integrations-web-fetch = "=0.18.3"
+everruns-integrations-duckduckgo = "=0.18.3"
+everruns-integrations-parallel = "=0.18.3"
+everruns-integrations-daytona = "=0.18.3"
 arboard = { version = "3", features = ["wayland-data-control"] }
 futures = "0.3"
 html-escape = "0.2"

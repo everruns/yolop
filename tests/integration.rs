@@ -2281,8 +2281,9 @@ fn print_mode_attaches_images_to_provider_request() {
         .expect("messages array in request");
     let user = messages
         .iter()
-        .find(|msg| msg["role"] == "user")
-        .expect("user message in request");
+        .filter(|msg| msg["role"] == "user")
+        .find(|msg| msg["content"].is_array())
+        .expect("multimodal user message in request");
     let content = user["content"].as_array().expect("multimodal user content");
     let image_part = content
         .iter()

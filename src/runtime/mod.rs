@@ -10224,23 +10224,27 @@ mod tests {
         std::fs::write(workspace.path().join("note.txt"), "before\n").expect("seed note");
         let sessions = tempfile::tempdir().expect("sessions");
         let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
+        let messages = Arc::new(std::sync::Mutex::new(Vec::new()));
         let options = BuildOptions {
-            llmsim_override: Some(LlmSimConfig::scripted(vec![
-                SimTurn::ToolCalls(vec![SimToolCall {
-                    name: "tool_search".to_string(),
-                    arguments: serde_json::json!({"query": "write_file"}),
-                    id: None,
-                }]),
-                SimTurn::ToolCalls(vec![SimToolCall {
-                    name: "write_file".to_string(),
-                    arguments: serde_json::json!({
-                        "path": "note.txt",
-                        "content": "after\n"
-                    }),
-                    id: None,
-                }]),
-                SimTurn::Assistant("DONE".to_string()),
-            ])),
+            llmsim_override: Some(
+                LlmSimConfig::scripted(vec![
+                    SimTurn::ToolCalls(vec![SimToolCall {
+                        name: "tool_search".to_string(),
+                        arguments: serde_json::json!({"query": "write_file"}),
+                        id: None,
+                    }]),
+                    SimTurn::ToolCalls(vec![SimToolCall {
+                        name: "write_file".to_string(),
+                        arguments: serde_json::json!({
+                            "path": "note.txt",
+                            "content": "after\n"
+                        }),
+                        id: None,
+                    }]),
+                    SimTurn::Assistant("DONE".to_string()),
+                ])
+                .with_message_capture(messages.clone()),
+            ),
             ..BuildOptions::default()
         };
         let built = build_with_options(
@@ -10260,13 +10264,9 @@ mod tests {
             .load_context(built.handles.session_id)
             .await
             .expect("initial context");
-        assert!(
-            initial
-                .runtime_agent
-                .system_prompt
-                .contains("MANDATORY_DISCLOSURE_POLICY"),
-            "AGENTS.md must remain in the model-visible prompt"
-        );
+        // AGENTS.md now rides the provider-visible conversation context instead
+        // of the system prompt. The model-visibility assertion lives after the
+        // turn, against the captured provider messages.
         let initial_write = initial
             .runtime_agent
             .tools
@@ -10290,6 +10290,19 @@ mod tests {
             .expect("run turn");
         assert!(result.success, "scripted disclosure turn: {result:?}");
         assert_eq!(result.tool_calls_count, 2);
+        let provider_text = {
+            let captured = messages.lock().expect("captured provider messages");
+            captured
+                .iter()
+                .flat_map(|turn| turn.iter())
+                .map(|message| message.content_as_text())
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        assert!(
+            provider_text.contains("MANDATORY_DISCLOSURE_POLICY"),
+            "AGENTS.md must remain in the model-visible prompt"
+        );
         assert_eq!(
             std::fs::read_to_string(workspace.path().join("note.txt")).expect("read note"),
             "after\n"

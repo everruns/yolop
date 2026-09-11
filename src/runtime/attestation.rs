@@ -15,7 +15,10 @@
 //! target. Compact work also shows Assistant lines, while a System hint would
 //! sit in collapsed details. Replace this with the upstream structured error
 //! once `everruns-openrouter` reports these gates as first-class kinds.
-
+//! Provider 0.21 added `LlmErrorKind::AttestationRequired` plus a structured
+//! parser, but the parser drops overlong types and returns `None` where this
+//! module promises truncation and an empty fallback, so the string-level
+//! contract here stays until the driver itself surfaces the gate.
 /// Fallback confirm page when an attestation body carries no usable URL.
 pub(crate) const OPENROUTER_PREFERENCES_URL: &str = "https://openrouter.ai/settings/preferences";
 
