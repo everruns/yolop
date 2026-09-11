@@ -35,10 +35,10 @@ use crate::capabilities::{
     LspCapability, MODEL_RUNTIME_CONTEXT_CAPABILITY_ID, MODELS_CAPABILITY_ID, ModelCliCapability,
     ModelRuntimeContextCapability, ModelsCapability, PROGRESS_GUARD_CAPABILITY_ID,
     ProgressGuardCapability, REPO_MAP_CAPABILITY_ID, RepoMapCapability,
-    SESSION_COORDINATION_CAPABILITY_ID, SESSION_HISTORY_CAPABILITY_ID,
-    SessionCoordinationCapability, SessionHistoryCapability, SetupCliCapability,
-    TOOL_ARGUMENT_VALIDATION_CAPABILITY_ID, ToolArgumentValidationCapability,
-    USER_ASK_CAPABILITY_ID, UserAskCapability, WorktreeCapability, coordination_project_id,
+    SESSION_COORDINATION_CAPABILITY_ID, SESSIONS_CAPABILITY_ID, SessionCoordinationCapability,
+    SessionsCapability, SetupCliCapability, TOOL_ARGUMENT_VALIDATION_CAPABILITY_ID,
+    ToolArgumentValidationCapability, USER_ASK_CAPABILITY_ID, UserAskCapability,
+    WorktreeCapability, coordination_project_id,
 };
 use crate::config::capability_settings::{CapabilityCatalog, apply_capability_settings};
 use crate::config::mcp::McpConfigStore;
@@ -2574,7 +2574,7 @@ fn default_coding_harness_capabilities(client_commands: bool) -> Vec<CapabilityR
         CapabilityRef::new(SKILLS_CAPABILITY_ID),
         CapabilityRef::new(HERDR_CAPABILITY_ID),
         CapabilityRef::new(REPO_MAP_CAPABILITY_ID),
-        CapabilityRef::new(SESSION_HISTORY_CAPABILITY_ID),
+        CapabilityRef::new(SESSIONS_CAPABILITY_ID),
         CapabilityRef::new(CHECKPOINT_CAPABILITY_ID),
         CapabilityRef::new(AST_GREP_CAPABILITY_ID),
         // Raw history stays searchable while the runtime persists a canonical
@@ -3983,10 +3983,7 @@ pub async fn build_with_options(
         skill_dirs.clone(),
     ));
     capabilities.register(RepoMapCapability::new(workspace_host.clone()));
-    capabilities.register(SessionHistoryCapability::new(
-        sessions_dir.clone(),
-        session_id,
-    ));
+    capabilities.register(SessionsCapability::new(sessions_dir.clone(), session_id));
     capabilities.register(AstGrepCapability::new(workspace_host.clone()));
     // `ast_edit` — structural rewrites with preview-first `dry_run`. Registered
     // for the catalog but intentionally NOT part of the default harness; enable
@@ -9699,7 +9696,6 @@ mod tests {
             "lsp_definition",
             "lsp_hover",
             "spawn_background",
-            "search_sessions",
             "run_command",
             "search_models",
         ];
@@ -9756,13 +9752,13 @@ mod tests {
     }
 
     #[test]
-    fn coding_harness_enables_session_history() {
+    fn coding_harness_enables_sessions() {
         let ids = coding_harness_capabilities(false, None, &Settings::default());
 
         assert!(
             ids.iter()
-                .any(|cap| cap.capability_id() == SESSION_HISTORY_CAPABILITY_ID),
-            "search_sessions should be available for grounding prior-session investigations"
+                .any(|cap| cap.capability_id() == SESSIONS_CAPABILITY_ID),
+            "sessions search should be available through the sessions CLI for grounding prior-session investigations"
         );
     }
 
@@ -9980,7 +9976,7 @@ mod tests {
         // Includes the logical model, config, setup, and mandatory skill
         // discovery/activation schemas that are intentionally eager.
         const BASELINE_TOOL_DEFINITION_BYTES: usize = 28_901;
-        const BASELINE_SCHEMA_BYTES: usize = 13_800;
+        const BASELINE_SCHEMA_BYTES: usize = 13_700;
         let workspace = tempfile::tempdir().expect("workspace");
         let sessions = tempfile::tempdir().expect("sessions");
         let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
@@ -10065,7 +10061,9 @@ mod tests {
         // skill discovery/activation eager avoids measured correction rounds.
         // That migration intentionally spent the prior schema savings on
         // list_skills and activate_skill, landing at 13,691 against the old
-        // 13,414 baseline; the guard moves to 13,800 with thin headroom.
+        // 13,414 baseline. Removing the search_sessions tool in favor of the
+        // sessions CLI lands the merged tree at 13,646; the guard moves to
+        // 13,700 with thin headroom.
         assert!(
             schema_bytes <= BASELINE_SCHEMA_BYTES,
             "schema bytes must remain below the historical all-eager surface: {schema_bytes} vs {BASELINE_SCHEMA_BYTES}"
