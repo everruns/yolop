@@ -71,7 +71,7 @@ const HARNESS_VARIANTS: &[HarnessVariant] = &[
         name: "no-ast-grep",
         settings: "[[capabilities]]\nref = \"ast_grep\"\nenabled = false\n",
     },
-    // Reveal gating (`yolop_tool_reveal`) holds the `config` and `memory` how-to
+    // Reveal gating (`tool_reveal`) holds the `config` and `memory` how-to
     // prose back until `tool_search` loads one of their schemas. Disabling it
     // restores the always-on blocks, which is the A/B for the gate itself: does
     // withholding that prose until the tools are callable cost any task success?
@@ -81,7 +81,7 @@ const HARNESS_VARIANTS: &[HarnessVariant] = &[
     // not a settings toggle.
     HarnessVariant {
         name: "no-tool-reveal",
-        settings: "[[capabilities]]\nref = \"yolop_tool_reveal\"\nenabled = false\n",
+        settings: "[[capabilities]]\nref = \"tool_reveal\"\nenabled = false\n",
     },
 ];
 

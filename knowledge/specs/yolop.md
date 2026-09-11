@@ -34,7 +34,7 @@ section listing only the routes actually registered. It exposes no tools and no
 slash commands.
 
 Concrete self-configuration, settings, memory, hooks, approval, skills, lives
-in the capabilities that own those surfaces (`yolop_config`, `memory`, `hooks`,
+in the capabilities that own those surfaces (`config`, `memory`, `hooks`,
 and so on). This capability does not route to them; their own prompts and skills
 carry that guidance.
 

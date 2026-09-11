@@ -38,7 +38,7 @@ use everruns_provider::{BuiltinTool, DeferrablePolicy, ToolCall, ToolDefinition}
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 
-pub(crate) const APPROVAL_CAPABILITY_ID: &str = "yolop_approval";
+pub(crate) const APPROVAL_CAPABILITY_ID: &str = "approval";
 
 /// A critical action yolop has stopped in front of, waiting for the user to
 /// say yes.

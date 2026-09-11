@@ -26,7 +26,7 @@ use everruns_core::command::{
 use everruns_core::{Capability, CapabilityStatus};
 use std::sync::Arc;
 
-pub(crate) const CLIENT_COMMANDS_CAPABILITY_ID: &str = "yolop_client_commands";
+pub(crate) const CLIENT_COMMANDS_CAPABILITY_ID: &str = "client_commands";
 
 /// Raw text on purpose: the host wraps `system_prompt_addition` in `<capability>`
 /// tags once, so tags here would render twice.

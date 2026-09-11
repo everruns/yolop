@@ -1548,7 +1548,7 @@ fn detached_cli_registry() -> Result<control::CliRegistry> {
         connectors::default_connections_path().unwrap_or_else(|| fallback.join("connections.toml"));
     let settings = Arc::new(SettingsStore::open(settings_path));
     let secrets = extensions::ExtensionSecrets::new(Arc::new(connectors::ConnectionStore::open(
-        connections_path,
+        connections_path.clone(),
     )));
     let workspace = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let capability = Arc::new(
@@ -1596,6 +1596,10 @@ fn detached_cli_registry() -> Result<control::CliRegistry> {
         .unwrap_or_else(|| workspace.join(".yolop").join("sessions"));
     registry.register(Arc::new(capabilities::SessionsCapability::detached(
         sessions_dir,
+    )))?;
+    registry.register(Arc::new(connectors::ConnectorsCapability::new(
+        Arc::new(connectors::ConnectionCatalog::with_defaults()),
+        Arc::new(connectors::ConnectionStore::open(connections_path)),
     )))?;
     Ok(registry)
 }

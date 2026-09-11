@@ -1,4 +1,4 @@
-//! Experimental `yolop_user_ask` — track the user's request and validate it
+//! Experimental `user_ask` — track the user's request and validate it
 //! after each turn.
 //!
 //! Independent of `/goal`: records what the user wants, allows updates when they

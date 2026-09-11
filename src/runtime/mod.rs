@@ -4301,11 +4301,10 @@ pub async fn build_with_options(
     // into the system prompt. Persists to the same `settings.toml`; provider/
     // model edits take effect next run. Registered after the catalog is built
     // (see below).
-    capabilities.register(ConnectorsCapability {
-        catalog: connection_catalog,
-        store: connections.clone(),
-        expose_connect_tool: !matches!(options.client_ui, ClientUiContext::Acp),
-    });
+    capabilities.register(ConnectorsCapability::new(
+        connection_catalog,
+        connections.clone(),
+    ));
     // `memory` — global, durable, structured user memory. Its MEMORY.md lives
     // beside settings.toml in the yolop config dir, so a tempdir settings path
     // in tests isolates memory automatically. Only titles are disclosed each
@@ -4759,7 +4758,7 @@ mod tests {
     #[test]
     fn enabled_extensions_are_owned_by_the_reversible_session_layer() {
         let mut harness = vec![
-            CapabilityRef::new("yolop_bash"),
+            CapabilityRef::new("bash"),
             CapabilityRef::new("ext:demo"),
             CapabilityRef::new("ext:other"),
         ];
@@ -4769,7 +4768,7 @@ mod tests {
                 .iter()
                 .map(|capability| capability.capability_id())
                 .collect::<Vec<_>>(),
-            vec!["yolop_bash"]
+            vec!["bash"]
         );
         assert_eq!(
             session
@@ -5046,7 +5045,7 @@ mod tests {
         let caps = default_coding_harness_capabilities(false);
         let validation = caps
             .iter()
-            .find(|capability| capability.capability_id() == "yolop_tool_argument_validation")
+            .find(|capability| capability.capability_id() == "tool_argument_validation")
             .expect("host-side tool argument validation must be enabled");
         let repair = caps
             .iter()
@@ -5175,18 +5174,13 @@ mod tests {
 
         assert!(built.startup.setup_recommended);
         assert_eq!(built.model.provider_name(), "llmsim");
-        assert!(
-            !built.startup.tool_names.contains(&"connect".to_string()),
-            "ACP must not expose model-facing connector credential entry: {:?}",
-            built.startup.tool_names
-        );
-        for connector_tool in ["list_connectors", "get_connector", "disconnect"] {
+        for connector_tool in ["list_connectors", "get_connector", "connect", "disconnect"] {
             assert!(
-                built
+                !built
                     .startup
                     .tool_names
                     .contains(&connector_tool.to_string()),
-                "non-secret connector operations remain available: {:?}",
+                "connector management is CLI-only (`yolop connectors ...`): {:?}",
                 built.startup.tool_names
             );
         }
@@ -5277,7 +5271,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn build_exposes_connector_tools_by_default() {
+    async fn build_keeps_connectors_cli_only() {
         use everruns_host::RuntimeHostAdapter;
 
         let workspace = tempfile::tempdir().expect("workspace");
@@ -5305,11 +5299,11 @@ mod tests {
         );
         for connector_tool in ["list_connectors", "connect", "disconnect", "get_connector"] {
             assert!(
-                built
+                !built
                     .startup
                     .tool_names
                     .contains(&connector_tool.to_string()),
-                "connector tools: {:?}",
+                "connector management is CLI-only (`yolop connectors ...`): {:?}",
                 built.startup.tool_names
             );
         }
@@ -9697,7 +9691,7 @@ mod tests {
             "lsp_hover",
             "spawn_background",
             "run_command",
-            "search_models",
+            "search_files",
         ];
         let mut tools = eager
             .iter()
@@ -9972,7 +9966,10 @@ mod tests {
     async fn cold_start_prompt_composition_is_measured_by_component() {
         // Auto mode teaches the model to initialize its session worktree before mutation.
         // Skill scopes now advertise physical directories instead of synthetic roots.
-        const BASELINE_PROMPT_BYTES: usize = 14_496;
+        const BASELINE_PROMPT_BYTES: usize = 14_684;
+        // The +188 over the previous baseline buys control-route discovery for the
+        // `mcp` and `connectors` capabilities (summaries plus read-only operations),
+        // the CLI-only replacements for their removed model-facing tools.
         // Includes the logical model, config, setup, and mandatory skill
         // discovery/activation schemas that are intentionally eager.
         const BASELINE_TOOL_DEFINITION_BYTES: usize = 28_901;
@@ -10370,7 +10367,7 @@ mod tests {
     }
 
     #[test]
-    fn coding_harness_enables_yolop_attribution() {
+    fn coding_harness_enables_attribution() {
         let ids = coding_harness_capabilities(false, None, &Settings::default());
 
         assert!(
@@ -10467,7 +10464,7 @@ mod tests {
         assert!(enabled(TOOL_SEARCH_CAPABILITY_ID));
         assert!(enabled(TOOL_REVEAL_CAPABILITY_ID));
         assert_eq!(
-            TOOL_REVEAL_CAPABILITY_ID, "yolop_tool_reveal",
+            TOOL_REVEAL_CAPABILITY_ID, "tool_reveal",
             "the eval variant's `ref` string tracks this constant"
         );
 
@@ -10484,7 +10481,7 @@ mod tests {
             false,
             None,
         )
-        .expect("`yolop_tool_reveal` should resolve in the capability catalog");
+        .expect("`tool_reveal` should resolve in the capability catalog");
 
         let disabled =
             crate::config::capability_settings::apply_capability_settings(ids, &[override_entry]);
@@ -10589,7 +10586,7 @@ mod tests {
     fn always_on_capability_prompts_within_budget() {
         use crate::capabilities::agent_commands::AGENT_COMMANDS_PROMPT;
         use crate::capabilities::approval::render_approval_block;
-        use crate::capabilities::attribution::yolop_attribution_prompt;
+        use crate::capabilities::attribution::attribution_prompt;
         use crate::capabilities::background::BACKGROUND_SYSTEM_PROMPT;
         use crate::capabilities::client_commands::CLIENT_COMMANDS_PROMPT;
         use crate::capabilities::host::MODELS_PROMPT;
@@ -10612,7 +10609,7 @@ mod tests {
             ("client_commands", CLIENT_COMMANDS_PROMPT.len()),
             ("agent_commands", AGENT_COMMANDS_PROMPT.len()),
             ("setup", MODELS_PROMPT.len()),
-            ("attribution", yolop_attribution_prompt().len()),
+            ("attribution", attribution_prompt().len()),
             (
                 "yolop",
                 YolopCapability::new(&[COORDINATION_CONTROL_ROUTE, EXTENSIONS_CONTROL_ROUTE])

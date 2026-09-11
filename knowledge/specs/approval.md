@@ -51,7 +51,7 @@ omitted from the file to keep it sparse.
 
 ### System-prompt injection
 
-The `yolop_approval` capability reads the level **live each turn** and
+The `approval` capability reads the level **live each turn** and
 contributes a `<soft_approval>` block to the system prompt:
 
 - `off` contributes nothing.

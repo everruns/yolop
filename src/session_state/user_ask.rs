@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::RwLock;
 
-pub(crate) const USER_ASK_CAPABILITY_ID: &str = "yolop_user_ask";
+pub(crate) const USER_ASK_CAPABILITY_ID: &str = "user_ask";
 pub(crate) const USER_ASK_COMMAND_NAME: &str = "ask";
 /// Internal `execute_command` argument — not user-facing.
 pub(crate) const USER_ASK_EVALUATE_ARG: &str = "\x00evaluate";
@@ -375,7 +375,7 @@ pub(crate) fn system_prompt_block(status: &UserAskStatus) -> String {
         })
         .unwrap_or_default();
     format!(
-        "<capability id=\"yolop_user_ask\">\n\
+        "<capability id=\"user_ask\">\n\
 Track and satisfy the user's request. Call `set_user_ask` when they change direction; \
 `clear_user_ask` only when they abandon it.\n\
 Current user ask: {}\n\

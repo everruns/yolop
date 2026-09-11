@@ -153,5 +153,5 @@ untouched.
 - [Model list](model-list.md), the menu of models a session offers, whose entries
   may pin an effort.
 - [Conversational control](conversational-control.md), the control surfaces
-  (`set_reasoning_effort`, `/effort`, `/setup effort`) this metadata feeds.
+  (`yolop model use <id>:<effort>`, `/effort`, `/setup effort`) this metadata feeds.
 - [ACP](acp.md), the `reasoning_effort` config option served to editors.

@@ -12,13 +12,13 @@ use async_trait::async_trait;
 use everruns_core::{Capability, CapabilityStatus, SystemPromptContext};
 use std::sync::Arc;
 
-pub(crate) const ATTRIBUTION_CAPABILITY_ID: &str = "yolop_attribution";
+pub(crate) const ATTRIBUTION_CAPABILITY_ID: &str = "attribution";
 pub(crate) const YOLOP_ATTRIBUTION_TRAILER: &str = "Co-Authored-By: yolop <yolop@everruns.com>";
 pub(crate) const YOLOP_PR_ATTRIBUTION: &str = "Produced by [yolop](https://everruns.com/yolop)";
 
 /// Render the `## Attribution` system-prompt block. Pure so it is unit-testable
 /// without a `SystemPromptContext`.
-pub(crate) fn yolop_attribution_prompt() -> String {
+pub(crate) fn attribution_prompt() -> String {
     format!(
         "<capability id=\"{ATTRIBUTION_CAPABILITY_ID}\">\n\
 ## Attribution
@@ -59,12 +59,10 @@ impl Capability for AttributionCapability {
         Some("Examples")
     }
     async fn system_prompt_contribution(&self, _ctx: &SystemPromptContext) -> Option<String> {
-        self.config
-            .attribution_enabled()
-            .then(yolop_attribution_prompt)
+        self.config.attribution_enabled().then(attribution_prompt)
     }
     fn system_prompt_preview(&self) -> Option<String> {
-        Some(yolop_attribution_prompt())
+        Some(attribution_prompt())
     }
 }
 
@@ -88,7 +86,7 @@ mod tests {
             .await
             .expect("enabled attribution prompt");
         assert!(enabled.contains(YOLOP_ATTRIBUTION_TRAILER));
-        assert!(enabled.starts_with("<capability id=\"yolop_attribution\">\n"));
+        assert!(enabled.starts_with("<capability id=\"attribution\">\n"));
         assert!(enabled.trim_end().ends_with("</capability>"));
         assert_eq!(
             YOLOP_PR_ATTRIBUTION,

@@ -30,7 +30,7 @@ use everruns_provider::ToolCall;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
-pub(crate) const AGENT_COMMANDS_CAPABILITY_ID: &str = "yolop_agent_commands";
+pub(crate) const AGENT_COMMANDS_CAPABILITY_ID: &str = "agent_commands";
 
 /// Raw text on purpose: the host wraps `system_prompt_addition` in `<capability>`
 /// tags once, so tags here would render twice.

@@ -17,7 +17,7 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-pub(crate) const TOOL_ARGUMENT_VALIDATION_CAPABILITY_ID: &str = "yolop_tool_argument_validation";
+pub(crate) const TOOL_ARGUMENT_VALIDATION_CAPABILITY_ID: &str = "tool_argument_validation";
 const VALIDATOR_CACHE_LIMIT: usize = 128;
 const EXPECTED_SHAPE_DEPTH: usize = 3;
 const EXPECTED_OBJECT_PROPERTIES: usize = 32;

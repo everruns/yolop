@@ -1,14 +1,18 @@
-use crate::capabilities::narration::stable_labeled;
 use crate::config::mcp::McpConfigStore;
+use crate::control::{ControlCapability, ControlResponse, ControlRoute};
 use async_trait::async_trait;
-use everruns_core::tool_narration::ToolNarrationPhase;
-use everruns_core::{Capability, CapabilityStatus};
-use everruns_core::{Tool, ToolExecutionResult};
-use everruns_provider::ToolCall;
+use everruns_core::{Capability, CapabilityStatus, Tool, ToolExecutionResult};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
 pub(crate) const MCP_CAPABILITY_ID: &str = "mcp";
+
+pub(crate) const MCP_CONTROL_ROUTE: ControlRoute = ControlRoute {
+    resource: MCP_CAPABILITY_ID,
+    cli_subcommand: "mcp",
+    read_only_operations: &["list"],
+    summary: "Inspect and manage MCP servers. Listing is served inline; every mutation runs through `yolop mcp ...`.",
+};
 
 pub(crate) struct McpCapability {
     pub(crate) store: Arc<McpConfigStore>,
@@ -32,48 +36,33 @@ impl Capability for McpCapability {
         Some("Extensibility")
     }
 
-    // No system-prompt contribution: mutations live on the CLI command path
-    // (`yolop mcp ...` everywhere, `/mcp ...` terminal-only via run_command),
-    // documented there.
+    // No system-prompt contribution: everything lives on the control route
+    // (`yolop mcp ...`), documented there.
 
     fn tools(&self) -> Vec<Box<dyn Tool>> {
-        // Mutations are CLI-only (`yolop mcp ...` everywhere, `/mcp ...`
-        // terminal-only reached through run_command). The model gets the read-only list; nothing here competes
-        // with the command path, so there is no second reload story to forget.
-        vec![Box::new(ListMcpServersTool {
-            store: self.store.clone(),
-        })]
+        // Fully CLI-driven (`yolop mcp ...` everywhere, `/mcp ...`
+        // terminal-only reached through run_command). The read-only list is
+        // served by the control route below; no model-invoked tools remain.
+        Vec::new()
     }
-}
-
-struct ListMcpServersTool {
-    store: Arc<McpConfigStore>,
 }
 
 #[async_trait]
-impl Tool for ListMcpServersTool {
-    fn narrate(
-        &self,
-        _tool_call: &ToolCall,
-        phase: ToolNarrationPhase,
-        _locale: Option<&str>,
-        _ctx: everruns_core::tool_narration::ToolNarrationContext<'_>,
-    ) -> Option<String> {
-        Some(stable_labeled("List MCP servers", None, phase))
+impl ControlCapability for McpCapability {
+    fn control_route(&self) -> ControlRoute {
+        MCP_CONTROL_ROUTE
     }
-    fn name(&self) -> &str {
-        "list_mcp_servers"
-    }
-    fn display_name(&self) -> Option<&str> {
-        Some("List MCP servers")
-    }
-    fn description(&self) -> &str {
-        "List global and workspace MCP server configuration, including enabled state and override source."
-    }
-    fn parameters_schema(&self) -> Value {
-        json!({ "type": "object", "properties": {}, "additionalProperties": false })
-    }
-    async fn execute(&self, _arguments: Value) -> ToolExecutionResult {
+
+    async fn execute_control(&self, action: &Value) -> ToolExecutionResult {
+        let operation = action
+            .get("operation")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        if operation != "list" {
+            return ToolExecutionResult::tool_error(format!(
+                "unknown or write operation `{operation}`: manage MCP servers with `yolop mcp ...`"
+            ));
+        }
         match self.store.effective() {
             Ok(effective) => ToolExecutionResult::success(json!({
                 "ok": true,
@@ -84,10 +73,14 @@ impl Tool for ListMcpServersTool {
             Err(err) => ToolExecutionResult::tool_error(err),
         }
     }
+
+    fn render_control(&self, _action: &Value, response: &ControlResponse) -> String {
+        response.render_default()
+    }
 }
 
 // MCP mutations live on the command path (`yolop mcp ...`, `/mcp ...`);
-// this capability intentionally exposes no mutation tools.
+// this capability intentionally exposes no model-invoked tools.
 
 #[cfg(test)]
 mod tests {
@@ -103,28 +96,46 @@ mod tests {
     }
 
     #[test]
-    fn tools_exposes_only_read_operations() {
+    fn tools_exposes_no_model_tools() {
         let (_tmp, store) = test_store();
         let capability = McpCapability { store };
-        let names: Vec<_> = capability
-            .tools()
-            .iter()
-            .map(|tool| tool.name().to_string())
-            .collect();
-        assert_eq!(names, vec!["list_mcp_servers".to_string()]);
+        assert!(capability.tools().is_empty());
+    }
+
+    #[test]
+    fn control_route_points_at_mcp_cli() {
+        let (_tmp, store) = test_store();
+        let capability = McpCapability { store };
+        let route = capability.control_route();
+        assert_eq!(route.resource, "mcp");
+        assert_eq!(route.cli_subcommand, "mcp");
+        assert_eq!(route.read_only_operations, &["list"]);
     }
 
     #[tokio::test]
-    async fn list_tool_reports_effective_configuration() {
+    async fn control_list_reports_effective_configuration() {
         let (_tmp, store) = test_store();
-        let tool = ListMcpServersTool {
-            store: store.clone(),
-        };
-        let result = tool.execute(json!({})).await;
-        let everruns_core::ToolExecutionResult::Success(value) = result else {
-            panic!("expected JSON success, got {result:?}");
+        let capability = McpCapability { store };
+        let response = capability
+            .execute_control(&json!({ "operation": "list" }))
+            .await;
+        let ToolExecutionResult::Success(value) = response else {
+            panic!("expected JSON success, got {response:?}");
         };
         assert_eq!(value["ok"], true);
         assert!(value["servers"].is_array());
+    }
+
+    #[tokio::test]
+    async fn control_rejects_mutations_toward_cli() {
+        let (_tmp, store) = test_store();
+        let capability = McpCapability { store };
+        let response = capability
+            .execute_control(&json!({ "operation": "remove", "name": "x" }))
+            .await;
+        let ToolExecutionResult::ToolError(message) = response else {
+            panic!("expected error, got {response:?}");
+        };
+        assert!(message.contains("yolop mcp"), "{message}");
     }
 }
