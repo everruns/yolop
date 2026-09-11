@@ -12,7 +12,7 @@ use everruns_provider::{ToolCall, ToolHints};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
-pub(crate) const CHECKPOINT_CAPABILITY_ID: &str = "yolop_checkpoint";
+pub(crate) const CHECKPOINT_CAPABILITY_ID: &str = "checkpoint";
 
 pub(crate) struct CheckpointCapability {
     pub(crate) manager: Arc<CheckpointManager>,

@@ -180,7 +180,7 @@ impl ConfigCommandLine {
     }
 }
 
-pub(crate) const CONFIG_CAPABILITY_ID: &str = "yolop_config";
+pub(crate) const CONFIG_CAPABILITY_ID: &str = "config";
 
 pub(crate) struct ConfigCapability {
     pub(crate) settings: Arc<SettingsStore>,

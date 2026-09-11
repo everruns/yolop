@@ -6,7 +6,7 @@ description: Defines the user ask, request tracking and turn-end validation cont
 
 # User ask, request tracking and turn-end validation
 
-Status: experimental and opt-in through the `yolop_user_ask` capability.
+Status: experimental and opt-in through the `user_ask` capability.
 
 ## Why
 
@@ -58,7 +58,7 @@ with:
 
 ```toml
 [[capabilities]]
-ref = "yolop_user_ask"
+ref = "user_ask"
 enabled = true
 ```
 

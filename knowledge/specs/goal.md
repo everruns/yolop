@@ -6,7 +6,7 @@ description: Defines the product goal and principles that guide Yolop developmen
 
 # `/goal`, autonomous completion loops
 
-Status: implemented in yolop (`yolop_goal` capability).
+Status: implemented in yolop (`goal` capability).
 
 ## Why
 

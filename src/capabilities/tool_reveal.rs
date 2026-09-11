@@ -30,7 +30,7 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-pub(crate) const TOOL_REVEAL_CAPABILITY_ID: &str = "yolop_tool_reveal";
+pub(crate) const TOOL_REVEAL_CAPABILITY_ID: &str = "tool_reveal";
 
 /// Upper bound on tracked sessions. The registry is process-wide (one harness
 /// serves every session), so without eviction a long-lived process would grow
