@@ -199,6 +199,16 @@ impl CoordinationPayload {
             ),
         }
     }
+
+    /// Variant name only, deliberately omitting the session IDs `prompt()` carries.
+    #[cfg(test)]
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::Assignment { .. } => "assignment",
+            Self::Completion { .. } => "completion",
+            Self::Cancellation { .. } => "cancellation",
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -1678,7 +1688,7 @@ mod tests {
             CoordinationPayload::Assignment {
                 owner_session_id, ..
             } => assert_eq!(owner_session_id, owner),
-            other => panic!("expected assignment payload, got {}", other.prompt()),
+            other => panic!("expected assignment payload, got {}", other.kind()),
         }
         let cancel = CoordinationAction::Cancel {
             task_id: task_id.clone(),
@@ -1711,7 +1721,7 @@ mod tests {
                 coordinator_session_id,
                 ..
             } => assert_eq!(coordinator_session_id, owner),
-            other => panic!("expected cancellation payload, got {}", other.prompt()),
+            other => panic!("expected cancellation payload, got {}", other.kind()),
         }
         assert_eq!(
             store
