@@ -199,8 +199,8 @@ yolop --provider llmsim -p "hi"         # offline demo, no API key required
   checkpoint, and `/undo`, `/redo`, and `/rewind` restore conversation or
   workspace state without touching `HEAD` or the Git index. See
   [Session persistence](#session-persistence).
-- **Session search**: `search_sessions` finds recent local sessions by a
-  distinctive phrase, keeping investigations grounded in the saved event log.
+- **Session search**: `yolop sessions search` finds recent local sessions by a
+  distinctive phrase (also `yolop sessions list`), keeping investigations grounded in the saved event log.
 
 ### Providers
 
