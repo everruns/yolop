@@ -152,11 +152,17 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # release, while the published `everruns` facade 0.19.1 still calls the two-arg
 # form and accepts host `^0.20.3`. Caret ranges resolved both together and broke
 # every fresh install. Upstream has already fixed the call site in git but has
-# not republished the facade, so 0.20.4 and the whole batch published alongside
-# it (core 0.19.1, platform 0.19.2, provider 0.20.1, mcp 0.19.3, builtins 0.18.6,
-# llmsim 0.18.5, openai/anthropic/meta/openrouter 0.18.3) stay unadoptable: they
-# all require host `^0.20.4` directly or transitively. Lift these pins in one
-# commit once a facade release that compiles against host 0.20.4 is on crates.io.
+# not republished the facade, so the batch published alongside host 0.20.4
+# (core 0.19.1, platform 0.19.2, provider 0.20.1, mcp 0.19.3, builtins 0.18.6,
+# llmsim 0.18.5, openai/anthropic/meta/openrouter 0.18.3) briefly stayed
+# unadoptable: they all require host `^0.20.4` directly or transitively. The
+# `everruns` 0.20.0 facade release closed that hole and this tree adopts that
+# batch. The next upstream product release (v0.25.0: core 0.20.0, platform
+# 0.20.0, provider 0.21.0, host 0.20.6, mcp 0.19.4, facade 0.20.1, builtins
+# 0.18.7, drivers 0.18.4, llmsim 0.18.6) stays unadoptable until its facade,
+# host, mcp, and platform cone patches are all on crates.io; the drivers and
+# builtins in that batch already require provider 0.21 / core 0.20. Lift those
+# pins as a set once the full cone is published.
 # `everruns-local` is not an escape hatch: its latest release (0.18.0) is yanked,
 # so the facade's `local` feature is the only supported route to the SQLite,
 # git-workspace, and durable-log backends.
