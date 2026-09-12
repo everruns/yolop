@@ -1,6 +1,7 @@
 //! Owner-private, append-only persistence for provider compaction checkpoints.
 
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use everruns_core::{
     CompactionCheckpoint, CompactionCheckpointPayload, CompactionCheckpointStore,
     ProactiveCompactionAttempt,
@@ -36,6 +37,11 @@ struct StoredCheckpoint {
     model: String,
     format_version: u32,
     payload: CompactionCheckpointPayload,
+    /// Wall-clock time this record was written. None for rows written before
+    /// timestamps existed.
+    /// TODO (EVE-961): prefer core compaction event timestamps once everruns-core emits them.
+    #[serde(default)]
+    recorded_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -47,6 +53,11 @@ struct StoredAttempt {
     estimated_input_tokens: u64,
     input_message_count: usize,
     source_fingerprint: [u8; 32],
+    /// Wall-clock time this record was written. None for rows written before
+    /// timestamps existed.
+    /// TODO (EVE-961): prefer core compaction event timestamps once everruns-core emits them.
+    #[serde(default)]
+    recorded_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -282,6 +293,7 @@ impl CompactionCheckpointStore for JsonlCompactionCheckpointStore {
                 estimated_input_tokens: attempt.estimated_input_tokens,
                 input_message_count: attempt.input_message_count,
                 source_fingerprint: attempt.source_fingerprint,
+                recorded_at: Some(Utc::now()),
             }))?;
         }
         Ok(())
@@ -309,6 +321,7 @@ impl From<&CompactionCheckpoint> for StoredCheckpoint {
             model: checkpoint.model.clone(),
             format_version: checkpoint.format_version,
             payload: checkpoint.payload.clone(),
+            recorded_at: Some(Utc::now()),
         }
     }
 }
@@ -605,5 +618,53 @@ mod tests {
             .is_err()
         );
         assert_eq!(std::fs::read_to_string(target).unwrap(), "do not touch");
+    }
+
+    #[tokio::test]
+    async fn attempt_rows_carry_recorded_at_and_legacy_rows_still_load() {
+        let temp = tempfile::tempdir().unwrap();
+        let session_id = SessionId::new();
+        let path = temp.path().join(CHECKPOINT_LOG);
+        let store = JsonlCompactionCheckpointStore::with_active_sequence(
+            path.clone(),
+            session_id,
+            Arc::new(|_| true),
+        )
+        .unwrap();
+        store
+            .record_proactive_attempt(session_id, "openai-codex", "gpt-5.6", attempt(7))
+            .await
+            .unwrap();
+        // New rows are stamped with the write time.
+        let raw = std::fs::read_to_string(&path).unwrap();
+        let value: serde_json::Value = serde_json::from_str(raw.trim_end()).unwrap();
+        let stamped = value
+            .get("record")
+            .and_then(|record| record.get("recorded_at"))
+            .and_then(|stamp| stamp.as_str())
+            .expect("new attempt rows carry recorded_at");
+        assert!(stamped.contains('T'), "recorded_at is RFC3339: {stamped}");
+        // Legacy rows without the field still load as core attempts.
+        let mut legacy = value.clone();
+        legacy
+            .get_mut("record")
+            .and_then(|record| record.as_object_mut())
+            .unwrap()
+            .remove("recorded_at");
+        std::fs::write(&path, serde_json::to_string(&legacy).unwrap() + "\n").unwrap();
+        let reopened = JsonlCompactionCheckpointStore::with_active_sequence(
+            path,
+            session_id,
+            Arc::new(|_| true),
+        )
+        .unwrap();
+        assert_eq!(
+            reopened
+                .get_proactive_attempt(session_id, "openai-codex", "gpt-5.6")
+                .await
+                .unwrap()
+                .unwrap(),
+            attempt(7)
+        );
     }
 }
