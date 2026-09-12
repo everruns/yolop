@@ -624,12 +624,15 @@ impl ChatDriver for CodexChatDriver {
         })
     }
 
+    // TODO (EVE-961): replace this interim log telemetry with the structured
+    // compaction lifecycle events once everruns-core emits them at its decision points.
     async fn compact(
         &self,
         _endpoint: &ProviderEndpoint,
         request: CompactRequest,
     ) -> EverrunsResult<Option<CompactResponse>> {
         if !self.compaction_policy.supports(&self.compaction_scope) {
+            tracing::debug!("Codex native compaction skipped: policy does not support compact");
             return Ok(None);
         }
 
@@ -639,6 +642,7 @@ impl ChatDriver for CodexChatDriver {
             None
         };
         if !self.compaction_policy.supports(&self.compaction_scope) {
+            tracing::debug!("Codex native compaction skipped after probe gate; using fallback");
             return Ok(None);
         }
         if probe_guard.is_some() && !self.compaction_policy.needs_probe(&self.compaction_scope) {
@@ -696,6 +700,7 @@ impl ChatDriver for CodexChatDriver {
             .json::<CompactResponse>()
             .await
             .map_err(|err| AgentLoopError::llm(format!("Invalid Codex compact response: {err}")))?;
+        tracing::info!("Codex native compaction completed");
         Ok(Some(compact))
     }
 }

@@ -599,6 +599,8 @@ const CONTEXT_GAUGE_CELLS: u32 = 8;
 /// compaction actually triggers on a char/4 token *estimate* of the message
 /// history (everruns-core `should_compact_proactively`), so the true trigger
 /// point can drift from the mark.
+/// TODO (EVE-961): surface core compaction lifecycle events
+/// (attempt/skip/install/fail) here once everruns-core emits them.
 pub(crate) fn context_label(
     used: Option<u32>,
     window: Option<u32>,

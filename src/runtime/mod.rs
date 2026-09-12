@@ -2968,6 +2968,9 @@ impl RuntimeHandles {
                 }
                 _ => None,
             })
+            // Cache accounting is additive: everruns usage buckets are disjoint
+            // (input + output + cache_read + cache_creation), so cache_read_tokens
+            // overlap the same prefix each turn and must never be subtracted from input.
             .map(|usage| {
                 u64::from(usage.input_tokens)
                     + u64::from(usage.output_tokens)
