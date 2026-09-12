@@ -10,6 +10,29 @@ mechanical `### What's Changed` list of merged PRs.
 Releases are cut via [`/release`](./.agents/skills/release/SKILL.md), which
 tags the version and publishes to crates.io and the Homebrew tap.
 
+## [0.18.1] - 2026-09-12
+
+### Highlights
+
+- Named profiles can now be managed from the CLI and control plane (#698)
+- Configured MCP servers are listed in the agent system prompt (#700)
+- OpenRouter 402 billing pauses now guide users to wait or add credits, and validation errors are actionable (#701, #705)
+- Compaction checkpoints stamp rows and trace Codex compaction (#703)
+
+### What's Changed
+
+* fix(transcript), feat(runtime): actionable validation errors and eager spawn_background schema ([#705](https://github.com/everruns/yolop/pull/705)) by @chaliy
+* fix(ship): require human confirmation for safety-critical steps in agent workflow ([#704](https://github.com/everruns/yolop/pull/704)) by @chaliy
+* feat(compaction): stamp checkpoint rows and trace Codex compaction ([#703](https://github.com/everruns/yolop/pull/703)) by @chaliy
+* fix(config): advertise ProfilesSettings with its schema ([#702](https://github.com/everruns/yolop/pull/702)) by @chaliy
+* feat(openrouter): guide 402 in-flight billing pauses ([#701](https://github.com/everruns/yolop/pull/701)) by @chaliy
+* feat(mcp): list configured servers in agent system prompt ([#700](https://github.com/everruns/yolop/pull/700)) by @chaliy
+* fix(auth): surface everruns login branding ([#699](https://github.com/everruns/yolop/pull/699)) by @chaliy
+* feat(profiles): manage named profiles from CLI and control plane ([#698](https://github.com/everruns/yolop/pull/698)) by @chaliy
+* fix(ship): keep invoking the merge tool call ([#697](https://github.com/everruns/yolop/pull/697)) by @chaliy
+
+**Full Changelog**: https://github.com/everruns/yolop/compare/v0.18.0...v0.18.1
+
 ## [0.18.0] - 2026-09-11
 
 ### Highlights
