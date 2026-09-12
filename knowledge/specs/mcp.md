@@ -50,7 +50,8 @@ path, so MCP tools flow through the same agent loop as the built-in tools.
   (`tools/list`) and routes `mcp_*` tool calls to the MCP executor. Tool names
   are prefixed (`mcp_<server>__<tool>`) by the runtime to avoid collisions.
 - **Visibility**: `/mcp` lists the configured servers; configured server names
-  also appear in `StartupInfo`.
+  also appear in `StartupInfo` and in the agent system prompt (first 10, with
+  `yolop mcp list` as the full discovery path).
 - **Live reload**: server changes apply to the running session without a
   restart. `/mcp enable|disable|remove` mutate config and immediately re-apply;
   `/mcp reload` re-reads config from disk (picking up `yolop mcp add`, hand

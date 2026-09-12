@@ -1,9 +1,11 @@
-use crate::config::mcp::McpConfigStore;
+use crate::config::mcp::{McpConfigStore, McpServerSummary};
 use crate::control::{ControlCapability, ControlResponse, ControlRoute};
 use async_trait::async_trait;
-use everruns_core::{Capability, CapabilityStatus, Tool, ToolExecutionResult};
+use everruns_core::{Capability, CapabilityStatus, SystemPromptContext, Tool, ToolExecutionResult};
 use serde_json::{Value, json};
 use std::sync::Arc;
+
+pub(crate) const MCP_VISIBLE_SERVERS: usize = 10;
 
 pub(crate) const MCP_CAPABILITY_ID: &str = "mcp";
 
@@ -16,6 +18,34 @@ pub(crate) const MCP_CONTROL_ROUTE: ControlRoute = ControlRoute {
 
 pub(crate) struct McpCapability {
     pub(crate) store: Arc<McpConfigStore>,
+}
+
+pub(crate) fn render_mcp_prompt(servers: &[McpServerSummary]) -> String {
+    let mut prompt = String::from("<capability id=\"mcp\">\nMCP servers provide external tools. ");
+    if servers.is_empty() {
+        prompt.push_str("No MCP servers are configured yet. ");
+    } else {
+        prompt.push_str("Configured servers (scope plus on/off state):\n");
+        for server in servers.iter().take(MCP_VISIBLE_SERVERS) {
+            let scope = format!("{:?}", server.scope).to_lowercase();
+            let state = if server.enabled {
+                "enabled"
+            } else {
+                "disabled"
+            };
+            prompt.push_str(&format!("- `{}` ({scope}, {state})\n", server.name));
+        }
+        let hidden = servers.len().saturating_sub(MCP_VISIBLE_SERVERS);
+        if hidden > 0 {
+            prompt.push_str(&format!(
+                "... and {hidden} more. Run `yolop mcp list` for the full set.\n"
+            ));
+        }
+    }
+    prompt.push_str(
+        "Discover the full set with the control tool (resource `mcp`, operation `list`) or `yolop mcp list`; details with `yolop mcp show <name>`. Manage with `yolop mcp login <name>` for OAuth, `yolop mcp enable <name>` / `yolop mcp disable <name>` to toggle, `yolop mcp add ...` to add, `yolop mcp remove <name>` to remove. Do not guess `.mcp.json` paths or environment keys; use `yolop mcp ...` instead.\n</capability>",
+    );
+    prompt
 }
 
 #[async_trait]
@@ -36,8 +66,23 @@ impl Capability for McpCapability {
         Some("Extensibility")
     }
 
-    // No system-prompt contribution: everything lives on the control route
-    // (`yolop mcp ...`), documented there.
+    // MCP servers are invisible to tool search, so name them here the way the
+    // skills capability names discoverable skills. The control route stays the
+    // full discovery surface; this block keeps agents from guessing at
+    // `.mcp.json` paths or environment keys.
+    async fn system_prompt_contribution(&self, _ctx: &SystemPromptContext) -> Option<String> {
+        let servers = self.store.effective().ok().map(|config| config.servers)?;
+        Some(render_mcp_prompt(&servers))
+    }
+
+    fn system_prompt_preview(&self) -> Option<String> {
+        let servers = self
+            .store
+            .effective()
+            .map(|config| config.servers)
+            .unwrap_or_default();
+        Some(render_mcp_prompt(&servers))
+    }
 
     fn tools(&self) -> Vec<Box<dyn Tool>> {
         // Fully CLI-driven (`yolop mcp ...` everywhere, `/mcp ...`
@@ -137,5 +182,70 @@ mod tests {
             panic!("expected error, got {response:?}");
         };
         assert!(message.contains("yolop mcp"), "{message}");
+    }
+
+    fn seed_server(store: &McpConfigStore, name: &str) {
+        use crate::config::mcp::{McpConfigScope, McpServerEntry};
+        use everruns_core::{McpServerTransportType, ScopedMcpServer};
+
+        store
+            .upsert(
+                McpConfigScope::Global,
+                name,
+                McpServerEntry {
+                    enabled: true,
+                    server: ScopedMcpServer {
+                        transport_type: McpServerTransportType::Http,
+                        url: "https://example.com/mcp".to_string(),
+                        ..Default::default()
+                    },
+                },
+            )
+            .expect("seed server");
+    }
+
+    #[tokio::test]
+    async fn system_prompt_lists_servers_and_discovery() {
+        let (_tmp, store) = test_store();
+        seed_server(&store, "linear");
+        let capability = McpCapability { store };
+        let prompt = capability
+            .system_prompt_contribution(&SystemPromptContext::without_file_store(
+                everruns_provider::typed_id::SessionId::new(),
+            ))
+            .await
+            .expect("mcp prompt");
+        assert!(prompt.contains("linear"), "{prompt}");
+        assert!(prompt.contains("yolop mcp list"), "{prompt}");
+        assert!(prompt.contains("yolop mcp login"), "{prompt}");
+        assert!(prompt.contains("yolop mcp enable"), "{prompt}");
+    }
+
+    #[tokio::test]
+    async fn system_prompt_truncates_long_server_lists() {
+        let (_tmp, store) = test_store();
+        for i in 0..12 {
+            seed_server(&store, &format!("server-{i:02}"));
+        }
+        let capability = McpCapability { store };
+        let prompt = capability
+            .system_prompt_contribution(&SystemPromptContext::without_file_store(
+                everruns_provider::typed_id::SessionId::new(),
+            ))
+            .await
+            .expect("mcp prompt");
+        assert!(prompt.contains("server-00"), "{prompt}");
+        assert!(!prompt.contains("server-11"), "{prompt}");
+        assert!(prompt.contains("more"), "{prompt}");
+        assert!(prompt.contains("yolop mcp list"), "{prompt}");
+    }
+
+    #[test]
+    fn system_prompt_preview_mentions_discovery_when_empty() {
+        let (_tmp, store) = test_store();
+        let capability = McpCapability { store };
+        let prompt = capability.system_prompt_preview().expect("mcp preview");
+        assert!(prompt.contains("yolop mcp list"), "{prompt}");
+        assert!(prompt.contains("yolop mcp show"), "{prompt}");
     }
 }
