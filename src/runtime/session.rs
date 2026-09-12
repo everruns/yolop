@@ -807,6 +807,47 @@ mod tests {
         assert!(lines[1].text.starts_with("turn error: "));
     }
 
+    /// The transcript an OpenRouter 402 billing pause leaves behind: a wait
+    /// and credits link replacing the generic apology, then the raw error.
+    #[test]
+    fn an_inflight_billing_pause_names_the_wait_and_credits_page() {
+        let error = "I encountered an error while processing your request. Please try again \
+            later.turn error: LLM error: provider 'openrouter': OpenAI Responses API error \
+            (402 Payment Required): {\"error\":{\"message\":\"This request would exceed \
+            your available credits given your current in-flight requests. Retry after \
+            in-flight requests settle, or add credits.\",\"code\":402,\"metadata\":{\"reason\":\
+            \"in_flight_budget_exhausted\",\"headers\":{\"Retry-After\":\"120\"}}}}";
+
+        let lines = failed_turn_transcript(
+            vec![ChatLine {
+                author: Author::Assistant,
+                text: "I encountered an error while processing your request. Please try again \
+                    later."
+                    .into(),
+            }],
+            error,
+            None,
+        );
+
+        assert_eq!(
+            lines.len(),
+            2,
+            "the apology is replaced by the way out: {lines:?}"
+        );
+        assert_eq!(lines[0].author, Author::Assistant);
+        assert_eq!(lines[1].author, Author::System);
+        assert!(
+            lines[0].text.contains("OpenRouter paused this request")
+                && lines[0].text.contains("about 2 minutes")
+                && lines[0]
+                    .text
+                    .contains("[OpenRouter credits](https://openrouter.ai/settings/credits)"),
+            "the hint names the pause, the wait, and a labeled credits page: {}",
+            lines[0].text
+        );
+        assert!(lines[1].text.starts_with("turn error: "));
+    }
+
     #[tokio::test]
     async fn cancelling_agent_turn_finishes_without_host_transcript_status() {
         let workspace = tempfile::tempdir().expect("workspace");
