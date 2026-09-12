@@ -5084,7 +5084,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join(" ");
         assert!(prompt.contains("actions need confirmation and wait"));
-        assert!(prompt.contains("a request is not approval"));
+        assert!(prompt.contains("A bare request is not approval"));
     }
 
     #[test]
@@ -9630,19 +9630,21 @@ mod tests {
     }
 
     #[test]
-    fn system_prompt_forbids_announcing_unexecuted_actions() {
-        let workflow = SYSTEM_PROMPT
-            .split("## Workflow")
+    fn system_prompt_scopes_safety_to_explicit_preapproval() {
+        // Safety must not contradict the approval flow: asking-to-ship
+        // pre-approves push, PR, and merge, and a recorded grant covers its
+        // action. A bare request is still not approval.
+        let safety = SYSTEM_PROMPT
+            .split("## Safety")
             .nth(1)
-            .and_then(|tail| tail.split("## Safety").next())
-            .expect("workflow section should be present")
+            .expect("safety section should be present")
             .split_whitespace()
             .collect::<Vec<_>>()
             .join(" ");
 
-        assert!(workflow.contains("Never announce an action"));
-        assert!(workflow.contains("same response"));
-        assert!(workflow.contains("text-only response ends the turn"));
+        assert!(safety.contains("unless explicitly pre-approved"));
+        assert!(safety.contains("asking-to-ship pre-approves push, PR, and merge"));
+        assert!(safety.contains("A bare request is not approval"));
     }
 
     #[test]
@@ -9990,7 +9992,7 @@ mod tests {
     async fn cold_start_prompt_composition_is_measured_by_component() {
         // Auto mode teaches the model to initialize its session worktree before mutation.
         // Skill scopes now advertise physical directories instead of synthetic roots.
-        const BASELINE_PROMPT_BYTES: usize = 14_848;
+        const BASELINE_PROMPT_BYTES: usize = 14_776;
         // The +188 over the previous baseline buys control-route discovery for the
         // `mcp` and `connectors` capabilities (summaries plus read-only operations),
         // the CLI-only replacements for their removed model-facing tools.
@@ -10541,7 +10543,7 @@ mod tests {
         // to 1_414 without moving the cap, leaving `main` red. Raised to that
         // plus the ~20 bytes of headroom the cap has always carried, rather
         // than trimming guidance that was added deliberately.
-        const MAX_BYTES: usize = 1_720;
+        const MAX_BYTES: usize = 1_576;
         assert!(
             SYSTEM_PROMPT.len() <= MAX_BYTES,
             "SYSTEM_PROMPT is {} bytes (~{} tokens), cap is {} bytes",
@@ -10632,11 +10634,11 @@ mod tests {
         use crate::extensions::EXTENSIONS_CONTROL_ROUTE;
         use everruns_core::Capability as _;
 
-        // Current total is 7,044 (includes the system.md same-response rule); the headroom is deliberately thin. The
+        // Current total is 6,901 (includes the Safety pre-approval scope); the headroom is deliberately thin. The
         // yolop block is what a full session renders (framing plus both routes
         // registered): it replaces per-route prompt text, so adding a CLI route
         // costs one line here rather than a block.
-        const MAX_BYTES: usize = 7_072;
+        const MAX_BYTES: usize = 6_928;
 
         let approval = render_approval_block(ApprovalMode::Normal).expect("normal contributes");
         let blocks: Vec<(&str, usize)> = vec![
