@@ -145,7 +145,7 @@ async fn wait_for_callback(listener: TcpListener) -> Result<String> {
             write_response(
                 &mut socket,
                 "200 OK",
-                "OpenRouter login complete. You can return to the terminal.",
+                "OpenRouter login complete. You can return to the client.",
             )
             .await?;
             return Ok(code.clone());
@@ -348,7 +348,7 @@ mod tests {
             write_response(
                 &mut socket,
                 "200 OK",
-                "OpenRouter login complete. You can return to the terminal.",
+                "OpenRouter login complete. You can return to the client.",
             )
             .await
             .unwrap();

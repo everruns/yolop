@@ -326,7 +326,7 @@ async fn wait_for_callback(
             write_callback_response(
                 &mut socket,
                 "200 OK",
-                "Yolop Codex login complete. You can return to the terminal.",
+                "Yolop Codex login complete. You can return to the client.",
             )
             .await?;
             return Ok(code.clone());
@@ -437,7 +437,7 @@ mod tests {
 
         assert!(page.contains("<svg"));
         assert!(page.contains("Codex is connected."));
-        assert!(page.contains("Your terminal is already warming up the keyboard."));
+        assert!(page.contains("The connection is saved and ready to use."));
         assert!(page.contains("Yolop Codex login complete."));
     }
 }

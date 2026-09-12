@@ -79,9 +79,9 @@ pub fn callback_page(status: &str, message: &str, connection_label: &str) -> Str
     };
     let eyebrow = if ok { "Signed in" } else { "Login interrupted" };
     let fun = if ok {
-        "Your terminal is already warming up the keyboard."
+        "The connection is saved and ready to use."
     } else {
-        "The terminal kept your seat warm. Try the login flow again when ready."
+        "No changes were made. Try the login flow again when ready."
     };
     let class = if ok { "success" } else { "error" };
     let headline = if ok {
@@ -99,11 +99,11 @@ pub fn callback_page(status: &str, message: &str, connection_label: &str) -> Str
   <style>
     :root {{
       color-scheme: light dark;
-      --ink: #12131a;
+      --ink: #0A0A0A;
       --muted: #626776;
       --panel: rgba(255, 255, 255, 0.86);
       --line: rgba(18, 19, 26, 0.12);
-      --gold: #d4a43a;
+      --gold: #D7AB4A;
       --navy: #0a1636;
       --bad: #b74747;
     }}
@@ -111,10 +111,10 @@ pub fn callback_page(status: &str, message: &str, connection_label: &str) -> Str
     html, body {{ min-height: 100%; }}
     body {{
       margin: 0;
-      font: 16px/1.5 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font: 15px/1.55 "Geist Sans", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       color: var(--ink);
       background:
-        radial-gradient(circle at 18% 12%, rgba(212, 164, 58, 0.22), transparent 28rem),
+        radial-gradient(circle at 18% 12%, rgba(215, 171, 74, 0.22), transparent 28rem),
         radial-gradient(circle at 85% 18%, rgba(10, 22, 54, 0.14), transparent 30rem),
         linear-gradient(135deg, #fbfaf7 0%, #eef1f7 100%);
       display: grid;
@@ -124,48 +124,51 @@ pub fn callback_page(status: &str, message: &str, connection_label: &str) -> Str
     main {{
       width: min(720px, 100%);
       border: 1px solid var(--line);
-      border-radius: 28px;
-      padding: clamp(28px, 6vw, 56px);
+      border-radius: 8px;
+      padding: clamp(24px, 4vw, 40px);
       background: var(--panel);
       box-shadow: 0 24px 80px rgba(10, 22, 54, 0.16);
       backdrop-filter: blur(20px);
     }}
     .logo {{
-      width: 88px;
-      height: 88px;
+      width: 64px;
+      height: 64px;
       display: grid;
       place-items: center;
-      border-radius: 24px;
+      border-radius: 8px;
       background: #fff;
       box-shadow: inset 0 0 0 1px var(--line), 0 12px 32px rgba(10, 22, 54, 0.12);
-      margin-bottom: 28px;
+      margin-bottom: 20px;
     }}
-    .logo svg {{ width: 62px; height: 62px; display: block; }}
+    .logo svg {{ width: 44px; height: 44px; display: block; }}
     .eyebrow {{
       margin: 0 0 10px;
       color: {accent};
       font-weight: 700;
       text-transform: uppercase;
-      font-size: 0.82rem;
+      font-size: 0.75rem;
+      letter-spacing: 0.08em;
     }}
     h1 {{
       margin: 0;
-      font-size: clamp(2rem, 7vw, 4.25rem);
-      line-height: 0.96;
+      font-size: clamp(1.5rem, 3.5vw, 2.25rem);
+      line-height: 1.08;
+      letter-spacing: -0.01em;
     }}
     .message {{
-      margin: 24px 0 0;
+      margin: 16px 0 0;
       color: var(--muted);
-      font-size: clamp(1rem, 2.2vw, 1.2rem);
+      font-size: 0.9375rem;
       max-width: 38rem;
     }}
     .next {{
-      margin-top: 34px;
-      padding: 18px 20px;
-      border-radius: 16px;
+      margin-top: 24px;
+      padding: 14px 16px;
+      border-radius: 4px;
+      font-size: 0.875rem;
       background: rgba(10, 22, 54, 0.06);
       color: var(--navy);
-      font-weight: 650;
+      font-weight: 500;
     }}
     .success .next {{ border-left: 5px solid var(--gold); }}
     .error .next {{ border-left: 5px solid var(--bad); }}
@@ -265,5 +268,12 @@ mod tests {
         assert!(page.contains("MCP server is connected."));
         assert!(page.contains("Connected to &lt;tools&gt;."));
         assert!(!page.contains("Connected to <tools>."));
+        assert!(page.contains("The connection is saved and ready to use."));
+        assert!(!page.contains("terminal"));
+        assert!(page.contains("Geist Sans"));
+        assert!(page.contains("clamp(1.5rem, 3.5vw, 2.25rem)"));
+
+        let denied = callback_page("400 Bad Request", "Denied.", "MCP server");
+        assert!(denied.contains("No changes were made."));
     }
 }
