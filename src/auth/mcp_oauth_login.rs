@@ -118,7 +118,7 @@ async fn wait_for_callback(listener: TcpListener, expected_state: &str) -> Resul
             write_response(
                 &mut socket,
                 "200 OK",
-                "MCP login complete. You can return to the terminal.",
+                "MCP login complete. You can return to the client.",
             )
             .await?;
             return Ok(Callback {
@@ -247,7 +247,7 @@ mod tests {
             write_response(
                 &mut socket,
                 "200 OK",
-                "MCP login complete. You can return to the terminal.",
+                "MCP login complete. You can return to the client.",
             )
             .await
             .unwrap();
