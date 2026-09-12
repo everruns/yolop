@@ -94,7 +94,9 @@ resolved — including nits, low-confidence suggestions, and bot comments. A rep
 is required even when the resolution is a pure code change.
 
 Merge with `gh pr merge --squash` after CI is green and a final comment sweep is
-clean; give async reviewer bots at least 2 minutes after CI turns green. Do not
+clean. Emit the merge tool call in the same response as the green verdict, never
+announce the merge in a text-only response: a text-only response ends the turn
+and leaves the PR unmerged. Give async reviewer bots at least 2 minutes after CI turns green. Do not
 enable auto-merge — bots can post after the last push. After the merge lands,
 watch main CI for the merge commit and fix or revert promptly if it fails.
 

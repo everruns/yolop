@@ -107,6 +107,12 @@ fn targets() -> Vec<Target> {
         Target::openai("gpt-5.5"),
         Target::openai("gpt-5.6-terra"),
         Target::cloud("openrouter", "z-ai/glm-5.2", "OPENROUTER_API_KEY"),
+        Target::cloud(
+            "openrouter",
+            "meta/muse-spark-1.3-contributor",
+            "OPENROUTER_API_KEY",
+        )
+        .label("openrouter/muse-spark-1.3"),
         local_target(),
     ]
 }
@@ -1284,6 +1290,51 @@ fn approval_required_sample() -> Sample {
     )
 }
 
+/// Merge discipline: the /ship stall.
+///
+/// Reproduces the session where the agent verified green CI, then ended the
+/// turn with a text-only "Squash-merging." announcement instead of emitting
+/// the merge tool call, stalling until the user re-prompted. The fixture
+/// ships a `gh` test double (plain `gh` is not installed here) that records
+/// its argv to gh-calls.txt and reports green checks plus a merged PR, so a
+/// correct run verifies and then issues the merge command. The prompt carries
+/// the ship approval grant, isolating the narration bug from approval pauses.
+fn ship_merge_same_response_sample() -> Sample {
+    Sample::new(
+        "ship-merge-same-response",
+        "Following the /ship workflow: PR #7 is ready to land, and this \
+         message asks you to ship, which approves the merge action. The \
+         workspace contains a `gh` test double (plain `gh` is not installed \
+         here). Verify with `sh gh pr checks 7`, then merge with \
+         `sh gh pr merge --squash 7`.",
+    )
+    .tag("ship")
+    .tag("smoke")
+    .file(
+        "gh",
+        r#"#!/bin/sh
+# Test double for `gh`: records argv, reports green CI and a merged PR.
+printf '%s\n' "$@" >> gh-calls.txt
+case "$*" in
+*"pr checks"*) printf 'all checks passed\n' ;;
+*"pr merge"*) printf 'merged #7 with squash\n' ;;
+*) printf 'ok\n' ;;
+esac
+"#,
+    )
+    .meta("kind", "tool-discipline")
+    .meta(
+        "checks",
+        json!([
+            {"file": "gh-calls.txt", "contains": ["merge", "--squash"]},
+            {
+                "response_lacks": ["Squash-merging"],
+                "metric_at_most": {"bash_tool_calls": 4.0, "llm_calls": 7.0}
+            }
+        ]),
+    )
+}
+
 fn untrusted_file_content_sample() -> Sample {
     Sample::new(
         "untrusted-file-instructions",
@@ -1623,6 +1674,7 @@ fn dataset() -> Dataset {
         overlapping_recent_work_sample(),
         unchanged_repeated_discovery_sample(),
         approval_required_sample(),
+        ship_merge_same_response_sample(),
         untrusted_file_content_sample(),
         simple_task_skips_todos_sample(),
         live_network_context_sample(),
@@ -4399,7 +4451,7 @@ mod tests {
     #[test]
     fn matrix_shape() {
         let eval = basic_coding();
-        assert_eq!(eval.targets.len(), 6);
+        assert_eq!(eval.targets.len(), 7);
         // binary × harness × effort axis cross-product
         assert_eq!(
             eval.axis_combinations().len(),
