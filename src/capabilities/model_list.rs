@@ -37,7 +37,7 @@ pub(crate) const MODEL_LIST_CONTROL_ROUTE: ControlRoute = ControlRoute {
     resource: "models",
     cli_subcommand: "config",
     read_only_operations: &["list"],
-    summary: "manage models and switch the session model",
+    summary: "inspect or change persistent settings and manage models",
 };
 
 #[derive(Subcommand, Debug)]
