@@ -378,12 +378,21 @@ pub struct ActiveProfile {
 }
 
 impl ActiveProfile {
-    pub fn load(settings_path: &Path, raw_name: &str) -> Result<Self> {
+    /// Resolve the canonical file for a validated profile name.
+    pub fn path_for(settings_path: &Path, raw_name: &str) -> Result<(ProfileName, PathBuf)> {
         let name = ProfileName::parse(raw_name)?;
         let parent = settings_path.parent().unwrap_or_else(|| Path::new("."));
-        let path = parent
-            .join("profiles")
-            .join(format!("{}.toml", name.as_str()));
+        Ok((
+            name.clone(),
+            parent
+                .join("profiles")
+                .join(format!("{}.toml", name.as_str())),
+        ))
+    }
+
+    pub fn load(settings_path: &Path, raw_name: &str) -> Result<Self> {
+        let (name, path) = Self::path_for(settings_path, raw_name)?;
+        let parent = settings_path.parent().unwrap_or_else(|| Path::new("."));
         let text = std::fs::read_to_string(&path)
             .with_context(|| format!("read profile `{}` from {}", name.as_str(), path.display()))?;
         let table: Table = toml::from_str(&text)

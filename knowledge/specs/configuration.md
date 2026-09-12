@@ -136,6 +136,23 @@ are global-only and make a selected profile fail validation. Invalid known
 values also fail startup; unknown keys produce a warning and are ignored for
 forward compatibility.
 
+### Managing profiles
+
+`yolop profiles` lists the profiles in the config root and marks the active
+one. `profiles show <name>` prints the sparse overlay, `profiles create <name>
+[--from <source>]` writes a new overlay file and refuses to overwrite an
+existing one, and `profiles delete <name> --yes` removes it. Deletion refuses
+the attached session's active profile. Profile edits apply to later sessions
+only; the running session keeps its own settings.
+
+`yolop config --profile <name> get|set|clear|model ...` targets a profile
+overlay instead of the attached session. Reads resolve that profile's overlay
+over global settings, and writes land in the profile file through the same
+validation and profile-scoped persistence as an active session. `--profile` is
+rejected for `config models` and `config hooks`. The option sits on the
+`config` command, so it never changes which profile the invoking process
+itself runs with.
+
 ### A profile is the unit of a purpose-built agent
 
 v1 profiles overlaid *execution* settings only, which was enough to switch

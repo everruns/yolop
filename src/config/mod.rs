@@ -649,7 +649,7 @@ fn save_profile_to(path: &Path, overlay: &profile::SettingsOverlay) -> Result<()
     save_table_to(path, &overlay.to_table())
 }
 
-fn save_table_to(path: &Path, table: &Table) -> Result<()> {
+pub(crate) fn save_table_to(path: &Path, table: &Table) -> Result<()> {
     let parent = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())

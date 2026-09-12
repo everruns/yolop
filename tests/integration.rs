@@ -646,6 +646,137 @@ fn missing_named_profile_fails_before_starting_a_session() {
     assert!(stderr.contains("read profile `missing`"), "stderr={stderr}");
 }
 
+#[cfg(unix)]
+#[test]
+fn profiles_and_config_profile_manage_named_overlay() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let config_root = if cfg!(target_os = "macos") {
+        tmp.path().join("Library/Application Support")
+    } else {
+        tmp.path().join(".config")
+    };
+    let yolop_config = config_root.join("yolop");
+    std::fs::create_dir_all(&yolop_config).expect("config dir");
+    let base_path = yolop_config.join("settings.toml");
+    let profile_path = yolop_config.join("profiles").join("review.toml");
+    std::fs::write(
+        &base_path,
+        "default_provider = 'openai'\n[tokens]\nopenai = 'global-secret'\n",
+    )
+    .expect("base settings");
+
+    let run = |args: &[&str]| -> std::process::Output {
+        Command::new(yolop_binary())
+            .args(args)
+            .env("HOME", tmp.path())
+            .env("XDG_CONFIG_HOME", &config_root)
+            .env_remove("OPENAI_API_KEY")
+            .env_remove("ANTHROPIC_API_KEY")
+            .output()
+            .expect("spawn yolop")
+    };
+
+    // Lifecycle: create, list, show.
+    let output = run(&["profiles", "create", "review"]);
+    assert!(
+        output.status.success(),
+        "create failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let output = run(&["profiles", "create", "review"]);
+    assert!(!output.status.success(), "duplicate create must fail");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("already exists"),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let output = run(&["profiles"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "list failed");
+    assert!(stdout.contains("review"), "stdout={stdout}");
+
+    // Targeted mutation: the overlay gains the key, the global file does not.
+    let output = run(&[
+        "config",
+        "--profile",
+        "review",
+        "set",
+        "default_provider",
+        "llmsim",
+    ]);
+    assert!(
+        output.status.success(),
+        "targeted set failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let output = run(&["config", "--profile", "review", "get", "default_provider"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "targeted get failed");
+    assert!(stdout.contains("llmsim"), "stdout={stdout}");
+    let output = run(&["profiles", "show", "review"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "show failed");
+    assert!(stdout.contains("default_provider"), "stdout={stdout}");
+    assert!(
+        !std::fs::read_to_string(&base_path)
+            .unwrap()
+            .contains("llmsim"),
+        "global settings must not receive the profile value"
+    );
+
+    // A fresh session resolves the managed value.
+    let output = Command::new(yolop_binary())
+        .args([
+            "--profile",
+            "review",
+            "--session-dir",
+            tmp.path().join("sessions").to_str().unwrap(),
+            "-p",
+            "hi",
+        ])
+        .env("HOME", tmp.path())
+        .env("XDG_CONFIG_HOME", &config_root)
+        .env_remove("OPENAI_API_KEY")
+        .env_remove("ANTHROPIC_API_KEY")
+        .output()
+        .expect("spawn yolop with profile");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "profile run failed: stdout={stdout} stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(stdout.contains("offline mode"), "stdout={stdout}");
+
+    // Guards: unknown profiles, missing confirmation, command scoping.
+    let output = run(&["config", "--profile", "missing", "get", "default_provider"]);
+    assert!(!output.status.success(), "unknown profile must fail");
+    let output = run(&["profiles", "delete", "review"]);
+    assert!(!output.status.success(), "delete without --yes must fail");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("--yes"),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let output = run(&["config", "--profile", "review", "models"]);
+    assert!(!output.status.success(), "scoped models must fail");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("--profile is supported by"),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // Delete: removed, then gone.
+    let output = run(&["profiles", "delete", "review", "--yes"]);
+    assert!(output.status.success(), "delete failed");
+    assert!(!profile_path.exists(), "profile file must be removed");
+    let output = run(&["profiles", "show", "review"]);
+    assert!(!output.status.success(), "show after delete must fail");
+    let output = run(&["profiles"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(!stdout.contains("review"), "stdout={stdout}");
+}
+
 #[test]
 fn version_flag_succeeds() {
     let output = Command::new(yolop_binary())
