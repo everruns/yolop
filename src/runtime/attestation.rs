@@ -486,15 +486,18 @@ mod tests {
     #[test]
     fn billing_hint_names_wait_and_credits_link() {
         let hint = billing_error_hint(BILLING_ERROR).expect("hint is produced");
-        assert!(hint.contains("about 2 minutes"), "hint: {hint}");
+        assert!(
+            hint.contains("about 2 minutes"),
+            "billing hint names the retry wait"
+        );
         assert!(
             hint.contains("[OpenRouter credits](https://openrouter.ai/settings/credits)"),
-            "hint is a labeled markdown link: {hint}"
+            "billing hint links to OpenRouter credits with a label"
         );
-        assert!(!hint.contains('{'), "hint carries no JSON blob: {hint}");
+        assert!(!hint.contains('{'), "billing hint carries no JSON blob");
         assert!(
             !hint.contains("user_39S0"),
-            "hint drops the provider user id: {hint}"
+            "billing hint drops the provider user id"
         );
     }
 
@@ -506,7 +509,10 @@ mod tests {
             detect_openrouter_billing(message).expect("billing without header is detected");
         assert_eq!(pressure.retry_after_secs, None);
         let hint = billing_error_hint(message).expect("hint is produced");
-        assert!(hint.contains("Wait for those to settle"), "hint: {hint}");
+        assert!(
+            hint.contains("Wait for those to settle"),
+            "billing hint advises waiting for in-flight requests"
+        );
     }
 
     #[test]
