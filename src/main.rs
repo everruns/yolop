@@ -1575,6 +1575,9 @@ fn detached_cli_registry() -> Result<control::CliRegistry> {
         catalog: Arc::new(catalog),
         model_list: model_list.clone(),
     }))?;
+    registry.register(Arc::new(capabilities::ProfilesCapability::new(
+        settings.clone(),
+    )))?;
     registry.register(Arc::new(capabilities::ModelCliCapability::detached()))?;
     registry.register(Arc::new(capabilities::SetupCliCapability::detached()))?;
     registry.register(Arc::new(capabilities::WorktreeCapability::detached()))?;

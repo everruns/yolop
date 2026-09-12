@@ -32,8 +32,19 @@ use std::sync::Arc;
 
 #[derive(Debug, Args)]
 pub(crate) struct ConfigCommandLine {
+    /// Target a named profile instead of the attached session settings.
+    #[arg(long, value_name = "NAME")]
+    profile: Option<String>,
+
     #[command(subcommand)]
     command: ConfigCommand,
+}
+
+fn profile_target(action: &Value) -> Option<String> {
+    action
+        .get("profile")
+        .and_then(Value::as_str)
+        .map(str::to_string)
 }
 
 #[derive(Debug, Subcommand)]
@@ -144,8 +155,9 @@ enum ConfigAction {
 
 impl ConfigCommandLine {
     fn request(matches: &clap::ArgMatches) -> anyhow::Result<ControlRequest> {
-        let command = Self::from_arg_matches(matches)?.command;
-        let action = match command {
+        let parsed = Self::from_arg_matches(matches)?;
+        let profile = parsed.profile;
+        let action = match parsed.command {
             ConfigCommand::Get { key } => serde_json::to_value(ConfigAction::Get { key })?,
             ConfigCommand::Set { key, value, json } => {
                 if value.is_none() && json.is_none() {
@@ -176,6 +188,21 @@ impl ConfigCommandLine {
             })?,
             ConfigCommand::Hooks { command } => serde_json::json!({ "hooks": command }),
         };
+        let action = match serde_json::from_value::<ConfigAction>(action.clone()) {
+            Ok(action) => {
+                let mut action = serde_json::to_value(action)?;
+                if let Some(profile) = profile {
+                    action["profile"] = Value::String(profile);
+                }
+                action
+            }
+            Err(_) if profile.is_none() => action,
+            Err(_) => {
+                anyhow::bail!(
+                    "--profile is supported by config get, set, clear, and model commands"
+                )
+            }
+        };
         Ok(ControlRequest::new("models", action)?)
     }
 }
@@ -195,8 +222,9 @@ impl ControlCapability for ConfigCapability {
     }
 
     async fn execute_control(&self, action: &Value) -> ToolExecutionResult {
+        let profile = profile_target(action);
         match serde_json::from_value::<ConfigAction>(action.clone()) {
-            Ok(action) => self.execute_config_action(action).await,
+            Ok(action) => self.execute_config_action(action, profile).await,
             Err(_) => self.model_list.execute_control(action).await,
         }
     }
@@ -293,11 +321,26 @@ impl ConfigCapability {
         ]
     }
 
-    async fn execute_config_action(&self, action: ConfigAction) -> ToolExecutionResult {
+    async fn execute_config_action(
+        &self,
+        action: ConfigAction,
+        profile: Option<String>,
+    ) -> ToolExecutionResult {
+        // An explicit profile target scopes reads and writes to that profile's
+        // overlay file. The attached session keeps its own settings.
+        let settings = match profile {
+            Some(name) => {
+                match SettingsStore::open_with_profile(self.settings.path().to_path_buf(), &name) {
+                    Ok(settings) => Arc::new(settings),
+                    Err(error) => return ToolExecutionResult::tool_error(error.to_string()),
+                }
+            }
+            None => self.settings.clone(),
+        };
         match action {
             ConfigAction::Get { key } => {
                 GetConfigTool {
-                    settings: self.settings.clone(),
+                    settings: settings.clone(),
                     catalog: self.catalog.clone(),
                 }
                 .execute(json!({ "key": key }))
@@ -312,7 +355,7 @@ impl ConfigCapability {
                     arguments["json"] = json;
                 }
                 SetConfigTool {
-                    settings: self.settings.clone(),
+                    settings: settings.clone(),
                     catalog: self.catalog.clone(),
                 }
                 .execute(arguments)
@@ -320,16 +363,16 @@ impl ConfigCapability {
             }
             ConfigAction::Clear { key } => {
                 SetConfigTool {
-                    settings: self.settings.clone(),
+                    settings: settings.clone(),
                     catalog: self.catalog.clone(),
                 }
                 .execute(json!({ "key": key, "value": "clear" }))
                 .await
             }
             ConfigAction::ModelShow => {
-                let settings = self.settings.snapshot();
-                let model = settings.default_provider.as_ref().and_then(|provider| {
-                    settings
+                let snapshot = settings.snapshot();
+                let model = snapshot.default_provider.as_ref().and_then(|provider| {
+                    snapshot
                         .default_models
                         .get(provider)
                         .map(|model| format!("{provider}/{model}"))
@@ -337,15 +380,14 @@ impl ConfigCapability {
                 ToolExecutionResult::success(json!({ "model": model }))
             }
             ConfigAction::ModelSet { model } => {
-                let models = self.settings.snapshot().model_list();
+                let models = settings.snapshot().model_list();
                 let index = match ModelListCapability::find(&models, &model) {
                     Ok(index) => index,
                     Err(error) => return ToolExecutionResult::tool_error(error),
                 };
                 let entry = &models[index];
-                if let Err(error) = self
-                    .settings
-                    .set_configured_model(entry.provider.clone(), entry.model.clone())
+                if let Err(error) =
+                    settings.set_configured_model(entry.provider.clone(), entry.model.clone())
                 {
                     return ToolExecutionResult::tool_error(error.to_string());
                 }
@@ -354,7 +396,7 @@ impl ConfigCapability {
                 )
             }
             ConfigAction::ModelClear => {
-                if let Err(error) = self.settings.clear_configured_model() {
+                if let Err(error) = settings.clear_configured_model() {
                     return ToolExecutionResult::tool_error(error.to_string());
                 }
                 ToolExecutionResult::success(json!({ "model": Value::Null }))

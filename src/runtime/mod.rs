@@ -4188,6 +4188,11 @@ pub async fn build_with_options(
         session_control_registry.register(management.clone())?;
         capabilities.register_arc(management);
     }
+    let profiles = Arc::new(crate::capabilities::ProfilesCapability::new(
+        settings.clone(),
+    ));
+    session_control_registry.register(profiles.clone())?;
+    capabilities.register_arc(profiles);
     // One shared `yolop` prompt block: self-address framing plus administration
     // derived from the routes actually registered above. Capabilities describe
     // their route via `ControlRoute::summary`; none of them contributes prompt
