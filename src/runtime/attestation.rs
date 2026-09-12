@@ -1,4 +1,4 @@
-//! Guided hints for OpenRouter account and data-policy gates.
+//! Guided hints for OpenRouter account, billing, and data-policy gates.
 //!
 //! Some OpenRouter models refuse until the account completes a confirmation
 //! (18+ age verification, HTTP 403) or until a data-policy setting allows the
@@ -24,6 +24,10 @@ pub(crate) const OPENROUTER_PREFERENCES_URL: &str = "https://openrouter.ai/setti
 
 /// Fallback data-policy page when a guardrail body carries no usable URL.
 pub(crate) const OPENROUTER_PRIVACY_URL: &str = "https://openrouter.ai/settings/privacy";
+
+/// Credits page for OpenRouter 402 billing pressure (in-flight budget). Matches
+/// the remedy OpenRouter itself sends in the error body.
+pub(crate) const OPENROUTER_CREDITS_URL: &str = "https://openrouter.ai/settings/credits";
 
 /// An OpenRouter model gated behind account confirmations.
 pub(crate) struct AttestationRequirement {
@@ -123,12 +127,98 @@ pub(crate) fn guardrail_error_hint(message: &str) -> Option<String> {
     ))
 }
 
-/// Actionable OpenRouter hints for a failed turn, attestation first.
+/// OpenRouter 402 billing pressure: the request would exceed available credits
+/// while other requests are still in flight.
+pub(crate) struct BillingPressure {
+    /// Parsed `Retry-After` seconds from the provider body, when present.
+    pub retry_after_secs: Option<u64>,
+}
+
+/// Detect OpenRouter 402 billing pressure in a provider error message.
+///
+/// Scoped to 402 plus a billing signal (`in_flight_budget_exhausted`,
+/// `available credits`, `insufficient credits`, `payment required`) so
+/// unrelated 402s and the 403 quota case keep their current behavior.
+pub(crate) fn detect_openrouter_billing(message: &str) -> Option<BillingPressure> {
+    let lower = message.to_lowercase();
+    if !lower.contains("402") {
+        return None;
+    }
+    let billing = lower.contains("in_flight_budget_exhausted")
+        || (lower.contains("in-flight") && lower.contains("credit"))
+        || lower.contains("available credits")
+        || lower.contains("insufficient credits")
+        || lower.contains("payment required");
+    if !billing {
+        return None;
+    }
+    Some(BillingPressure {
+        retry_after_secs: parse_retry_after_secs(message),
+    })
+}
+
+/// Guided follow-up for [`detect_openrouter_billing`].
+pub(crate) fn billing_error_hint(message: &str) -> Option<String> {
+    let pressure = detect_openrouter_billing(message)?;
+    let wait = match pressure.retry_after_secs {
+        Some(secs) => format!(
+            "Wait {} for those to settle and retry",
+            format_retry_after(secs)
+        ),
+        None => "Wait for those to settle and retry".to_string(),
+    };
+    let link = markdown_link("OpenRouter credits", OPENROUTER_CREDITS_URL);
+    Some(format!(
+        "OpenRouter paused this request: it would exceed your available credits while other requests are still in flight. {wait}, or add credits at {link} to raise the limit."
+    ))
+}
+
+/// First digit run after the `Retry-After` marker, for example
+/// `"Retry-After":"120"` or `Retry-After: 120`.
+fn parse_retry_after_secs(message: &str) -> Option<u64> {
+    let lower = message.to_lowercase();
+    let marker = lower.find("retry-after")?;
+    let rest = &message[marker + "retry-after".len()..];
+    let mut digits = String::new();
+    let mut started = false;
+    for ch in rest.chars() {
+        if ch.is_ascii_digit() {
+            digits.push(ch);
+            started = true;
+        } else if started {
+            break;
+        }
+    }
+    let secs: u64 = digits.parse().ok()?;
+    if secs == 0 { None } else { Some(secs) }
+}
+
+fn format_retry_after(secs: u64) -> String {
+    if secs < 60 {
+        if secs == 1 {
+            "about 1 second".to_string()
+        } else {
+            format!("about {secs} seconds")
+        }
+    } else {
+        let minutes = (secs + 30) / 60;
+        if minutes == 1 {
+            "about 1 minute".to_string()
+        } else {
+            format!("about {minutes} minutes")
+        }
+    }
+}
+
+/// Actionable OpenRouter hints for a failed turn: attestation, guardrail, billing.
 pub(crate) fn openrouter_error_hints(message: &str) -> Vec<String> {
     if let Some(hint) = attestation_error_hint(message) {
         return vec![hint];
     }
     if let Some(hint) = guardrail_error_hint(message) {
+        return vec![hint];
+    }
+    if let Some(hint) = billing_error_hint(message) {
         return vec![hint];
     }
     Vec::new()
@@ -151,6 +241,8 @@ fn openrouter_link_label(url: &str) -> &'static str {
         "OpenRouter privacy settings"
     } else if url.contains("/settings/preferences") {
         "OpenRouter preferences"
+    } else if url.contains("/settings/credits") {
+        "OpenRouter credits"
     } else {
         "OpenRouter settings"
     }
@@ -381,6 +473,66 @@ mod tests {
         assert_eq!(openrouter_error_hints(GATED_ERROR).len(), 1);
         assert_eq!(openrouter_error_hints(GUARDRAIL_ERROR).len(), 1);
         assert!(openrouter_error_hints("connection reset by peer").is_empty());
+    }
+
+    const BILLING_ERROR: &str = r#"provider 'openrouter': OpenAI Responses API error (402 Payment Required): {"error":{"message":"This request would exceed your available credits given your current in-flight requests. Retry after in-flight requests settle, or add credits.","code":402,"metadata":{"reason":"in_flight_budget_exhausted","remedy_hint":"Retry after your in-flight requests settle (see the Retry-After header). Adding credits at https://openrouter.ai/settings/credits raises your in-flight budget.","headers":{"Retry-After":"120"}},"user_id":"user_39S0vhHVDLm80mLSdZVcs9SGU1yB"}"#;
+
+    #[test]
+    fn detects_billing_pressure_with_retry_after() {
+        let pressure = detect_openrouter_billing(BILLING_ERROR).expect("billing error is detected");
+        assert_eq!(pressure.retry_after_secs, Some(120));
+    }
+
+    #[test]
+    fn billing_hint_names_wait_and_credits_link() {
+        let hint = billing_error_hint(BILLING_ERROR).expect("hint is produced");
+        assert!(hint.contains("about 2 minutes"), "hint: {hint}");
+        assert!(
+            hint.contains("[OpenRouter credits](https://openrouter.ai/settings/credits)"),
+            "hint is a labeled markdown link: {hint}"
+        );
+        assert!(!hint.contains('{'), "hint carries no JSON blob: {hint}");
+        assert!(
+            !hint.contains("user_39S0"),
+            "hint drops the provider user id: {hint}"
+        );
+    }
+
+    #[test]
+    fn billing_without_retry_after_uses_generic_wait() {
+        let message = "OpenAI Responses API error (402 Payment Required): \
+            this request would exceed your available credits given in-flight requests";
+        let pressure =
+            detect_openrouter_billing(message).expect("billing without header is detected");
+        assert_eq!(pressure.retry_after_secs, None);
+        let hint = billing_error_hint(message).expect("hint is produced");
+        assert!(hint.contains("Wait for those to settle"), "hint: {hint}");
+    }
+
+    #[test]
+    fn ignores_unrelated_402_without_billing_words() {
+        assert!(detect_openrouter_billing("request failed with status 402").is_none());
+        assert!(billing_error_hint("request failed with status 402").is_none());
+        assert!(openrouter_error_hints("request failed with status 402").is_empty());
+    }
+
+    #[test]
+    fn quota_403_is_not_billing_pressure() {
+        let message = "provider 'openrouter': OpenAI Responses error (403 Forbidden): \
+            {\"error\":{\"message\":\"Insufficient credits. Top up at https://openrouter.ai/account.\",\"code\":403}}";
+        assert!(detect_openrouter_billing(message).is_none());
+        assert!(billing_error_hint(message).is_none());
+    }
+
+    #[test]
+    fn openrouter_hints_include_billing() {
+        let hints = openrouter_error_hints(BILLING_ERROR);
+        assert_eq!(hints.len(), 1);
+        assert!(
+            hints[0].contains("OpenRouter paused this request"),
+            "hint: {}",
+            hints[0]
+        );
     }
 
     #[test]
