@@ -10005,7 +10005,12 @@ mod tests {
         // Includes the logical model, config, setup, and mandatory skill
         // discovery/activation schemas that are intentionally eager.
         const BASELINE_TOOL_DEFINITION_BYTES: usize = 28_901;
-        const BASELINE_SCHEMA_BYTES: usize = 13_700;
+        // 2026-09-12: 13,700 -> 14,350. `spawn_background` joined the
+        // never-defer allowlist, so its real 1061-byte schema replaced the
+        // ~45-byte deferred stub in the eager surface. Measured 14,302 locally
+        // and 13,938 in Linux CI for the same tree; the environment delta
+        // predates this change. Thin headroom kept on the larger number.
+        const BASELINE_SCHEMA_BYTES: usize = 14_350;
         let workspace = tempfile::tempdir().expect("workspace");
         let sessions = tempfile::tempdir().expect("sessions");
         let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
