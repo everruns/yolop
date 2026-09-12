@@ -1238,6 +1238,11 @@ const YOLOP_NEVER_DEFER_TOOLS: &[&str] = &[
     // progress_guard can make this the only allowed transition, so the model
     // must never need tool_search to recover its argument shape.
     "progress_checkpoint",
+    // Background execution is called with free-form shell text. A deferred
+    // stub names no parameters while allowing extras, so the model guesses
+    // other harnesses' shapes and spends the turn on a validation correction
+    // instead of starting the work.
+    "spawn_background",
 ];
 #[derive(Clone, Debug)]
 pub enum ProviderChoice {
@@ -4224,9 +4229,10 @@ pub async fn build_with_options(
     // Provider-agnostic deferred tool loading (upstream `everruns-core`, 0.11.0+).
     // Defers the long tail behind a `tool_search` tool and restores real schemas
     // progressively (per-session reveal set). The `never_defer` allowlist keeps
-    // only first-turn discovery and bookkeeping eager. Mutation, background,
-    // control, release, and specialized tools retain visible names/descriptions
-    // but load schemas through `tool_search`. This static host profile preserves
+    // only first-turn discovery and bookkeeping eager. Mutation (except
+    // `spawn_background`), control, release, and specialized tools retain
+    // visible names/descriptions but load schemas through `tool_search`. This
+    // static host profile preserves
     // a stable provider-cache prefix; there is no volatile per-turn classifier.
     // Yolop does not own the eager tool definitions, so it sets the policy by
     // name here. Works on every provider/model, unlike the native
@@ -9702,6 +9708,7 @@ mod tests {
             "list_skills",
             "activate_skill",
             "progress_checkpoint",
+            "spawn_background",
             // The shell is eager: a stub costs a correction round trip on the
             // most-called tool in the harness.
             "bash",
@@ -9715,7 +9722,6 @@ mod tests {
             // Opt-in surfaces defer, LSP included.
             "lsp_definition",
             "lsp_hover",
-            "spawn_background",
             "run_command",
             "search_files",
         ];
@@ -9999,7 +10005,12 @@ mod tests {
         // Includes the logical model, config, setup, and mandatory skill
         // discovery/activation schemas that are intentionally eager.
         const BASELINE_TOOL_DEFINITION_BYTES: usize = 28_901;
-        const BASELINE_SCHEMA_BYTES: usize = 13_700;
+        // 2026-09-12: 13,700 -> 14,350. `spawn_background` joined the
+        // never-defer allowlist, so its real 1061-byte schema replaced the
+        // ~45-byte deferred stub in the eager surface. Measured 14,302 locally
+        // and 13,938 in Linux CI for the same tree; the environment delta
+        // predates this change. Thin headroom kept on the larger number.
+        const BASELINE_SCHEMA_BYTES: usize = 14_350;
         let workspace = tempfile::tempdir().expect("workspace");
         let sessions = tempfile::tempdir().expect("sessions");
         let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));

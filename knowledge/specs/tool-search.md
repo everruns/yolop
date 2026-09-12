@@ -43,10 +43,11 @@ vendor was deleted and yolop now consumes upstream directly:
 2. **Static host-shaped eager profile.** Yolop passes first-turn repository
    discovery (`read_file`, `list_directory`, `grep_files`, `repo_map`,
    `repo_symbols`, `ast_grep`), bookkeeping (`write_todos`,
-   `write_session_title`), the shell (`bash`), and the mandatory
-   progress-guard transition (`progress_checkpoint`) to
-   `ToolSearchCapability::new().with_never_defer([...])`. Mutation,
-   background, release/control, skills, session history, web, LSP, and other
+   `write_session_title`), the shell (`bash`), background execution
+   (`spawn_background`), and the mandatory progress-guard transition
+   (`progress_checkpoint`) to
+   `ToolSearchCapability::new().with_never_defer([...])`. Mutation, other
+   background tools, release/control, skills, session history, web, LSP, and other
    specialized tools keep their names and descriptions visible but reveal their
    authoritative schemas through `tool_search` when the task calls for them.
    This is host/task shaped without a volatile classifier: the allowlist is
@@ -54,7 +55,11 @@ vendor was deleted and yolop now consumes upstream directly:
    deferred stub names no parameters while allowing extras, so a model fills the
    gap from other harnesses' shell schemas and yolop's
    `additionalProperties: false` schema then rejects the call: the most-used
-   tool in the harness spent a round trip on a correction. `repo_map`,
+   tool in the harness spent a round trip on a correction.
+   `spawn_background` is eager for the same reason: its deferred stub names no
+   parameters while allowing extras, so the model fills the gap from other
+   harnesses' background schemas and spends the turn on a validation correction
+   instead of starting the work. `repo_map`,
    `repo_symbols`, and `ast_grep` are eager so code work can move from broad
    orientation to symbol or structural navigation without a schema-reveal round
    trip. `repo_map` also stays eager for a contract reason: its deferred stub

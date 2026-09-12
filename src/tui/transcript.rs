@@ -628,9 +628,38 @@ fn readable_tool_block(error: &str) -> Option<String> {
         .get("message")
         .and_then(Value::as_str)
         .unwrap_or("the arguments do not match the tool schema");
-    Some(format!(
-        "invalid arguments for `{tool}`: {message} — rejected before running; retrying"
-    ))
+    let mut summary = format!("invalid arguments for `{tool}`");
+    if let Some(path) = diagnostic.get("path").and_then(Value::as_str)
+        && !path.is_empty()
+        && path != "/"
+    {
+        summary.push_str(&format!(" at `{path}`"));
+    }
+    summary.push_str(&format!(": {message}"));
+    let expected_text = diagnostic
+        .get("expected")
+        .map(|value| serde_json::to_string(value).unwrap_or_default())
+        .unwrap_or_default();
+    let received = diagnostic.get("received").and_then(Value::as_str);
+    if !expected_text.is_empty() {
+        let expected_text = truncate_chars(&expected_text, 300);
+        match received {
+            Some(got) => {
+                summary.push_str(&format!(" (expected {expected_text}, got {got})"));
+            }
+            None => {
+                summary.push_str(&format!(" (expected {expected_text})"));
+            }
+        }
+    } else if let Some(got) = received {
+        summary.push_str(&format!(" (got {got})"));
+    }
+    summary.push_str(", rejected before running, retrying");
+    if let Some(correction) = diagnostic.get("correction").and_then(Value::as_str) {
+        summary.push(' ');
+        summary.push_str(correction);
+    }
+    Some(summary)
 }
 
 /// One-line summary of a tool result, used in the transcript and `--print` output.
@@ -874,6 +903,45 @@ mod tests {
         );
         assert!(summary.contains("unsupported argument"), "{summary}");
         assert!(!summary.contains("pre_tool_use"), "{summary}");
+    }
+
+    /// A wrong-type rejection must name the argument path and the expected
+    /// shape, otherwise the model and the user cannot tell what to fix (the
+    /// `spawn_background` retry loop in the screenshot showed only the generic
+    /// message).
+    #[test]
+    fn argument_validation_type_error_surfaces_path_and_shapes() {
+        let data = ToolCompletedData {
+            success: false,
+            error: Some(
+                "blocked by pre_tool_use hook: {\"error\":\"invalid_tool_arguments\",\
+                 \"tool\":\"spawn_background\",\"path\":\"/command\",\"message\":\"an argument \
+                 has the wrong JSON type\",\"expected\":{\"type\":\"string\"},\
+                 \"received\":\"object\",\"correction\":\"Correct the arguments to the \
+                 expected shape and call this tool once more.\",\"retryable\":true}"
+                    .into(),
+            ),
+            tool_call_id: "call-1".into(),
+            tool_name: "spawn_background".into(),
+            tool_call_fingerprint: None,
+            tool_result_fingerprint: None,
+            display_name: Some("Spawn background".into()),
+            status: "error".into(),
+            result: None,
+            duration_ms: None,
+            capability_id: None,
+            capability_name: None,
+            narration: None,
+        };
+        let summary = summarize_tool_result(&data);
+        assert!(
+            summary.contains("invalid arguments for `spawn_background`"),
+            "{summary}"
+        );
+        assert!(summary.contains("at `/command`"), "{summary}");
+        assert!(summary.contains("expected"), "{summary}");
+        assert!(summary.contains("got object"), "{summary}");
+        assert!(summary.contains("Correct the arguments"), "{summary}");
     }
 
     /// An actual user hook block keeps the engine's wording: it really was a hook.
