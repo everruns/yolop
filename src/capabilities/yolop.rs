@@ -78,6 +78,7 @@ impl Capability for YolopCapability {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capabilities::model_list::MODEL_LIST_CONTROL_ROUTE;
     use crate::capabilities::session_coordination::COORDINATION_CONTROL_ROUTE;
     use crate::extensions::EXTENSIONS_CONTROL_ROUTE;
 
@@ -131,5 +132,16 @@ mod tests {
         let capability = YolopCapability::new(&[COORDINATION_CONTROL_ROUTE]);
         let block = capability.system_prompt_addition().expect("block");
         assert!(block.contains("Do not repeat `--help`"));
+    }
+
+    #[test]
+    fn administration_advertises_config_settings() {
+        let capability = YolopCapability::new(&[MODEL_LIST_CONTROL_ROUTE]);
+        let block = capability.system_prompt_addition().expect("block");
+        assert!(block.contains("`config`"));
+        assert!(
+            block.contains("persistent settings"),
+            "config route should advertise settings, not only models"
+        );
     }
 }
