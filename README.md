@@ -37,7 +37,7 @@ yolop
 - **Safe to leave running.** OS sandboxing plus a soft approval model: routine file work proceeds, risky or outward facing actions pause for a yes.
 - **Keeps your place.** Every run is a resumable session with checkpoints, rewind, undo, and fork. Long tasks survive interruptions.
 - **Works where you work.** Full screen TUI, inline mode for small terminals, one shot print mode for pipes and CI, and ACP support for Zed and other editors.
-- **Speaks your stack.** Ten provider backends, local inference, custom OpenAI compatible endpoints, MCP servers, extensions, skills, and hooks.
+- **Speaks your stack.** Nine provider backends, local inference, custom OpenAI compatible endpoints, MCP servers, extensions, skills, and hooks.
 
 ## Install
 
@@ -58,12 +58,6 @@ cargo build --release
 ```
 
 Prefer a prebuilt binary, including accelerated local inference builds (`metal` on macOS, `cuda` on Linux)? Grab one from [releases](https://github.com/everruns/yolop/releases).
-
-Verify without an API key:
-
-```bash
-yolop --provider llmsim -p "hi"
-```
 
 ## Quickstart
 
@@ -178,7 +172,7 @@ Yolop never force pushes, rewrites history, or skips hooks on your behalf. Detai
 
 ## Providers and models
 
-Ten backends, one switch. Set a key once with `/setup`, override per run with flags or env vars.
+Nine backends, one switch. Set a key once with `/setup`, override per run with flags or env vars.
 
 | Provider | Default model | Key |
 | -------- | ------------- | --- |
@@ -191,7 +185,6 @@ Ten backends, one switch. Set a key once with `/setup`, override per run with fl
 | `ollama` | `qwen3:8b` | none for local defaults |
 | `local` | `ministral-3-14b` | none, runs on your machine |
 | `custom` | set via `/setup` | custom endpoint key |
-| `llmsim` | simulated | none, offline testing |
 
 ```bash
 yolop --provider anthropic --model claude-opus-4-6 -p "fix the failing test"
@@ -307,7 +300,7 @@ Run `yolop --help` for the full list. These are the flags you will reach for dai
 | Flag | What it does |
 | ---- | ------------ |
 | `-p, --prompt <text>` | One shot print mode. Aliases: `--query`, `--print`. Reads stdin when no prompt is given. |
-| `--provider <name>` | Backend: `openai`, `anthropic`, `google`, `codex`, `meta`, `openrouter`, `ollama`, `local`, `custom`, `llmsim`. |
+| `--provider <name>` | Backend: `openai`, `anthropic`, `google`, `codex`, `meta`, `openrouter`, `ollama`, `local`, `custom`. |
 | `--model <id>` | Model within the backend. |
 | `--thinking <level>` | Reasoning effort: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`. |
 | `--session <name>` | Create or resume a named session. |
