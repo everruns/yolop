@@ -38,12 +38,11 @@ yolop
 
 ## Why yolop
 
-- **Autonomous, not chatty.** It reads code, makes the edit, runs tests, and iterates. You review the diff, not a wall of suggestions.
-- **Safe to leave running.** Approvals pause it before destructive or outward facing steps, and sandbox modes contain the filesystem when you want them.
-- **Conversational control.** Providers, models, MCP servers, editor wiring, even how careful to be: just ask, or run one guided command. Settings files and flags exist when you want them, they are never the starting point.
-- **Keeps your place.** Every run is a resumable session with checkpoints, rewind, undo, and redo. Long tasks survive interruptions.
-- **Works where you work.** Full screen TUI, inline mode for small terminals, one shot print mode for pipes and CI, and ACP support with Paseo, Zed, and Buzz.
-- **Speaks your stack.** Nine provider backends, local inference, custom OpenAI compatible endpoints, MCP servers, extensions, skills, and hooks.
+- **Friday afternoon tasks, done.** Point it at the flaky test, the dependency bump, the "add JSON output" issue. Come back to a green suite and a diff you can actually read.
+- **It already knows the repo.** Structural map, symbol search, workspace-wide renames. "Move auth refresh into its own module" just happens, references included.
+- **Talk it into shape.** Providers, MCP servers, editor wiring, how careful to be. Ask in plain words or run one guided command; config files only when you want them.
+- **It works where you work.** Full screen TUI when you want the show, `yolop -p` for pipes and CI, Paseo or Zed over ACP when you live in the editor.
+- **It keeps its place.** Every run is a resumable session with checkpoints. Rewind the bad idea, redo the good one, pick the goal back up Monday.
 
 ## Install
 
@@ -199,7 +198,7 @@ Pick per run with `--provider` and `-m`, persist choices with `/setup` or `yolop
 
 ## Context superpowers
 
-Yolop earns its keep on large repos:
+Yolop earns its keep on large repos (full inventory: [Tools and capabilities](docs/features/tools.md)):
 
 - **Repo map.** A compact structural index of the codebase, refreshed as files change, so the agent finds the right module before reading. Guide: [docs/features/repo-map/repo-map.md](docs/features/repo-map/repo-map.md).
 - **LSP aware edits.** Rename a symbol and references follow across files instead of leaving stale call sites.
