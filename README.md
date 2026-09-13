@@ -17,7 +17,7 @@ yolop
 
 ## Origin of the name
 
-`yolop` comes from the Ukrainian `Йолоп`: a dummy, fool, or not-too-bright person. The name was meant to sound clever and funny in Ukrainian while also describing the agent's starting point: Yolop avoids per-tool approval pop-ups. Routine workspace work runs automatically; hard prompts are reserved for the configured shell boundary, with [soft approval](#safety-by-default) for critical moments that need spoken consent and an audit trail.
+`yolop` comes from the Ukrainian `Йолоп`: a dummy, fool, or not-too-bright person. The name was meant to sound clever and funny in Ukrainian while also describing the agent's starting point: Yolop avoids per-tool approval pop-ups. Routine workspace work runs automatically; hard prompts are reserved for the configured shell boundary, with [soft approval](#trust-and-guardrails) for critical moments that need spoken consent and an audit trail.
 
 ## Contents
 
@@ -26,7 +26,7 @@ yolop
 - [Install](#install)
 - [Quickstart](#quickstart)
 - [How you work with it](#how-you-work-with-it)
-- [Safety by default](#safety-by-default)
+- [Trust and guardrails](#trust-and-guardrails)
 - [Providers and models](#providers-and-models)
 - [Context superpowers](#context-superpowers)
 - [Editor integration](#editor-integration)
@@ -145,9 +145,9 @@ Inside the TUI:
 
 Handoffs between agents use `/checkpoint` and `/coordinator`: see [docs/session-coordination.md](docs/session-coordination.md).
 
-## Safety by default
+## Trust and guardrails
 
-Yolop is autonomous, so approvals are part of the loop, not an afterthought. Shell commands run with full host access unless you opt into containment, and anything destructive, irreversible, or outward facing pauses for a yes.
+The paradigm here is relaxed security, stated plainly: yolop trusts the agent with your machine so work flows without pop-ups. Shell commands run with full host access unless you opt into containment. What stands between that trust and regret is approvals: anything destructive, irreversible, or outward facing pauses for a yes.
 
 | Control | What it does |
 | ------- | ------------ |
