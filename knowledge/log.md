@@ -1366,3 +1366,20 @@ wording, formatting, and link fixes do not need entries.
 - Dispatch failure now tells the root to spawn via `spawn_agent` (same
   project, accepting coordination work) instead of suggesting a bare CLI
   accept that would create an untracked process.
+
+## 2026-09-13, Management evals grade structured control adoption
+
+- [Conversational control](specs/conversational-control.md): added a focused
+  Mira preset for configuration and administration requests across attached CLI
+  routes and registry-only `run_command` actions.
+- The harness now records structured tool arguments and supports positive and
+  negative invocation checks, so calling the right tool with the wrong Yolop
+  operation cannot pass.
+- Management mutation cases use an isolated Yolop identity and grade the
+  resulting settings and profile files as well as the trajectory.
+- The conversational-control inventory and command guidance now prefer the
+  existing `manage_checkpoint` schema over routing restore actions through the
+  generic command registry.
+- The preset matrix is OpenRouter Muse 1.3 Contributor, GPT-5.6 Terra medium,
+  and Anthropic Sonnet 5. Every case fingerprints the host config before and
+  after its isolated run and retains provider token usage in the report.
