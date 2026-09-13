@@ -25,7 +25,7 @@ Env COLORTERM "truecolor"
 Env RUST_LOG "error"
 
 Hide
-Type "cargo build -q && docs/demo-setup.sh && alias yolop='target/debug/yolop -C /tmp/yolop-hero-mission-control --theme dracula --provider codex -m gpt-5.6-sol --reasoning-effort low --session-dir /tmp/yolop-hero-sessions' && clear"
+Type "cargo build -q && docs/demo-setup.sh && alias yolop='target/debug/yolop -C /tmp/yolop-hero-pizza-rocket --theme dracula --provider openai --reasoning-effort low --session-dir /tmp/yolop-hero-sessions' && clear"
 Enter
 Wait+Line@5m /[>$%#]/
 Show
@@ -35,7 +35,7 @@ Type "yolop"
 Enter
 Sleep 3s
 
-Type "Modernize mission-control: set clap=4.6.4, serde=1.0.229, and serde_json=1.0.151; add --json output; unit-test both text and JSON rendering using only existing dependencies; run fmt and tests. Skip Git. Keep it concise. Finish with Ready+for+launch (replace + with spaces)."
+Type "Throw a pizza-rocket launch party: set clap=4.6.4, serde=1.0.229, serde_json=1.0.151; add --json for cheesy delivery status plus --party that prints an ASCII rocket, a 3-2-1 countdown, and extra cheese; unit-test text and JSON; run fmt and tests; then run cargo run -- --party to show the party. Skip Git. Keep it concise. Finish with Pizza+away! (replace + with space)."
 Enter
-Wait+Screen@3m /Ready for launch/
+Wait+Screen@3m /Pizza away!/
 Sleep 4s
