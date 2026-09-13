@@ -14,7 +14,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::ffi::OsString;
-#[cfg(unix)]
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Stdio;
