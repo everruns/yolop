@@ -99,7 +99,11 @@ Expected result: yolop explores the repo, proposes a plan for anything risky, ed
 
 ### In your editor, over ACP
 
-The main way most people use yolop: right inside the editor, over the Agent Client Protocol. [Paseo](https://paseo.sh/) is the most used client. Wiring is one command:
+The main way most people use yolop: right inside the editor, over the Agent Client Protocol. [Paseo](https://paseo.sh/) is the most used client.
+
+![yolop running inside Paseo over ACP, working through a dark mode task](docs/paseo-acp.png)
+
+Wiring is one command:
 
 ```bash
 yolop into paseo   # wire up Paseo
