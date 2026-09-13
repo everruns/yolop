@@ -13,7 +13,7 @@ yolop
 # > add retry with backoff to the sync client, then run the tests for it
 ```
 
-![yolop upgrading a Rust CLI, adding JSON output, and running its tests](docs/demo.gif)
+![yolop upgrading a pizza-rocket CLI, adding cheesy JSON output, and running its tests](docs/demo.gif)
 
 ## Origin of the name
 
