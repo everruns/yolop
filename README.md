@@ -29,7 +29,6 @@ yolop
 - [Trust and guardrails](#trust-and-guardrails)
 - [Providers and models](#providers-and-models)
 - [Context superpowers](#context-superpowers)
-- [Editor integration](#editor-integration)
 - [MCP servers](#mcp-servers)
 - [Extensions](#extensions)
 - [Skills, memory, and hooks](#skills-memory-and-hooks)
@@ -97,6 +96,19 @@ yolop --session checkout-fix
 Expected result: yolop explores the repo, proposes a plan for anything risky, edits files, runs the relevant tests, and leaves a diff plus a transcript you can rewind.
 
 ## How you work with it
+
+### In your editor, over ACP
+
+The main way most people use yolop: right inside the editor, over the Agent Client Protocol. [Paseo](https://paseo.sh/) is the most used client. Wiring is one command:
+
+```bash
+yolop into paseo   # wire up Paseo
+yolop into zed     # wire up Zed
+yolop into buzz    # wire up Buzz Desktop
+yolop --acp        # speak ACP over stdio, for any other ACP client
+```
+
+The same agent, hosted where your code already is.
 
 ### Interactive TUI
 
@@ -206,17 +218,6 @@ Yolop earns its keep on large repos (full inventory: [Tools and capabilities](do
 - **Subagents and background work.** Delegate a research branch or park a long test run in the background while you keep chatting. See [docs/features/subagents/subagents.md](docs/features/subagents/subagents.md).
 - **Show me.** Focused guides load into context only when needed, keeping routine turns lean: [docs/features/show-me/show-me.md](docs/features/show-me/show-me.md).
 - **OKF knowledge.** Durable project memory lives in an explicit bundle, validated by `python3 scripts/validate_okf.py knowledge --check-links`: [docs/features/okf/okf.md](docs/features/okf/okf.md).
-
-## Editor integration
-
-Yolop speaks the Agent Client Protocol, so ACP clients can drive it directly. [Paseo](https://paseo.sh/) is the most used one. Wiring is one command:
-
-```bash
-yolop into paseo   # wire up Paseo
-yolop into zed     # wire up Zed
-yolop into buzz    # wire up Buzz Desktop
-yolop --acp        # speak ACP over stdio, for any other ACP client
-```
 
 ## MCP servers
 
