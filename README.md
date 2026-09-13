@@ -15,8 +15,13 @@ yolop
 
 ![yolop upgrading a Rust CLI, adding JSON output, and running its tests](docs/demo.gif)
 
+## Origin of the name
+
+`yolop` comes from the Ukrainian `Йолоп`: a dummy, fool, or not-too-bright person. The name was meant to sound clever and funny in Ukrainian while also describing the agent's starting point: Yolop avoids per-tool approval pop-ups. Routine workspace work runs automatically; hard prompts are reserved for the configured shell boundary, with [soft approval](#safety-by-default) for critical moments that need spoken consent and an audit trail.
+
 ## Contents
 
+- [Origin of the name](#origin-of-the-name)
 - [Why yolop](#why-yolop)
 - [Install](#install)
 - [Quickstart](#quickstart)
@@ -36,8 +41,8 @@ yolop
 - **Autonomous, not chatty.** It reads code, makes the edit, runs tests, and iterates. You review the diff, not a wall of suggestions.
 - **Safe to leave running.** Approvals pause it before destructive or outward facing steps, and sandbox modes contain the filesystem when you want them.
 - **Conversational control.** Providers, models, MCP servers, editor wiring, even how careful to be: just ask, or run one guided command. Settings files and flags exist when you want them, they are never the starting point.
-- **Keeps your place.** Every run is a resumable session with checkpoints, rewind, undo, and fork. Long tasks survive interruptions.
-- **Works where you work.** Full screen TUI, inline mode for small terminals, one shot print mode for pipes and CI, and ACP support for Zed and other editors.
+- **Keeps your place.** Every run is a resumable session with checkpoints, rewind, undo, and redo. Long tasks survive interruptions.
+- **Works where you work.** Full screen TUI, inline mode for small terminals, one shot print mode for pipes and CI, and ACP support with Paseo, Zed, and Buzz.
 - **Speaks your stack.** Nine provider backends, local inference, custom OpenAI compatible endpoints, MCP servers, extensions, skills, and hooks.
 
 ## Install
@@ -317,6 +322,5 @@ yolop --trajectory-out /tmp/run.jsonl -p "reproduce the flake"
 - Changelog: [CHANGELOG.md](CHANGELOG.md). Release process: ask for `/release`.
 - License: MIT, see [LICENSE](LICENSE).
 
-Fun fact: the name is a wink at the old joke about writing code on a dare. Yolop keeps the speed and removes the recklessness: approvals when it matters, rewind when it does not.
 
 *Produced by [yolop](https://everruns.com/yolop)*
