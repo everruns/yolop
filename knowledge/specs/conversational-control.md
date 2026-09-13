@@ -30,7 +30,7 @@ command, an overlay confirmation, or a next-run-only settings write fail this ba
 
 1. **Live, agent-invocable, no confirmation.** Each control surface listed below
    is reachable conversationally, either through a model-facing tool or through the
-   attached CLI (`yolop <subcommand> ...` in the foreground Bash tool), that
+   attached CLI (`yolop <subcommand> ...` in Bash), that
    (a) the agent can call from a natural-language request or autonomously,
    (b) takes effect on the **live session** (at the latest, the next turn, never
    "next process run only"), and (c) does not require the user to confirm an
@@ -92,7 +92,7 @@ Notes:
 - **Attached administration is the rule for configuration, not the exception.**
   Extension, coordination, model-list, MCP, connector, model, and setup
   administration is reachable conversationally by
-  running `yolop <subcommand> ...` in the foreground Bash tool, which the host
+  running `yolop <subcommand> ...` in Bash, which the host
   attaches to the live session, rather than by tool schemas that would cost
   context every turn. It still meets the rest of this contract: live effect,
   no confirmation overlay, one shared implementation behind the CLI, `/command`,

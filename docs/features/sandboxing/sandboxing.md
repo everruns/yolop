@@ -19,13 +19,13 @@ The same policy covers every Yolop shell entry point:
 - the `/shell` command; and
 - the TUI `!shell` shortcut.
 
-One narrow exception is not an arbitrary shell command: a direct foreground
-`yolop extensions ...` invocation is recognized as typed administration of the
-current session. It still passes shell approval policy, then uses the exact
-running Yolop executable and anonymous one-request pipes. No endpoint or control
-environment variable is exported, and pipelines, redirects, substitutions,
-quoted commands, and background jobs are never attached. Those forms continue
-through the ordinary sandbox.
+One narrow exception is not arbitrary host shell execution: an attached
+`yolop <subcommand> ...` invocation is typed administration of the current
+session. A private local endpoint is inherited by the shell, so pipelines,
+redirects, substitutions, scripts, and background expressions stay attached.
+The child sends raw argv and the exact running Yolop executable parses them on
+the host. Read-only operations run directly; mutations still pass the shell
+approval boundary, and transport failure never falls back to global mutation.
 
 The modes are:
 

@@ -33,14 +33,15 @@ guardrail against accidental commands, not process isolation: dynamically
 resolved or deliberately obscured signals still require a kernel, container,
 or VM boundary.
 
-A direct foreground `yolop extensions ...` invocation is a special typed host
-broker, not arbitrary shell execution. It passes the same shell approval policy
-first, then the host invokes its exact Yolop executable with anonymous pipes for
-one versioned control request. It receives no general shell environment
-capability and cannot be composed into a pipeline, redirection, substitution,
-or background job. The broker exposes no listener or persistent endpoint and
-closes both pipes after the response. All other commands, including composed
-Yolop commands, continue through `SandboxProvider` normally.
+An attached `yolop <subcommand> ...` invocation uses a special typed host
+broker, not arbitrary host shell execution. Each shell call receives a private,
+short-lived local endpoint and random token. Its descendants may use the CLI in
+scripts, pipelines, redirection, substitutions, and background expressions.
+The child sends raw argv before parsing; the host invokes its exact Yolop
+executable to parse the canonical CLI grammar, then routes the typed request.
+Read-only operations run directly. Mutating operations cross the arbitrary-shell
+sandbox only after the existing approval gate accepts them, and endpoint or
+protocol failure never falls back to global mutation.
 
 Structured file tools remain in Yolop's trusted host broker. They are rooted at
 the active `WorkspaceHost` and retain the existing protected-path checks. System,

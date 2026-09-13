@@ -1,5 +1,20 @@
 # Knowledge Log
 
+## 2026-09-13, Attached CLI works through ordinary shell composition
+
+- [Extensions](specs/extensions.md), [Sandboxing](specs/sandboxing.md), and
+  [`yolop`](specs/yolop.md): session administration now uses a private local
+  endpoint inherited by shell descendants, so `yolop` works from scripts,
+  pipelines, substitutions, redirections, and background expressions. Children
+  send raw argv and the host's exact executable owns parsing, eliminating CLI
+  grammar skew. Endpoint or protocol failure never falls back to detached
+  mutation, and mutating requests retain the host approval boundary.
+- [Commands](specs/commands.md): model-side `run_command help` returns the live
+  slash-command registry only in its tool result. It no longer invokes the
+  terminal's visible `/help` effect. Authentication guidance points exclusively
+  to `yolop setup login|reauthenticate <provider>`, not `/setup` or direct
+  settings edits.
+
 ## 2026-09-11, OpenRouter account gates get a labeled way out
 
 - [Presentation](specs/presentation.md): OpenRouter failures the user can fix

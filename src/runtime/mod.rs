@@ -4013,6 +4013,9 @@ pub async fn build_with_options(
     // so extension `status/changed` pushes and `ClientCommandsCapability` share
     // one `UiRequest` stream that the `App` event loop drains.
     let (ui_tx, ui_rx) = mpsc::unbounded_channel::<UiRequest>();
+    let host_ui: Option<Arc<dyn HostUi>> = options
+        .client_commands
+        .then(|| Arc::new(TuiHandle::new(ui_tx.clone())) as Arc<dyn HostUi>);
     // Status-bar sink for extensions, only when the host has a status bar (the
     // TUI). Maps a server's `status/changed` into a `SetExtensionStatus`
     // command; `None` in `--print`/ACP, where it logs instead.
@@ -4071,7 +4074,7 @@ pub async fn build_with_options(
     // `reload_extension` can restart one in place mid-session (self-writing
     // iteration) without a yolop restart.
     let live_processes = crate::extensions::LiveProcessRegistry::default();
-    let mut session_control_registry = crate::control::ControlRegistry::default();
+    let session_control_registry = Arc::new(crate::control::ControlRegistry::default());
     session_control_registry.register(skill_management)?;
     session_control_registry.register(coordination_capability)?;
     // Hook management is exposed through the control plane and `yolop config hooks`.
@@ -4201,17 +4204,8 @@ pub async fn build_with_options(
     ));
     session_control_registry.register(profiles.clone())?;
     capabilities.register_arc(profiles);
-    // One shared `yolop` prompt block: self-address framing plus administration
-    // derived from the routes actually registered above. Capabilities describe
-    // their route via `ControlRoute::summary`; none of them contributes prompt
-    // prose of its own.
-    let yolop = enable_yolop(
-        &mut harness_capabilities,
-        &crate::control::ControlService::routes(&session_control_registry),
-    );
     let session_control: Option<Arc<dyn crate::control::ControlService>> =
-        Some(Arc::new(session_control_registry));
-    capabilities.register(yolop);
+        Some(session_control_registry.clone());
     // Server name list for `/mcp` and StartupInfo, computed after extension
     // contributions are merged so provider-provenance entries show up too.
     let mut mcp_server_names: Vec<String> = mcp_servers.keys().cloned().collect();
@@ -4371,7 +4365,7 @@ pub async fn build_with_options(
         expose_command: !options.client_commands,
         approval_policy,
         approval_gate: sandbox_approval_gate.clone(),
-        control: session_control.clone(),
+        control: session_control.as_ref().map(Arc::downgrade),
     });
     // `background` — the `/background` command listing this session's everruns
     // tasks. Detached work runs through everruns `spawn_background` (which wraps
@@ -4387,23 +4381,31 @@ pub async fn build_with_options(
     // effort/clear/shell/quit and forwards each invocation as a `UiCommand` down
     // `ui_tx` (created above, shared with extension status); the `App` event
     // loop drains `ui_rx` and performs the effect.
-    let host_ui: Option<Arc<dyn HostUi>> = options
-        .client_commands
-        .then(|| Arc::new(TuiHandle::new(ui_tx)) as Arc<dyn HostUi>);
     if let Some(ui) = host_ui.clone() {
         capabilities.register(ClientCommandsCapability::new(ui));
     }
-    capabilities.register(SetupCliCapability::live(
+    let setup_cli = Arc::new(SetupCliCapability::live(
         setup_controller.clone(),
         host_ui.clone(),
     ));
-    capabilities.register(ModelCliCapability::live(
+    session_control_registry.register(setup_cli.clone())?;
+    capabilities.register_arc(setup_cli);
+    let model_cli = Arc::new(ModelCliCapability::live(
         model_list.clone(),
         setup_controller,
     ));
+    session_control_registry.register(model_cli.clone())?;
+    capabilities.register_arc(model_cli);
+    // One shared `yolop` prompt block: self-address framing plus administration
+    // derived from every route now registered for this session.
+    let yolop = enable_yolop(
+        &mut harness_capabilities,
+        &crate::control::ControlService::routes(session_control_registry.as_ref()),
+    );
+    capabilities.register(yolop);
     // `run_command` is host-neutral: it dispatches whatever this session's
     // registry holds, so every host registers it. The terminal's `HostUi` rides
-    // along only so informational client commands (`/mcp`, `/tools`) can return
+    // along only so informational client commands (`/mcp`, `/tools`, `/cwd`) can return
     // the transcript lines the host printed.
     capabilities.register(AgentCommandsCapability::new(
         Arc::new(RuntimeCommandDispatch {
@@ -4418,11 +4420,13 @@ pub async fn build_with_options(
         catalog.register_arc(cap.clone());
     }
 
-    capabilities.register(ConfigCapability {
+    let config_capability = Arc::new(ConfigCapability {
         settings: settings.clone(),
         catalog: Arc::new(catalog),
         model_list: model_list.clone(),
     });
+    session_control_registry.replace(config_capability.clone())?;
+    capabilities.register_arc(config_capability);
 
     let mut driver_registry = DriverRegistry::new();
     everruns_anthropic::register_driver(&mut driver_registry);

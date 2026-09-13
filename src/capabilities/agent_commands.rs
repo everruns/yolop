@@ -14,7 +14,7 @@
 //! terminal commands ACP and `--print` never see), but the mechanism does not:
 //! whatever a host advertises, the agent can run. The optional [`HostUi`] port
 //! is the one host-specific detail: when a terminal is present, the informational
-//! terminal commands (`/mcp`, `/tools`, `/help`, `/cwd`) are dispatched through
+//! terminal commands (`/mcp`, `/tools`, `/cwd`) are dispatched through
 //! it so the tool result carries the transcript lines the host printed, instead
 //! of the empty `CommandResult` those commands return by design.
 
@@ -34,12 +34,11 @@ pub(crate) const AGENT_COMMANDS_CAPABILITY_ID: &str = "agent_commands";
 
 /// Raw text on purpose: the host wraps `system_prompt_addition` in `<capability>`
 /// tags once, so tags here would render twice.
-pub(crate) const AGENT_COMMANDS_PROMPT: &str = r#"`run_command` runs any slash command this session registers, not a fixed subset:
-`/setup status|login|reauthenticate <provider>`, `/background`, `/undo`,
-`/rewind`, `/goal`, and whatever else the host registers. Use `command: help`
-for the live list; an unknown name returns the available ones. Prefer running a
-command over telling the user to type it. Skill commands activate by prompt, so
-follow the skill instead. The result carries the command's own output."#;
+pub(crate) const AGENT_COMMANDS_PROMPT: &str = r#"Use `run_command` for slash-only actions such as `/goal`, `/background`,
+`/undo`, `/redo`, and `/rewind`. Use Bash and `yolop` for administration;
+authentication is `yolop setup login|reauthenticate <provider>`, never `/setup`.
+Act instead of asking the user to type. `help` privately lists slash commands;
+unknown names also list them. Skills activate by prompt."#;
 
 /// Registry port for `run_command`: list the commands this session actually has
 /// and execute one through the runtime, the same path a typed slash command
@@ -120,16 +119,16 @@ impl RunCommandTool {
             }
         };
         let available: Vec<&str> = commands.iter().map(|c| c.name.as_str()).collect();
+        // Agent-side discovery must not invoke the terminal's visible `/help`
+        // effect. Return the same live registry privately in the tool result.
+        if name == "help" {
+            return ToolExecutionResult::success(json!({
+                "success": true,
+                "command": "/help",
+                "message": format!("available commands: {}", available.join(", "))
+            }));
+        }
         let Some(descriptor) = commands.iter().find(|c| c.name == name) else {
-            // `help` is the documented discovery call, so answer it from the
-            // registry on hosts that have no `/help` command of their own.
-            if name == "help" {
-                return ToolExecutionResult::success(json!({
-                    "success": true,
-                    "command": "/help",
-                    "message": format!("available commands: {}", available.join(", "))
-                }));
-            }
             return ToolExecutionResult::tool_error(format!(
                 "unknown yolop command: /{name}; available: {}",
                 available.join(", ")
@@ -217,7 +216,7 @@ fn rendered_command(name: &str, arg: Option<&str>) -> String {
 /// print to the transcript and return an empty `CommandResult`, so the registry
 /// path alone would tell the agent nothing.
 fn command_awaits_host_reply(name: &str) -> bool {
-    matches!(name, "mcp" | "tools" | "help" | "cwd")
+    matches!(name, "mcp" | "tools" | "cwd")
 }
 
 #[async_trait]
@@ -247,19 +246,19 @@ impl Tool for RunCommandTool {
         // is attached. ACP and --print omit ClientCommandsCapability, so naming
         // them here prompts a doomed run_command that fails with unknown command.
         if self.ui.is_some() {
-            "Execute any slash command this session registers, on behalf of a natural-language user \
-             request: `setup` (`command: setup`, `args: [reauthenticate, codex_browser]`), \
-             `background`, `undo`, `redo`, `rewind`, `goal`, and in the terminal also `help`, `tools`, \
-             `mcp`, `cwd`, `status`, `model`, `effort`, `clear`, and `quit`. Use `command: help` to list the live \
-             command set; an unknown name returns the available ones. Accepts command names with or \
-             without the leading slash; `exit` is an alias for `quit`. Skill commands activate by \
+            "Execute a session slash command that has no CLI equivalent, on behalf of a natural-language user \
+             request: `background`, `undo`, `redo`, `rewind`, `goal`, and in the terminal also `help`, `tools`, \
+             `mcp`, `cwd`, `status`, `model`, `effort`, `clear`, and `quit`. `command: help` privately lists the live \
+             command set; use it only for a user's help request. An unknown name returns the available ones. Accepts command names with or \
+             without the leading slash; `exit` is an alias for `quit`. Use Bash with `yolop setup \
+             login|reauthenticate <provider>` for authentication. Skill commands activate by \
              prompt and `shell` is typed-only, so neither runs here."
         } else {
-            "Execute any slash command this session registers, on behalf of a natural-language user \
-             request: `setup` (`command: setup`, `args: [reauthenticate, codex_browser]`), \
-             `background`, `undo`, `redo`, `rewind`, `goal`, and whatever else this session registers. \
-             Use `command: help` to list the live command set; an unknown name returns the available \
-             ones. Accepts command names with or without the leading slash. Skill commands activate \
+            "Execute a session slash command that has no CLI equivalent, on behalf of a natural-language user \
+             request: `background`, `undo`, `redo`, `rewind`, `goal`, and whatever else this session registers. \
+             `command: help` privately lists the live command set; use it only for a user's help request. An unknown name returns the available \
+             ones. Accepts command names with or without the leading slash. Use Bash with `yolop setup \
+             login|reauthenticate <provider>` for authentication. Skill commands activate \
              by prompt and `shell` is typed-only, so neither runs here."
         }
     }
@@ -275,20 +274,20 @@ impl Tool for RunCommandTool {
                     "type": "string",
                     "description": if self.ui.is_some() {
                         "Slash command name, with or without the leading slash, \
-                         e.g. `setup`, `background`, `mcp`, `model`. Use `help` to list them."
+                         e.g. `setup`, `background`, `mcp`, `model`. `help` privately lists them."
                     } else {
                         "Slash command name, with or without the leading slash, \
-                         e.g. `setup`, `background`. Use `help` to list them."
+                         e.g. `setup`, `background`. `help` privately lists them."
                     }
                 },
                 "args": {
                     "type": "array",
                     "items": { "type": "string" },
                     "description": if self.ui.is_some() {
-                        "Ordered command arguments, e.g. [`reload`] for /mcp, \
-                         [`openai/gpt-5.4`] for /model, or [`reauthenticate`, `codex_browser`] for /setup."
+                        "Ordered command arguments, e.g. [`reload`] for /mcp or \
+                         [`openai/gpt-5.4`] for /model."
                     } else {
-                        "Ordered command arguments, e.g. [`reauthenticate`, `codex_browser`] for /setup."
+                        "Ordered slash-command arguments."
                     }
                 }
             },
@@ -518,11 +517,10 @@ mod tests {
             .to_string();
 
         assert!(capability.contains("run_command"));
-        assert!(capability.contains("runs any slash command this session registers"));
-        assert!(capability.contains("reauthenticate <provider>"));
-        // The prompt wraps this guidance across two lines, check each side.
-        assert!(capability.contains("Use `command: help`"));
-        assert!(capability.contains("for the live list"));
+        assert!(capability.contains("slash-only actions"));
+        assert!(capability.contains("yolop setup login|reauthenticate"));
+        assert!(capability.contains("`help` privately"));
+        assert!(capability.contains("privately"));
     }
 
     #[test]
@@ -574,8 +572,8 @@ mod tests {
         );
     }
 
-    /// The reported gap: `/setup reauthenticate <provider>` was unreachable
-    /// because `run_command` carried its own client-command allowlist.
+    /// Commands resolve through the runtime registry rather than a private
+    /// allowlist. Administrative CLI routes are tested at their CLI boundary.
     #[tokio::test]
     async fn run_command_dispatches_registry_commands() {
         let dispatch = RecordingDispatch::registry();
@@ -583,23 +581,17 @@ mod tests {
 
         let result = tool
             .execute(json!({
-                "command": "/setup",
-                "args": ["reauthenticate", "codex_browser"]
+                "command": "/goal",
+                "args": ["tests pass"]
             }))
             .await;
 
         assert!(result.is_success(), "tool result: {result:?}");
         assert_eq!(
             dispatch.executed(),
-            vec![(
-                "setup".to_string(),
-                Some("reauthenticate codex_browser".to_string())
-            )]
+            vec![("goal".to_string(), Some("tests pass".to_string()))]
         );
-        assert_eq!(
-            message(&result),
-            "/setup ran with reauthenticate codex_browser"
-        );
+        assert_eq!(message(&result), "/goal ran with tests pass");
     }
 
     /// ACP and `--print` have no `HostUi`, so every command, including a
@@ -627,6 +619,21 @@ mod tests {
         let message = message(&result);
         assert!(message.contains("setup"), "message: {message}");
         assert!(message.contains("goal"), "message: {message}");
+    }
+
+    #[tokio::test]
+    async fn run_command_help_does_not_print_into_the_terminal_transcript() {
+        let ui = Arc::new(RecordingUi::default());
+        let tool = terminal_tool(RecordingDispatch::registry(), ui.clone());
+
+        let result = tool.execute(json!({ "command": "help" })).await;
+
+        assert!(result.is_success(), "tool result: {result:?}");
+        assert!(message(&result).contains("setup"));
+        assert!(
+            ui.take().is_empty(),
+            "agent command discovery must stay inside the tool result"
+        );
     }
 
     #[tokio::test]
@@ -760,10 +767,7 @@ mod tests {
                 headless.description()
             );
         }
-        assert!(
-            headless.description().contains("Use `command: help`"),
-            "headless description must still point at the live list"
-        );
+        assert!(headless.description().contains("privately lists"));
         let schema = headless.parameters_schema();
         let schema_text = serde_json::to_string(&schema).expect("schema serializes");
         assert!(
