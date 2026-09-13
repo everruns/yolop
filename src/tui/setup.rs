@@ -241,7 +241,22 @@ impl App {
                 if let Some(env) = Self::detected_env_var(provider) {
                     (true, format!("✓ {env}"))
                 } else if settings.has_codex_auth() {
-                    (true, "✓ signed in".to_string())
+                    // An expired access token with no refresh token cannot
+                    // recover on the next turn: the driver only auto-refreshes
+                    // when a refresh token is present. Report it now so setup
+                    // cannot complete on a login that is already dead.
+                    let expired_without_refresh = settings
+                        .codex_auth()
+                        .map(|auth| {
+                            crate::auth::codex::should_refresh(auth.expires_at)
+                                && auth.refresh_token.as_deref().unwrap_or("").is_empty()
+                        })
+                        .unwrap_or(false);
+                    if expired_without_refresh {
+                        (false, "expired, sign in again".to_string())
+                    } else {
+                        (true, "✓ signed in".to_string())
+                    }
                 } else {
                     (false, "needs ChatGPT login".to_string())
                 }
@@ -1765,6 +1780,22 @@ impl App {
         spec: &str,
         selected: usize,
     ) {
+        // The provider step already redirects an unhealthy provider to its
+        // login, but the stored credential can die between that check and
+        // this confirmation (an expired Codex login is the reported case),
+        // so re-check here instead of completing setup on a dead provider.
+        let (connected, status) = Self::provider_status(&self.settings.snapshot(), provider);
+        if !connected {
+            self.setup = Some(SetupStep::PickModel {
+                provider: provider.to_string(),
+                selected,
+                custom: None,
+                error: Some(format!(
+                    "{provider} is not ready ({status}). Sign in first, or pick another provider."
+                )),
+            });
+            return;
+        }
         // `model <spec>` resolves against the current provider. For the
         // custom endpoint the wizard reaches this step before any switch
         // could succeed (a first-time custom provider has no model yet), so
@@ -1888,6 +1919,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::App;
+    use crate::config::{CodexAuth, Settings};
 
     #[test]
     fn openai_and_codex_fallback_models_include_gpt_5_6_variants() {
@@ -1902,5 +1934,42 @@ mod tests {
                 "{provider} selector should lead with all GPT-5.6 variants"
             );
         }
+    }
+
+    fn codex_settings(access: &str, refresh: Option<&str>, expires_at: Option<i64>) -> Settings {
+        Settings {
+            codex_auth: Some(CodexAuth {
+                access_token: access.into(),
+                refresh_token: refresh.map(str::to_string),
+                expires_at,
+                account_id: None,
+                email: None,
+            }),
+            ..Settings::default()
+        }
+    }
+
+    #[test]
+    fn expired_codex_login_without_refresh_is_not_ready() {
+        unsafe { std::env::remove_var("CODEX_ACCESS_TOKEN") };
+        let settings = codex_settings("stale-access", None, Some(1));
+        let (connected, status) = App::provider_status(&settings, "codex");
+        assert!(
+            !connected,
+            "an expired login with no refresh token must not read as ready"
+        );
+        assert!(
+            status.contains("expired"),
+            "the status names the problem: {status}"
+        );
+    }
+
+    #[test]
+    fn fresh_codex_login_stays_ready() {
+        unsafe { std::env::remove_var("CODEX_ACCESS_TOKEN") };
+        let settings = codex_settings("fresh-access", Some("refresh"), Some(i64::MAX));
+        let (connected, status) = App::provider_status(&settings, "codex");
+        assert!(connected, "a fresh login must read as ready");
+        assert_eq!(status, "✓ signed in");
     }
 }
