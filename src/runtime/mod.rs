@@ -6336,7 +6336,7 @@ mod tests {
             Some(env!("YOLOP_EVERRUNS_HOST_VERSION"))
         );
         // OpenRouter attribution headers flow through embedder metadata.
-        use everruns_provider::driver_registry::{
+        use everruns_openrouter::options::{
             OPENROUTER_HTTP_REFERER_METADATA_KEY, OPENROUTER_X_TITLE_METADATA_KEY,
         };
         assert_eq!(
