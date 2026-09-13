@@ -229,7 +229,7 @@ Yolop earns its keep on large repos:
 
 ## Editor integration
 
-Yolop speaks the Agent Client Protocol, so Zed and other ACP editors can drive it directly.
+Yolop speaks the Agent Client Protocol, so ACP clients can drive it directly. [Paseo](https://paseo.sh/) is the most used one: register your yolop binary as an ACP agent and it works alongside your other providers. [Zed](https://zed.dev) works the same way through a custom agent server.
 
 ```bash
 yolop --acp  # speak ACP over stdio
