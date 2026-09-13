@@ -62,18 +62,18 @@ to your harness in `~/.config/yolop/settings.toml`:
 ref = "ext:<name>"
 ```
 
-(or run `yolop extensions enable <name>`). A detached invocation persists the
-choice for sessions. When the command is invoked directly through a running
-Yolop session's foreground Bash, Yolop also applies enable/disable to that
-session for the next turn. `reload` is session-only and reports an error when
-run detached. Installing a new manifest still requires a new session before it
+(or run `yolop extensions enable <name>`). An invocation outside a running
+session persists the choice for future sessions. When the command is invoked
+through a running Yolop session's Bash, Yolop also applies enable/disable to
+that session for the next turn. `reload` is session-only and reports an error
+outside a session. Installing a new manifest still requires a new session before it
 can be enabled because the host registers extension packages at startup.
 
-The attached path is deliberately narrow: invoke `yolop extensions ...`
-directly, without a pipeline, redirection, command substitution, or background
-operator. Yolop spawns its exact executable with anonymous pipes for one typed
-request; it does not publish a socket, endpoint, token, or control environment
-variable to general shell commands.
+The attached path supports normal shell syntax, including pipelines,
+redirection, command substitution, scripts, and background operators. The child
+sends raw argv over a private local endpoint. The host's exact Yolop executable
+owns parsing and dispatch, so an older installed binary cannot reinterpret the
+current session's grammar or silently fall back to detached mutation.
 
 **3. Use**: start yolop; the extension's tools and prompt are available. To
 watch it connect:

@@ -17,7 +17,7 @@ distinguished from project work (which belongs in the repo's `AGENTS.md`,
 source, and tests).
 
 The same block teaches how to act on the live session: run
-`yolop <subcommand> ...` in the foreground bash tool, with the route list
+`yolop <subcommand> ...` in the bash tool, with the route list
 derived from the routes actually registered. Administration is deliberately not
 a set of model tools (their schemas would cost context every turn).
 
@@ -25,6 +25,11 @@ Each yolop-owned capability already contributes its own system-prompt block and
 tools. The `yolop` capability adds the framing layer plus the attached
 administration: teach the model when a request is about yolop itself, and how
 to administer the session it is attached to.
+
+The CLI remains ordinary shell software. Session attachment survives scripts,
+pipelines, redirection, command substitution, and background expressions. A
+child sends raw argv over an authenticated local endpoint before parsing them;
+the host's exact executable owns the canonical grammar and typed request.
 
 ## What
 

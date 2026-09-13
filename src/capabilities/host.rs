@@ -516,7 +516,7 @@ pub(crate) struct CodingBashCapability {
     pub(crate) expose_command: bool,
     pub(crate) approval_policy: crate::config::ApprovalPolicy,
     pub(crate) approval_gate: Arc<crate::sandbox_approval::ApprovalGate>,
-    pub(crate) control: Option<Arc<dyn crate::control::ControlService>>,
+    pub(crate) control: Option<std::sync::Weak<dyn crate::control::ControlService>>,
 }
 
 #[async_trait]
@@ -550,7 +550,7 @@ impl Capability for CodingBashCapability {
                 self.approval_policy,
                 self.approval_gate.clone(),
             )
-            .with_control(self.control.clone()),
+            .with_control(self.control.as_ref().and_then(std::sync::Weak::upgrade)),
         )]
     }
     fn commands(&self) -> Vec<CommandDescriptor> {
@@ -595,7 +595,7 @@ impl Capability for CodingBashCapability {
             self.approval_policy,
             self.approval_gate.clone(),
         )
-        .with_control(self.control.clone())
+        .with_control(self.control.as_ref().and_then(std::sync::Weak::upgrade))
         .execute(json!({ "command": command, "output": "normal" }))
         .await;
         Ok(shell_command_result(result))
@@ -823,7 +823,7 @@ impl Capability for ModelsCapability {
 // mid-task, are judgement calls left to the model.
 /// Raw text on purpose: the host wraps `system_prompt_addition` in `<capability>`
 /// tags once, so tags here would render twice.
-pub(crate) const MODELS_PROMPT: &str = "Configure models through `yolop model ...` and \n    `yolop setup ...` (foreground Bash) or `/model`, `/setup`, `/effort`. Changes apply \n    next turn. Never guess IDs: run `yolop model` or `yolop setup status` first. Switch \n    with `yolop model use <target>` (label, id, or provider/model with optional `:effort`); \n    authenticate providers with `yolop setup login <provider>.";
+pub(crate) const MODELS_PROMPT: &str = "Configure models through `yolop model ...` and \n    `yolop setup ...` or `/model`, `/setup`, `/effort`. Changes apply next turn. Never \n    guess IDs: run `yolop model` or `yolop setup status` first. Switch with \n    `yolop model use <target>` (label, id, or provider/model with optional `:effort`); \n    authenticate or reset through `yolop setup login|reauthenticate <provider>`.";
 
 fn setup_command_arg() -> CommandArg {
     let mut suggestions = vec![

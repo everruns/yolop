@@ -776,6 +776,13 @@ fn unknown_subcommand_context(root: &clap::Command) -> Option<(String, Vec<Strin
 }
 
 async fn async_main(crash_reporter: &crash_report::CrashReporter) -> Result<()> {
+    if let Some(args) = control::endpoint_client_args()? {
+        let exit_code = control::run_endpoint_client(args).await?;
+        if exit_code != 0 {
+            std::process::exit(exit_code);
+        }
+        return Ok(());
+    }
     let cli_registry = detached_cli_registry()?;
     let root = cli_registry.augment(Cli::command())?;
     let mut matches = match root.clone().try_get_matches() {

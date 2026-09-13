@@ -130,15 +130,6 @@ impl BashTool {
         self
     }
 
-    /// Notice for an administration command that lost its session attachment to
-    /// shell composition. Surfaced on the result so both the agent and the
-    /// client transcript can say so; `None` without a control service, where
-    /// there are no routes to be wrong about.
-    fn detached_control_notice(&self, command: &str) -> Option<String> {
-        let control = self.control.as_ref()?;
-        crate::control::detached_control_notice(command, control.as_ref())
-    }
-
     fn timeout_secs(&self, background: bool) -> u64 {
         if background {
             self.background_timeout_secs
@@ -164,34 +155,39 @@ impl BashTool {
         let max_bytes = self.max_output_bytes;
         let sandbox_mode = sandbox.mode();
 
-        // Attached administration is deliberately foreground-only. The
-        // recognizer rejects shell composition, then the exact running Yolop
-        // executable exchanges one typed request over anonymous pipes. No
-        // endpoint or capability reaches the ordinary shell environment.
-        if sink.is_none()
-            && let Some(control) = &self.control
-            && let Some(output) = crate::control::invoke_attached(command, control.clone()).await
-        {
-            return Ok(BashRunOutput {
-                stdout_text: output.stdout,
-                stderr_text: output.stderr,
-                exit_code: output.exit_code,
-                out_truncated: false,
-                err_truncated: false,
-                duration: Duration::ZERO,
-                sandbox_mode,
-            });
-        }
-
         if let Some(sink) = &sink {
             let _ = sink.status("Running bash command").await;
         }
 
         // kill_on_drop ensures a timed-out or canceled background command is
         // reaped when the owning future is dropped.
+        let control_endpoint = if let Some(control) = &self.control {
+            Some(
+                crate::control::ControlEndpoint::start(
+                    control.clone(),
+                    self.approval_policy,
+                    self.approval_gate.clone(),
+                    sandbox_mode,
+                )
+                .await
+                .map_err(|error| {
+                    ToolExecutionResult::tool_error(format!(
+                        "attached control setup failed: {error:#}"
+                    ))
+                })?,
+            )
+        } else {
+            None
+        };
+        let attached_script = control_endpoint
+            .as_ref()
+            .map(|endpoint| endpoint.wrap_shell_script(command));
         let mut process = sandbox
-            .command(&cwd, command)
+            .command(&cwd, attached_script.as_deref().unwrap_or(command))
             .map_err(|e| ToolExecutionResult::tool_error(format!("sandbox setup failed: {e:#}")))?;
+        if let Some(endpoint) = &control_endpoint {
+            endpoint.apply_to(&mut process);
+        }
         crate::exec::sandbox::configure_stdio(&mut process);
         let mut child = process
             .spawn()
@@ -314,33 +310,6 @@ impl BashTool {
                 "refusing to signal the running Yolop host process",
             ));
         }
-        if sink.is_none()
-            && self.control.is_some()
-            && self.sandbox.mode() != SandboxMode::DangerFullAccess
-            && crate::control::requires_host_approval(
-                command,
-                self.control.as_ref().expect("checked above").as_ref(),
-            )
-        {
-            if self.approval_policy == ApprovalPolicy::Never {
-                return Err(ToolExecutionResult::tool_error(
-                    "approval_policy=never forbids attached administration outside the shell sandbox",
-                ));
-            }
-            self.request_approval(
-                command,
-                justification
-                    .filter(|value| !value.trim().is_empty())
-                    .unwrap_or(
-                        "typed Yolop administration writes or executes outside the arbitrary-shell sandbox",
-                    )
-                    .to_string(),
-                false,
-            )
-            .await?;
-            return self.run_command(command, sink, &self.sandbox).await;
-        }
-
         if self.sandbox.mode() == SandboxMode::DangerFullAccess {
             if self.approval_policy == ApprovalPolicy::Untrusted && !trusted_command(command) {
                 self.request_approval(
@@ -564,10 +533,6 @@ impl Tool for BashTool {
         if let Some(hint) = command_failure_hint(exit_code, &output.stderr_text) {
             result["hint"] = json!(hint);
         }
-        if let Some(notice) = self.detached_control_notice(&command) {
-            result["detached_control"] = json!(notice);
-        }
-
         ToolExecutionResult::success_with_raw_output(result, raw_output)
     }
 
@@ -629,7 +594,7 @@ impl BackgroundExecutableTool for BashTool {
                 label: Some("runtime".to_string()),
             })
             .await;
-        let mut result = json!({
+        let result = json!({
             "command": command,
             "exit_code": exit_code,
             "success": success,
@@ -640,12 +605,6 @@ impl BackgroundExecutableTool for BashTool {
             "output_limited": output_limited,
             "sandbox": output.sandbox_mode.as_str(),
         });
-        // A backgrounded administration command is detached twice over: the
-        // recognizer is foreground-only, so say so here as well.
-        if let Some(notice) = self.detached_control_notice(&command) {
-            result["detached_control"] = json!(notice);
-        }
-
         if success {
             Ok(BackgroundOutcome {
                 summary: format!(
@@ -679,47 +638,6 @@ mod tests {
     /// was hardcoded to `yolop extensions`, which named one of the session's
     /// routes and advertised administration even where none is registered.
     /// Discovery belongs to the shared `yolop` prompt block.
-    /// The agent half: a composed administration command must carry the notice
-    /// on its result, where the model reads it.
-    #[tokio::test]
-    async fn composed_administration_result_carries_the_detached_notice() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut control = crate::control::ControlRegistry::default();
-        control
-            .register(std::sync::Arc::new(
-                crate::extensions::ExtensionsCapability::new(
-                    dir.path().join("extensions"),
-                    dir.path().to_path_buf(),
-                    std::sync::Arc::new(crate::config::SettingsStore::open(
-                        dir.path().join("settings.toml"),
-                    )),
-                    crate::extensions::LiveProcessRegistry::default(),
-                    None,
-                ),
-            ))
-            .expect("register extensions control route");
-        let tool = BashTool::new(Workspace::from_path(dir.path().to_path_buf()))
-            .with_control(Some(std::sync::Arc::new(control)));
-
-        let result = tool
-            .execute(serde_json::json!({
-                "command": "echo skipped | grep -q . && true # yolop extensions list | cat",
-                "output": "normal",
-            }))
-            .await;
-        let value = match result {
-            ToolExecutionResult::Success(value) => value,
-            other => panic!("expected success, got {other:?}"),
-        };
-        assert!(
-            value
-                .get("detached_control")
-                .and_then(Value::as_str)
-                .is_some_and(|notice| notice.contains("`yolop extensions`")),
-            "expected a detached-control notice on the result: {value}"
-        );
-    }
-
     #[test]
     fn bash_description_does_not_name_control_resources() {
         let tool = BashTool::new(Workspace::from_path(std::env::current_dir().unwrap()));

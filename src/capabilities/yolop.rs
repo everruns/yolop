@@ -3,7 +3,7 @@
 //! The framing teaches the model when a request is about yolop itself (a global
 //! request about the tool) rather than a change to the current project. The
 //! administration teaches how to act on the live session: run
-//! `yolop <subcommand> ...` in the foreground bash tool, with the route list
+//! `yolop <subcommand> ...` in the bash tool, with the route list
 //! derived from the routes actually registered. Administration is deliberately
 //! not a set of model tools (their schemas would cost context every turn).
 
@@ -26,7 +26,7 @@ impl YolopCapability {
     pub(crate) fn new(routes: &[ControlRoute]) -> Self {
         let mut prompt = String::from(FRAMING);
         if !routes.is_empty() {
-            prompt.push_str("\n\nAdminister this session by running `yolop <subcommand> ...` in the foreground bash tool: it attaches to the running session and takes effect live. Run `yolop <subcommand> --help` for the operations; there are no equivalent tools.\n");
+            prompt.push_str("\n\nAdminister this session with `yolop <subcommand> ...` in Bash. It stays attached in scripts and shell composition. Run `yolop <subcommand> --help` for operations.\n");
             for route in routes {
                 prompt.push_str(&format!(
                     "- `{sub}`, {summary}\n",
@@ -34,9 +34,7 @@ impl YolopCapability {
                     summary = route.summary
                 ));
             }
-            prompt.push_str(
-                "Invoke directly: shell composition loses attachment. Do not repeat `--help`.",
-            );
+            prompt.push_str("Do not repeat `--help`.");
         }
         Self { prompt }
     }
@@ -132,6 +130,14 @@ mod tests {
         let capability = YolopCapability::new(&[COORDINATION_CONTROL_ROUTE]);
         let block = capability.system_prompt_addition().expect("block");
         assert!(block.contains("Do not repeat `--help`"));
+    }
+
+    #[test]
+    fn administration_supports_shell_composition() {
+        let capability = YolopCapability::new(&[COORDINATION_CONTROL_ROUTE]);
+        let block = capability.system_prompt_addition().expect("block");
+        assert!(block.contains("scripts and shell composition"));
+        assert!(!block.contains("Invoke directly"));
     }
 
     #[test]

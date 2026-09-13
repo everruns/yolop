@@ -37,12 +37,12 @@ surface available without silently enrolling interactive sessions. A named
 profile is the intended way to define a standing coordinator or worker.
 
 The capability contributes no model tools. Coordinator and worker agents use
-the ordinary foreground Bash tool to invoke `yolop coordination ...`, matching
+the ordinary Bash tool to invoke `yolop coordination ...`, matching
 extension administration and the shared attached-control contract. The
 contributed CLI covers `list`, `status`, `dispatch`, `complete`, `cancel`, `accept`, and
 `drain`; `/coordination` parses the same action grammar. Multiword payload
-fields consume unquoted words until the next option, preserving the control
-plane's conservative direct-invocation grammar.
+fields consume unquoted words until the next option. Ordinary shell quoting and
+composition are also supported by the attached endpoint.
 
 The attached host derives session identity and role. `dispatch` requires a
 coordinator or combined role, `complete` requires a worker or combined role and

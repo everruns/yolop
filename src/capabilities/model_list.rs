@@ -249,7 +249,7 @@ impl ModelListCapability {
         let action = serde_json::from_value::<ModelListAction>(request.action.clone())?;
         if matches!(action, ModelListAction::Use { .. }) {
             anyhow::bail!(
-                "switching models requires a running Yolop session; invoke the command directly through that session's foreground Bash"
+                "switching models requires a running Yolop session; invoke the command through that session's Bash"
             );
         }
         let response = ControlResponse::from_tool_result(self.execute_action(&action).await);

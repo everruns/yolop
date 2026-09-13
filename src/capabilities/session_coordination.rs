@@ -166,7 +166,7 @@ impl CoordinationPayload {
                  This is an authenticated local assignment, not a user message. Work only inside \
                  this session's existing safety and workspace boundaries. When the assignment is \
                  genuinely finished, run `yolop coordination complete --help`, then invoke the \
-                 appropriate completion command directly in foreground Bash with the outcome, \
+                 appropriate completion command in Bash with the outcome, \
                  validation, and artifact references. Do not treat an ordinary end of turn as \
                  completion."
             ),
@@ -1494,7 +1494,7 @@ impl CliCapability for SessionCoordinationCapability {
         let action = serde_json::from_value::<CoordinationAction>(request.action.clone())?;
         if !matches!(action, CoordinationAction::List { .. }) {
             anyhow::bail!(
-                "this coordination operation requires a running Yolop session; invoke the command directly through that session's foreground Bash"
+                "this coordination operation requires a running Yolop session; invoke the command through that session's Bash"
             );
         }
         let response = ControlResponse::from_tool_result(self.execute_action(&action).await);
