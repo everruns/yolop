@@ -62,6 +62,11 @@ path as `/shell` (handy for quick one-offs).
 User-invocable skills (for example `/yolop`, `/yolop-config`, `/skill-management`)
 also appear in the registry when installed.
 
+When acting conversationally, use Bash with `yolop setup
+login|reauthenticate <provider>` for authentication. Do not dispatch those
+authentication operations through `run_command`; the slash forms above are for
+the person using the TUI.
+
 ## The model list
 
 `/model` (and clicking the model in the status bar) opens your model list: an

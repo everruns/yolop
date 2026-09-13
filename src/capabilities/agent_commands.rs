@@ -34,11 +34,11 @@ pub(crate) const AGENT_COMMANDS_CAPABILITY_ID: &str = "agent_commands";
 
 /// Raw text on purpose: the host wraps `system_prompt_addition` in `<capability>`
 /// tags once, so tags here would render twice.
-pub(crate) const AGENT_COMMANDS_PROMPT: &str = r#"Use `run_command` for slash-only actions such as `/goal`, `/background`,
-`/undo`, `/redo`, and `/rewind`. Use Bash and `yolop` for administration;
-authentication is `yolop setup login|reauthenticate <provider>`, never `/setup`.
-Act instead of asking the user to type. `help` privately lists slash commands;
-unknown names also list them. Skills activate by prompt."#;
+pub(crate) const AGENT_COMMANDS_PROMPT: &str = r#"Use `run_command` for slash-only actions such as `/goal` and `/background`.
+Use `manage_checkpoint` for undo, redo, and rewind. Use Bash and `yolop` for
+administration; authentication is `yolop setup login|reauthenticate <provider>`,
+never `/setup`. Act instead of asking the user to type. `help` privately lists
+slash commands; unknown names also list them. Skills activate by prompt."#;
 
 /// Registry port for `run_command`: list the commands this session actually has
 /// and execute one through the runtime, the same path a typed slash command
@@ -246,16 +246,16 @@ impl Tool for RunCommandTool {
         // is attached. ACP and --print omit ClientCommandsCapability, so naming
         // them here prompts a doomed run_command that fails with unknown command.
         if self.ui.is_some() {
-            "Execute a session slash command that has no CLI equivalent, on behalf of a natural-language user \
-             request: `background`, `undo`, `redo`, `rewind`, `goal`, and in the terminal also `help`, `tools`, \
+            "Execute a session slash command that has no dedicated tool or CLI equivalent, on behalf of a natural-language user \
+             request: `background`, `goal`, and in the terminal also `help`, `tools`, \
              `mcp`, `cwd`, `status`, `model`, `effort`, `clear`, and `quit`. `command: help` privately lists the live \
              command set; use it only for a user's help request. An unknown name returns the available ones. Accepts command names with or \
              without the leading slash; `exit` is an alias for `quit`. Use Bash with `yolop setup \
              login|reauthenticate <provider>` for authentication. Skill commands activate by \
              prompt and `shell` is typed-only, so neither runs here."
         } else {
-            "Execute a session slash command that has no CLI equivalent, on behalf of a natural-language user \
-             request: `background`, `undo`, `redo`, `rewind`, `goal`, and whatever else this session registers. \
+            "Execute a session slash command that has no dedicated tool or CLI equivalent, on behalf of a natural-language user \
+             request: `background`, `goal`, and whatever else this session registers. \
              `command: help` privately lists the live command set; use it only for a user's help request. An unknown name returns the available \
              ones. Accepts command names with or without the leading slash. Use Bash with `yolop setup \
              login|reauthenticate <provider>` for authentication. Skill commands activate \

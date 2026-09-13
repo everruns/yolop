@@ -75,7 +75,8 @@ command, an overlay confirmation, or a next-run-only settings write fail this ba
 | Skills, package management | `yolop skills` (attached CLI) | skills control route |
 | Hooks, configuration | `yolop config hooks` (attached CLI) | hooks control route |
 | Model selection and model-list edits | `yolop config model` / `yolop config models` | `/setup`, `yolop-config` skill |
-| Any slash command the host's registry holds (`/setup`, `/background`, `/undo`, `/redo`, `/rewind`, `/goal`, plus the terminal ones in the TUI) | `run_command` (every host) | the slash commands themselves |
+| Checkpoint restore | `manage_checkpoint` | `/undo`, `/redo`, `/rewind` |
+| Any slash command without a dedicated tool or CLI (`/background`, `/goal`, plus the terminal ones in the TUI) | `run_command` (every host) | the slash commands themselves |
 
 Notes:
 
@@ -111,6 +112,20 @@ Notes:
 - **Mid-turn reasoning-effort change** (within a single `run_turn`, not just at the
   next turn boundary) requires upstream `everruns-host` support and is tracked in
   **EVE-595**. `yolop model use <id>:<effort>` delivers turn-boundary escalation today.
+
+## Evaluation
+
+The `management` preset in `evals/harness_basic` exercises natural-language
+configuration and administration requests. It covers schema-backed configuration,
+model catalogs, profiles, live model selection, authentication, attached resource
+inventory, registry-only help, goal, and background actions, plus direct checkpoint
+management.
+Checks match structured tool names and arguments, so invoking Bash or
+`run_command` with the wrong operation does not count as adoption. Mutating cases
+also inspect the isolated Yolop configuration written by the session, and every
+case verifies that the host's global configuration fingerprint stayed unchanged.
+The preset runs OpenRouter Muse 1.3 Contributor, GPT-5.6 Terra at medium effort,
+and Anthropic Sonnet 5, with per-case token usage retained in the Mira report.
 
 ## Ownership boundary
 

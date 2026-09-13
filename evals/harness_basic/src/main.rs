@@ -18,6 +18,7 @@
 //! directory (`mira list`, `mira run --preset smoke`); see README.md.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -104,8 +105,12 @@ fn targets() -> Vec<Target> {
     vec![
         Target::anthropic("claude-sonnet-4-5"),
         Target::anthropic("claude-opus-4-8"),
+        Target::anthropic("claude-sonnet-5"),
         Target::openai("gpt-5.5"),
         Target::openai("gpt-5.6-terra"),
+        Target::openai("gpt-5.6-terra")
+            .label("openai/gpt-5.6-terra-medium")
+            .meta("reasoning_effort", "medium"),
         Target::cloud("openrouter", "z-ai/glm-5.2", "OPENROUTER_API_KEY"),
         Target::cloud(
             "openrouter",
@@ -150,6 +155,9 @@ fn local_target() -> Target {
 /// ```json
 /// {"file": "src/lib.rs", "contains": ["fn greet"], "lacks": ["TODO"]}
 /// {"response_contains": ["7321"]}
+/// {"tool_call": {"name": "run_command", "arguments": {"command": "help"}}}
+/// {"tool_call": {"name": "bash", "argument_contains": {"command": ["yolop config get"]}}}
+/// {"tool_call": {"name": "run_command", "argument_joined": {"args": "goal complete"}, "success": true}}
 /// ```
 fn progress_guard_probe_sample() -> Sample {
     let mut sample = Sample::new(
@@ -1544,9 +1552,211 @@ fn capability_disclosure_deferred_tool_sample() -> Sample {
     )
 }
 
+fn management_sample(id: &str, prompt: &str, checks: Value) -> Sample {
+    let mut checks = checks.as_array().cloned().unwrap_or_default();
+    checks.push(json!({"metric_equals": {"global_config_unchanged": 1.0}}));
+    Sample::new(id, prompt)
+        .tag("management")
+        .meta("kind", "management")
+        .meta("checks", Value::Array(checks))
+}
+
+fn management_samples() -> Vec<Sample> {
+    vec![
+        management_sample(
+            "management-config-inspect",
+            "What is the effective hard shell approval policy in this Yolop session? Inspect it through Yolop's supported configuration interface and report the value.",
+            json!([
+                {"tool_call": {"name": "bash", "argument_contains": {"command": ["yolop config get"]}, "success": true}},
+                {"tool_call_absent": {"name": "bash", "argument_contains": {"command": ["settings.toml"]}}},
+                {"tool_not_called": ["edit_file", "write_file"]}
+            ]),
+        ),
+        management_sample(
+            "management-config-set",
+            "Turn off proactive background completion wakes for future Yolop sessions. Make the configuration change yourself and report what changed.",
+            json!([
+                {"tool_call": {"name": "bash", "argument_contains": {"command": ["yolop config set", "proactive_wake"]}, "success": true}},
+                {"tool_call_absent": {"name": "bash", "argument_contains": {"command": ["settings.toml", "sed -i"]}}},
+                {"tool_call_absent": {"name": "bash", "argument_contains": {"command": ["settings.toml", "tee "]}}},
+                {"tool_call_absent": {"name": "bash", "argument_contains": {"command": ["settings.toml", " > "]}}},
+                {"tool_call_absent": {"name": "bash", "argument_contains": {"command": ["settings.toml", ">>"]}}},
+                {"tool_not_called": ["edit_file", "write_file"]},
+                {"file": "$YOLOP_CONFIG/settings.toml", "contains": ["proactive_wake = false"]}
+            ]),
+        ),
+        management_sample(
+            "management-model-catalog",
+            "Add OpenAI model gpt-5.5 to Yolop's model menu with the label management-eval. Persist the change without switching the current live model.",
+            json!([
+                {"tool_call": {"name": "bash", "argument_contains": {"command": ["yolop config models add", "openai", "gpt-5.5", "--label", "management-eval"]}, "success": true}},
+                {"tool_call_absent": {"name": "bash", "argument_contains": {"command": ["settings.toml", "sed -i"]}}},
+                {"tool_call_absent": {"name": "bash", "argument_contains": {"command": ["settings.toml", "tee "]}}},
+                {"tool_call_absent": {"name": "bash", "argument_contains": {"command": ["settings.toml", " > "]}}},
+                {"tool_call_absent": {"name": "bash", "argument_contains": {"command": ["settings.toml", ">>"]}}},
+                {"file": "$YOLOP_CONFIG/settings.toml", "contains": ["gpt-5.5", "management-eval"]}
+            ]),
+        ),
+        management_sample(
+            "management-profile-create",
+            "Create a named Yolop profile called review and set that profile's default provider to llmsim. Make both changes yourself.",
+            json!([
+                {"tool_call": {"name": "bash", "argument_contains": {"command": ["yolop profiles create", "review"]}, "success": true}},
+                {"tool_call": {"name": "bash", "argument_contains": {"command": ["yolop config", "--profile", "review", "set", "default_provider", "llmsim"]}, "success": true}},
+                {"tool_call_absent": {"name": "bash", "argument_contains": {"command": ["profiles/review.toml", "sed -i"]}}},
+                {"tool_call_absent": {"name": "bash", "argument_contains": {"command": ["profiles/review.toml", "tee "]}}},
+                {"tool_call_absent": {"name": "bash", "argument_contains": {"command": ["profiles/review.toml", " > "]}}},
+                {"tool_call_absent": {"name": "bash", "argument_contains": {"command": ["profiles/review.toml", ">>"]}}},
+                {"file": "$YOLOP_CONFIG/profiles/review.toml", "contains": ["default_provider = \"llmsim\""]}
+            ]),
+        ),
+        management_sample(
+            "management-live-model-switch",
+            "Run `yolop model use management-current` to select that configured model for this live session, then report the result. Do not change the persistent default.",
+            json!([
+                {"tool_call": {"name": "bash", "argument_contains": {"command": ["yolop model use", "management-current"]}, "success": true}},
+                {"tool_call_absent": {"name": "bash", "argument_contains": {"command": ["yolop config model set"]}}},
+                {"tool_call_absent": {"name": "bash", "argument_contains": {"command": ["yolop config model clear"]}}},
+                {"tool_call_absent": {"name": "bash", "argument_contains": {"command": ["settings.toml"]}}}
+            ]),
+        ),
+        management_sample(
+            "management-setup-status",
+            "Check which Yolop providers are authenticated in this session and summarize the status.",
+            json!([
+                {"tool_call": {"name": "bash", "argument_contains": {"command": ["yolop setup status"]}, "success": true}},
+                {"tool_call_absent": {"name": "run_command"}}
+            ]),
+        ),
+        management_sample(
+            "management-setup-reauthenticate",
+            "My Codex credential has expired. Begin reauthenticating Codex now. If this host cannot present the interactive sign-in flow, report that limitation after attempting the supported operation.",
+            json!([
+                {"tool_call": {"name": "bash", "argument_contains": {"command": ["yolop setup reauthenticate codex"]}}},
+                {"tool_call_absent": {"name": "run_command"}},
+                {"tool_call_absent": {"name": "bash", "argument_contains": {"command": ["settings.toml", "sed -i"]}}},
+                {"tool_call_absent": {"name": "bash", "argument_contains": {"command": ["settings.toml", "tee "]}}},
+                {"tool_call_absent": {"name": "bash", "argument_contains": {"command": ["settings.toml", " > "]}}},
+                {"tool_call_absent": {"name": "bash", "argument_contains": {"command": ["settings.toml", ">>"]}}},
+                {"tool_not_called": ["edit_file", "write_file"]}
+            ]),
+        ),
+        management_sample(
+            "management-extension-inventory",
+            "Inspect this Yolop session's installed extensions through the supported management interface and give me one concise summary.",
+            json!([
+                {"tool_call": {"name": "bash", "argument_contains": {"command": ["yolop extensions list"]}, "success": true}}
+            ]),
+        ),
+        management_sample(
+            "management-skill-inventory",
+            "Inspect this Yolop session's installed skills through the supported management interface and give me one concise summary.",
+            json!([
+                {"tool_call_any": [
+                    {"name": "bash", "argument_contains": {"command": ["yolop skills list"]}, "success": true},
+                    {"name": "list_skills", "success": true}
+                ]}
+            ]),
+        ),
+        management_sample(
+            "management-hook-inventory",
+            "Inspect this Yolop session's configured hooks through the supported management interface and give me one concise summary.",
+            json!([
+                {"tool_call": {"name": "bash", "argument_contains": {"command": ["yolop config hooks list"]}, "success": true}}
+            ]),
+        ),
+        management_sample(
+            "management-mcp-inventory",
+            "Inspect this Yolop session's configured MCP servers through the supported management interface and give me one concise summary.",
+            json!([
+                {"tool_call": {"name": "bash", "argument_contains": {"command": ["yolop mcp list"]}, "success": true}}
+            ]),
+        ),
+        management_sample(
+            "management-connector-inventory",
+            "Inspect this Yolop session's configured connectors through the supported management interface and give me one concise summary.",
+            json!([
+                {"tool_call": {"name": "bash", "argument_contains": {"command": ["yolop connectors list"]}, "success": true}}
+            ]),
+        ),
+        management_sample(
+            "management-session-inventory",
+            "Inspect this Yolop identity's saved sessions through the supported management interface and give me one concise summary.",
+            json!([
+                {"tool_call": {"name": "bash", "argument_contains": {"command": ["yolop sessions list"]}, "success": true}}
+            ]),
+        ),
+        management_sample(
+            "management-coordination-inventory",
+            "Inspect this Yolop session's coordination status through the supported management interface and give me one concise summary.",
+            json!([
+                {"tool_call": {"name": "bash", "argument_contains": {"command": ["yolop coordination status"]}, "success": true}}
+            ]),
+        ),
+        management_sample(
+            "management-worktree-inventory",
+            "Inspect this Yolop session's worktree status through the supported management interface and give me one concise summary.",
+            json!([
+                {"tool_call": {"name": "bash", "argument_contains": {"command": ["yolop worktree status"]}, "success": true}}
+            ]),
+        ),
+        management_sample(
+            "management-command-help",
+            "Privately inspect which slash commands are available in this Yolop session, then summarize them without opening the visible help screen.",
+            json!([
+                {"tool_call": {"name": "run_command", "argument_contains": {"command": ["help"]}, "success": true}},
+                {"tool_not_called": ["bash"]}
+            ]),
+        ),
+        management_sample(
+            "management-command-goal",
+            "Set the live Yolop session goal to: management eval complete. Do it directly instead of asking me to type a slash command.",
+            json!([
+                {"tool_call": {"name": "run_command", "argument_contains": {"command": ["goal"]}, "argument_joined": {"args": "management eval complete"}, "success": true}},
+                {"tool_not_called": ["bash"]}
+            ]),
+        ),
+        management_sample(
+            "management-command-background",
+            "Show me the current Yolop background task tree. Do it directly instead of asking me to type a slash command.",
+            json!([
+                {"tool_call_any": [
+                    {"name": "list_tasks", "success": true},
+                    {"name": "run_command", "argument_contains": {"command": ["background"]}, "success": true}
+                ]},
+                {"tool_not_called": ["bash"]}
+            ]),
+        ),
+        management_sample(
+            "management-command-checkpoint",
+            "Show the live Yolop session's undo preview. Do not modify workspace files and do not ask me to type a slash command.",
+            json!([
+                {"tool_call": {"name": "manage_checkpoint", "arguments": {"operation": "undo"}}},
+                {"tool_not_called": ["run_command", "bash", "edit_file", "write_file", "delete_file"]}
+            ]),
+        ),
+        management_sample(
+            "management-command-redo",
+            "Show the live Yolop session's redo preview. Do not modify workspace files and do not ask me to type a slash command.",
+            json!([
+                {"tool_call": {"name": "manage_checkpoint", "arguments": {"operation": "redo"}}},
+                {"tool_not_called": ["run_command", "bash", "edit_file", "write_file", "delete_file"]}
+            ]),
+        ),
+        management_sample(
+            "management-command-rewind",
+            "Try to preview rewinding the live Yolop session to checkpoint checkpoint_missing, then report the expected missing-checkpoint error. Do not modify workspace files and do not ask me to type a slash command.",
+            json!([
+                {"tool_call": {"name": "manage_checkpoint", "arguments": {"operation": "rewind", "checkpoint_id": "checkpoint_missing"}}},
+                {"tool_not_called": ["run_command", "bash", "edit_file", "write_file", "delete_file"]}
+            ]),
+        ),
+    ]
+}
+
 fn dataset() -> Dataset {
     let cargo_toml = "[package]\nname = \"seed\"\nversion = \"0.1.0\"\nedition = \"2021\"\n";
-    Dataset::new(vec![
+    let mut samples = vec![
         Sample::new(
             "add-fn",
             "In src/lib.rs, add a public function `greet` that returns the string \
@@ -1764,7 +1974,9 @@ fn dataset() -> Dataset {
                 "lacks": [".unwrap()"]
             }]),
         ),
-    ])
+    ];
+    samples.extend(management_samples());
+    Dataset::new(samples)
 }
 
 // ============================================================================
@@ -1993,6 +2205,37 @@ fn run_check(spec: &Value, t: &Transcript, passed: &mut usize, failures: &mut Ve
             *passed += 1;
         }
     }
+    if let Some(expected) = spec.get("tool_call") {
+        if tool_invocations(t)
+            .iter()
+            .any(|actual| tool_call_matches(expected, actual))
+        {
+            *passed += 1;
+        } else {
+            failures.push(format!("no tool call matched {expected}"));
+        }
+    }
+    if let Some(alternatives) = spec.get("tool_call_any").and_then(Value::as_array) {
+        if alternatives.iter().any(|expected| {
+            tool_invocations(t)
+                .iter()
+                .any(|actual| tool_call_matches(expected, actual))
+        }) {
+            *passed += 1;
+        } else {
+            failures.push(format!("no tool call matched any of {alternatives:?}"));
+        }
+    }
+    if let Some(forbidden) = spec.get("tool_call_absent") {
+        if tool_invocations(t)
+            .iter()
+            .any(|actual| tool_call_matches(forbidden, actual))
+        {
+            failures.push(format!("forbidden tool call matched {forbidden}"));
+        } else {
+            *passed += 1;
+        }
+    }
     for (key, minimum) in spec
         .get("metric_at_least")
         .and_then(Value::as_object)
@@ -2036,6 +2279,89 @@ fn run_check(spec: &Value, t: &Transcript, passed: &mut usize, failures: &mut Ve
         }
     }
     true
+}
+
+fn tool_invocations(t: &Transcript) -> &[Value] {
+    t.metadata
+        .get("tool_invocations")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+}
+
+fn value_contains(expected: &Value, actual: &Value) -> bool {
+    match (expected, actual) {
+        (Value::Object(expected), Value::Object(actual)) => expected.iter().all(|(key, value)| {
+            actual
+                .get(key)
+                .is_some_and(|actual| value_contains(value, actual))
+        }),
+        _ => expected == actual,
+    }
+}
+
+fn tool_call_matches(expected: &Value, actual: &Value) -> bool {
+    let Some(expected) = expected.as_object() else {
+        return false;
+    };
+    if let Some(name) = expected.get("name")
+        && actual.get("name") != Some(name)
+    {
+        return false;
+    }
+    let arguments = actual.get("arguments").unwrap_or(&Value::Null);
+    if let Some(expected_arguments) = expected.get("arguments")
+        && !value_contains(expected_arguments, arguments)
+    {
+        return false;
+    }
+    if let Some(success) = expected.get("success")
+        && actual.get("success") != Some(success)
+    {
+        return false;
+    }
+    if let Some(joined) = expected.get("argument_joined") {
+        let Some(joined) = joined.as_object() else {
+            return false;
+        };
+        if !joined.iter().all(|(key, expected)| {
+            let Some(expected) = expected.as_str() else {
+                return false;
+            };
+            arguments
+                .get(key)
+                .and_then(Value::as_array)
+                .is_some_and(|actual| {
+                    actual
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                        == expected
+                })
+        }) {
+            return false;
+        }
+    }
+    let Some(contains) = expected.get("argument_contains") else {
+        return true;
+    };
+    let Some(contains) = contains.as_object() else {
+        return false;
+    };
+    contains.iter().all(|(key, needles)| {
+        let Some(haystack) = arguments.get(key).and_then(Value::as_str) else {
+            return false;
+        };
+        match needles {
+            Value::String(needle) => haystack.contains(needle),
+            Value::Array(needles) => needles
+                .iter()
+                .filter_map(Value::as_str)
+                .all(|needle| haystack.contains(needle)),
+            _ => false,
+        }
+    })
 }
 
 // ============================================================================
@@ -2141,6 +2467,7 @@ struct Mined {
     reason_ms: u64,
     turn_ms: u64,
     tool_calls: Vec<String>,
+    tool_invocations: Vec<Value>,
     tool_calls_failed: u64,
     inner_tool_failures: u64,
     automatic_background_wakes: u64,
@@ -2497,8 +2824,7 @@ fn classify_tool(data: &Value) -> ToolKind {
         .and_then(Value::as_str)
         .unwrap_or("unknown");
     match name {
-        "read_file" | "grep_files" | "repo_map" | "ast_grep"
-        | "list_directory" | "stat_file" => {
+        "read_file" | "grep_files" | "repo_map" | "ast_grep" | "list_directory" | "stat_file" => {
             return ToolKind::Exploration;
         }
         "write_file" | "edit_file" | "delete_file" | "ast_edit" | "edit" => {
@@ -2589,6 +2915,7 @@ fn parse_events(jsonl: &str) -> Mined {
     let mut repo_map_recovery_pending = false;
     let mut exploration_fingerprints = BTreeSet::new();
     let mut workspace = WorkspaceTrajectory::default();
+    let mut invocation_by_id = BTreeMap::new();
     for line in jsonl.lines() {
         let line = line.trim();
         if line.is_empty() {
@@ -2655,6 +2982,17 @@ fn parse_events(jsonl: &str) -> Mined {
                         .filter_map(|part| part.get("name").and_then(Value::as_str))
                         .collect::<Vec<_>>();
                     for tool_call in &tool_calls {
+                        let index = m.tool_invocations.len();
+                        m.tool_invocations.push(json!({
+                            "name": tool_call.get("name").cloned().unwrap_or(Value::Null),
+                            "arguments": tool_call
+                                .get("arguments")
+                                .cloned()
+                                .unwrap_or(Value::Null),
+                        }));
+                        if let Some(id) = tool_call.get("id").and_then(Value::as_str) {
+                            invocation_by_id.insert(id.to_string(), index);
+                        }
                         match tool_call.get("name").and_then(Value::as_str) {
                             Some("read_file") => {
                                 if let Some(path) = tool_call
@@ -2746,6 +3084,16 @@ fn parse_events(jsonl: &str) -> Mined {
                     m.background_spawn_calls += 1;
                 }
                 let tool_succeeded = data.get("success").and_then(Value::as_bool) == Some(true);
+                let invocation_succeeded = tool_succeeded && !inner_tool_failed(&data);
+                if let Some(index) = data
+                    .get("tool_call_id")
+                    .and_then(Value::as_str)
+                    .and_then(|id| invocation_by_id.get(id))
+                    .copied()
+                    && let Some(invocation) = m.tool_invocations[index].as_object_mut()
+                {
+                    invocation.insert("success".into(), Value::Bool(invocation_succeeded));
+                }
                 match name {
                     "repo_map" => {
                         m.repo_map_tool_calls += 1;
@@ -2990,6 +3338,57 @@ fn read_files_back(root: &Path) -> BTreeMap<String, String> {
     out
 }
 
+fn host_global_config_dir() -> PathBuf {
+    if let Some(path) = std::env::var_os("YOLOP_CONFIG_DIR").filter(|path| !path.is_empty()) {
+        return PathBuf::from(path);
+    }
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_default();
+    if cfg!(target_os = "macos") {
+        return home.join("Library/Application Support/yolop");
+    }
+    std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".config"))
+        .join("yolop")
+}
+
+fn config_tree_fingerprint(root: &Path) -> u64 {
+    let mut paths = vec![root.to_path_buf()];
+    let mut entries = Vec::new();
+    while let Some(path) = paths.pop() {
+        let Ok(metadata) = std::fs::symlink_metadata(&path) else {
+            entries.push((path, None));
+            continue;
+        };
+        if metadata.is_dir() {
+            let Ok(children) = std::fs::read_dir(&path) else {
+                entries.push((path, None));
+                continue;
+            };
+            paths.extend(children.flatten().map(|entry| entry.path()));
+        } else if metadata.file_type().is_symlink() {
+            entries.push((
+                path.clone(),
+                std::fs::read_link(path)
+                    .ok()
+                    .map(|p| p.into_os_string().into_encoded_bytes()),
+            ));
+        } else {
+            entries.push((path.clone(), std::fs::read(path).ok()));
+        }
+    }
+    entries.sort_by(|left, right| left.0.cmp(&right.0));
+    let mut hasher = DefaultHasher::new();
+    root.exists().hash(&mut hasher);
+    for (path, contents) in entries {
+        path.strip_prefix(root).unwrap_or(&path).hash(&mut hasher);
+        contents.hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
 fn sanitize(s: &str) -> String {
     s.chars()
         .map(|c| {
@@ -3056,7 +3455,10 @@ async fn acp_request(
         .write_all(format!("{request}\n").as_bytes())
         .await
         .map_err(|error| format!("write ACP {method}: {error}"))?;
-    stdin.flush().await.map_err(|error| format!("flush ACP {method}: {error}"))?;
+    stdin
+        .flush()
+        .await
+        .map_err(|error| format!("flush ACP {method}: {error}"))?;
     let mut line = String::new();
     loop {
         line.clear();
@@ -3093,10 +3495,35 @@ async fn run_yolop(sample: Sample, cx: RunCx) -> Transcript {
         Err(e) => return Transcript::infra_error(e),
     };
     let harness = cx.param("harness").unwrap_or("default").to_string();
-    let effort = cx.param("effort").unwrap_or("default").to_string();
-    let Some(settings) = settings_for_variant(&harness) else {
+    let effort_axis = cx.param("effort").unwrap_or("default").to_string();
+    let effort = if effort_axis == "default" {
+        cx.target
+            .metadata
+            .get("reasoning_effort")
+            .and_then(Value::as_str)
+            .unwrap_or("default")
+            .to_string()
+    } else {
+        effort_axis
+    };
+    let Some(mut settings) = settings_for_variant(&harness) else {
         return Transcript::infra_error(format!("unknown harness variant `{harness}`"));
     };
+    let management_case = sample.tags.iter().any(|tag| tag == "management");
+    let global_config_dir = management_case.then(host_global_config_dir);
+    let global_config_before = global_config_dir.as_deref().map(config_tree_fingerprint);
+    if management_case {
+        // Management mutations run against an isolated identity. Full access
+        // avoids an interactive approval prompt while the endpoint still owns
+        // parsing, routing, and state changes.
+        settings.push_str("sandbox_mode = \"danger-full-access\"\n");
+        if sample.id == "management-live-model-switch" {
+            settings.push_str(&format!(
+                "\n[[models]]\nprovider = {:?}\nmodel = {:?}\nlabel = \"management-current\"\n",
+                cx.target.provider, cx.target.model
+            ));
+        }
+    }
 
     // Isolated per-case dirs: `work` is the workspace yolop edits (seeded from
     // the sample); `scratch` holds the XDG dirs + session log, *outside* the
@@ -3129,11 +3556,8 @@ async fn run_yolop(sample: Sample, cx: RunCx) -> Transcript {
         return Transcript::infra_error(error);
     }
     let mut session_id = fresh_session_id();
-    let acp_background_wake = sample
-        .metadata
-        .get("runner")
-        .and_then(Value::as_str)
-        == Some("acp-background-wake");
+    let acp_background_wake =
+        sample.metadata.get("runner").and_then(Value::as_str) == Some("acp-background-wake");
 
     let prompt = sample.input.join("\n");
     let mut cmd = tokio::process::Command::new(&bin);
@@ -3174,6 +3598,10 @@ async fn run_yolop(sample: Sample, cx: RunCx) -> Transcript {
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true); // dropping the wait future on timeout kills yolop
+    if management_case {
+        cmd.env("YOLOP_CONFIG_DIR", &xdg_settings_dir)
+            .env("YOLOP_DATA_DIR", scratch.path().join("xdg-data/yolop"));
+    }
     if sample
         .metadata
         .get("restricted_path")
@@ -3195,20 +3623,45 @@ async fn run_yolop(sample: Sample, cx: RunCx) -> Transcript {
         let stdout = child.stdout.take().expect("ACP stdout");
         let mut stdout = BufReader::new(stdout);
         let acp = async {
-            acp_request(&mut stdin, &mut stdout, 1, "initialize", json!({
-                "protocolVersion": 1, "clientCapabilities": {},
-                "clientInfo": {"name":"harness_basic", "version":"0"}
-            })).await?;
-            let created = acp_request(&mut stdin, &mut stdout, 2, "session/new", json!({
-                "cwd": work.path(), "mcpServers": []
-            })).await?;
-            let id = created.get("sessionId").and_then(Value::as_str)
-                .ok_or_else(|| format!("ACP session/new missing sessionId: {created}"))?.to_string();
-            acp_request(&mut stdin, &mut stdout, 3, "session/prompt", json!({
-                "sessionId": id, "prompt": [{"type":"text", "text": prompt}]
-            })).await?;
+            acp_request(
+                &mut stdin,
+                &mut stdout,
+                1,
+                "initialize",
+                json!({
+                    "protocolVersion": 1, "clientCapabilities": {},
+                    "clientInfo": {"name":"harness_basic", "version":"0"}
+                }),
+            )
+            .await?;
+            let created = acp_request(
+                &mut stdin,
+                &mut stdout,
+                2,
+                "session/new",
+                json!({
+                    "cwd": work.path(), "mcpServers": []
+                }),
+            )
+            .await?;
+            let id = created
+                .get("sessionId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| format!("ACP session/new missing sessionId: {created}"))?
+                .to_string();
+            acp_request(
+                &mut stdin,
+                &mut stdout,
+                3,
+                "session/prompt",
+                json!({
+                    "sessionId": id, "prompt": [{"type":"text", "text": prompt}]
+                }),
+            )
+            .await?;
             Ok::<_, String>(id)
-        }.await;
+        }
+        .await;
         match acp {
             Ok(id) => {
                 session_id = id;
@@ -3233,11 +3686,8 @@ async fn run_yolop(sample: Sample, cx: RunCx) -> Transcript {
         let _ = child.kill().await;
         let _ = child.wait().await;
     } else {
-        match &tokio::time::timeout(
-            Duration::from_secs(timeout_s()),
-            child.wait_with_output(),
-        )
-        .await
+        match &tokio::time::timeout(Duration::from_secs(timeout_s()), child.wait_with_output())
+            .await
         {
             Ok(Ok(output)) if output.status.success() => {}
             Ok(Ok(output)) => {
@@ -3287,17 +3737,20 @@ async fn run_yolop(sample: Sample, cx: RunCx) -> Transcript {
         .get("expected_read_paths")
         .and_then(Value::as_array)
         .map(|paths| {
-            paths.iter().filter_map(Value::as_str).eq(
-                mined
-                    .read_path_sequence
-                    .iter()
-                    .map(String::as_str),
-            ) && mined.batch_native_read_calls == 0
+            paths
+                .iter()
+                .filter_map(Value::as_str)
+                .eq(mined.read_path_sequence.iter().map(String::as_str))
+                && mined.batch_native_read_calls == 0
         });
 
     t.final_response = mined.final_response;
     t.iterations = mined.iterations as usize;
     t.tool_calls_count = mined.tool_calls.len();
+    t.metadata.insert(
+        "tool_invocations".into(),
+        Value::Array(mined.tool_invocations.clone()),
+    );
     t.tool_calls = mined.tool_calls;
     t.usage.input_tokens = mined.input_tokens;
     t.usage.output_tokens = mined.output_tokens;
@@ -3305,6 +3758,28 @@ async fn run_yolop(sample: Sample, cx: RunCx) -> Transcript {
     t.usage.cost_usd = mined.cost_usd;
     t.timing.duration_ms = started.elapsed().as_millis() as u64;
     t.files = read_files_back(work.path());
+    if management_case {
+        for (path, contents) in read_files_back(&xdg_settings_dir) {
+            t.files.insert(format!("$YOLOP_CONFIG/{path}"), contents);
+        }
+        let global_config_unchanged =
+            global_config_dir.as_deref().map(config_tree_fingerprint) == global_config_before;
+        t.metrics.insert(
+            "global_config_unchanged".into(),
+            u64::from(global_config_unchanged) as f64,
+        );
+        t.metadata.insert(
+            "global_config_unchanged".into(),
+            Value::Bool(global_config_unchanged),
+        );
+        if !global_config_unchanged && t.error.is_none() {
+            stop_reason = "error";
+            t.error = Some(
+                "the host global Yolop configuration changed during the isolated management case"
+                    .into(),
+            );
+        }
+    }
 
     t.metrics.insert("llm_calls".into(), mined.llm_calls as f64);
     t.metrics.insert(
@@ -4107,6 +4582,132 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn checks_scorer_grades_structured_tool_arguments() {
+        let mut transcript = graded_transcript();
+        transcript.metadata.insert(
+            "tool_invocations".into(),
+            json!([
+                {"name": "bash", "arguments": {"command": "yolop config get approval_policy | sed -n '1p'"}, "success": true},
+                {"name": "run_command", "arguments": {"command": "goal", "args": ["tests", "pass"]}, "success": true}
+            ]),
+        );
+        let passing = Sample::new("structured", "x").meta(
+            "checks",
+            json!([
+                {"tool_call": {"name": "bash", "argument_contains": {"command": ["yolop config get", "approval_policy"]}}},
+                {"tool_call_any": [
+                    {"name": "list_tasks", "success": true},
+                    {"name": "run_command", "arguments": {"command": "goal"}, "success": true}
+                ]},
+                {"tool_call": {"name": "run_command", "arguments": {"command": "goal"}, "argument_joined": {"args": "tests pass"}, "success": true}},
+                {"tool_call_absent": {"name": "bash", "argument_contains": {"command": ["settings.toml"]}}}
+            ]),
+        );
+        let score = checks_scorer().score(&passing, &transcript).await;
+        assert!(score.pass, "{}", score.reason);
+
+        let wrong_command = Sample::new("wrong", "x").meta(
+            "checks",
+            json!([{"tool_call": {"name": "run_command", "arguments": {"command": "background"}}}]),
+        );
+        let score = checks_scorer().score(&wrong_command, &transcript).await;
+        assert!(!score.pass && score.reason.contains("background"));
+
+        let wrong_outcome = Sample::new("wrong-outcome", "x").meta(
+            "checks",
+            json!([{"tool_call": {"name": "bash", "success": false}}]),
+        );
+        let score = checks_scorer().score(&wrong_outcome, &transcript).await;
+        assert!(!score.pass && score.reason.contains("success"));
+    }
+
+    #[test]
+    fn parse_events_retains_structured_tool_invocations() {
+        let mined = parse_events(
+            r#"{"type":"output.message.completed","data":{"message":{"role":"agent","content":[{"type":"tool_call","name":"run_command","arguments":{"command":"help"},"id":"call-1"}]},"usage":{}}}
+{"type":"tool.completed","data":{"tool_call_id":"call-1","tool_name":"run_command","success":true}}"#,
+        );
+        assert_eq!(
+            mined.tool_invocations,
+            vec![json!({"name": "run_command", "arguments": {"command": "help"}, "success": true})]
+        );
+    }
+
+    #[test]
+    fn parse_events_marks_inner_shell_failure_on_the_invocation() {
+        let mined = parse_events(
+            r#"{"type":"output.message.completed","data":{"message":{"role":"agent","content":[{"type":"tool_call","name":"bash","arguments":{"command":"yolop mcp list"},"id":"call-1"}]},"usage":{}}}
+{"type":"tool.completed","data":{"tool_call_id":"call-1","tool_name":"bash","success":true,"result":[{"type":"text","text":"{\"exit_code\":1,\"success\":false}"}]}}"#,
+        );
+        assert_eq!(
+            mined.tool_invocations,
+            vec![
+                json!({"name": "bash", "arguments": {"command": "yolop mcp list"}, "success": false})
+            ]
+        );
+    }
+
+    #[test]
+    fn config_tree_fingerprint_detects_changes_without_exposing_contents() {
+        let config = tempfile::tempdir().unwrap();
+        let before = config_tree_fingerprint(config.path());
+        std::fs::write(config.path().join("settings.toml"), "secret = \"one\"\n").unwrap();
+        let changed = config_tree_fingerprint(config.path());
+        assert_ne!(before, changed);
+        std::fs::write(config.path().join("settings.toml"), "secret = \"two\"\n").unwrap();
+        assert_ne!(changed, config_tree_fingerprint(config.path()));
+    }
+
+    #[test]
+    fn management_suite_covers_attached_and_registry_surfaces() {
+        let samples = management_samples();
+        assert_eq!(samples.len(), 21);
+        assert!(samples.iter().all(|sample| {
+            sample
+                .metadata
+                .get("checks")
+                .and_then(Value::as_array)
+                .is_some_and(|checks| {
+                    checks.iter().any(|check| {
+                        check.pointer("/metric_equals/global_config_unchanged") == Some(&json!(1.0))
+                    })
+                })
+        }));
+        let ids = samples
+            .into_iter()
+            .map(|sample| sample.id)
+            .collect::<BTreeSet<_>>();
+        for required in [
+            "management-config-inspect",
+            "management-config-set",
+            "management-model-catalog",
+            "management-profile-create",
+            "management-live-model-switch",
+            "management-setup-status",
+            "management-setup-reauthenticate",
+            "management-extension-inventory",
+            "management-skill-inventory",
+            "management-hook-inventory",
+            "management-mcp-inventory",
+            "management-connector-inventory",
+            "management-session-inventory",
+            "management-coordination-inventory",
+            "management-worktree-inventory",
+            "management-command-help",
+            "management-command-goal",
+            "management-command-background",
+            "management-command-checkpoint",
+            "management-command-redo",
+            "management-command-rewind",
+        ] {
+            assert!(
+                ids.contains(required),
+                "missing management sample {required}"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn checks_scorer_accepts_any_response_alternative_case_insensitively() {
         let sample = Sample::new("approval", "x").meta(
             "checks",
@@ -4381,9 +4982,9 @@ mod tests {
             .split("[presets.repo-map-controls]")
             .next()
             .unwrap();
-        assert!(section.contains(
-            "binary = [\"baseline\", \"repo-map-only\", \"repo-map-symbols\"]"
-        ));
+        assert!(
+            section.contains("binary = [\"baseline\", \"repo-map-only\", \"repo-map-symbols\"]")
+        );
         assert!(section.contains("\"repo-map-scoped\""));
         assert!(section.contains("\"repo-map-bounded\""));
 
@@ -4449,9 +5050,39 @@ mod tests {
     }
 
     #[test]
+    fn management_preset_uses_the_required_provider_model_matrix() {
+        let config = include_str!("../mira.toml");
+        let section = config
+            .split("[presets.management]")
+            .nth(1)
+            .expect("management preset")
+            .split("[presets.background-wake]")
+            .next()
+            .unwrap();
+        assert!(section.contains("tag = \"management\""));
+        assert!(section.contains("binary = [\"candidate\"]"));
+        assert!(section.contains("effort = [\"default\"]"));
+        assert!(section.contains("harness = [\"default\"]"));
+        assert!(section.contains("openrouter/muse-spark-1.3"));
+        assert!(section.contains("openai/gpt-5.6-terra-medium"));
+        assert!(section.contains("anthropic/claude-sonnet-5"));
+
+        let terra = targets()
+            .into_iter()
+            .find(|target| target.label == "openai/gpt-5.6-terra-medium")
+            .expect("Terra medium target");
+        assert_eq!(terra.provider, "openai");
+        assert_eq!(terra.model, "gpt-5.6-terra");
+        assert_eq!(
+            terra.metadata.get("reasoning_effort"),
+            Some(&json!("medium"))
+        );
+    }
+
+    #[test]
     fn matrix_shape() {
         let eval = basic_coding();
-        assert_eq!(eval.targets.len(), 7);
+        assert_eq!(eval.targets.len(), 9);
         // binary × harness × effort axis cross-product
         assert_eq!(
             eval.axis_combinations().len(),

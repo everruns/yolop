@@ -124,12 +124,34 @@ impl ControlCapability for ModelCliCapability {
     }
 
     fn render_control(&self, _action: &Value, response: &ControlResponse) -> String {
-        response
+        if let Some(message) = response
             .value
             .as_ref()
             .and_then(|value| value.get("message"))
             .and_then(Value::as_str)
-            .unwrap_or_else(|| response.error.as_deref().unwrap_or("model command failed"))
+        {
+            return message.to_owned();
+        }
+        if let Some(using) = response
+            .value
+            .as_ref()
+            .and_then(|value| value.get("using"))
+            .and_then(Value::as_str)
+        {
+            if let Some(detail) = response
+                .value
+                .as_ref()
+                .and_then(|value| value.get("detail"))
+                .and_then(Value::as_str)
+            {
+                return format!("{using}\n{detail}");
+            }
+            return using.to_owned();
+        }
+        response
+            .error
+            .as_deref()
+            .unwrap_or("model command failed")
             .to_owned()
     }
 }
@@ -225,5 +247,19 @@ mod tests {
             )
             .await;
         assert!(use_model.is_error(), "{use_model:?}");
+    }
+
+    #[test]
+    fn model_use_response_renders_the_selected_model_and_detail() {
+        let capability = ModelCliCapability::detached();
+        let response = ControlResponse::from_tool_result(ToolExecutionResult::Success(json!({
+            "using": "review",
+            "detail": "setup provider changed: OpenAI gpt-5.6-terra (current session only)"
+        })));
+
+        assert_eq!(
+            capability.render_control(&json!({"action": "use"}), &response),
+            "review\nsetup provider changed: OpenAI gpt-5.6-terra (current session only)"
+        );
     }
 }

@@ -222,6 +222,16 @@ impl ControlCapability for ConfigCapability {
     }
 
     async fn execute_control(&self, action: &Value) -> ToolExecutionResult {
+        if let Some(value) = action.get("hooks") {
+            return match serde_json::from_value::<HooksCommand>(value.clone()) {
+                Ok(command) => execute_hooks_cli(command).unwrap_or_else(|error| {
+                    ToolExecutionResult::tool_error(format!("manage hooks: {error:#}"))
+                }),
+                Err(error) => {
+                    ToolExecutionResult::tool_error(format!("invalid hooks action: {error}"))
+                }
+            };
+        }
         let profile = profile_target(action);
         match serde_json::from_value::<ConfigAction>(action.clone()) {
             Ok(action) => self.execute_config_action(action, profile).await,
@@ -230,7 +240,9 @@ impl ControlCapability for ConfigCapability {
     }
 
     fn render_control(&self, action: &Value, response: &ControlResponse) -> String {
-        if serde_json::from_value::<ConfigAction>(action.clone()).is_ok() {
+        if action.get("hooks").is_some()
+            || serde_json::from_value::<ConfigAction>(action.clone()).is_ok()
+        {
             response.render_default()
         } else {
             self.model_list.render_control(action, response)
@@ -1171,6 +1183,29 @@ mod tests {
             };
             assert_eq!(actual, expected);
         }
+    }
+
+    #[tokio::test]
+    async fn attached_hooks_action_executes_on_the_config_host() {
+        let (_tmp, settings) = store();
+        let model_list = Arc::new(ModelListCapability::new(settings.clone(), None));
+        let capability = ConfigCapability {
+            settings,
+            catalog: catalog(),
+            model_list,
+        };
+
+        let request = cli_request(&["config", "hooks", "list"]);
+        let response =
+            ControlResponse::from_tool_result(capability.execute_control(&request.action).await);
+
+        assert!(response.ok, "attached hooks action: {response:?}");
+        assert!(
+            response
+                .value
+                .and_then(|value| value.get("hooks").cloned())
+                .is_some()
+        );
     }
 
     #[test]

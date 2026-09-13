@@ -23,7 +23,7 @@ structural-rewrite tasks:
 | Axis | Values | Where |
 |------|--------|-------|
 | **binary** | `candidate` · `baseline` · `parallel-only` · `policy-only` · `dependency-baseline` | `BINARIES`; configured by the matching `HARNESS_BASIC_*_BIN` variable |
-| **target** (model) | `anthropic/claude-sonnet-4-5` · `anthropic/claude-opus-4-8` · `openai/gpt-5.5` · `openrouter/z-ai/glm-5.2` | `targets()` in `src/main.rs` |
+| **target** (model) | Anthropic Sonnet 4.5, Opus 4.8, Sonnet 5; OpenAI GPT-5.5 and GPT-5.6 Terra; OpenRouter GLM 5.2 and Muse 1.3 Contributor; optional local model | `targets()` in `src/main.rs` |
 | **effort** | `default` (yolop's per-model default; no flag) · `low` · `high` | `EFFORTS` |
 | **harness** | `default` (out-of-the-box yolop) · `with-ast-edit` (opt-in `ast_edit` capability) · `no-progress-guard` · `no-ast-grep` · `no-tool-reveal` | `HARNESS_VARIANTS` |
 
@@ -76,6 +76,16 @@ search/refactor, and read-only code navigation.
 | `bookkeeping-piggyback` [`orchestration-efficiency`] | two independent inputs | track todos, read both, and write their joined result | result is correct and bookkeeping was used | title/todo piggybacking |
 | `simple-task-skips-todos` [`runtime-guidance`] | one input value | copy the value to one output file | result is correct and `write_todos` is not called | todo restraint on small work |
 | `live-network-context` [`runtime-guidance`] | danger-full-access runtime | report live shell network availability | output says `enabled` | dynamic execution context beats stale prompt claims |
+| `management-config-inspect` [`management`] | isolated Yolop identity | report effective approval policy | structured Bash call uses `yolop config get` without reading settings files | schema-backed configuration discovery |
+| `management-config-set` [`management`] | isolated Yolop identity | disable proactive wakes | structured Bash call uses `yolop config set`; captured settings carry the change | persistent scalar configuration |
+| `management-model-catalog` [`management`] | isolated Yolop identity | add a labeled model-menu entry | structured Bash call uses `yolop config models add`; captured settings carry the entry | model catalog management |
+| `management-profile-create` [`management`] | isolated Yolop identity | create and configure a profile | both supported CLI calls occur and the captured sparse profile is correct | profile management |
+| `management-live-model-switch` [`management`] | live session with a target-specific labeled model entry | select the live model without changing defaults | structured Bash call uses `yolop model use`, not persistent configuration | live model management |
+| `management-setup-status` / `management-setup-reauthenticate` [`management`] | live session | inspect auth or begin credential replacement | attached `yolop setup` call is selected, never `run_command` or file editing | authentication routing |
+| `management-extension-inventory` / `management-skill-inventory` / `management-hook-inventory` / `management-mcp-inventory` / `management-connector-inventory` / `management-session-inventory` / `management-coordination-inventory` / `management-worktree-inventory` [`management`] | isolated session state | inspect extensions, skills, hooks, MCP, connectors, sessions, coordination, and worktrees | each focused case records one successful supported CLI or direct-tool call | attached administration discovery |
+| `management-command-help` [`management`] | live command registry | inspect slash commands privately | `run_command help` is selected without Bash | private command discovery |
+| `management-command-goal` / `management-command-background` [`management`] | live session state | manage the goal and inspect the background tree | `run_command` receives the goal; the direct `list_tasks` tool inspects background state | registry and direct-tool management |
+| `management-command-checkpoint` / `management-command-redo` / `management-command-rewind` [`management`] | checkpoint manager | preview undo, redo, and a named rewind | `manage_checkpoint` receives the correct schema-backed operation | direct checkpoint management |
 | `dependent-read-control` [`orchestration-efficiency`] | a route file naming a second path | follow the route and report the code | correct answer; dependent reads are not co-batched | dependency-safe sequencing |
 | `self-write-git-block-extension` [`self-writing`] | empty workdir | Scaffold, implement, install, and doctor an extension that blocks git, using yolop's own extension tools | drives the full loop (`scaffold_extension` → `install_extension` → `doctor_extension`) and replies `DONE` | self-writing: can yolop author a working extension for itself, unaided |
 | `replace-console-log` [`ast-edit`] | TS: `api.ts`/`worker.ts` call `console.log`; `logger.ts` exports `logger.info` | Replace every `console.log(...)` with `logger.info(...)` | both TS files use `logger.info`, no `console.log` | multi-file shape rewrite (`console.log` → `logger.info`) |
@@ -144,7 +154,32 @@ one generic scorer, adding a sample needs no new code:
 {"response_contains": ["7321"]}
 {"response_contains_any": ["approve", "confirm", "permission"]}
 {"tool_not_called": ["delete_file"]}
+{"tool_call_any": [{"name": "list_tasks", "success": true}, {"name": "run_command", "arguments": {"command": "background"}, "success": true}]}
+{"tool_call": {"name": "bash", "argument_contains": {"command": ["yolop setup status"]}}}
+{"tool_call": {"name": "run_command", "argument_joined": {"args": "goal complete"}, "success": true}}
+{"tool_call_absent": {"name": "bash", "argument_contains": {"command": ["settings.toml"]}}}
 ```
+
+`tool_call` and `tool_call_absent` use the recorded structured tool invocation.
+`tool_call_any` accepts the first matching structured invocation from an explicit
+set of equivalent supported routes.
+`arguments` is an exact recursive subset of the argument object;
+`argument_contains` requires each listed substring in the named string argument.
+`argument_joined` joins a string-array argument with spaces before comparing it,
+and `success` can require the matching invocation to have completed successfully.
+This lets management cases distinguish the supported Yolop CLI from arbitrary
+Bash and distinguish one `run_command` action from another.
+
+Every management case runs with fresh temporary `HOME`, XDG directories,
+`YOLOP_CONFIG_DIR`, `YOLOP_DATA_DIR`, workspace, and session storage. The scorer
+fingerprints the real host configuration before and after each case and requires
+it to remain unchanged. Mutating cases additionally inspect the isolated files
+to prove the requested state was written. Structured calls record their actual
+arguments and completion result, including a failed inner shell command.
+
+Mira records input, output, and cache-read tokens plus cost in each transcript.
+The harness also emits cache-creation tokens, first-request tokens, and cumulative
+input tokens as metrics for analysis.
 
 Alongside it: `succeeded` (yolop exited cleanly) and lenient guardrail budgets
 (`turns_within(32)`, `tool_calls_within(64)`, `cost_within($2)`). The A/B
@@ -220,6 +255,10 @@ HARNESS_BASIC_CANDIDATE_BIN=/path/to/change/yolop \
 # Persistent ACP proof for failed background completion handling.
 HARNESS_BASIC_CANDIDATE_BIN=/path/to/change/yolop \
   doppler run -- mira run --preset background-wake --trials 3
+
+# Natural-language configuration and management coverage.
+HARNESS_BASIC_CANDIDATE_BIN=/path/to/change/yolop \
+  doppler run -- mira run --preset management --group-by sample
 
 # Smallest focused discovery A/B.
 HARNESS_BASIC_BASELINE_BIN=/path/to/main/yolop \
@@ -355,6 +394,7 @@ doppler run -- mira run --targets 'anthropic/*' --axis harness=no-ast-grep --sam
 | `owner-selection` | first-mutation owner selection plus local-edit controls, 3 trials | two owner fixtures + `add-fn` + `implement-todo` | gpt-5.5 | candidate, default vs no-progress-guard |
 | `orchestration-efficiency` | batching interventions and dependency control, 3 trials | three orchestration cases | gpt-5.5 | baseline + parallel-only + policy-only + candidate |
 | `runtime-guidance` | live network truth and todo restraint, 5 trials | network context + small-task negative control | gpt-5.6-terra medium | baseline + candidate |
+| `management` | configuration and administration routing | 21 focused attached-CLI, direct-tool, and `run_command` cases | OpenRouter Muse 1.3 Contributor; OpenAI GPT-5.6 Terra medium; Anthropic Sonnet 5 | candidate, harness=default; provider defaults except Terra fixed to medium |
 | `batch-native-discovery` | dependency-isolated structured read proof under single-tool emission, 3 trials | independent read + dependent control | gpt-5.5 | dependency baseline + candidate |
 | `output-persistence` | dependency-isolated output proof, 3 trials | head preservation + complete-output no-reread | gpt-5.5 | dependency baseline + candidate |
 | `persisted-output-reading` | bounded limited-output recovery proof, 3 trials | small read + large contextual search | gpt-5.5 | dependency baseline + candidate |

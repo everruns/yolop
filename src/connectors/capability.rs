@@ -168,7 +168,7 @@ impl Capability for ConnectorsCapability {
         Some(format!(
             "<capability id=\"{id}\">\n\
             The `daytona` connector is active: prefer the `daytona_*` tools over raw shell for \
-            sandbox work. Manage credentials with `yolop connectors ...` (foreground Bash).\n\
+            sandbox work. Manage credentials with `yolop connectors ...` in Bash.\n\
             </capability>",
         ))
     }
