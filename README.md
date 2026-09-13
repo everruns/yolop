@@ -232,8 +232,7 @@ Yolop earns its keep on large repos:
 Yolop speaks the Agent Client Protocol, so Zed and other ACP editors can drive it directly.
 
 ```bash
-yolop --acp         # speak ACP over stdio
-yolop --acp-remote  # accept one TCP connection as an ACP server
+yolop --acp  # speak ACP over stdio
 ```
 
 In Zed, point a custom agent server at your yolop binary. Full steps live in the Zed docs for external agents.
@@ -314,7 +313,7 @@ Run `yolop --help` for the full list. These are the flags you will reach for dai
 | `-C, --working-dir <dir>` | Run as if started in another directory. |
 | `--worktree <name>` | Run inside a fresh git worktree. |
 | `--background` | Keep running after you detach; completion notifies you. |
-| `--acp`, `--acp-remote` | Speak Agent Client Protocol over stdio or TCP. |
+| `--acp` | Speak Agent Client Protocol over stdio. |
 | `--mcp-config <file>` | Load MCP servers from a custom file. |
 | `--profile <name>` | Use a saved provider, model, and approval preset. |
 | `--exec <cmd>` | Run one non-interactive command and exit (`--resume` keeps its session). |
