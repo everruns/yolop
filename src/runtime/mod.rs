@@ -1963,7 +1963,7 @@ impl ProviderChoice {
                 return Ok(Some(effort));
             }
             return Err(anyhow!(
-                "model {} supports reasoning efforts: {}",
+                "model {} does not support reasoning effort `{effort}`; supports reasoning efforts: {}",
                 self.model_label_for(model),
                 allowed.join(", ")
             ));
@@ -2494,10 +2494,14 @@ fn merged_reasoning_effort_config(
     provider_type: &DriverId,
     model: &str,
 ) -> Option<ReasoningEffortConfig> {
-    merge_reasoning_effort_config(
+    let merged = merge_reasoning_effort_config(
         discovered_profiles::reasoning_effort_config(provider_type, model),
         profile_reasoning_effort_config(provider_type, model),
-    )
+    );
+    merged.map(|candidate| {
+        discovered_profiles::catalog_scale_override(provider_type, model, &candidate)
+            .unwrap_or(candidate)
+    })
 }
 
 /// Prefer what the provider advertised at discovery; the hardcoded registry
@@ -9252,13 +9256,24 @@ mod tests {
         );
     }
 
-    /// The real muse-spark id, as the driver records it: `everruns-openrouter
-    /// 0.18.3` drops the catalog's `supported_efforts`, so the lookup
-    /// substitutes the catalog-verified levels instead of the driver's fixed
-    /// low/medium/high. `max` stays unoffered: it has no `ReasoningEffort`
-    /// variant yet.
+    /// The real muse-spark id accepts its catalog-verified scale before the
+    /// first discovery and keeps it after the driver records its fixed
+    /// low/medium/high fallback. `max` stays unoffered: it has no
+    /// `ReasoningEffort` variant yet.
     #[test]
-    fn muse_spark_advertisement_uses_catalog_levels() {
+    fn muse_spark_uses_catalog_levels_before_and_after_discovery() {
+        let cold = ProviderChoice::default_openrouter()
+            .resolve_model_spec("meta/muse-spark-1.3-contributor xhigh")
+            .expect("xhigh must be valid before discovery");
+        assert_eq!(cold.reasoning_effort(), Some("xhigh"));
+        assert_eq!(
+            cold.reasoning_effort_options()
+                .into_iter()
+                .map(|option| option.value)
+                .collect::<Vec<_>>(),
+            vec!["minimal", "low", "medium", "high", "xhigh"]
+        );
+
         // What the driver records for every reasoning model: the fixed scale,
         // with the catalog's levels dropped.
         let mut driver_record = discovered_profiles::advertised_profile_for_test();
@@ -9288,20 +9303,15 @@ mod tests {
             }],
         );
 
-        let options = ProviderChoice::default_openrouter()
+        let warm = ProviderChoice::default_openrouter()
             .resolve_model_spec("meta/muse-spark-1.3-contributor")
-            .expect("the real model id must resolve")
-            .reasoning_effort_options()
-            .into_iter()
-            .map(|option| option.value)
-            .collect::<Vec<_>>();
-        assert_eq!(options, vec!["minimal", "low", "medium", "high", "xhigh"]);
+            .expect("the real model id must resolve after discovery");
         assert_eq!(
-            ProviderChoice::default_openrouter()
-                .resolve_model_spec("meta/muse-spark-1.3-contributor xhigh")
-                .unwrap()
-                .reasoning_effort(),
-            Some("xhigh"),
+            warm.reasoning_effort_options()
+                .into_iter()
+                .map(|option| option.value)
+                .collect::<Vec<_>>(),
+            vec!["minimal", "low", "medium", "high", "xhigh"]
         );
         assert!(
             ProviderChoice::default_openrouter()
@@ -9361,6 +9371,10 @@ mod tests {
             .resolve_model_spec("test-vendor/gateway-reasoner minimal")
             .unwrap_err()
             .to_string();
+        assert!(
+            err.contains("does not support reasoning effort `minimal`"),
+            "{err}"
+        );
         assert!(err.contains("supports reasoning efforts: high"), "{err}");
     }
 

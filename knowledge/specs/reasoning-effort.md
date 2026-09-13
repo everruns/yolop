@@ -67,11 +67,12 @@ reasoning model to fixed low/medium/high and drops the catalog's
 `reasoning.supported_efforts`, so `catalog_scale_override` in
 `src/runtime/discovered_profiles.rs` carries the hand-verified scale for the
 affected models (currently only `meta/muse-spark-1.3-contributor`: minimal,
-low, medium, high, xhigh, default medium). It applies only while the recorded
-advertisement is still exactly the driver's generic scale, so it yields the
-moment the driver maps the real levels. `max` stays unoffered until
-`ReasoningEffort` grows a variant for it. Re-verify against OpenRouter
-`/models` before extending the table.
+low, medium, high, xhigh, default medium). The correction applies after the
+layers merge, so a fresh process and one that has completed discovery expose
+the same scale. It applies only while the selected metadata is exactly the
+driver's generic scale, so it yields the moment the driver maps the real
+levels. `max` stays unoffered until `ReasoningEffort` grows a variant for it.
+Re-verify against OpenRouter `/models` before extending the table.
 
 ### Offering a level is not choosing one
 

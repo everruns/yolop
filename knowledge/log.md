@@ -1,5 +1,13 @@
 # Knowledge Log
 
+## 2026-09-13, Catalog effort corrections apply on cold startup
+
+- [Reasoning effort](specs/reasoning-effort.md): a provider-specific correction
+  to incomplete reasoning metadata now applies after discovered and fallback
+  profiles merge. Fresh ACP sessions therefore validate against the same scale
+  that model discovery later advertises. OpenRouter Muse accepts `xhigh` before
+  its process-local discovery cache is populated.
+
 ## 2026-09-13, Attached CLI works through ordinary shell composition
 
 - [Extensions](specs/extensions.md), [Sandboxing](specs/sandboxing.md), and
