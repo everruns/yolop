@@ -52,7 +52,7 @@ Prerequisites: a Rust toolchain for source builds, `git`, and optionally the `gh
 brew install everruns/tap/yolop
 
 # Any platform with Cargo
-cargo install yolop
+cargo install yolop --locked
 
 # From source
 git clone https://github.com/everruns/yolop.git
