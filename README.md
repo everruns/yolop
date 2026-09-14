@@ -118,6 +118,11 @@ yolop --provider llmsim -p "hi"         # offline demo, no API key required
   1 MiB per-stream output cap (overflow spills to the session folder and stays
   readable for tool calls). Run a command directly with `/shell <command>` or
   `!<command>`.
+- **Conversation control plane**: the agent reaches broad configuration and
+  administration through `yolop <route>` commands instead of loading a model
+  tool schema for every action. Shell descendants connect back to the live
+  session through a short-lived authenticated local endpoint. See
+  [Conversation Control Plane](./docs/features/conversation-control-plane/conversation-control-plane.md).
 - **Background tasks**: `spawn_background` runs a shell command detached from
   the current turn (e.g. watching CI): it streams to a log, writes a
   `result.json`, and tracks a session task you inspect with `list_tasks`,

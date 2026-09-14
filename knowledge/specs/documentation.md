@@ -100,6 +100,25 @@ Run tapes from the repository root
 (`vhs docs/features/<feature>/<capture>.tape`) so their relative output paths
 resolve consistently.
 
+## Diagram style
+
+The default visual language for architecture and relationship diagrams is a
+hand-drawn engineering sketch:
+
+- warm white paper, black ink, and slightly imperfect lines;
+- sparse boxes and directional arrows on a clear reading path;
+- pale yellow highlights used only for the focal nodes;
+- short, exact labels instead of prose inside the image; and
+- a 5:2 landscape canvas when the relationship fits a horizontal flow.
+
+Prefer two small diagrams over one dense diagram when both structure and
+sequence matter. Avoid dark backgrounds, gradients, terminal chrome, 3D
+objects, mascots, and decorative icons. A different style is appropriate when
+the subject is an actual product surface or the target medium requires it.
+
+The surrounding text must still state the mechanism and boundaries. A diagram
+provides the first reading path, not the only explanation.
+
 ## Capture toolchain
 
 Reproducing any VHS capture, the feature guides above and the README hero
