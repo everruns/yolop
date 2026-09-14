@@ -403,12 +403,30 @@ doppler run -- mira run --targets 'anthropic/*' --axis harness=no-ast-grep --sam
 | `effort-compare` | effort sweep | all | gpt-5.5 | candidate, harness=default, all efforts |
 | `models` | model sweep, out-of-the-box yolop | all | all | candidate, harness=default, effort=default |
 
+The initial management matrix run is retained in
+[`reports/20260913T195827Z-0f0f/report.json`](reports/20260913T195827Z-0f0f/report.json):
+59 of 63 rows passed, and all 63 proved the host configuration unchanged. The
+post-fix Sonnet live-model and Muse skill-inventory reruns are retained in
+[`reports/20260913T200859Z-a754/report.json`](reports/20260913T200859Z-a754/report.json)
+and
+[`reports/20260913T200859Z-b3d8/report.json`](reports/20260913T200859Z-b3d8/report.json).
+Both focused reruns passed, leaving two genuine Terra routing misses from the
+matrix run.
+
 Every run archives to `results/<run_id>/` (`report.json`, `report.html`,
 `meta.json`, per-case `cases/`); resume an interrupted run with
 `mira run --resume <run_id>`. Note: yolop validates `--reasoning-effort`
 against the selected model's supported values, so an unsupported
 model × effort combination fails that case with yolop's error, subset the
 axis rather than treating those rows as signal.
+
+Raw run archives remain local because they can include machine metadata and
+debugging material. Every run cited in a pull request, knowledge entry, release
+decision, or other durable conclusion must also copy its complete
+`report.json` into `reports/<run_id>/report.json` and commit it with the change.
+Do not condense away failed rows, transcripts, tool routes, or usage metrics.
+Review the report for credentials and other host-sensitive values before
+staging it.
 
 For search-efficiency, compare correctness first, then medians and the worst
 trial for tool/LLM calls, failures, bytes, tokens, cost, and duration. Focused
@@ -484,8 +502,9 @@ not evidence that the new wording alone reduced todo use.
 
 ## Prompt-composition changes
 
-Runs under `results/` are gitignored and die with the machine, so evidence that
-should outlive a run is condensed into a committed manifest.
+Runs under `results/` are gitignored and die with the machine. Full reports used
+as evidence are retained under `reports/`; compact baseline manifests remain
+useful for pinning comparison revisions and summarizing study decisions.
 [`prompt_composition_baseline.json`](prompt_composition_baseline.json) pins the
 pre-trim revision to build as `HARNESS_BASIC_BASELINE_BIN`, the focused samples
 worth repeating, and the measured findings, including one run marked
@@ -527,6 +546,7 @@ evals/harness_basic/
   Cargo.toml    # standalone crate (outside the yolop package), mira-eval SDK
   mira.toml     # host config: launcher, ./results, presets
   results/      # mira run archives (<run_id>/)
+  reports/      # committed full JSON reports cited as durable evidence
   .cache/       # gitignored: raw per-case session logs
 ```
 

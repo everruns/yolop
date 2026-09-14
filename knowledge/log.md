@@ -1382,4 +1382,6 @@ wording, formatting, and link fixes do not need entries.
   generic command registry.
 - The preset matrix is OpenRouter Muse 1.3 Contributor, GPT-5.6 Terra medium,
   and Anthropic Sonnet 5. Every case fingerprints the host config before and
-  after its isolated run and retains provider token usage in the report.
+  after its isolated run and retains provider token usage in the report. Full
+  JSON reports used as durable evidence are committed under the harness's
+  `reports/` directory instead of being left in its gitignored local archive.
