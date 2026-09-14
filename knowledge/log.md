@@ -18,6 +18,16 @@
   and frequency. The maintenance skill and surfaces carry the matching
   workflow: fix in pass, never weaken tests or security to ship an upgrade,
   and report evidence with deferred issue numbers.
+## 2026-09-13, Hand-drawn schematics become the diagram default
+
+- [Documentation](specs/documentation.md): architecture and relationship
+  diagrams now default to sparse hand-drawn engineering sketches on warm white,
+  with black lines, limited pale yellow emphasis, and a 5:2 canvas for
+  horizontal flows. Split structure and sequence into separate visuals when one
+  diagram would become dense.
+- The public [Conversation Control Plane](../docs/features/conversation-control-plane/conversation-control-plane.md)
+  article records the current endpoint, shim, host parsing, anonymous-pipe, and
+  registry path after the shell-descendant attachment change.
 
 ## 2026-09-13, Catalog effort corrections apply on cold startup
 
