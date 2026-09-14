@@ -1,0 +1,190 @@
+{
+  "cases": [
+    {
+      "aggregate": 1.0,
+      "eval": "basic_coding",
+      "input": [
+        "Run `yolop model use management-current` to select that configured model for this live session, then report the result. Do not change the persistent default."
+      ],
+      "params": {
+        "binary": "candidate",
+        "effort": "default",
+        "harness": "default"
+      },
+      "passed": true,
+      "sample": "management-live-model-switch",
+      "scores": [
+        {
+          "pass": true,
+          "reason": "no error",
+          "scorer": "succeeded",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "5 check(s) passed",
+          "scorer": "checks",
+          "value": 1.0
+        },
+        {
+          "na": true,
+          "pass": false,
+          "reason": "sample declares no budget checks",
+          "scorer": "declared_budget",
+          "value": 0.0
+        },
+        {
+          "pass": true,
+          "reason": "2 <= 32",
+          "scorer": "turns_within",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "1 <= 64",
+          "scorer": "tool_calls_within",
+          "value": 1.0
+        },
+        {
+          "na": true,
+          "pass": false,
+          "reason": "baseline variant; ast_edit not offered",
+          "scorer": "ast_edit_used",
+          "value": 0.0
+        },
+        {
+          "pass": true,
+          "reason": "$0.0513 <= $2",
+          "scorer": "cost_within",
+          "value": 1.0
+        }
+      ],
+      "skipped": false,
+      "target": "anthropic/claude-sonnet-5",
+      "transcript": {
+        "final_response": "Done. The session model was switched to `management-current`, which resolved to **anthropic/claude-sonnet-5** at high reasoning effort. The change applies only to this live session — the output explicitly confirms \"current session only\" — so the persistent default configuration was not touched.",
+        "iterations": 2,
+        "metadata": {
+          "binary": "candidate",
+          "effort": "default",
+          "global_config_unchanged": true,
+          "harness": "default",
+          "model": "claude-sonnet-5",
+          "provider": "anthropic",
+          "reasoning_effort_applied": "high",
+          "session_log": ".cache/sessions/management-live-model-switch-anthropic-claude-sonnet-5-candidate-default-default-18d4fa49092a827800008c7e00000000.events.jsonl",
+          "stop_reason": "completed",
+          "tool_invocations": [
+            {
+              "arguments": {
+                "command": "yolop model use management-current 2>&1"
+              },
+              "name": "bash",
+              "success": true
+            }
+          ]
+        },
+        "metrics": {
+          "agent_reported_ms": 5051.0,
+          "ast_edit_tool_calls": 0.0,
+          "ast_edit_tool_calls_failed": 0.0,
+          "automatic_background_wakes": 0.0,
+          "background_spawn_calls": 0.0,
+          "background_wake_llm_calls": 0.0,
+          "background_wake_responses": 0.0,
+          "background_wake_tool_calls": 0.0,
+          "bash_result_bytes": 348.0,
+          "bash_tool_calls": 1.0,
+          "batch_native_read_calls": 0.0,
+          "batched_tool_model_calls": 0.0,
+          "blocked_equivalent_failures": 0.0,
+          "bookkeeping_tool_calls": 0.0,
+          "cache_creation_tokens": 14663.0,
+          "calls_after_checkpoint_required": 0.0,
+          "calls_after_progress_warning": 0.0,
+          "checkpoint_required_warnings": 0.0,
+          "contextual_grep_files_tool_calls": 0.0,
+          "cumulative_input_tokens": 29521.0,
+          "duplicate_exploration_calls": 0.0,
+          "equivalent_failure_warnings": 0.0,
+          "exploration_tools_before_first_mutation": 0.0,
+          "first_request_input_tokens": 2.0,
+          "first_request_total_input_tokens": 14665.0,
+          "git_grep_calls": 0.0,
+          "global_config_unchanged": 1.0,
+          "grep_files_tool_calls": 0.0,
+          "inner_tool_failures": 0.0,
+          "leading_marker_in_bash_result": 0.0,
+          "llm_calls": 2.0,
+          "max_exploration_tools_without_progress": 0.0,
+          "max_read_file_batch_width": 0.0,
+          "max_tool_batch_width": 1.0,
+          "max_tool_result_bytes": 348.0,
+          "mean_tool_batch_width": 1.0,
+          "persisted_output_recovery_calls": 0.0,
+          "persisted_output_recovery_result_bytes": 0.0,
+          "progress_guard_warnings": 0.0,
+          "read_file_tool_calls": 0.0,
+          "redundant_validation_calls": 0.0,
+          "repo_map_max_result_bytes": 0.0,
+          "repo_map_narrowed_after_truncation": 0.0,
+          "repo_map_targeted_recovery_after_truncation": 0.0,
+          "repo_map_tool_calls": 0.0,
+          "repo_map_tool_calls_failed": 0.0,
+          "repo_symbols_tool_calls": 0.0,
+          "repo_symbols_tool_calls_failed": 0.0,
+          "session_extra_matches": 0.0,
+          "session_result_bytes": 0.0,
+          "session_useful_match_recall": 0.0,
+          "sessions_search_calls": 0.0,
+          "sessions_search_first_exploration": 0.0,
+          "single_tool_model_calls": 1.0,
+          "standalone_bookkeeping_rounds": 0.0,
+          "successful_progress_checkpoints": 0.0,
+          "task_llm_calls": 2.0,
+          "task_tool_calls": 1.0,
+          "tool_calls": 1.0,
+          "tool_calls_failed": 0.0,
+          "tool_emitting_model_calls": 1.0,
+          "total_tool_result_bytes": 348.0,
+          "turns": 2.0,
+          "unchanged_reuse_responses": 0.0,
+          "validation_tool_calls": 0.0,
+          "workspace_state_revisits": 0.0
+        },
+        "timing": {
+          "duration_ms": 7943
+        },
+        "tool_calls": [
+          "bash"
+        ],
+        "tool_calls_count": 1,
+        "usage": {
+          "cache_read_tokens": 14663,
+          "cost_usd": 0.0513129,
+          "input_tokens": 195,
+          "output_tokens": 156
+        }
+      }
+    }
+  ],
+  "groups": {
+    "provider": {
+      "anthropic": {
+        "passed": 1,
+        "scored": 1
+      }
+    }
+  },
+  "summary": {
+    "failed": 0,
+    "na": 0,
+    "passed": 1,
+    "scored": 1,
+    "skipped": 0,
+    "total_cost_usd": 0.0513129,
+    "total_duration_ms": 7943,
+    "total_tokens": 351,
+    "total_tool_calls": 1
+  }
+}

@@ -1,0 +1,196 @@
+{
+  "cases": [
+    {
+      "aggregate": 1.0,
+      "eval": "basic_coding",
+      "input": [
+        "Inspect this Yolop session's installed skills through the supported management interface and give me one concise summary."
+      ],
+      "params": {
+        "binary": "candidate",
+        "effort": "default",
+        "harness": "default"
+      },
+      "passed": true,
+      "sample": "management-skill-inventory",
+      "scores": [
+        {
+          "pass": true,
+          "reason": "no error",
+          "scorer": "succeeded",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "2 check(s) passed",
+          "scorer": "checks",
+          "value": 1.0
+        },
+        {
+          "na": true,
+          "pass": false,
+          "reason": "sample declares no budget checks",
+          "scorer": "declared_budget",
+          "value": 0.0
+        },
+        {
+          "pass": true,
+          "reason": "3 <= 32",
+          "scorer": "turns_within",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "2 <= 64",
+          "scorer": "tool_calls_within",
+          "value": 1.0
+        },
+        {
+          "na": true,
+          "pass": false,
+          "reason": "baseline variant; ast_edit not offered",
+          "scorer": "ast_edit_used",
+          "value": 0.0
+        },
+        {
+          "pass": true,
+          "reason": "$0.0016 <= $2",
+          "scorer": "cost_within",
+          "value": 1.0
+        }
+      ],
+      "skipped": false,
+      "target": "openrouter/muse-spark-1.3",
+      "transcript": {
+        "final_response": "You have 7 system skills installed (all v1.0): ast-grep for structural code search, joke generation, okf for knowledge bundles, skill-management for the registry, plus yolop usage help, yolop-config for models, and yolop-hooks for lifecycle hooks.",
+        "iterations": 3,
+        "metadata": {
+          "binary": "candidate",
+          "effort": "default",
+          "global_config_unchanged": true,
+          "harness": "default",
+          "model": "meta/muse-spark-1.3-contributor",
+          "provider": "openrouter",
+          "reasoning_effort_applied": "medium",
+          "session_log": ".cache/sessions/management-skill-inventory-openrouter-muse-spark-1.3-candidate-default-default-18d4fa49094e4e8800008c9200000000.events.jsonl",
+          "stop_reason": "completed",
+          "tool_invocations": [
+            {
+              "arguments": {
+                "title": "Installed skills summary"
+              },
+              "name": "write_session_title",
+              "success": true
+            },
+            {
+              "arguments": {},
+              "name": "list_skills",
+              "success": true
+            }
+          ]
+        },
+        "metrics": {
+          "agent_reported_ms": 4280.0,
+          "ast_edit_tool_calls": 0.0,
+          "ast_edit_tool_calls_failed": 0.0,
+          "automatic_background_wakes": 0.0,
+          "background_spawn_calls": 0.0,
+          "background_wake_llm_calls": 0.0,
+          "background_wake_responses": 0.0,
+          "background_wake_tool_calls": 0.0,
+          "bash_result_bytes": 0.0,
+          "bash_tool_calls": 0.0,
+          "batch_native_read_calls": 0.0,
+          "batched_tool_model_calls": 0.0,
+          "blocked_equivalent_failures": 0.0,
+          "bookkeeping_tool_calls": 1.0,
+          "cache_creation_tokens": 0.0,
+          "calls_after_checkpoint_required": 0.0,
+          "calls_after_progress_warning": 0.0,
+          "checkpoint_required_warnings": 0.0,
+          "contextual_grep_files_tool_calls": 0.0,
+          "cumulative_input_tokens": 41031.0,
+          "duplicate_exploration_calls": 0.0,
+          "equivalent_failure_warnings": 0.0,
+          "exploration_tools_before_first_mutation": 0.0,
+          "first_request_input_tokens": 13247.0,
+          "first_request_total_input_tokens": 13247.0,
+          "git_grep_calls": 0.0,
+          "global_config_unchanged": 1.0,
+          "grep_files_tool_calls": 0.0,
+          "inner_tool_failures": 0.0,
+          "leading_marker_in_bash_result": 0.0,
+          "llm_calls": 3.0,
+          "max_exploration_tools_without_progress": 0.0,
+          "max_read_file_batch_width": 0.0,
+          "max_tool_batch_width": 1.0,
+          "max_tool_result_bytes": 3286.0,
+          "mean_tool_batch_width": 1.0,
+          "persisted_output_recovery_calls": 0.0,
+          "persisted_output_recovery_result_bytes": 0.0,
+          "progress_guard_warnings": 0.0,
+          "read_file_tool_calls": 0.0,
+          "redundant_validation_calls": 0.0,
+          "repo_map_max_result_bytes": 0.0,
+          "repo_map_narrowed_after_truncation": 0.0,
+          "repo_map_targeted_recovery_after_truncation": 0.0,
+          "repo_map_tool_calls": 0.0,
+          "repo_map_tool_calls_failed": 0.0,
+          "repo_symbols_tool_calls": 0.0,
+          "repo_symbols_tool_calls_failed": 0.0,
+          "session_extra_matches": 0.0,
+          "session_result_bytes": 0.0,
+          "session_useful_match_recall": 0.0,
+          "sessions_search_calls": 0.0,
+          "sessions_search_first_exploration": 0.0,
+          "single_tool_model_calls": 2.0,
+          "standalone_bookkeeping_rounds": 1.0,
+          "successful_progress_checkpoints": 0.0,
+          "task_llm_calls": 2.0,
+          "task_tool_calls": 1.0,
+          "tool_calls": 2.0,
+          "tool_calls_failed": 0.0,
+          "tool_emitting_model_calls": 2.0,
+          "total_tool_result_bytes": 3430.0,
+          "turns": 3.0,
+          "unchanged_reuse_responses": 0.0,
+          "validation_tool_calls": 0.0,
+          "workspace_state_revisits": 0.0
+        },
+        "timing": {
+          "duration_ms": 7113
+        },
+        "tool_calls": [
+          "write_session_title",
+          "list_skills"
+        ],
+        "tool_calls_count": 2,
+        "usage": {
+          "cache_read_tokens": 26466,
+          "cost_usd": 0.001562432,
+          "input_tokens": 14565,
+          "output_tokens": 265
+        }
+      }
+    }
+  ],
+  "groups": {
+    "provider": {
+      "openrouter": {
+        "passed": 1,
+        "scored": 1
+      }
+    }
+  },
+  "summary": {
+    "failed": 0,
+    "na": 0,
+    "passed": 1,
+    "scored": 1,
+    "skipped": 0,
+    "total_cost_usd": 0.001562432,
+    "total_duration_ms": 7113,
+    "total_tokens": 14830,
+    "total_tool_calls": 2
+  }
+}
