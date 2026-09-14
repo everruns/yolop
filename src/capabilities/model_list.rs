@@ -25,6 +25,7 @@ use crate::runtime::SUPPORTED_PROVIDERS;
 use async_trait::async_trait;
 use clap::{Args, Subcommand};
 use everruns_core::{Capability, CapabilityStatus, ToolExecutionResult};
+use everruns_provider::ReasoningEffort;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -170,6 +171,17 @@ impl ModelListCapability {
         if let Some(index) = models.iter().position(qualified) {
             return Ok(index);
         }
+        let labels: Vec<usize> = models
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| entry.label.as_deref() == Some(reference))
+            .map(|(index, _)| index)
+            .collect();
+        match labels.as_slice() {
+            [index] => return Ok(*index),
+            [] => {}
+            _ => return Err(format!("model label `{reference}` is ambiguous")),
+        }
         let matches: Vec<usize> = models
             .iter()
             .enumerate()
@@ -192,6 +204,13 @@ impl ModelListCapability {
                 ))
             }
         }
+    }
+
+    fn use_reference(reference: &str) -> (&str, Option<&str>) {
+        reference
+            .rsplit_once(':')
+            .filter(|(_, effort)| ReasoningEffort::parse(effort).is_some())
+            .map_or((reference, None), |(model, effort)| (model, Some(effort)))
     }
 
     fn entry_json(&self, entry: &ModelEntry, index: usize, usable: bool, current: bool) -> Value {
@@ -249,7 +268,7 @@ impl ModelListCapability {
         let action = serde_json::from_value::<ModelListAction>(request.action.clone())?;
         if matches!(action, ModelListAction::Use { .. }) {
             anyhow::bail!(
-                "switching models requires a running Yolop session; invoke the command directly through that session's foreground Bash"
+                "switching models requires a running Yolop session; invoke the command through that session's Bash"
             );
         }
         let response = ControlResponse::from_tool_result(self.execute_action(&action).await);
@@ -347,7 +366,8 @@ impl ModelListCapability {
                 }))
             }
             ModelListAction::Use { model } => {
-                let index = match Self::find(&models, model) {
+                let (reference, effort) = Self::use_reference(model);
+                let index = match Self::find(&models, reference) {
                     Ok(index) => index,
                     Err(error) => return ToolExecutionResult::tool_error(error),
                 };
@@ -360,8 +380,11 @@ impl ModelListCapability {
                 // One implementation: this is exactly what `/setup provider
                 // <name> <model> [effort]` does, so provider and model switch
                 // together and persist the same way.
+                let spec = effort
+                    .map(|effort| format!("{} {effort}", entry.model))
+                    .unwrap_or_else(|| entry.spec());
                 let result = controller
-                    .change_provider(&format!("{} {}", entry.provider, entry.spec()))
+                    .change_provider(&format!("{} {spec}", entry.provider))
                     .await;
                 match result {
                     Ok(command) if command.success => ToolExecutionResult::Success(json!({
@@ -688,17 +711,17 @@ mod tests {
                 model: "gpt-5.5".to_string(),
                 reasoning_effort: None,
             });
+        let mut selected = ModelEntry::new("anthropic", "claude-opus-4-8");
+        selected.label = Some("review".to_string());
+        selected.effort = Some("high".to_string());
         settings
-            .set_models(vec![
-                ModelEntry::new("openai", "gpt-5.5"),
-                ModelEntry::new("anthropic", "claude-opus-4-8"),
-            ])
+            .set_models(vec![ModelEntry::new("openai", "gpt-5.5"), selected])
             .expect("write the model list");
         let capability = ModelListCapability::new(settings, Some(controller));
 
         let result = capability
             .execute_action(&ModelListAction::Use {
-                model: "claude-opus-4-8".to_string(),
+                model: "review:low".to_string(),
             })
             .await;
         assert!(result.is_success(), "{result:?}");
@@ -706,6 +729,11 @@ mod tests {
         let live = provider.read().expect("provider lock");
         assert_eq!(live.provider_name(), "anthropic", "the provider switched");
         assert_eq!(live.model_id(), "claude-opus-4-8", "and so did the model");
+        assert_eq!(
+            live.reasoning_effort(),
+            Some("low"),
+            "an explicit CLI effort overrides the entry's pinned effort"
+        );
     }
 
     #[tokio::test]
@@ -789,6 +817,17 @@ mod tests {
             Ok(1)
         );
         assert_eq!(ModelListCapability::find(&models, "gpt-5.6-sol"), Ok(0));
+    }
+
+    #[test]
+    fn a_reference_resolves_by_unique_display_label() {
+        let mut entry = ModelEntry::new("openai", "gpt-5.6-terra");
+        entry.label = Some("management-current-high".to_string());
+
+        assert_eq!(
+            ModelListCapability::find(&[entry], "management-current-high"),
+            Ok(0)
+        );
     }
 
     #[test]

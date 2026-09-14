@@ -233,8 +233,8 @@ exit. Covered by `teardown_flushes_the_final_trace_events`.
 Attached control: the upstream runtime (`everruns-host`) grew a live-reconfigure boundary
 (`InProcessRuntime::activate_capability`/`deactivate_capability` →
 `CapabilityDelta`, EVE-795). `yolop extensions enable|disable` persists the
-`ext:<name>` override to settings, and when invoked directly through the TUI's
-foreground Bash it also pushes a
+`ext:<name>` override to settings, and when invoked through the TUI's Bash it
+also pushes a
 `SetExtensionActive` `UiCommand`; the `App` answers it by calling
 `Session::activate_capability`/`deactivate_capability`, which mutate the
 session-scoped capability overlay. The runtime reassembles prompt, tools, hooks,
@@ -312,9 +312,9 @@ boundary.
 
 Extension administration uses the ordinary `yolop extensions` CLI in both
 contexts. Outside a session it operates on global installed state and settings.
-Inside a running TUI, a conservative direct foreground invocation is attached
-to that session, so enable/disable reconcile the live session and reload can
-restart its process.
+Inside a running TUI, CLI invocations made by that session's shell are attached
+to it, so enable/disable reconcile the live session and reload can restart its
+process. Attachment works through normal shell composition and scripts.
 
 The attachment is an internal `control/v1` plane, not YEP. YEP remains the
 host↔extension data plane. The control envelope is versioned and resource-tagged.
@@ -327,14 +327,16 @@ resource while returning no model tools. Its `CliCapability` facet contributes
 the complete top-level `clap::Command` and converts `ArgMatches` into that same
 typed control request. The binary assembles registered CLI facets into its root
 command and has no static `Extensions` command variant or dispatch branch.
-For each eligible command the parent launches its exact current
-executable and grants only anonymous stdin/stdout pipes. The child sends one
-bounded request and accepts one response; both ends close on completion,
-cancellation, or timeout. No listener, filesystem socket, port, token,
-`YOLOP_CONTROL_ENDPOINT`, or ambient shell environment is created. Pipelines,
-redirection, quoting, substitutions, and background execution receive no
-attachment and run as ordinary shell commands. Attached failure never falls
-back to detached global mutation.
+For each shell execution the parent creates a private, short-lived local
+endpoint with a random token and places a shim for its exact executable first on
+that shell's `PATH`. A child whose top-level command names a registered route
+sends bounded raw argv before its own CLI parser runs. The host launches its
+exact executable as the canonical parser, receives the typed request over
+anonymous pipes, and dispatches it to the live capability. This makes scripts,
+pipelines, redirection, quoting, substitutions, and background expressions
+ordinary supported forms. Endpoint, token, protocol, or parser failure is a
+hard error and never falls back to detached global mutation. The envelope
+includes protocol and product versions so skew failures name both sides.
 
 Enablement applies to the running session for any installed package, including
 one installed mid-conversation. The runtime composes its capability registry at
@@ -349,22 +351,16 @@ impossible (no extensions directory, or the package is not on disk) the
 transcript says so and names a restart rather than reporting an internal
 "unknown capability".
 
-Two consequences of that boundary are handled rather than left implicit. A child
-that answers as an ordinary CLI, `--help`, `--version`, or a usage error, never
-sends a control frame because clap prints and exits inside it; the parent relays
-its stdout, stderr, and exit code verbatim instead of failing to parse help text
-as a frame, so the documented `yolop <subcommand> --help` discovery path works
-inside a session. And a composed administration command, which differs from the
-attached form only by punctuation while its output looks identical, carries a
-notice on the tool result saying it ran detached and left the session untouched;
-the notice reaches the agent in the result and the user in the transcript, so
-neither has to infer which of the two forms ran. Help and version administer
-nothing and draw no notice.
+Two consequences of that boundary are handled rather than left implicit. A host
+parser that answers as an ordinary CLI for `--help` or a usage error never sends
+a control frame; the broker relays its stdout, stderr, and exit code verbatim.
+The endpoint child owns final stdout and stderr, so shell pipelines and
+redirections retain their native behavior.
 
 Discovery is one shared system-prompt block owned by the `yolop` capability, not
 the Bash tool description and not a per-capability contribution: `YolopCapability`
 renders every route registered in the session from its `ControlRoute::summary`,
-states the direct-invocation rules once, and points at `yolop <subcommand> --help`.
+states the attachment rules once, and points at `yolop <subcommand> --help`.
 A session with no registered route contributes the framing only, so the prompt never
 names
 a surface that session lacks. A capability contributing a CLI route therefore

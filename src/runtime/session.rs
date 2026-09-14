@@ -479,7 +479,28 @@ pub(crate) fn turn_failure_hints(error: &str, current_effort: Option<&str>) -> V
     // the upstream structured error once everruns-openrouter reports the
     // gates as first-class kinds instead of JSON strings.
     hints.extend(attestation::openrouter_error_hints(error));
+    if let Some(hint) = codex_auth_error_hint(error) {
+        hints.push(hint);
+    }
     hints
+}
+
+/// An expired or revoked Codex login reads as a provider failure, so name
+/// the way out the same way the driver does: sign in again from setup, or
+/// switch to a provider whose credential is healthy.
+fn codex_auth_error_hint(error: &str) -> Option<String> {
+    if error.contains("Codex login is no longer valid")
+        || error.contains("Codex provider requires a saved OAuth access token")
+        || error.contains("Codex access was denied")
+    {
+        Some(
+            "Codex login needs attention: run `/setup` and sign in with Codex again \
+            (or switch provider with `/model`)."
+                .to_string(),
+        )
+    } else {
+        None
+    }
 }
 
 /// How a failed turn reads in the transcript: drop a generic everruns
@@ -843,6 +864,40 @@ mod tests {
                     .text
                     .contains("[OpenRouter credits](https://openrouter.ai/settings/credits)"),
             "the hint names the pause, the wait, and a labeled credits page: {}",
+            lines[0].text
+        );
+        assert!(lines[1].text.starts_with("turn error: "));
+    }
+
+    /// The transcript an expired Codex login leaves behind: the generic
+    /// misconfiguration apology is replaced by the re-login control, then
+    /// the raw error.
+    #[test]
+    fn an_expired_codex_login_names_the_setup_control() {
+        let error = "LLM error: Codex login is no longer valid. Run `/setup` and sign \
+            in with Codex again.";
+
+        let lines = failed_turn_transcript(
+            vec![ChatLine {
+                author: Author::Assistant,
+                text: "There is a misconfiguration with the AI provider. Please contact \
+                    support."
+                    .into(),
+            }],
+            error,
+            None,
+        );
+
+        assert_eq!(
+            lines.len(),
+            2,
+            "the apology is replaced by the way out: {lines:?}"
+        );
+        assert_eq!(lines[0].author, Author::Assistant);
+        assert_eq!(lines[1].author, Author::System);
+        assert!(
+            lines[0].text.contains("Codex") && lines[0].text.contains("`/setup`"),
+            "the hint names Codex and the setup control: {}",
             lines[0].text
         );
         assert!(lines[1].text.starts_with("turn error: "));

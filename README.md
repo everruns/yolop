@@ -221,6 +221,7 @@ Yolop earns its keep on large repos (full inventory: [Tools and capabilities](do
 - **Planned work.** `write_todos` keeps multi-step tasks on track, independent steps run in parallel, and loop detection stops repeated failing calls.
 - **Subagents and background work.** Delegate a research branch or park a long test run in the background while you keep chatting. See [docs/features/subagents/subagents.md](docs/features/subagents/subagents.md).
 - **Show me.** Focused guides load into context only when needed, keeping routine turns lean: [docs/features/show-me/show-me.md](docs/features/show-me/show-me.md).
+- **Conversation control plane.** Broad configuration and administration go through `yolop <route>` commands instead of model tool schemas, so shell descendants connect back to the live session: [Conversation Control Plane](docs/features/conversation-control-plane/conversation-control-plane.md).
 - **OKF knowledge.** Durable project memory lives in an explicit bundle, validated by `python3 scripts/validate_okf.py knowledge --check-links`: [docs/features/okf/okf.md](docs/features/okf/okf.md).
 
 ## MCP servers
@@ -256,8 +257,8 @@ Full protocol and SDK guide: [docs/extensions.md](docs/extensions.md).
 
 ## Skills, memory, and hooks
 
-- **Skills** are reusable workflows you invoke by name. Ship them in `.agents/skills/` (repo) or `~/.agents/skills` (global, shared across agents) and they load on demand.
-- **Memory** persists what the agent should remember about you and the project: global and repo scoped notes plus a task checkpoint file per session.
+- **Skills** are reusable workflows you invoke by name. Ship them in `.agents/skills/` (repo) or `~/.agents/skills` (global, shared across agents) and they load on demand. Manage packages with `yolop skills`; newly installed skills work immediately.
+- **Memory** is a structured `MEMORY.md` of durable, cross-session memories, managed in natural language ("remember that I prefer terse answers") with `remember`, `recall`, and `forget`. Only titles load each turn; bodies recall on demand.
 - **Hooks** run your commands on agent lifecycle events (before a tool runs, after it finishes, on session stop). They live in `hooks.json` under the config dir: [docs/features/hooks.md](docs/features/hooks.md).
 
 ## Reference
@@ -276,6 +277,7 @@ Run `yolop --help` for the full list. These are the flags you will reach for dai
 | `--session <name>` | Create a session, or reopen it later by reusing the name. |
 | `-C, --cwd <dir>` | Run as if started in another directory. |
 | `--inline` | Single-screen inline TUI instead of the alternate screen. |
+| `--no-compact-work` | Retain ordinary transcript rows instead of compact work summaries. |
 | `--acp` | Speak Agent Client Protocol over stdio. |
 | `--sandbox` | Attach the sandbox dashboard sidecar when one is provisioned for the run. |
 | `--image <path>` | Attach an image (multimodal models). Repeatable. |

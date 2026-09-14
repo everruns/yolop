@@ -46,9 +46,9 @@ so it cannot receive work until it opts in.
 ## Operate the pool
 
 Coordination administration is CLI-first and contributes no model tools. Inside
-a running session, invoke `yolop coordination ...` directly through foreground
-Bash. The host recognizes that conservative command shape and carries a typed
-request to the live capability over the attached control channel.
+a running session, invoke `yolop coordination ...` through Bash. A local
+session endpoint carries raw argv to the host, whose exact Yolop executable
+parses and dispatches the typed request to the live capability.
 
 The CLI covers discovery, dispatch, completion, cancellation, and worker availability:
 
@@ -64,12 +64,12 @@ yolop coordination drain
 ```
 
 Multiword `--title`, `--request`, `--summary`, and `--validation` values consume
-words until the next option, so attached commands do not need shell quoting.
+words until the next option, though ordinary shell quoting also works.
 Run `yolop coordination <operation> --help` for the canonical grammar. The
 built-in `/coordination` command accepts the same operation syntax.
 
-An attached `list` is scoped to the current Git project. A detached shell may
-list all live sessions, but every other operation requires a running session
+An attached `list` is scoped to the current Git project. A CLI outside a
+session may list all live sessions, but every other operation requires a running session
 and derives its identity and role from that attachment. A caller cannot mutate
 another session by supplying a session ID.
 

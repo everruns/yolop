@@ -1,5 +1,39 @@
 # Knowledge Log
 
+## 2026-09-13, Hand-drawn schematics become the diagram default
+
+- [Documentation](specs/documentation.md): architecture and relationship
+  diagrams now default to sparse hand-drawn engineering sketches on warm white,
+  with black lines, limited pale yellow emphasis, and a 5:2 canvas for
+  horizontal flows. Split structure and sequence into separate visuals when one
+  diagram would become dense.
+- The public [Conversation Control Plane](../docs/features/conversation-control-plane/conversation-control-plane.md)
+  article records the current endpoint, shim, host parsing, anonymous-pipe, and
+  registry path after the shell-descendant attachment change.
+
+## 2026-09-13, Catalog effort corrections apply on cold startup
+
+- [Reasoning effort](specs/reasoning-effort.md): a provider-specific correction
+  to incomplete reasoning metadata now applies after discovered and fallback
+  profiles merge. Fresh ACP sessions therefore validate against the same scale
+  that model discovery later advertises. OpenRouter Muse accepts `xhigh` before
+  its process-local discovery cache is populated.
+
+## 2026-09-13, Attached CLI works through ordinary shell composition
+
+- [Extensions](specs/extensions.md), [Sandboxing](specs/sandboxing.md), and
+  [`yolop`](specs/yolop.md): session administration now uses a private local
+  endpoint inherited by shell descendants, so `yolop` works from scripts,
+  pipelines, substitutions, redirections, and background expressions. Children
+  send raw argv and the host's exact executable owns parsing, eliminating CLI
+  grammar skew. Endpoint or protocol failure never falls back to detached
+  mutation, and mutating requests retain the host approval boundary.
+- [Commands](specs/commands.md): model-side `run_command help` returns the live
+  slash-command registry only in its tool result. It no longer invokes the
+  terminal's visible `/help` effect. Authentication guidance points exclusively
+  to `yolop setup login|reauthenticate <provider>`, not `/setup` or direct
+  settings edits.
+
 ## 2026-09-11, OpenRouter account gates get a labeled way out
 
 - [Presentation](specs/presentation.md): OpenRouter failures the user can fix
@@ -1343,3 +1377,22 @@ wording, formatting, and link fixes do not need entries.
 - Dispatch failure now tells the root to spawn via `spawn_agent` (same
   project, accepting coordination work) instead of suggesting a bare CLI
   accept that would create an untracked process.
+
+## 2026-09-13, Management evals grade structured control adoption
+
+- [Conversational control](specs/conversational-control.md): added a focused
+  Mira preset for configuration and administration requests across attached CLI
+  routes and registry-only `run_command` actions.
+- The harness now records structured tool arguments and supports positive and
+  negative invocation checks, so calling the right tool with the wrong Yolop
+  operation cannot pass.
+- Management mutation cases use an isolated Yolop identity and grade the
+  resulting settings and profile files as well as the trajectory.
+- The conversational-control inventory and command guidance now prefer the
+  existing `manage_checkpoint` schema over routing restore actions through the
+  generic command registry.
+- The preset matrix is OpenRouter Muse 1.3 Contributor, GPT-5.6 Terra medium,
+  and Anthropic Sonnet 5. Every case fingerprints the host config before and
+  after its isolated run and retains provider token usage in the report. Full
+  JSON reports used as durable evidence are committed under the harness's
+  `reports/` directory instead of being left in its gitignored local archive.

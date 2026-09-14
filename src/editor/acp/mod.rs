@@ -1141,6 +1141,123 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn openrouter_muse_accepts_xhigh_before_discovery() {
+        let sessions = tempfile::tempdir().expect("sessions tempdir");
+        let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
+        settings
+            .set_token("openrouter".to_string(), "test-token".to_string())
+            .expect("mark OpenRouter configured");
+        settings
+            .set_models(vec![crate::config::model_list::ModelEntry::new(
+                "openrouter",
+                "meta/muse-spark-1.3-contributor",
+            )])
+            .expect("list Muse");
+        let (mut w, mut reader, _server) = start_raw_server_with_settings(
+            fixed("unused"),
+            sessions.path().to_path_buf(),
+            settings,
+        );
+        send_json(
+            &mut w,
+            json!({ "jsonrpc": "2.0", "id": 0, "method": "initialize", "params": { "protocolVersion": 1 } }),
+        )
+        .await;
+        collect_until_response_id(&mut reader, 0).await;
+
+        let cwd = tempfile::tempdir().expect("cwd tempdir").keep();
+        send_json(
+            &mut w,
+            json!({ "jsonrpc": "2.0", "id": 1, "method": "session/new", "params": { "cwd": cwd, "mcpServers": [] } }),
+        )
+        .await;
+        let (new_session, _) = collect_until_response_id(&mut reader, 1).await;
+        let session_id = new_session["result"]["sessionId"]
+            .as_str()
+            .expect("sessionId");
+
+        send_json(
+            &mut w,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "session/set_config_option",
+                "params": {
+                    "sessionId": session_id,
+                    "configId": "model",
+                    "value": "openrouter:meta/muse-spark-1.3-contributor"
+                }
+            }),
+        )
+        .await;
+        let (selected, _) = collect_until_response_id(&mut reader, 2).await;
+        assert!(
+            selected.get("error").is_none(),
+            "model selection failed: {selected}"
+        );
+        let efforts = selected["result"]["configOptions"]
+            .as_array()
+            .expect("updated configOptions")
+            .iter()
+            .find(|option| option["id"] == "reasoning_effort")
+            .expect("reasoning effort config")["options"]
+            .as_array()
+            .expect("reasoning effort options");
+        assert!(
+            efforts.iter().any(|option| option["value"] == "xhigh"),
+            "cold Muse options must include xhigh: {efforts:?}"
+        );
+
+        send_json(
+            &mut w,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "session/set_config_option",
+                "params": {
+                    "sessionId": session_id,
+                    "configId": "reasoning_effort",
+                    "value": "xhigh"
+                }
+            }),
+        )
+        .await;
+        let (xhigh, _) = collect_until_response_id(&mut reader, 3).await;
+        assert!(xhigh.get("error").is_none(), "xhigh failed: {xhigh}");
+        let current = xhigh["result"]["configOptions"]
+            .as_array()
+            .expect("updated configOptions")
+            .iter()
+            .find(|option| option["id"] == "reasoning_effort")
+            .expect("reasoning effort config")["currentValue"]
+            .as_str();
+        assert_eq!(current, Some("xhigh"));
+
+        send_json(
+            &mut w,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 4,
+                "method": "session/set_config_option",
+                "params": {
+                    "sessionId": session_id,
+                    "configId": "reasoning_effort",
+                    "value": "extreme"
+                }
+            }),
+        )
+        .await;
+        let (invalid, _) = collect_until_response_id(&mut reader, 4).await;
+        assert_eq!(invalid["error"]["code"], -32602);
+        assert!(
+            invalid["error"]["data"]
+                .as_str()
+                .is_some_and(|message| message.contains("reasoning effort `extreme`")),
+            "error must name the rejected value: {invalid}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn setup_credential_change_pushes_refreshed_model_options() {
         let sessions = tempfile::tempdir().expect("sessions tempdir");
         let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));

@@ -135,7 +135,7 @@ enum ExtensionSecretCommand {
 #[derive(Parser)]
 #[command(
     name = "extensions",
-    about = "Manage Yolop extensions. A direct invocation from Yolop's foreground Bash updates the current session as well as persisted state",
+    about = "Manage Yolop extensions. An invocation from Yolop's Bash updates the current session as well as persisted state, including inside shell composition",
     after_help = "Examples:\n  Scaffold a Python extension with a command and a tool:\n    yolop extensions scaffold release-notes --command draft --tool changelog --dir ./extensions\n\n  Apply an extension's updated package without restarting Yolop:\n    yolop extensions reload release-notes",
     disable_help_subcommand = true
 )]

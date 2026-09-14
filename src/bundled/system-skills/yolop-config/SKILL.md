@@ -6,9 +6,9 @@ user-invocable: true
 
 # Yolop configuration
 
-Use the foreground Bash tool to run `yolop config` directly. The command works
-both detached and through the current Yolop session. Do not use a pipeline,
-redirection, substitution, or background execution when attached.
+Use Bash to run `yolop config`. The command works both detached and through the
+current Yolop session. Attached calls remain attached inside scripts, pipelines,
+redirection, substitutions, and background execution.
 
 ## Persistent settings
 

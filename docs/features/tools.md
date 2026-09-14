@@ -83,6 +83,15 @@ allowlist of well-known public resources.
   (`/goal clear` stops early, `/goal resume` picks a previous one back up).
 - `/btw` asks a side question without touching history.
 
+## Conversation control plane
+
+Broad configuration and administration actions live behind `yolop <route>`
+commands instead of model tool schemas, so nested agents and detached shell
+descendants connect back to the live session and blocking requests survive
+side restarts. This is how the agent installs MCP servers, manages skills,
+and coordinates workers when you ask in plain words. See
+[Conversation Control Plane](conversation-control-plane/conversation-control-plane.md).
+
 ## Turning capabilities on and off
 
 Optional tools stay off until enabled so the model sees a small, relevant
@@ -106,4 +115,5 @@ approvals (`/setup approval <protective|normal|off>`), providers (`/setup`,
 - [Show me](show-me/show-me.md)
 - [OKF knowledge](okf/okf.md)
 - [Session coordination](../session-coordination.md)
+- [Conversation Control Plane](conversation-control-plane/conversation-control-plane.md)
 - [Extensions](../extensions.md)

@@ -1,11 +1,10 @@
-//! One-shot attached CLI control plane.
+//! Attached CLI control plane.
 //!
 //! This is intentionally separate from YEP: YEP is the host↔extension data
-//! plane, while this module lets a directly invoked Yolop CLI ask its parent
-//! Yolop session to mutate live state. There is no listening socket, endpoint
-//! path, token, or inherited general-shell environment. For one conservative
-//! foreground invocation the host spawns its exact executable with anonymous
-//! stdin/stdout pipes, accepts one versioned request, replies once, and closes.
+//! plane, while this module lets a Yolop CLI invoked anywhere below a session's
+//! shell ask that session to mutate live state. A short-lived authenticated
+//! local endpoint belongs to one shell execution. The child sends raw argv,
+//! then the host's exact executable parses it into the typed capability request.
 
 use async_trait::async_trait;
 use clap::{ArgMatches, Command};
@@ -16,10 +15,11 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::Path;
+use std::path::PathBuf;
 use std::process::Stdio;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 
 pub const CONTROL_VERSION: u32 = 1;
 const MAX_CONTROL_FRAME_BYTES: usize = 64 * 1024;
@@ -27,6 +27,26 @@ const CONTROL_TIMEOUT: Duration = Duration::from_secs(120);
 /// Cap for output relayed from a child that ran as an ordinary CLI (help,
 /// version, usage errors) rather than speaking the protocol.
 const MAX_RELAY_BYTES: usize = 256 * 1024;
+const CONTROL_ENDPOINT_ENV: &str = "YOLOP_CONTROL_ENDPOINT";
+const CONTROL_TOKEN_ENV: &str = "YOLOP_CONTROL_TOKEN";
+const CONTROL_ROUTES_ENV: &str = "YOLOP_CONTROL_ROUTES";
+
+#[derive(Debug, Serialize, Deserialize)]
+struct EndpointRequest {
+    version: u32,
+    token: String,
+    client_version: String,
+    argv: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct EndpointResponse {
+    version: u32,
+    host_version: String,
+    stdout: String,
+    stderr: String,
+    exit_code: i32,
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ControlRequest {
@@ -207,52 +227,72 @@ impl ControlResponse {
 
 #[async_trait]
 pub trait ControlService: Send + Sync {
-    fn route(&self, cli_subcommand: &str) -> Option<ControlRoute>;
     /// Every registered route, ordered by subcommand so the derived prompt
     /// block is stable across sessions (and stays cacheable).
     fn routes(&self) -> Vec<ControlRoute>;
     async fn execute(&self, request: ControlRequest) -> ControlResponse;
     fn render(&self, request: &ControlRequest, response: &ControlResponse) -> String;
+    fn is_read_only(&self, request: &ControlRequest) -> bool;
 }
 
 #[derive(Default)]
 pub struct ControlRegistry {
-    resources: HashMap<String, Arc<dyn ControlCapability>>,
-    routes: HashMap<String, String>,
+    resources: RwLock<HashMap<String, Arc<dyn ControlCapability>>>,
+    routes: RwLock<HashMap<String, String>>,
 }
 
 impl ControlRegistry {
-    pub fn register<C>(&mut self, capability: Arc<C>) -> anyhow::Result<()>
+    pub fn register<C>(&self, capability: Arc<C>) -> anyhow::Result<()>
     where
         C: ControlCapability + 'static,
     {
         let route = capability.control_route();
-        if self.resources.contains_key(route.resource) {
+        let mut resources = self.resources.write().expect("control resources lock");
+        let mut routes = self.routes.write().expect("control routes lock");
+        if resources.contains_key(route.resource) {
             anyhow::bail!("duplicate control resource `{}`", route.resource);
         }
-        if self.routes.contains_key(route.cli_subcommand) {
+        if routes.contains_key(route.cli_subcommand) {
             anyhow::bail!("duplicate control CLI route `{}`", route.cli_subcommand);
         }
-        self.routes
-            .insert(route.cli_subcommand.to_string(), route.resource.to_string());
-        self.resources
-            .insert(route.resource.to_string(), capability);
+        routes.insert(route.cli_subcommand.to_string(), route.resource.to_string());
+        resources.insert(route.resource.to_string(), capability);
+        Ok(())
+    }
+
+    /// Replace a temporary route owner with the complete capability that uses
+    /// the same resource and top-level CLI route.
+    pub fn replace<C>(&self, capability: Arc<C>) -> anyhow::Result<()>
+    where
+        C: ControlCapability + 'static,
+    {
+        let route = capability.control_route();
+        let mut resources = self.resources.write().expect("control resources lock");
+        let routes = self.routes.read().expect("control routes lock");
+        let Some(resource) = routes.get(route.cli_subcommand) else {
+            anyhow::bail!(
+                "control CLI route `{}` is not registered",
+                route.cli_subcommand
+            );
+        };
+        if resource != route.resource || !resources.contains_key(route.resource) {
+            anyhow::bail!(
+                "control route `{}` does not match its replacement",
+                route.resource
+            );
+        }
+        resources.insert(route.resource.to_string(), capability);
         Ok(())
     }
 }
 
 #[async_trait]
 impl ControlService for ControlRegistry {
-    fn route(&self, cli_subcommand: &str) -> Option<ControlRoute> {
-        self.routes
-            .get(cli_subcommand)
-            .and_then(|resource| self.resources.get(resource))
-            .map(|capability| capability.control_route())
-    }
-
     fn routes(&self) -> Vec<ControlRoute> {
         let mut routes: Vec<ControlRoute> = self
             .resources
+            .read()
+            .expect("control resources lock")
             .values()
             .map(|capability| capability.control_route())
             .collect();
@@ -267,7 +307,13 @@ impl ControlService for ControlRegistry {
                 request.version
             ));
         }
-        let Some(capability) = self.resources.get(&request.resource) else {
+        let capability = self
+            .resources
+            .read()
+            .expect("control resources lock")
+            .get(&request.resource)
+            .cloned();
+        let Some(capability) = capability else {
             return ControlResponse::error(format!(
                 "control resource `{}` is not available in this session",
                 request.resource
@@ -278,9 +324,30 @@ impl ControlService for ControlRegistry {
 
     fn render(&self, request: &ControlRequest, response: &ControlResponse) -> String {
         self.resources
+            .read()
+            .expect("control resources lock")
             .get(&request.resource)
             .map(|capability| capability.render_control(&request.action, response))
             .unwrap_or_else(|| response.render_default())
+    }
+
+    fn is_read_only(&self, request: &ControlRequest) -> bool {
+        let capability = self
+            .resources
+            .read()
+            .expect("control resources lock")
+            .get(&request.resource)
+            .cloned();
+        let Some(capability) = capability else {
+            return false;
+        };
+        let route = capability.control_route();
+        request
+            .action
+            .get("operation")
+            .or_else(|| request.action.get("action"))
+            .and_then(Value::as_str)
+            .is_some_and(|operation| route.read_only_operations.contains(&operation))
     }
 }
 
@@ -290,34 +357,165 @@ pub struct AttachedCommandOutput {
     pub exit_code: i32,
 }
 
-/// Return argv only for the deliberately narrow direct-invocation grammar.
-/// Shell composition and quoting run as ordinary shell commands without an
-/// attached channel, so a capability cannot leak into pipelines/backgrounds.
-fn direct_control_args(
-    command: &str,
-    service: &dyn ControlService,
-) -> Option<(ControlRoute, Vec<OsString>)> {
-    if command.len() > 8192
-        || command.chars().any(|c| {
-            matches!(
-                c,
-                '|' | '&' | ';' | '<' | '>' | '`' | '\n' | '\r' | '\\' | '\'' | '"'
-            )
+/// One authenticated endpoint inherited by every descendant of a shell call.
+/// The listener is local-only and the directory is private to this process.
+pub(crate) struct ControlEndpoint {
+    address: String,
+    token: String,
+    routes: String,
+    bin_dir: PathBuf,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl ControlEndpoint {
+    pub(crate) async fn start(
+        service: Arc<dyn ControlService>,
+        approval_policy: crate::config::ApprovalPolicy,
+        approval_gate: Arc<crate::sandbox_approval::ApprovalGate>,
+        sandbox_mode: crate::config::SandboxMode,
+    ) -> anyhow::Result<Self> {
+        use rand::RngExt;
+
+        let nonce = format!("{:032x}", rand::rng().random::<u128>());
+        let token = format!("{:032x}", rand::rng().random::<u128>());
+        #[cfg(unix)]
+        let temp_root = PathBuf::from("/tmp");
+        #[cfg(windows)]
+        let temp_root = std::env::temp_dir();
+        let root = temp_root.join(format!("yolop-control-{}-{nonce}", std::process::id()));
+        std::fs::create_dir(&root)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))?;
+        }
+        let bin_dir = root.join("bin");
+        std::fs::create_dir(&bin_dir)?;
+        install_current_executable_shim(&bin_dir)?;
+
+        let routes = service
+            .routes()
+            .into_iter()
+            .map(|route| route.cli_subcommand)
+            .collect::<Vec<_>>()
+            .join(",");
+
+        #[cfg(unix)]
+        let (address, task) = {
+            let path = root.join("control.sock");
+            let listener = tokio::net::UnixListener::bind(&path)?;
+            let address = format!("unix:{}", path.display());
+            let expected_token = token.clone();
+            let task = tokio::spawn(async move {
+                while let Ok((stream, _)) = listener.accept().await {
+                    let service = service.clone();
+                    let token = expected_token.clone();
+                    let gate = approval_gate.clone();
+                    tokio::spawn(async move {
+                        let _ = handle_endpoint_stream(
+                            stream,
+                            &token,
+                            service,
+                            approval_policy,
+                            gate,
+                            sandbox_mode,
+                        )
+                        .await;
+                    });
+                }
+            });
+            (address, task)
+        };
+
+        #[cfg(windows)]
+        let (address, task) = {
+            // Windows shell containment is not available yet. Loopback plus a
+            // per-execution random token retains process-local authentication.
+            let listener =
+                tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?;
+            let address = format!("tcp:{}", listener.local_addr()?);
+            let expected_token = token.clone();
+            let task = tokio::spawn(async move {
+                while let Ok((stream, _)) = listener.accept().await {
+                    let service = service.clone();
+                    let token = expected_token.clone();
+                    let gate = approval_gate.clone();
+                    tokio::spawn(async move {
+                        let _ = handle_endpoint_stream(
+                            stream,
+                            &token,
+                            service,
+                            approval_policy,
+                            gate,
+                            sandbox_mode,
+                        )
+                        .await;
+                    });
+                }
+            });
+            (address, task)
+        };
+
+        Ok(Self {
+            address,
+            token,
+            routes,
+            bin_dir,
+            task,
         })
-        || command.contains("$(")
-    {
-        return None;
     }
-    let words = command.split_ascii_whitespace().collect::<Vec<_>>();
-    if words.len() < 2 || Path::new(words[0]).file_name().and_then(|v| v.to_str()) != Some("yolop")
-    {
-        return None;
+
+    pub(crate) fn apply_to(&self, command: &mut tokio::process::Command) {
+        command
+            .env(CONTROL_ENDPOINT_ENV, &self.address)
+            .env(CONTROL_TOKEN_ENV, &self.token)
+            .env(CONTROL_ROUTES_ENV, &self.routes);
+        let mut paths = vec![self.bin_dir.clone()];
+        if let Some(existing) = std::env::var_os("PATH") {
+            paths.extend(std::env::split_paths(&existing));
+        }
+        if let Ok(path) = std::env::join_paths(paths) {
+            command.env("PATH", path);
+        }
     }
-    let route = service.route(words[1])?;
-    Some((
-        route,
-        words.into_iter().skip(1).map(OsString::from).collect(),
-    ))
+
+    pub(crate) fn wrap_shell_script(&self, script: &str) -> String {
+        #[cfg(unix)]
+        {
+            let path = self.bin_dir.to_string_lossy().replace('\'', "'\"'\"'");
+            format!("export PATH='{path}':\"$PATH\"\n{script}")
+        }
+        #[cfg(windows)]
+        {
+            let path = self.bin_dir.to_string_lossy().replace('\'', "''");
+            format!("$env:Path = '{path};' + $env:Path\n{script}")
+        }
+    }
+}
+
+impl Drop for ControlEndpoint {
+    fn drop(&mut self) {
+        self.task.abort();
+        if let Some(root) = self.bin_dir.parent() {
+            let _ = std::fs::remove_dir_all(root);
+        }
+    }
+}
+
+#[cfg(unix)]
+fn install_current_executable_shim(bin_dir: &Path) -> anyhow::Result<()> {
+    std::os::unix::fs::symlink(std::env::current_exe()?, bin_dir.join("yolop"))?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn install_current_executable_shim(bin_dir: &Path) -> anyhow::Result<()> {
+    let target = std::env::current_exe()?;
+    std::fs::write(
+        bin_dir.join("yolop.cmd"),
+        format!("@\"{}\" %*\r\n", target.display()),
+    )?;
+    Ok(())
 }
 
 /// Relay a child that answered as an ordinary CLI rather than a control client.
@@ -348,71 +546,50 @@ async fn relay_plain_cli_child(
     })
 }
 
-/// Warn when a `yolop` administration command was written in a form the
-/// attached recognizer rejects.
-///
-/// The two forms differ only by punctuation, and the difference is invisible in
-/// the output: `yolop extensions enable x` mutates this session, while
-/// `yolop extensions enable x | cat` is ordinary shell that touches only
-/// persisted global state. Without this notice the agent (and the user reading
-/// the transcript) sees a success either way and cannot tell which happened.
-///
-/// `None` for anything that is genuinely attached, and for `yolop` commands that
-/// name no registered control route (`yolop --version | cat` administers
-/// nothing).
-pub fn detached_control_notice(command: &str, service: &dyn ControlService) -> Option<String> {
-    if direct_control_args(command, service).is_some() {
-        return None;
-    }
-    let words = command.split_ascii_whitespace().collect::<Vec<_>>();
-    // Help and version administer nothing, so a composed one is not a mistake.
-    if words
-        .iter()
-        .any(|word| matches!(*word, "--help" | "-h" | "--version" | "-V"))
-    {
-        return None;
-    }
-    // Scan every token, not just argv[0]: `... | yolop extensions list` runs
-    // detached just as surely as `yolop extensions list | ...`.
-    let subcommand = words.windows(2).find_map(|pair| {
-        let is_yolop = Path::new(pair[0].trim_matches(['"', '\'']))
-            .file_name()
-            .and_then(|value| value.to_str())
-            == Some("yolop");
-        let route = service.route(pair[1].trim_matches(['"', '\'']))?;
-        is_yolop.then_some(route.cli_subcommand)
-    })?;
-    Some(format!(
-        "`yolop {subcommand}` ran as an ordinary shell command. Shell composition (a pipeline, \
-         redirection, quoting, substitution, or `&`) is never attached to this session, so this \
-         changed only persisted global state and left the running session untouched. Re-run it \
-         directly, without composition, to administer this session."
-    ))
-}
-
-/// Typed administration other than a list crosses the arbitrary-shell
-/// sandbox boundary into a host broker and therefore needs an explicit shell
-/// approval whenever containment is enabled.
-pub fn requires_host_approval(command: &str, service: &dyn ControlService) -> bool {
-    let Some((route, args)) = direct_control_args(command, service) else {
-        return false;
-    };
-    !args
-        .get(1)
-        .and_then(|value| value.to_str())
-        .is_some_and(|operation| route.read_only_operations.contains(&operation))
-}
-
-/// Invoke the exact running Yolop executable as a one-shot protocol client.
-/// `None` means this is not an eligible direct control command and the caller
-/// should execute it through the ordinary shell.
-pub async fn invoke_attached(
-    command: &str,
+async fn handle_endpoint_stream<S>(
+    stream: S,
+    expected_token: &str,
     service: Arc<dyn ControlService>,
-) -> Option<AttachedCommandOutput> {
-    let (_, args) = direct_control_args(command, service.as_ref())?;
-    Some(
-        match tokio::time::timeout(CONTROL_TIMEOUT, invoke_attached_inner(args, service)).await {
+    approval_policy: crate::config::ApprovalPolicy,
+    approval_gate: Arc<crate::sandbox_approval::ApprovalGate>,
+    sandbox_mode: crate::config::SandboxMode,
+) -> anyhow::Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let reader = BufReader::new(stream);
+    let mut reader = reader.take((MAX_CONTROL_FRAME_BYTES + 1) as u64);
+    let mut frame = Vec::new();
+    reader.read_until(b'\n', &mut frame).await?;
+    if frame.len() > MAX_CONTROL_FRAME_BYTES {
+        anyhow::bail!("control request exceeded {MAX_CONTROL_FRAME_BYTES} bytes");
+    }
+    let request: EndpointRequest = serde_json::from_slice(&frame)?;
+    let output = if request.version != CONTROL_VERSION {
+        AttachedCommandOutput {
+            stdout: String::new(),
+            stderr: format!(
+                "attached control protocol {} is incompatible with host protocol {CONTROL_VERSION} (child {}, host {})\n",
+                request.version,
+                request.client_version,
+                env!("CARGO_PKG_VERSION")
+            ),
+            exit_code: 1,
+        }
+    } else if request.token != expected_token {
+        AttachedCommandOutput {
+            stdout: String::new(),
+            stderr: "attached control authentication failed\n".to_string(),
+            exit_code: 1,
+        }
+    } else {
+        let args = request.argv.into_iter().map(OsString::from).collect();
+        match tokio::time::timeout(
+            CONTROL_TIMEOUT,
+            invoke_attached_inner(args, service, approval_policy, approval_gate, sandbox_mode),
+        )
+        .await
+        {
             Ok(Ok(output)) => output,
             Ok(Err(error)) => AttachedCommandOutput {
                 stdout: String::new(),
@@ -424,18 +601,34 @@ pub async fn invoke_attached(
                 stderr: "attached control timed out\n".to_string(),
                 exit_code: 1,
             },
-        },
-    )
+        }
+    };
+    let response = EndpointResponse {
+        version: CONTROL_VERSION,
+        host_version: env!("CARGO_PKG_VERSION").to_string(),
+        stdout: output.stdout,
+        stderr: output.stderr,
+        exit_code: output.exit_code,
+    };
+    let mut encoded = serde_json::to_vec(&response)?;
+    encoded.push(b'\n');
+    let mut stream = reader.into_inner().into_inner();
+    stream.write_all(&encoded).await?;
+    stream.shutdown().await?;
+    Ok(())
 }
 
 async fn invoke_attached_inner(
     args: Vec<OsString>,
     service: Arc<dyn ControlService>,
+    approval_policy: crate::config::ApprovalPolicy,
+    approval_gate: Arc<crate::sandbox_approval::ApprovalGate>,
+    sandbox_mode: crate::config::SandboxMode,
 ) -> anyhow::Result<AttachedCommandOutput> {
     let executable = std::env::current_exe()?;
     let mut child = tokio::process::Command::new(executable)
         .arg("--__attached-control-child")
-        .args(args)
+        .args(&args)
         .env_clear()
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -459,7 +652,37 @@ async fn invoke_attached_inner(
         Ok(request) => request,
         Err(_) => return relay_plain_cli_child(child, frame, reader).await,
     };
-    let response = service.execute(request.clone()).await;
+    let response = if sandbox_mode != crate::config::SandboxMode::DangerFullAccess
+        && !service.is_read_only(&request)
+    {
+        let command = format!(
+            "yolop {}",
+            args.iter()
+                .map(|arg| arg.to_string_lossy())
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+        if approval_policy == crate::config::ApprovalPolicy::Never {
+            ControlResponse::error(
+                "approval_policy=never forbids attached administration outside the shell sandbox",
+            )
+        } else if approval_gate
+            .approve(crate::sandbox_approval::ApprovalRequest {
+                command,
+                reason:
+                    "Yolop administration writes or executes outside the arbitrary-shell sandbox"
+                        .to_string(),
+                full_access: false,
+            })
+            .await
+        {
+            service.execute(request.clone()).await
+        } else {
+            ControlResponse::error("attached administration was not approved")
+        }
+    } else {
+        service.execute(request.clone()).await
+    };
 
     let mut stdin = child.stdin.take().expect("piped stdin");
     let mut reply = serde_json::to_vec(&response)?;
@@ -485,6 +708,110 @@ async fn invoke_attached_inner(
             exit_code: 1,
         }
     })
+}
+
+/// Return raw argv when this process is an administrative CLI below a running
+/// session. Route selection is the only child-side interpretation. The host's
+/// exact executable owns the full grammar and typed decoding.
+pub(crate) fn endpoint_client_args() -> anyhow::Result<Option<Vec<String>>> {
+    let Some(_) = std::env::var_os(CONTROL_ENDPOINT_ENV) else {
+        return Ok(None);
+    };
+    let mut args = std::env::args_os().skip(1);
+    let Some(first) = args.next() else {
+        return Ok(None);
+    };
+    let first = first
+        .into_string()
+        .map_err(|_| anyhow::anyhow!("attached Yolop arguments must be valid UTF-8"))?;
+    let routes = std::env::var(CONTROL_ROUTES_ENV)
+        .map_err(|_| anyhow::anyhow!("attached control route metadata is missing"))?;
+    if !routes.split(',').any(|route| route == first) {
+        return Ok(None);
+    }
+    let mut raw = vec![first];
+    for arg in args {
+        raw.push(
+            arg.into_string()
+                .map_err(|_| anyhow::anyhow!("attached Yolop arguments must be valid UTF-8"))?,
+        );
+    }
+    Ok(Some(raw))
+}
+
+pub(crate) async fn run_endpoint_client(argv: Vec<String>) -> anyhow::Result<i32> {
+    let address = std::env::var(CONTROL_ENDPOINT_ENV)
+        .map_err(|_| anyhow::anyhow!("attached control endpoint is missing"))?;
+    let token = std::env::var(CONTROL_TOKEN_ENV)
+        .map_err(|_| anyhow::anyhow!("attached control token is missing"))?;
+    let request = EndpointRequest {
+        version: CONTROL_VERSION,
+        token,
+        client_version: env!("CARGO_PKG_VERSION").to_string(),
+        argv,
+    };
+
+    #[cfg(unix)]
+    let stream = {
+        let path = address
+            .strip_prefix("unix:")
+            .ok_or_else(|| anyhow::anyhow!("unsupported attached control endpoint `{address}`"))?;
+        tokio::net::UnixStream::connect(path).await.map_err(|error| {
+            anyhow::anyhow!(
+                "cannot reach the running Yolop session at `{path}`: {error}; refusing detached fallback"
+            )
+        })?
+    };
+    #[cfg(windows)]
+    let stream = {
+        let target = address
+            .strip_prefix("tcp:")
+            .ok_or_else(|| anyhow::anyhow!("unsupported attached control endpoint `{address}`"))?;
+        tokio::net::TcpStream::connect(target).await.map_err(|error| {
+            anyhow::anyhow!(
+                "cannot reach the running Yolop session at `{target}`: {error}; refusing detached fallback"
+            )
+        })?
+    };
+    exchange_endpoint_request(stream, request).await
+}
+
+async fn exchange_endpoint_request<S>(
+    mut stream: S,
+    request: EndpointRequest,
+) -> anyhow::Result<i32>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let mut frame = serde_json::to_vec(&request)?;
+    if frame.len() > MAX_CONTROL_FRAME_BYTES {
+        anyhow::bail!("control request exceeded {MAX_CONTROL_FRAME_BYTES} bytes");
+    }
+    frame.push(b'\n');
+    stream.write_all(&frame).await?;
+    stream.flush().await?;
+    let mut reader = BufReader::new(stream).take((MAX_CONTROL_FRAME_BYTES + 1) as u64);
+    let mut reply = Vec::new();
+    reader.read_until(b'\n', &mut reply).await?;
+    if reply.len() > MAX_CONTROL_FRAME_BYTES {
+        anyhow::bail!("control response exceeded {MAX_CONTROL_FRAME_BYTES} bytes");
+    }
+    let response: EndpointResponse = serde_json::from_slice(&reply)?;
+    if response.version != CONTROL_VERSION {
+        anyhow::bail!(
+            "host {} uses unsupported attached control protocol {}; child {} expects {CONTROL_VERSION}",
+            response.host_version,
+            response.version,
+            env!("CARGO_PKG_VERSION")
+        );
+    }
+    let mut stdout = tokio::io::stdout();
+    stdout.write_all(response.stdout.as_bytes()).await?;
+    stdout.flush().await?;
+    let mut stderr = tokio::io::stderr();
+    stderr.write_all(response.stderr.as_bytes()).await?;
+    stderr.flush().await?;
+    Ok(response.exit_code)
 }
 
 /// Child half of the anonymous pipe handshake. It emits exactly one bounded
@@ -582,32 +909,9 @@ mod tests {
     }
 
     fn service() -> ControlRegistry {
-        let mut service = ControlRegistry::default();
+        let service = ControlRegistry::default();
         service.register(Arc::new(TestControlCapability)).unwrap();
         service
-    }
-
-    #[test]
-    fn only_plain_foreground_extension_invocations_are_attached() {
-        let service = service();
-        assert!(direct_control_args("yolop extensions", &service).is_some());
-        assert!(direct_control_args("yolop extensions list", &service).is_some());
-        assert!(
-            direct_control_args("/usr/local/bin/yolop extensions enable demo", &service).is_some()
-        );
-        assert!(direct_control_args("yolop extensions enable demo | cat", &service).is_none());
-        assert!(direct_control_args("yolop extensions enable demo &", &service).is_none());
-        assert!(direct_control_args("yolop extensions enable 'demo'", &service).is_none());
-        assert!(direct_control_args("yolop mcp list", &service).is_none());
-        assert!(!requires_host_approval("yolop extensions list", &service));
-        assert!(requires_host_approval(
-            "yolop extensions doctor demo",
-            &service
-        ));
-        assert!(requires_host_approval(
-            "yolop extensions enable demo",
-            &service
-        ));
     }
 
     #[test]
@@ -624,6 +928,36 @@ mod tests {
             serde_json::from_str::<ControlRequest>(&encoded).unwrap(),
             request
         );
+    }
+
+    #[tokio::test]
+    async fn endpoint_rejects_protocol_skew_with_both_product_versions() {
+        let (mut client, server) = tokio::io::duplex(4096);
+        let task = tokio::spawn(handle_endpoint_stream(
+            server,
+            "expected-token",
+            Arc::new(service()),
+            crate::config::ApprovalPolicy::Never,
+            crate::sandbox_approval::ApprovalGate::deny(),
+            crate::config::SandboxMode::DangerFullAccess,
+        ));
+        let mut frame = serde_json::to_vec(&EndpointRequest {
+            version: 0,
+            token: "expected-token".to_string(),
+            client_version: "0.1.0".to_string(),
+            argv: vec!["extensions".to_string(), "list".to_string()],
+        })
+        .unwrap();
+        frame.push(b'\n');
+        client.write_all(&frame).await.unwrap();
+
+        let mut reply = String::new();
+        BufReader::new(client).read_line(&mut reply).await.unwrap();
+        let response: EndpointResponse = serde_json::from_str(&reply).unwrap();
+        assert_eq!(response.exit_code, 1);
+        assert!(response.stderr.contains("child 0.1.0"));
+        assert!(response.stderr.contains(env!("CARGO_PKG_VERSION")));
+        task.await.unwrap().unwrap();
     }
 
     #[tokio::test]
@@ -649,11 +983,23 @@ mod tests {
                 .unwrap_or_default()
                 .contains("not available")
         );
+        assert!(service.is_read_only(
+            &ControlRequest::new("extensions", serde_json::json!({ "operation": "list" })).unwrap()
+        ));
+        assert!(
+            !service.is_read_only(
+                &ControlRequest::new(
+                    "extensions",
+                    serde_json::json!({ "operation": "enable", "name": "demo" })
+                )
+                .unwrap()
+            )
+        );
     }
 
     #[test]
     fn registries_reject_duplicate_capability_routes() {
-        let mut control = ControlRegistry::default();
+        let control = ControlRegistry::default();
         control.register(Arc::new(TestControlCapability)).unwrap();
         assert!(
             control
@@ -690,7 +1036,7 @@ mod tests {
 
     #[test]
     fn routes_are_ordered_so_the_prompt_prefix_stays_stable() {
-        let mut registry = ControlRegistry::default();
+        let registry = ControlRegistry::default();
         registry
             .register(Arc::new(SecondTestControlCapability))
             .expect("register");
@@ -739,47 +1085,5 @@ mod tests {
         fn render_control(&self, _action: &Value, response: &ControlResponse) -> String {
             response.render_default()
         }
-    }
-
-    #[test]
-    fn attached_administration_gets_no_detached_notice() {
-        let service = service();
-        assert!(detached_control_notice("yolop extensions enable demo", &service).is_none());
-        assert!(detached_control_notice("yolop extensions list", &service).is_none());
-    }
-
-    #[test]
-    fn composed_administration_is_reported_as_detached() {
-        let service = service();
-        // Each of these is rejected by the recognizer and silently runs as
-        // ordinary shell, which is exactly what the agent cannot otherwise see.
-        for command in [
-            "yolop extensions enable demo | cat",
-            "yolop extensions enable demo > out.txt",
-            "yolop extensions enable 'demo'",
-            "yolop extensions enable demo &",
-            "/usr/local/bin/yolop extensions list | grep demo",
-            // Not argv[0]: still a detached administration attempt.
-            "echo hi | yolop extensions list",
-        ] {
-            let notice = detached_control_notice(command, &service)
-                .unwrap_or_else(|| panic!("expected a detached notice for `{command}`"));
-            assert!(notice.contains("`yolop extensions`"), "{command}: {notice}");
-            assert!(
-                notice.contains("left the running session untouched"),
-                "{command}"
-            );
-        }
-    }
-
-    #[test]
-    fn unrelated_and_non_administration_commands_are_quiet() {
-        let service = service();
-        // No registered route named, so nothing about the session is at stake.
-        assert!(detached_control_notice("yolop --version | cat", &service).is_none());
-        assert!(detached_control_notice("yolop worktree list | cat", &service).is_none());
-        assert!(detached_control_notice("cargo test | tee log", &service).is_none());
-        // A bare word that happens to match a route is not a yolop invocation.
-        assert!(detached_control_notice("git extensions list", &service).is_none());
     }
 }

@@ -805,12 +805,28 @@ enum CodexContentPart {
         r#type: String,
         input_audio: CodexInputAudio,
     },
+    InputFile {
+        r#type: String,
+        input_file: CodexInputFile,
+    },
 }
 
 #[derive(Debug, Serialize)]
 struct CodexInputAudio {
     data: String,
     format: String,
+}
+
+// Mirrors the Responses `input_file` shape: the file payload travels as
+// `file_data` with `file_url` reserved for a future remote reference.
+#[derive(Debug, Serialize)]
+struct CodexInputFile {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    file_data: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    file_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    filename: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -917,6 +933,17 @@ fn compact_output_item(item: &CompactOutputItem) -> CodexInputItem {
                                     image_url: image_url.clone(),
                                 }
                             }
+                            CompactContentPart::InputFile {
+                                file_data,
+                                filename,
+                            } => CodexContentPart::InputFile {
+                                r#type: "input_file".to_string(),
+                                input_file: CodexInputFile {
+                                    file_data: Some(file_data.clone()),
+                                    file_url: None,
+                                    filename: filename.clone(),
+                                },
+                            },
                         })
                         .collect(),
                 ),
@@ -959,6 +986,17 @@ fn convert_message(message: &LlmMessage) -> CodexInputItem {
                         input_audio: CodexInputAudio {
                             data: url.clone(),
                             format: "wav".to_string(),
+                        },
+                    },
+                    // New in everruns-provider 0.22.0 (upstream v0.26.0 PDF
+                    // input): file attachments travel as `input_file`, same
+                    // shape as the Responses API.
+                    LlmContentPart::File { url, filename } => CodexContentPart::InputFile {
+                        r#type: "input_file".to_string(),
+                        input_file: CodexInputFile {
+                            file_data: Some(url.clone()),
+                            file_url: None,
+                            filename: filename.clone(),
                         },
                     },
                 })
@@ -2335,12 +2373,75 @@ mod tests {
                 tool_call_id: None,
                 phase: None,
                 reasoning: Vec::new(),
+                native_tool_calls: Vec::new(),
             },
             message,
         ]);
         assert!(matches!(
             input.last(),
             Some(CodexInputItem::FunctionCallOutput { call_id, .. }) if call_id == "call_1"
+        ));
+    }
+
+    #[test]
+    fn converts_file_content_to_input_file_part() {
+        // everruns-provider 0.22.0 added File parts for PDF input; the Codex
+        // driver must carry them as `input_file`, same shape as Responses.
+        let message = LlmMessage {
+            configuration_update: None,
+            role: LlmMessageRole::User,
+            content: LlmMessageContent::Parts(vec![LlmContentPart::File {
+                url: "data:application/pdf;base64,QUJD".to_string(),
+                filename: Some("notes.pdf".to_string()),
+            }]),
+            tool_calls: None,
+            tool_call_id: None,
+            phase: None,
+            reasoning: Vec::new(),
+            native_tool_calls: Vec::new(),
+        };
+        let item = convert_message(&message);
+        let CodexInputItem::Message {
+            content: CodexContent::Parts(parts),
+            ..
+        } = &item
+        else {
+            panic!("expected message parts, got {item:?}");
+        };
+        assert_eq!(parts.len(), 1);
+        let CodexContentPart::InputFile { r#type, input_file } = &parts[0] else {
+            panic!("expected input_file part, got {:?}", parts[0]);
+        };
+        assert_eq!(r#type, "input_file");
+        assert_eq!(
+            input_file.file_data.as_deref(),
+            Some("data:application/pdf;base64,QUJD")
+        );
+        assert_eq!(input_file.filename.as_deref(), Some("notes.pdf"));
+        let value = serde_json::to_value(&item).unwrap();
+        assert_eq!(value["content"][0]["type"], "input_file");
+        assert_eq!(
+            value["content"][0]["input_file"]["file_data"],
+            "data:application/pdf;base64,QUJD"
+        );
+
+        let compact = compact_output_item(&CompactOutputItem::Message {
+            role: "user".to_string(),
+            content: CompactContent::Parts(vec![CompactContentPart::InputFile {
+                file_data: "data:application/pdf;base64,QUJD".to_string(),
+                filename: Some("notes.pdf".to_string()),
+            }]),
+        });
+        let CodexInputItem::Message {
+            content: CodexContent::Parts(parts),
+            ..
+        } = &compact
+        else {
+            panic!("expected compact message parts, got {compact:?}");
+        };
+        assert!(matches!(
+            parts.first(),
+            Some(CodexContentPart::InputFile { .. })
         ));
     }
 
@@ -2418,6 +2519,7 @@ mod tests {
                 tool_call_id: None,
                 phase: None,
                 reasoning: Vec::new(),
+                native_tool_calls: Vec::new(),
             },
             paired_result,
             orphaned_result,

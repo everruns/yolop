@@ -261,6 +261,25 @@ fn attached_control_child_exchanges_one_versioned_pipe_request() {
     assert!(child.wait().unwrap().success());
 }
 
+#[cfg(unix)]
+#[test]
+fn attached_cli_refuses_detached_fallback_when_the_host_is_gone() {
+    let output = Command::new(yolop_binary())
+        .args(["setup", "status"])
+        .env(
+            "YOLOP_CONTROL_ENDPOINT",
+            "unix:/tmp/yolop-control-host-is-gone.sock",
+        )
+        .env("YOLOP_CONTROL_TOKEN", "test-token")
+        .env("YOLOP_CONTROL_ROUTES", "setup")
+        .output()
+        .expect("run attached CLI with a stale endpoint");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("refusing detached fallback"), "{stderr}");
+}
+
 #[test]
 fn meta_provider_reaches_credential_boundary_from_real_binary() {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -2521,7 +2540,7 @@ fn tui_bang_shell_runs_shell_without_model_turn() {
 }
 
 #[test]
-fn tui_bang_yolop_extensions_uses_attached_control() {
+fn tui_bang_yolop_pipeline_uses_attached_control() {
     let mut tui = spawn_tui_llmsim_with(
         &yolop_binary(),
         TuiSpawnOptions {
@@ -2536,7 +2555,7 @@ fn tui_bang_yolop_extensions_uses_attached_control() {
         tui.output_text()
     );
 
-    tui.write_input(b"!yolop extensions list\r");
+    tui.write_input(b"!bash -c 'yolop extensions list' | sed -n '1p'\r");
     let summary = tui
         .wait_for_screen(Duration::from_secs(10), |screen| {
             screen.iter().any(|line| line.contains("Ctrl+O details"))
@@ -2615,6 +2634,36 @@ fn tui_bang_yolop_extensions_help_renders_usage_instead_of_a_parse_error() {
 
     tui.write_input(b"\x03\x03");
     assert!(tui.wait_or_kill(Duration::from_secs(3)).success());
+}
+
+#[test]
+fn tui_bang_yolop_setup_reauthenticate_opens_live_authentication() {
+    let mut tui = spawn_tui_llmsim_with(
+        &yolop_binary(),
+        TuiSpawnOptions {
+            inline: false,
+            compact_work: true,
+            ..TuiSpawnOptions::default()
+        },
+    );
+    assert!(
+        tui.wait_for_output("type /help", Duration::from_secs(10)),
+        "TUI did not render startup banner: {}",
+        tui.output_text()
+    );
+
+    tui.write_input(b"!yolop setup reauthenticate codex\r");
+    if !tui.wait_for_output("Sign in with browser", Duration::from_secs(10)) {
+        tui.write_input(b"\x0f");
+        let _ = tui.wait_for_output("shell exited", Duration::from_secs(2));
+        panic!(
+            "attached setup did not open live authentication: {}",
+            tui.output_text()
+        );
+    }
+
+    let _ = tui.child.kill();
+    let _ = tui.wait_or_kill(Duration::from_secs(3));
 }
 
 #[test]

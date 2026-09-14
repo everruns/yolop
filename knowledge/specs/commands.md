@@ -32,8 +32,8 @@ top of the runtime's two, not a separate `CommandSource` variant.
 
 1. **System**: the **runtime** executes it via `runtime.execute_command`,
    returning a `CommandResult { success, message }` the host renders inline.
-   Example: `/setup` opens guided setup, while `/setup status`, `/setup login <provider>`,
-   and `/setup reauthenticate <provider>` inspect or start provider authentication;
+   Example: `/setup` opens guided setup, while the attached CLI owns
+   `yolop setup status|login|reauthenticate` for provider authentication;
    `/shell <command>` runs the existing bounded bash tool; `/undo`, `/redo`, and
    `/rewind` preview and confirm durable session restores; `/goal <condition>`
    starts an autonomous completion loop (see [`goal.md`](./goal.md)).
@@ -87,22 +87,24 @@ portable case ever arises.
    new on-screen effect is a host change, not a drop-in.
 4. **Natural-language dispatch.** The `agent_commands` capability exposes a
    model-facing `run_command` tool and a prompt contribution describing it.
-   When the user asks for a command in ordinary prose (for example, "exit" or
-   "re-authenticate my provider"), the model invokes that tool instead of
-   telling the user to type the slash command. `run_command` covers the
+   When the user asks for a slash-only command in ordinary prose (for example,
+   "exit" or "set a goal"), the model invokes that tool instead of telling the
+   user to type the slash command. Administrative operations, including provider
+   authentication, use the attached `yolop` CLI through Bash. `run_command` covers the
    **whole registry** of the host it runs on, not a curated subset, and holds no
    allowlist of its own: a name is resolved against `runtime.list_commands` and
    run through `runtime.execute_command`, exactly as typing it would, so client
    commands reach their capability and emit the same `UiCommand` as the typed
-   path. `command: help` returns the live list, and an unknown name answers with
-   it too. Two commands stay out by design: `Skill` commands, which activate by
-   prompt rather than by a runtime effect, and `/shell`, which is typed-only
-   because the agent already has the `bash` tool.
+   path. `command: help` returns the live list privately in the tool result,
+   without executing the terminal's visible `/help` effect, and an unknown name
+   answers with the list too. Two commands stay out by design: `Skill`
+   commands, which activate by prompt rather than by a runtime effect, and
+   `/shell`, which is typed-only because the agent already has the `bash` tool.
 
    The tool is registered on **every host**, because every host has a registry;
    what differs is what that registry holds (host gating below). The only
    host-specific detail is read-back: where a `HostUi` exists, the
-   informational client commands (`/mcp`, `/tools`, `/help`, `/cwd`) are
+   informational client commands (`/mcp`, `/tools`, `/cwd`) are
    dispatched through it so the tool result carries the transcript lines the
    host printed instead of the empty `CommandResult` they return by design.
    `run_command` does not create a second command registry.
@@ -112,7 +114,7 @@ portable case ever arises.
    `--print` leave it off and therefore neither advertise nor dispatch terminal
    commands. `AgentCommandsCapability` is not gated that way: it is registered
    and enabled everywhere, so a `--print` or ACP session can run the commands
-   its own registry holds (`/setup`, `/background`, `/undo`, …) and simply has
+   its own registry holds (`/background`, `/undo`, …) and simply has
    no terminal commands to find. See [`acp.md`](./acp.md) for how the remaining
    `System`/`Skill` commands surface over ACP.
 

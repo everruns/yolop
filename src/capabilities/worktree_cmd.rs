@@ -209,7 +209,7 @@ impl Capability for WorktreeCommandCapability {
         }
         Some(
             "<capability id=\"session_worktree\">\n\
-Before the first repository mutation, run `yolop worktree init` as a direct foreground Bash command. \
+Before the first repository mutation, run `yolop worktree init` in Bash. \
 Do not initialize for read-only investigation, explanation, review, or planning. \
 After initialization, continue in the active workspace reported by the command. \
 Do not create, switch, move, or remove the session worktree with raw `git worktree` commands.\n\

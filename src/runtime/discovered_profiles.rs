@@ -9,7 +9,9 @@
 //! what says the model takes a reasoning effort at all). The catalog also names
 //! the actual levels (`reasoning.supported_efforts`); the driver does not map
 //! those yet, so `catalog_scale_override` below carries the hand-verified copy
-//! for the affected models until it does.
+//! for the affected models until it does. The runtime applies that correction
+//! after merging discovered and fallback metadata, so it also covers startup
+//! before this cache is populated.
 //!
 //! Yolop's effort selector and per-turn defaults are synchronous, so they
 //! cannot query discovery themselves. Every path that already lists models
@@ -72,18 +74,17 @@ pub(crate) fn reasoning_effort_config(
     provider_type: &DriverId,
     model: &str,
 ) -> Option<ReasoningEffortConfig> {
-    profile(provider_type, model)
-        .and_then(|profile| profile.reasoning_effort)
-        .map(|recorded| catalog_scale_override(provider_type, model, &recorded).unwrap_or(recorded))
+    profile(provider_type, model).and_then(|profile| profile.reasoning_effort)
 }
 
 /// Catalog-verified effort scales for models whose driver drops the levels.
 /// `everruns-openrouter 0.18.3` maps every reasoning model to the same fixed
 /// low/medium/high scale and drops the catalog's `reasoning.supported_efforts`,
-/// so the recorded advertisement for these models is wrong. Each entry applies
-/// only while the recorded scale is still exactly that generic one: the moment
-/// the driver maps the real levels, the advertisement stops matching and this
-/// yields to it. An entry's levels are hand-copied from the provider catalog,
+/// so both its recorded advertisement and the registry fallback are wrong.
+/// Each entry applies only while the selected scale is still exactly that
+/// generic one: the moment the driver maps the real levels, its advertisement
+/// stops matching and this yields to it. An entry's levels are hand-copied from
+/// the provider catalog,
 /// so re-verify against the catalog before extending this table (muse-spark's
 /// entry was read from OpenRouter `/models`: `supported_efforts` `["max",
 /// "xhigh", "high", "medium", "low", "minimal"]`, default `"medium"`). `max`
@@ -91,7 +92,7 @@ pub(crate) fn reasoning_effort_config(
 pub(crate) fn catalog_scale_override(
     provider_type: &DriverId,
     model: &str,
-    recorded: &ReasoningEffortConfig,
+    candidate: &ReasoningEffortConfig,
 ) -> Option<ReasoningEffortConfig> {
     if provider_type.as_str() != "openrouter" {
         return None;
@@ -102,21 +103,21 @@ pub(crate) fn catalog_scale_override(
     {
         return None;
     }
-    let recorded_values = recorded
+    let candidate_values = candidate
         .values
         .iter()
         .map(|value| value.value)
         .collect::<Vec<_>>();
-    if recorded_values
+    if candidate_values
         != [
             everruns_provider::ReasoningEffort::Low,
             everruns_provider::ReasoningEffort::Medium,
             everruns_provider::ReasoningEffort::High,
         ]
-        || recorded.default != everruns_provider::ReasoningEffort::Medium
+        || candidate.default != everruns_provider::ReasoningEffort::Medium
     {
-        // The driver has learned to map the real levels (or someone recorded a
-        // narrower scale): the advertisement speaks for itself now.
+        // The driver has learned to map the real levels, or the selected layer
+        // carries a narrower scale. Its metadata speaks for itself now.
         return None;
     }
     Some(ReasoningEffortConfig {
