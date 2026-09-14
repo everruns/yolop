@@ -1,41 +1,103 @@
-# Maintenance surfaces — commands and heuristics
+# Maintenance surfaces
 
-Operational companion to [`SKILL.md`](SKILL.md). Why each surface matters is in
-[`knowledge/specs/maintenance.md`](../../../knowledge/specs/maintenance.md); this file is what to run.
+Per-surface commands and heuristics. Open only the surfaces the scope covers.
+The [maintenance spec](../../../knowledge/specs/maintenance.md) owns the bar;
+this file owns how to check it.
 
-## CI health
-
-```bash
-gh run list --branch main --limit 5   # through Doppler if GitHub auth fails
-```
-
-Any red run is a hard gate. If the failure is out of reach, open an issue with
-the failing run linked and report the pass blocked.
-
-## Dependency health
-
-The `everruns-*` family (`-host`, `-core`, `-anthropic`, `-openai`,
-`-integrations-duckduckgo`) moves in lockstep at one minor version.
+## CI health on `main`
 
 ```bash
-cargo search everruns-host --limit 1
-cargo update                    # transitive drift
-cargo tree --duplicates         # split transitive versions: fix or explain
-cargo audit                     # when available; otherwise Dependabot alerts
+gh run list --branch main --limit 10
+gh run view <failing-run-id> --log-failed
 ```
 
-Also check `ratatui`, `crossterm`, `clap`, and `tokio` minors — they tend to
-ship breaking-feeling lint changes. Grep for direct dependencies no longer used
-in `src/`, and flag deprecated crates with a replacement.
+A red `main` outranks everything. Fix it first or report **blocked**. Common
+causes: a stale lockfile, a yanked crate, an upstream behavior change that
+compiles clean, a gallery or PTY regression.
 
-Evidence after a bump: `cargo test --workspace --features yolop-yep/schema`, plus one real-provider
-smoke (`doppler run -- cargo run -- --provider openai -p "hi"`).
+## Dependency and toolchain health
 
-## Upstream mirror
+```bash
+cargo update --dry-run
+cargo update -p <crate>
+cargo metadata --locked
+cargo audit  # when the tool is available
+cargo fmt --check
+cargo clippy --workspace --all-targets --features yolop-yep/schema -- -D warnings
+cargo test --workspace --features yolop-yep/schema
+```
 
-Compare `src/` against the current `examples/coding-cli` in `everruns/everruns`.
-Mirror improvements that are not tied to internal everruns paths; record
-meaningful divergence as a comment next to the diverged code.
+Heuristics: review the whole `everruns-*` family, not only the crates named
+in the root manifest (`everruns-host`, `everruns-core`,
+`everruns-anthropic`, `everruns-openai`,
+`everruns-integrations-duckduckgo`, `everruns-platform`). Respect the
+release age floor: under one day for patches, under seven days for minor and
+major. Re-resolve from scratch to prove manifest pins are sufficient before
+restoring the lockfile on failure. End state is `cargo metadata --locked`
+clean, no yanked crates, no audit findings where the tool runs, no duplicate
+versions, no unused dependencies, and `rust-toolchain.toml`, CI, and docs in
+agreement. Major upgrades and protocol bumps ship as their own PRs. Go deep
+on majors in scope: read the breaking notes, weigh migration cost against the
+gain, and land the upgrade or record why the pin stays with a re-check
+trigger. When a library introduces a new thing or a new paradigm, evaluate
+adoption explicitly: what it simplifies or unlocks, with a prototype where
+the claim is uncertain.
+
+## Upstream library surface
+
+Read the upstream `CHANGELOG.md` files for the `everruns-*` crates in scope.
+Treat behavioral notes as findings even when the build is green: retry,
+timeout, tool calling, MCP, session, and provider changes alter the agent
+loop without breaking call shapes. Check facade coverage for new upstream
+capabilities the loop or a driver should adopt, and decide explicitly on
+feature gated additions such as `a2a` or local backends. When a release
+introduces a new paradigm, evaluate what adopting it would simplify or
+unlock, and record an explicit adopt or decline with reasons. What is
+published on crates.io wins.
+
+## Tuika boundary
+
+```bash
+cargo update --dry-run -p tuika -p tuika-codeformatters -p tuika-mermaid
+```
+
+Heuristics: the three versions move together where they are companion
+releases, `Cargo.toml` and `Cargo.lock` agree, and no path or git dependency
+exists. Read the upstream changelog for rendering, input, and escape changes
+that compile clean. Prove TUI changes with the gallery assertion, the PTY
+test (`tests/tuika_pty.rs`), and the cross terminal workflow where the tuika
+spec requires it. Toolkit shaped fixes belong upstream first, then release,
+then bump here.
+
+## YEP wire compat
+
+```bash
+cargo test --workspace --features yolop-yep/schema
+```
+
+Heuristics: the schema drift guard is the first witness. A schema change
+without a regenerated artifact is a finding. The protocol version, the
+`yolop-yep` crate version, and the first-party extension manifests agree,
+proven by the manifest pin test asserting `plugin.json` matches `Cargo.toml`.
+Exercise the extension server matrix (enumerate, start, tools, resources, UI
+affordances) when the wire moved. Publish order holds: `yolop-yep` first,
+then the binary, then the extensions.
+
+## Local inference, metal, CUDA matrix
+
+Only when the scope includes it. Keep every routine command on the schema
+feature set in the default `target/`; give the engine and the backends their
+own directories per `AGENTS.md`:
+
+```bash
+CARGO_TARGET_DIR=target-local-inference \
+  cargo clippy --workspace --all-targets --features local-inference -- -D warnings
+CARGO_TARGET_DIR=target-cuda CUDA_COMPUTE_CAP=80 \
+  cargo check -p yolop --locked --features cuda
+```
+
+`cuda` needs `nvcc` installed. Distribution stays split: the default portable
+build never absorbs the engine, accelerated builds stay per target.
 
 ## Knowledge and docs alignment
 
@@ -43,73 +105,80 @@ meaningful divergence as a comment next to the diverged code.
 python3 scripts/validate_okf.py knowledge --check-links
 ```
 
-Read `knowledge/index.md`, then inspect the concepts touched by behavior that
-changed since the last pass. Staleness means contradiction or missing coverage,
-not age. Confirm the index covers and correctly classifies every concept, mark
-superseded concepts, and log significant changes in `knowledge/log.md`.
-
-Check `AGENTS.md`, `README.md`, and `docs/` against
-[`knowledge/specs/agent-context.md`](../../../knowledge/specs/agent-context.md) and
-[`documentation.md`](../../../knowledge/specs/documentation.md): no rule owned in two places, no public
-page linking into `knowledge/` or `.agents/`, README provider and model lists
-matching `runtime.rs`.
+Heuristics: specs record what is true and why; replace duplicated tables
+with links to the owning source. Spot check specs against code on every
+covered surface: a contradiction is a bug in exactly one side, fix the wrong
+side and say which changed. `README.md` and `docs/` never link into
+`knowledge/` or `.agents/`. Verify the README scope claim, install path, and
+quickstart by running the commands; stale pages describing removed flags or
+past architecture are findings with owners. Provider and model lists match `runtime.rs`,
+flag tables match the CLI definition, manifest fields match the extensions
+spec. Prose avoids em-dashes. Update `knowledge/index.md` when concepts are
+added, removed, renamed, or reclassified, and `knowledge/log.md` for
+significant changes under `DATE, Title` headings.
 
 ## Feature-completeness drift
 
-Diff the `clap` definitions in `src/` against the README flag table. For
-features shipped since the last tag (`git log`), confirm each has a test that
-exercises it and a knowledge/README mention. The outcome is a small reconnecting
-fix, or a finding naming the missing surface and its user-visible impact.
+Walk every surface a behavior touches: CLI flags, fullscreen TUI,
+`--inline`, print mode, ACP, skills, README, `docs/`, specs, and tests. Check
+recent diffs for behaviors added to one renderer and forgotten in another.
+Every user-facing terminal state stays reachable in the gallery wiring, and
+every status or new behavior carries a behavior anchored test with an
+explicit transcript or status line assertion.
 
-## Simplification and de-abstraction
+## Code simplicity, soundness, architecture
 
-On code touched during the pass: delete dead code, unreachable branches,
-commented-out blocks, and resolved TODOs.
-
-On a deep pass, hunt for complexity the codebase no longer earns — single-use
-abstractions, premature generalization, indirection with no payoff, duplication
-that wants a helper, deep nesting, names that hide intent. Verify with `cargo
-build`, `cargo clippy`, and `cargo test`: a simplification that changes behavior
-is a bug. Removing a public item from `yolop-yep` is a breaking
-change — call it out in the PR.
+Look for one-off helpers, overlapping abstractions, and special cases that a
+general mechanism already covers. Delete before adding. Keep each
+simplification independently reviewable with tests green. Check soundness:
+unenforced invariants, swallowed error context, unstated ordering
+assumptions. Check architecture: leaking module boundaries, inverted
+layering, new code duplicating an existing mechanism under a new name.
 
 ## Binary size
 
-```bash
-cargo install cargo-bsize             # once
-cargo bsize --bin yolop --limit 25    # full attribution report
-cargo bsize --bin yolop --baseline target/release/yolop   # what grew since a kept build
-ls -l target/release/yolop            # the number users actually download
-```
-
-`cargo bsize` builds into its own `target/bsize` profile, so it neither reuses
-nor clobbers `target/release`; expect a full release-grade build the first time.
-Attribute before proposing: the report's dependency, feature, and generic-family
-tables say whether a growth came from a bump, a feature that unified on, or
-yolop's own code.
-
-To measure a profile lever without editing `Cargo.toml`:
-
-```bash
-cargo build --release --config 'profile.release.opt-level="s"'
-```
-
-[`knowledge/specs/maintenance.md`](../../../knowledge/specs/maintenance.md#binary-size)
-owns which levers are rejected and why; the live profile's rationale is in the
-`Cargo.toml` comment beside it.
+Measure the release binary with a stated baseline: the previous release tag
+for release readiness, otherwise the last recorded maintenance numbers.
+Report the total plus the component breakdown. Unexplained growth above
+noise, roughly 5 percent or 5 MB, is a finding with an owner. Suspects
+include new backends, new default features, debug settings, and duplicated
+native libraries.
 
 ## Security posture
 
-- the write blocklist in `runtime.rs` still covers `.git/`, `node_modules/`,
-  `target/`, `dist/`, `build/`, `.next/`, `.venv/`, `venv/`, `.tox/`, `.gradle/`
-- the bash tool still enforces a wall-clock timeout and per-stream output cap
-- session JSONL log permissions stay `0o600` on Unix
-- provider keys are read from process env only — never logged or persisted
+Re-check the sandbox trust boundary: filesystem broker and command execution
+mounts, deny by default, sandbox logic behind the provider trait. Shell
+provider changes run the provider tests on both macOS and Linux. Session logs
+stay owner read write only, API keys stay environment only, link rendering
+stays opt-in. Scopes touching execution, filesystem access, secrets, or
+untrusted rendering get the structured security review from the ship skill,
+and the report names what was reviewed and what it concluded. When in doubt,
+run that review rather than asserting safety from a green build.
 
 ## Test and runtime confidence
 
 ```bash
-cargo test --workspace --features yolop-yep/schema
-doppler run -- cargo test --features yolop-yep/schema --test integration
-cargo run -- --provider llmsim -p "hi"     # non-empty response, exit 0
+cargo run -- --provider llmsim -p "hi"
+doppler run -- cargo run -- --provider openai -p "hi"
 ```
+
+Heuristics: the offline `llmsim` smoke always runs when runtime behavior
+moved; the Doppler live smoke follows for provider wiring. Tests that need
+something the environment may lack check at runtime and return early; ignored
+tests are forbidden. Review the suite itself: coverage gaps on changed
+behavior, tests that prove nothing obvious, duplicates asserting the same
+behavior twice, slow or flaky or over-mocked tests that cost more than they
+protect, and nonsense tests whose assertions cannot fail. `evals/` studies run
+only when the scope touches prompt or tool behavior and asks for them,
+otherwise note them as skipped with that reason; a behavior with no covering
+eval is a finding, propose the missing eval or record why none is needed.
+
+## Release readiness
+
+Check only what the scope covered, and say what was not checked. For a
+release readiness scope: `main` green with the schema feature, upstream
+families current within the floor with pins matching the lockfile, versions
+in agreement across the root crate, `yolop-yep`, lockfile, and extension
+manifests, publish order intact, the release build starting per the release
+spec, fresh binary numbers, green terminal verification tiers for changed UI,
+and docs tables matching their sources.

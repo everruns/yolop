@@ -1,5 +1,23 @@
 # Knowledge Log
 
+## 2026-09-14, Maintenance review angles second pass
+
+- [Maintenance](specs/maintenance.md): added simplicity, soundness, and
+  architecture checks, knowledge versus code agreement, structured security
+  reviews, deep major dependency updates, new paradigm evaluation, eval gap
+  findings, test review across coverage, obviousness, duplication, cost, and
+  nonsense, plus README soundness and docs freshness. Skill scopes and
+  surfaces carry the matching workflow.
+
+## 2026-09-14, Maintenance bundle modeled on everruns depth and bashkit discipline
+
+- [Maintenance](specs/maintenance.md): replaced the stale upstream mirror
+  section with an upstream library surface, and added design goals, ownership
+  boundary, constraints, release readiness standard, tuika boundary, YEP wire
+  compat, local inference matrix, test confidence, docs contract, reporting,
+  and frequency. The maintenance skill and surfaces carry the matching
+  workflow: fix in pass, never weaken tests or security to ship an upgrade,
+  and report evidence with deferred issue numbers.
 ## 2026-09-13, Hand-drawn schematics become the diagram default
 
 - [Documentation](specs/documentation.md): architecture and relationship
