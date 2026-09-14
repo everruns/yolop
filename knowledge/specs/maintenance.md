@@ -1,293 +1,442 @@
 ---
 type: Process Specification
 title: Maintenance Specification
-description: Defines the success criteria for repository maintenance and release readiness.
+description: Defines the success bar for goal-oriented repository maintenance and release readiness.
 ---
 
-# Maintenance Specification
+# Maintenance
 
 ## Abstract
 
-This specification defines goal-oriented maintenance for yolop. Maintenance improves release readiness and repo health with evidence, not by mechanically executing a fixed checklist.
+A maintenance pass keeps yolop healthy, honest, and ready to ship. The pass
+reviews the repository as a whole, fixes what is small and local, and records
+anything larger as a tracked issue with its user-visible impact. The goal is a
+repository that stays releasable: green CI on `main`, exact and current
+upstream dependencies, a clean toolkit boundary, a compatible extension wire,
+a documented binary size, complete features across every surface, and specs
+that describe what the code does.
 
-The canonical agent workflow lives in [`.agents/skills/maintenance/SKILL.md`](../../.agents/skills/maintenance/SKILL.md). That skill is user-invocable so maintenance can be requested directly as `/maintenance`.
+This spec owns the success bar and the rationale. The
+[`maintenance` skill](../../.agents/skills/maintenance/SKILL.md) owns how to
+work a pass, and
+[`surfaces.md`](../../.agents/skills/maintenance/surfaces.md) owns the
+per-surface commands and heuristics.
 
 ## Design Goals
 
-1. Make the maintenance scope explicit.
-2. Improve the repo in concrete ways or produce crisp findings with evidence.
-3. Match validation depth to the actual risk surface.
-4. Keep release claims honest.
-5. Detect drift between yolop and its upstream source (`examples/coding-cli` in `everruns/everruns`).
-6. Detect feature-completeness drift: features that look shipped on one surface
-   (CLI flags, TUI behavior, specs, README, docs, tests, bundled skills) but are
-   missing or stale on another.
-7. Reduce accidental complexity: remove over-abstraction, dead code, and premature generalization the codebase no longer earns.
-8. Keep the shipped binary honest about its size: attribute growth to a cause before proposing a fix.
+1. Leave the repo materially healthier than the pass found it, with evidence.
+2. Keep `main` releasable: green CI, honest version numbers, and a tested
+   release path.
+3. Fix root causes inside the pass. A large diff, a long build, a missing
+   audit, or an unfamiliar surface is work to complete, not a reason to defer.
+4. Never weaken tests, security limits, or supply chain criteria to ship an
+   upgrade.
+5. Track the upstream library and toolkit surfaces for behavioral changes,
+   even when the code still compiles.
+6. Tie each surface back to the users who feel it: startup time, binary size,
+   terminal rendering, extension compat, agent loop quality, and docs accuracy.
+7. Make release readiness a verdict with evidence, not a feeling.
 
 ## Ownership Boundary
 
-- This spec owns the maintenance intent, constraints, and success bar.
-- The skill owns the execution workflow, heuristics, and example commands.
+This spec owns the success bar and the rationale behind each surface. The
+`maintenance` skill owns how to work a pass: scope, order, validation, and
+report shape. `surfaces.md` owns the per-surface commands and heuristics.
+When a surface grows a new command, update `surfaces.md`. When the bar itself
+changes, update this spec.
 
 ## Constraints
 
-- Maintenance is risk-proportional, not sweep-proportional.
-- The selected scope must be explained, including what was skipped and why.
-- If maintenance changes code or behavior, affected artifacts must stay in sync:
-  `README.md`, `docs/`, `AGENTS.md`, `knowledge/specs/`.
-- Maintenance prefers concrete fixes over ceremonial audits when a safe local fix exists.
-- Dependency upgrades against external registries should respect a short release-age floor (≥1 day for patch, ≥7 days for minor/major) to avoid landing same-day yanks.
+- The release age floor from everruns maintenance still applies: a patch
+  release less than one day old is too fresh for a routine pass, and a minor
+  or major release less than seven days old is too fresh. Critical security
+  fixes are exempt.
+- Keep a single routine feature set per `target/` directory. The schema
+  feature (`--features yolop-yep/schema`) resolves to the same crates a
+  default build does. `--all-features` also turns on `local-inference` and
+  its large engine graph, and mixing the two in one `target/` compiles the
+  whole graph twice. Anything behind `local-inference` or `cuda` gets its own
+  `CARGO_TARGET_DIR` per `AGENTS.md`.
+- Risk proportional upgrades. Patch and minor bumps that preserve the
+  `everruns` and `tuika` contracts go through the pass. Major bumps, facade
+  changes, protocol version changes, and distribution changes ship as their
+  own tested PRs. A major inside the refresh scope gets a real evaluation,
+  not a silent skip.
+- Synchronize artifacts with code: specs, README flags and tables, provider
+  and model lists, extension manifests, the OpenAPI surface where one exists,
+  threat posture notes, test cases, and agent instructions. A behavior change
+  with only code updated is incomplete.
+- Never weaken a test, a security limit, or a supply chain criterion to make
+  an upgrade fit. If the newest upstream version cannot preserve a required
+  contract, establish the incompatibility, retain the newest safe version with
+  a tested and documented pin, and complete the rest of the pass.
 
 ## CI Health Gate
 
-GitHub Actions on `main` is the CI source of truth. The latest run on `main`
-must be green before a maintenance pass is reported complete:
+A red CI on `main` outranks every other maintenance scope. The pass fixes it
+first, or opens an issue and reports **blocked**.
 
-- A red `main` is the first maintenance item, ahead of any other scope.
-- If the pass cannot fix the failure, it must open a tracked issue and report
-  the pass as **blocked**, not complete.
+Rationale: `main` is the release source. Feature, dependency, docs, and size
+work built on a red `main` cannot be validated. The gate keeps the pass from
+producing changes that look healthy but were never proven against a green
+baseline.
 
 ## Deferred Findings
 
-Findings too large to fix inline (multi-file refactors, upgrades needing
-non-trivial rework) are deferred, not dropped:
+A finding that is too large to fix inline, for example a refactor that spans
+several subsystems or a story that needs design discussion, is deferred to a
+GitHub issue naming the problem and its user-visible impact. The pass records
+the issue number in its report.
 
-- each deferred finding becomes a GitHub issue with scope and reproduction
-- the issue numbers appear in the maintenance report
+Rationale: maintenance is time boxed. Issues preserve a crisp problem
+statement so work survives the pass. The user-visible impact keeps the backlog
+prioritized by what users feel, not by what is architecturally elegant.
 
-Deferred items are not failures. Untracked ones are.
-
-## Feature Completeness Drift
-
-A feature is not release-ready merely because one surface exists. Yolop's
-surfaces are the CLI flags, the presentation model, the TUI behavior, `--print`
-output, ACP output, `knowledge/specs/`, `README.md`, `docs/`, the test suite, and bundled
-system skills. Maintenance should catch:
-
-- flags or behavior present in `src/` but absent from `README.md`, `docs/`, or
-  `knowledge/specs/`
-- specs or README describing behavior the binary no longer has
-- shipped features with no test exercising them
-- user-visible transcript/status behavior tested only through terminal buffers
-  instead of the terminal-independent presentation model
-
-The outcome is either a small fix that reconnects the surfaces or a crisp
-finding naming the missing surface and its user-visible impact, not a
-generic "tech debt" note.
-
-## Dependency Discipline
-
-The `everruns-*` family is yolop's single most consequential dependency vector:
-
-- `everruns-host`
-- `everruns-core`
-- `everruns-platform`
-- `everruns-openai`
-- `everruns-anthropic`
-- `everruns-integrations-duckduckgo`
-
-These crates ship together from one upstream workspace and are designed to be used at the same version. Yolop pins them at a single minor version. Mixing minor versions across the family is a soft API break and is not allowed without an explicit reason recorded in the PR.
-
-Every `everruns-*` requirement in `Cargo.toml` is an exact `=` pin, and the pins
-are lifted as one set, never one crate at a time. The reason is that the family's
-crates depend on each other by caret, so a caret in yolop only constrains the
-committed lockfile: `cargo install yolop` re-resolves and can pick a combination
-that was never built together. Upstream versions the family per-crate and treats
-`#[doc(hidden)]` items as private, so a *patch* release can and does change a
-signature another family crate calls. Host 0.20.4 did exactly that, adding a
-required `turn_id` to `Runtime::append_accepted_inputs` while the published
-`everruns` facade still called the two-arg form and accepted host `^0.20.3`;
-caret ranges resolved the two together and every fresh install failed to compile,
-though the lockfile build stayed green. Exact pins make the resolved set the
-reviewed set.
-
-A family bump is therefore a single change that moves every pin together and is
-validated by a from-scratch resolution, not only by `cargo build`. Generating a
-lockfile from an empty project carrying the same requirements is the cheap check
-that `cargo install yolop` still resolves. When one crate in a batch is
-unadoptable, the whole batch waits: the rest of the batch requires it directly or
-transitively, so a partial bump reintroduces the untested combination it was
-meant to avoid.
-
-The `everruns` facade is load-bearing despite the note beside it in `Cargo.toml`:
-its `local` feature is the only supported route to the SQLite, git-workspace, and
-durable-log backends, because the standalone `everruns-local` crate's latest
-release is yanked. A facade that lags the rest of the family therefore gates the
-whole family, and the lag is worth reporting upstream rather than working around.
-
-Beyond the everruns family, dependency hygiene means:
-
-- no known CVEs in the tree (`cargo audit` when available, plus the repo's Dependabot alerts)
-- no yanked versions in `Cargo.lock`. A yanked dependency keeps building from
-  the committed lockfile, so nothing fails locally, while `cargo install yolop`
-  re-resolves and cannot pick it: yolop is unpublishable until the dependency
-  moves. Upstream yanks a crate when its contents move elsewhere, so the fix is
-  to find the new home, not to pin harder.
-- duplicate transitive versions reviewed (`cargo tree --duplicates`), fix or note why unfixable
-- no unused direct dependencies; prefer narrow sub-crates over umbrella crates when only a slice is used
-
-The CI toolchain is not a dependency Dependabot can reason about. Every
-workflow's `dtolnay/rust-toolchain@<ref>` names a Rust version, not an action
-release, and that repository carries branches for Rust versions rustup cannot
-yet download. The ref must equal the `rust-toolchain.toml` channel, which
-tracks the everruns MSRV, so Dependabot ignores the action and both move by
-hand together.
-
-## Binary Size
-
-Yolop ships as a single binary, so its size is a user-visible cost three times
-over: the release tarball download, the `cargo install yolop` build, and the
-page-ins of every cold start. Size is a maintenance surface with the same
-evidence bar as the others, a size claim needs a measured before and after on
-one target and one profile, never an estimate.
-
-[`cargo-bsize`](https://github.com/Boshen/cargo-bsize) is the tool of record. It
-attributes the shipped bytes to crates, features, generic families, constant
-data, and unwind tables, so a finding can name the thing to change instead of
-only the number that hurts.
-
-The shape of the binary decides which findings are worth chasing. Measured at
-0.16.0 on `x86_64-unknown-linux-gnu` with default features, before the everruns
-0.20 bump dropped the second HTTP/TLS stack, 79 MiB shipped of an 88.5 MiB
-on-disk binary:
-
-- About a third is tree-sitter parse tables. The 19 grammars are already shared
-  by the symbol scan, ast-grep editing, and syntax highlighting, one copy each,
-  so the only lever left is shipping fewer languages, a product decision rather
-  than a cleanup.
-- Yolop's own code is under 5%. Shrinking `src/` cannot move the total;
-  dependency features and profile settings can.
-- The remainder is dependency code and read-only data, so a size regression is
-  usually a dependency bump or a feature-unification change, not a diff here.
-
-Constraints:
-
-- A lever that degrades a shipped guarantee is a decision, not a default. Two
-  are rejected until the guarantee they break is rebuilt some other way:
-  `panic = "abort"` drops the unwind and exception tables but breaks the crash
-  path, where `join_worker` catches the worker thread's panic to print the
-  crashed session id and report path before resuming the unwind; and
-  `strip = "symbols"` leaves every crash-report backtrace frame as `<unknown>`,
-  since a release build carries no debug info and the symbol table is all that
-  names them.
-- Levers that only trade build time for bytes are fair game, and their cost is
-  paid by `cargo install` users too, not just by release CI.
-- Bytes that a dependency's own feature choices force in cannot be fixed from
-  here. Report them upstream with the measurement attached, and record the
-  finding rather than working around it.
-
-## Upstream Mirror
-
-Yolop began as `examples/coding-cli` in `everruns/everruns`, but that example is
-no longer a mirror source. In 0.17.24 upstream rebuilt it as the acceptance test
-for the new public `everruns` facade: it depends only on that one crate, and a
-test forbids it from touching `everruns-core` or `everruns-runtime`. Its TUI,
-MCP, provider, and capability wiring were deleted. Yolop is now the more complete
-agent of the two, so there is nothing left to pull from the example.
-
-What remains worth tracking upstream is the **library surface**, not the example:
-
-- the `everruns-*` crates yolop depends on, and their API changes
-- the `everruns` facade's coverage, see the note beside the dependencies in
-  `Cargo.toml` for why yolop does not use it yet, and revisit when it promotes
-  provider registration, MCP, and capability wiring
-- upstream's `CHANGELOG.md` highlights, which name the behavioral changes that a
-  clean compile will not catch
-
-When upstream changes the public runtime API, bump the `everruns-*` versions in
-`Cargo.toml` together and reconcile any compile errors before the new feature
-lands. A clean compile is not sufficient evidence of adoption: 0.17.24 widened
-driver model discovery to include embedding models and began requiring HTTPS for
-MCP OAuth resources, and 0.18.0 moved credentials out of model selection so a
-host that keeps its own keys gets keyless drivers from the built-in provider
-store. None of these showed up as a compile error.
-
-Upstream also moves capability behind Cargo features, so read each cycle's
-feature notes before assuming a default build still carries what it used to.
-Host 0.20 made outbound A2A delegation opt-in behind the `everruns` crate's
-`a2a` feature: yolop does not delegate to remote A2A agents, so it stays off and
-the default build no longer pulls a second HTTP/TLS stack. Enable it only if
-yolop grows an outbound A2A path.
+Deferral is for genuine scope, not for avoiding work. A large diff, a long
+build, a missing audit, or an unfamiliar failure is work to diagnose and
+finish inside the pass. Only a true external blocker, a missing permission, an
+unavailable service, or an explicitly requested deferred scope justifies
+stopping short.
 
 ## Release Readiness Standard
 
-Before tagging a release:
+A release readiness verdict covers the release path in
+[`release.md`](release.md) and the merge bar in
+[`shipping.md`](shipping.md), scoped to what the pass actually checked:
 
-- the `everruns-*` family is on the latest released minor
-- `cargo build --release` succeeds and the resulting binary starts (`./target/release/yolop --help`)
-- `cargo test --workspace --features yolop-yep/schema` is green
-- the live-provider integration test passes under Doppler
-- the README's feature list, flag table, and provider env-var table match the source
+- `main` CI is green, including the wire schema drift guard with
+  `--features yolop-yep/schema`.
+- The `everruns-*` family and the `tuika` family are current within the
+  release age floor, with exact pins that still match `Cargo.lock`.
+- Versions agree: the root crate, `yolop-yep`, `Cargo.lock`, and the
+  first-party extension manifests. The extension manifest pin test proves the
+  agreement.
+- The publish order still holds: `yolop-yep` first, then the binary, then the
+  extensions.
+- The release build starts, per the release spec, and the binary size section
+  below has fresh numbers against a stated baseline.
+- Terminal verification tiers for the changed UI surfaces are green: the
+  gallery assertion, the PTY test, and the cross terminal workflow where the
+  tuika spec requires it.
+- Docs that gate a release still match: provider and model lists, flag
+  tables, and the README scope statement.
 
-## Security And Threat Posture
+Rationale: readiness rots between releases. Dependency drift, forgotten
+manifest bumps, stale tables, and untested UI paths accumulate silently. The
+checklist forces the pass to re-prove the path instead of assuming the last
+release still works.
 
-Yolop uses native containment for arbitrary shell commands by default. The
-remaining threat surface is concentrated:
+Do not declare release-ready for surfaces the pass did not actually check.
 
-- **Filesystem**: structured file tools still use the rooted real-disk broker
-  and protected-path checks. Maintenance must verify those mounts and checks
-  remain wired.
-- **Shell**: arbitrary commands spawn through the configured sandbox provider.
-  Maintenance must run the workspace-write, outside-write, network-denial,
-  worktree-switch, timeout, and output-cap tests on macOS and Linux.
-- **Session log**: JSONL session logs contain prompts, tool arguments, and tool output. They must be created with `0o600` on Unix.
-- **API keys**: provider keys must only be read from process env. They must never be written to the session log or echoed to tracing output.
+## Dependency and Toolchain Health
 
-[`sandboxing.md`](./sandboxing.md) defines the implemented boundary and its known limitations.
+- `everruns-host` and every `everruns-*` provider crate stay on exact version
+  pins. The graph is large and transitive drift is the failure mode the pins
+  prevent.
+- Reviews consider the whole published family (`everruns-host`,
+  `everruns-core`, `everruns-anthropic`, `everruns-openai`,
+  `everruns-integrations-duckduckgo`, `everruns-platform`), not only the
+  crates named in the root manifest, since a stale transitive member can keep
+  a known bug alive.
+- Patch and minor updates within the release age floor go through
+  `cargo update -p <crate>` deliberately. Prefer `cargo update --dry-run` for
+  review, and re-resolve from scratch (`rm Cargo.lock`, fresh `cargo update`,
+  rebuild) to prove the manifest pins are sufficient before restoring the
+  lockfile if the experiment fails.
+- Updates must leave `cargo metadata --locked` clean, with no yanked crates,
+  no `cargo audit` findings when the tool is available, no duplicate crate
+  versions, and no unused dependencies.
+- The Rust toolchain stays current and the minimum supported Rust version in
+  `rust-toolchain.toml`, CI, and docs stays synchronized. Version drift
+  between those three is itself a finding.
+- Major upgrades ship as their own PRs with the breaking changes reviewed.
+  A major refresh scope goes deep: read the upstream breaking notes, assess
+  migration cost against what the new version buys, and land the upgrade or
+  record why the pin stays with a re-check trigger. Skipping a major because
+  it looks painful is not a verdict. Transitive runtime dependencies that
+  must move together move together.
 
-## Code Simplification And De-Abstraction
+Rationale: yolop is downstream of a fast moving library family. Exact pins
+make builds reproducible, and deliberate updates make behavior changes
+reviewable. Stale transitive members and yanked crates are the quiet ways a
+green build keeps a known bug.
 
-Complexity accretes: an abstraction added for a second caller that never
-arrived, a trait with one impl, a config knob nobody sets. A deep maintenance
-pass treats removing that complexity as real work, not a side effect. The bias
-is toward deletion, the healthiest passes often remove more code than they add.
+## Upstream Library Surface
 
-Maintenance should look for and collapse:
+- Read the upstream `CHANGELOG.md` files for the `everruns-*` crates in the
+  refresh scope. Treat behavioral notes as findings even when the code
+  compiles cleanly: retry, timeout, tool calling, MCP, session, and provider
+  changes alter the agent loop without breaking the build.
+- Check facade coverage. When upstream adds a new facade capability the agent
+  loop or a provider driver should use, the gap is a finding. When upstream
+  adds a feature gated capability (for example `a2a` or a local backend), the
+  pass decides explicitly whether yolop opts in or records why it stays out.
+- When a library introduces a new thing or a new paradigm, for example a new
+  provider capability, a new extension pattern, or a new TUI idiom, the pass
+  evaluates what adopting it would simplify or unlock, prototypes where the
+  claim is uncertain, and records an explicit adopt or decline with reasons.
+- Check the minimum supported Rust version and the lockstep between related
+  crates. What is published on crates.io wins over local habit.
 
-- single-use abstractions (one-impl traits, forwarding wrappers, single-instantiation generics, builders for trivial structs), unless the boundary is essential
-- premature generalization: flexibility shaped for hypothetical futures, not current callers
-- indirection with no payoff: helpers that only rename a stdlib call, modules that re-export one item, always-default knobs
-- under-abstraction: the same block pasted in several places, where a shared helper genuinely reduces total code
-- deep nesting and long match arms that a flatten or extraction makes legible
-- names that hide intent
+Rationale: the compiler only proves the call shapes still match. Upstream
+behavioral changes, new capabilities, and requirement changes pass through a
+clean build and surface as agent regressions, provider failures, or release
+surprises. The changelog is the only cheap detector.
 
-Constraints:
+## Tuika Boundary
 
-- A simplification must preserve behavior. It is verified by build, clippy, and
-  the test suite, a behavior change disguised as cleanup is a regression.
-- Keep simplifications small and independently reviewable; do not fold a
-  de-abstraction sweep into an unrelated change.
-- Removing a public item from the published `yolop-yep` crate is a breaking
-  change and must be called out, not slipped in.
-- A simplification too large to land inline (a cross-cutting abstraction with
-  many call sites) is deferred to a tracked issue naming the abstraction and why
-  it no longer pays its way, same discipline as any other deferred finding.
+Toolkit-shaped work, including layout, components, overlays, focus, keymap,
+markdown rendering, terminal escapes, and screen modes, belongs in the
+`tuika` repository, not here. What belongs here is how yolop composes it.
 
-This is the inverse of premature abstraction, not an argument against all
-abstraction: an abstraction that carries real, current weight stays.
+- The `tuika`, `tuika-codeformatters`, and `tuika-mermaid` versions stay
+  current within the release age floor, move together where they are
+  companion releases, and keep `Cargo.toml` and `Cargo.lock` in agreement.
+  No path or git dependencies: a git dependency would make yolop
+  unpublishable.
+- Read the upstream `tuika` changelog for rendering, input, and escape
+  changes that compile clean but alter the TUI. The gallery assertion, the
+  PTY test, and the cross terminal workflow are the detectors.
+- A needed toolkit change lands upstream first, releases, then bumps here.
+  A local workaround that belongs upstream is a finding with an upstream
+  issue, not a permanent local shortcut.
+
+Rationale: the TUI is the product surface users see first. A stale toolkit
+keeps rendering bugs alive, and a local toolkit shaped shortcut forks the
+architecture. The boundary keeps fixes where they compound.
+
+## YEP Wire Compat
+
+- The wire schema drift guard stays green with
+  `--features yolop-yep/schema`. A schema change without a regenerated
+  artifact is a finding.
+- The protocol version, the `yolop-yep` crate version, and the first-party
+  extension manifests stay in agreement. The manifest pin test that asserts
+  `plugin.json` matches `Cargo.toml` is the proof.
+- Extension servers in the matrix still enumerate, start, use tools and
+  resources, and render their UI affordances per the extensions spec. A
+  protocol bump ships as its own tested PR with the publish order preserved.
+
+Rationale: the extension wire is a compat promise to third party authors.
+Silent drift breaks their servers while yolop stays green. The drift guard
+and the manifest pin test are the only automated witnesses.
+
+## Local-Inference, Metal, CUDA Matrix
+
+Code behind `local-inference` (`src/drivers/local.rs`, `src/models/`) and the
+accelerated release builds (`metal` on macOS, `cuda` on Linux) is outside the
+routine feature set. The pass touches it only when the scope includes it, and
+then with the commands in `AGENTS.md`:
+
+- `local-inference` checks run under their own `CARGO_TARGET_DIR` so the
+  large engine graph never pollutes the routine target directory.
+- A `cuda` change also wants the backend compiled with `nvcc` and
+  `CUDA_COMPUTE_CAP` set, since kernels target one capability and no GPU
+  exists here to query.
+- Distribution stays split per the local inference spec: the default
+  portable build never absorbs the engine, and the accelerated builds stay
+  per target.
+
+Rationale: the engine graph is hundreds of crates. Compiling it inside the
+routine target directory wastes every later routine command, and an untested
+accelerated build ships a release artifact nobody proved.
+
+## Binary Size
+
+The pass measures the release binary and reports the total plus the component
+breakdown (binary count where applicable, largest dependencies, feature
+contributions) against a stated baseline: the previous release tag for a
+release readiness scope, otherwise the last recorded maintenance numbers.
+Unexplained growth above noise, roughly 5 percent or 5 MB, is a finding with
+an owner.
+
+Rationale: yolop ships a single binary and size regressions are silent.
+Dependency additions, new backends, and debug settings accumulate without any
+test turning red. Evidence keeps the conversation about tradeoffs instead of
+surprise.
+
+## Feature Completeness Drift
+
+When the pass covers a behavior, it walks every surface that behavior touches:
+CLI flags, the fullscreen TUI, `--inline` mode, print mode, ACP, skills,
+README, `docs/`, specs, and tests. The worst drift is a flag that works in
+one mode but is missing, stale, or contradictory in another.
+
+Every user-facing terminal state, including success, failure, working,
+awaiting approval, offline, and diff views, stays reachable in the gallery
+wiring so its ratatui buffer diff has nowhere to hide a wrong style or a
+broken layout. Every status and every new behavior carries a
+behavior-anchored test with an explicit transcript or status line assertion,
+full screen or inline as appropriate. The presentation model and the terminal
+buffers are the authoritative contract, so specs describe that model and tests
+assert it.
+
+Rationale: yolop presents the same run through several renderers. A behavior
+added to one surface and forgotten in the others reads as a broken product.
+Buffer asserted tests are the only check that survives refactors of the view
+layer.
+
+## Test and Runtime Confidence
+
+- The routine suite runs with the schema feature:
+  `cargo test --workspace --features yolop-yep/schema`, after `cargo fmt`
+  and `cargo clippy` per `AGENTS.md`. The pass never mixes feature sets in
+  one target directory.
+- The offline smoke runs without keys: `--provider llmsim`. A runtime behavior
+  change also gets a live provider smoke through Doppler. Tests that need
+  something the environment may lack check at runtime and return early (a key
+  via `live_key_or_skip`, a binary via a probe, an external service via
+  `YOLOP_REQUIRE_LIVE_TESTS`); ignored tests are forbidden.
+- The PTY test stays as the binary level witness for the interactive TUI,
+  alongside the gallery assertion for buffer level coverage.
+- `evals/` holds Mira studies outside the Cargo workspace. The pass runs them
+  only when the scope touches prompt or tool behavior and the scope asks for
+  it. Otherwise the pass notes them as skipped with that reason. A prompt or
+  tool behavior with no eval covering it is a finding: propose the missing
+  eval or record why the behavior needs none.
+- Review the tests themselves, not only their pass rate. Coverage gaps on
+  changed behavior are findings. So are tests that prove nothing obvious,
+  duplicated tests that assert the same behavior twice, slow or flaky or
+  over-mocked tests that cost more than they protect, and nonsense tests
+  whose assertions cannot fail or do not match their names. Fix, merge, or
+  delete; never weaken an assertion to make a suite green.
+
+Rationale: unit tests prove logic, the PTY test proves the binary starts and
+interacts, the smoke tests prove the provider wiring works with and without
+keys, and evals prove the agent still accomplishes work. Each layer catches
+what the others cannot.
+
+## Security and Threat Posture
+
+- The sandbox spec owns the trust boundary. The pass re-checks the filesystem
+  broker and command execution mounts, the deny by default posture, and the
+  rule that sandbox shaped logic lives behind the provider trait, not in
+  callers.
+- Shell provider changes run the provider tests on both macOS and Linux.
+  Platform specific quoting, Robertson versus Bourne differences, and ACL
+  versus mode behavior diverge silently.
+- Session logs stay owner read write only, API keys stay environment only,
+  and link rendering stays opt-in per the shipping security review.
+- A scope that touches execution, filesystem access, secrets, or rendering
+  of untrusted content gets a structured security review from the ship
+  skill, not only a green build. The pass names what was reviewed and what
+  the review concluded.
+
+Rationale: yolop executes untrusted model output as shell commands and file
+operations. The threat posture is the product. A convenience shortcut in a
+caller, a permissive mount, or a logged secret is a vulnerability, not a
+refactor.
+
+## Simplicity, Soundness, and Architecture
+
+Prefer deleting code over adding it. Consolidate special cases into general
+mechanisms. Remove one-off helpers, merge overlapping abstractions, and
+simplify control flow while keeping every test green. Each simplification
+ships as its own independently reviewable change.
+
+Check soundness where the pass looks: invariants that callers must hold but
+nothing enforces, error paths that swallow context, and concurrency or
+ordering assumptions the code never states. Check architecture where the
+pass looks: module boundaries that leak, layering that inverts, and new code
+that duplicates an existing mechanism under a new name. A shortcut with no
+owner and no removal trigger is a finding.
+
+Rationale: unneeded abstraction is where bugs hide, and unstated invariants
+are where outages hide. A smaller, more direct codebase with explicit
+boundaries is easier to review, easier to test, and less likely to drift
+from its specs. Simplification compounds across passes.
 
 ## Spec Hygiene
 
-Specs preserve design intent, rationale, and constraints, not implementation details readable from code. Maintenance should:
+- Specs record what is true and why. Update specs when behavior, intent,
+  architecture, policy, constraints, or terminology changes. Transient plans
+  and source level detail stay out.
+- Knowledge and code must agree. A spec that contradicts the code is a bug
+  in exactly one of the two: fix the side that is wrong and say which side
+  changed. The pass spot checks specs against behavior for every surface it
+  covers instead of assuming they match.
+- Replace duplicated tables and lists with links to their owning source.
+  When a README table must stand alone for offline readers, say so next to it
+  and keep the sync obligation explicit.
+- `knowledge/index.md` changes when concepts are added, removed, renamed, or
+  reclassified. `knowledge/log.md` records significant knowledge changes
+  under `DATE, Title` headings.
+- Knowledge changes run `python3 scripts/validate_okf.py knowledge
+  --check-links`, and any concept that contradicts another concept names the
+  winner inline.
 
-- replace duplicated struct/enum/field tables with links to source
-- replace exhaustive feature-flag or capability lists with links to source
-- keep the "why" and constraints; link to code for the "what"
+Rationale: specs are the durable memory. Duplicated facts rot, unlinked
+concepts vanish from discovery, and an unlogged intent change looks like an
+accident to the next reader.
+
+## Docs Contract
+
+- `README.md` and `docs/` never link into `knowledge/` or `.agents/`. They
+  are the public surface; the bundle is the working memory.
+- Provider and model lists, flag tables, and setup instructions match the
+  code that owns them (`runtime.rs`, the CLI definition, the extension
+  manifests). A table that disagrees with its source is a finding.
+- The README stays sound: its scope claim, install path, and quickstart
+  reflect the current product, and its quickstart commands actually run. A
+  claim the product no longer keeps is a finding, not a footnote.
+- Docs stay current with behavior. A doc page that describes removed flags,
+  renamed commands, or past architecture is a finding with an owner, whether
+  the fix is an update or a deletion.
+- Prose across `knowledge/`, docs, commit messages, and PR bodies avoids
+  em-dashes. A comma, colon, or separate sentence says the same thing.
+- Visual claims about the TUI carry fresh captures from the gallery or PTY
+  evidence where the docs spec requires them.
+
+Rationale: docs are a release artifact. A stale flag table or a phantom
+model name breaks user trust faster than a bug, because users stop believing
+the rest of the page.
 
 ## Agent Context Hygiene
 
-The context agents read drifts the same way code does, and duplication is its
-characteristic failure: a rule stated in `AGENTS.md`, restated in a spec, and
-restated again in a skill will disagree within a few changes. Maintenance should
-check the layering defined in [`agent-context.md`](./agent-context.md), one
-owner per rule, `AGENTS.md` carrying only every-turn facts, skills thin at the
-top with reference material split out, and no instruction that both mandates a
-step and invites judgment about it.
+- Resolve the duplication: each rule has exactly one owner. If a rule appears
+  in both `AGENTS.md` and a knowledge spec, that is a bug in exactly one of
+  the two.
+- `AGENTS.md` stays entry level: facts and gotchas with links. Depth moves to
+  the knowledge specs it points at.
+- Skills own workflows, specs own success bars. A skill that redefines the
+  bar and a spec that prescribes keystrokes are both findings.
+
+Rationale: agents read `AGENTS.md` every turn. Duplicated or drifting
+instructions waste attention and produce confident mistakes. One owner per
+rule keeps the context cheap and correct.
+
+## Reporting Standard
+
+The pass report states:
+
+- The scope covered, and what was intentionally skipped with a reason.
+- What was fixed and what was found.
+- The evidence gathered: commands run, versions moved, sizes measured,
+  tests and smoke results.
+- Deferred findings with their GitHub issue numbers.
+- **Blocked** when `main` CI is red and out of reach.
+
+If the user asks to ship the result, hand off to `/ship`. Maintenance proves
+health; shipping owns the merge bar.
+
+## Frequency
+
+Run a pass before each release, when upstream `everruns-*` or `tuika` drift is
+suspected, when binary size moves without explanation, when docs or specs
+drift from behavior, or when CI on `main` needs a health verdict. The scope
+follows the signal: recent diffs, failing checks, stale knowledge, and
+outdated upstream versions first.
 
 ## Related
 
-- [`.agents/skills/maintenance/SKILL.md`](../../.agents/skills/maintenance/SKILL.md)
-- [`knowledge/specs/agent-context.md`](./agent-context.md)
-- [`knowledge/specs/documentation.md`](./documentation.md)
-- [`knowledge/specs/shipping.md`](./shipping.md)
+- [`shipping.md`](shipping.md), the merge bar and release safety checks.
+- [`release.md`](release.md), the release path, publish order, and terminal
+  verification.
+- [`tuika.md`](tuika.md), the toolkit boundary and verification workflow.
+- [`extensions.md`](extensions.md), the YEP wire, manifest pins, and server
+  matrix.
+- [`local-inference.md`](local-inference.md), the engine boundary and
+  distribution split.
+- [`sandboxing.md`](sandboxing.md), the trust boundary and threat posture.
+- [`documentation.md`](documentation.md), the public surface contract.
+- [`agent-context.md`](agent-context.md), how agent context is organized.
