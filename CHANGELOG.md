@@ -10,6 +10,29 @@ mechanical `### What's Changed` list of merged PRs.
 Releases are cut via [`/release`](./.agents/skills/release/SKILL.md), which
 tags the version and publishes to crates.io and the Homebrew tap.
 
+## [0.18.2] - 2026-09-14
+
+### Highlights
+
+- Setup validates provider auth before completing model selection (#709)
+- CLI attaches through shell descendants so managed sessions stay reachable (#711)
+- Muse xhigh is accepted on cold startup (#712)
+- README rewrite and control-plane docs keep the public surface accurate (#707, #715)
+
+### What's Changed
+
+* chore(maintenance): expand maintenance bundle beyond dependencies by @chaliy in #716
+* docs(control): explain the conversation control plane by @chaliy in #715
+* test(evals): retain management reports by @chaliy in #714
+* test(evals): add isolated management matrix by @chaliy in #713
+* fix(runtime): accept Muse xhigh on cold startup by @chaliy in #712
+* fix(control): attach CLI through shell descendants by @chaliy in #711
+* chore(deps): bump everruns to v0.26.0 batch by @chaliy in #710
+* fix(setup): validate provider auth before completing model selection by @chaliy in #709
+* docs(readme): rewrite for scanability and accurate links by @chaliy in #707
+
+**Full Changelog**: https://github.com/everruns/yolop/compare/v0.18.1...v0.18.2
+
 ## [0.18.1] - 2026-09-12
 
 ### Highlights
