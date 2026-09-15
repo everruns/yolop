@@ -9,7 +9,7 @@ description: Defines Yolop's in-process inference provider, why it is feature-ga
 ## Why
 
 Yolop's `ollama` provider is not an Ollama integration. It is the OpenAI driver
-pointed at `http://127.0.0.1:11434/v1` with a placeholder key — the same code
+pointed at `http://127.0.0.1:11434/v1` with a placeholder key, the same code
 path as any hosted endpoint, aimed at loopback. Everything that makes local
 models awkward lives outside yolop: a second program to install, a daemon to
 keep running, and a model store yolop cannot see.
@@ -20,7 +20,7 @@ and answers requests in-process, with no socket in between.
 
 What it does *not* remove is the download. Weights are gigabytes and cannot ride
 in a crate, so first use fetches them from Hugging Face. The honest framing is
-that "install and run a daemon" becomes "wait once" — a smaller promise than
+that "install and run a daemon" becomes "wait once": a smaller promise than
 "local models with no setup", and the one this design can actually keep.
 
 This is an experiment. Whether a model small enough to run on a developer laptop
@@ -133,7 +133,7 @@ deliberately no CPU-only engine build in the list: the [Acceleration](#accelerat
 finding is that an unaccelerated engine measures the wrong thing, so shipping
 one as a *download* would only spread that mistake.
 
-A build without the feature still resolves `--provider local` — only the driver
+A build without the feature still resolves `--provider local`; only the driver
 is compiled out. Such a build reports the provider unusable so it stays out of
 automatic provider fallback, and fails loudly if selected explicitly, rather
 than silently disappearing from the picker.
@@ -190,7 +190,7 @@ neither see nor delete through yolop. `yolop weights list` reports what is on
 disk and its size; `yolop weights rm` reclaims it.
 
 **A turn never downloads.** The engine is capable of fetching its own weights,
-but it does so inside the first inference call — the turn appears to hang for
+but it does so inside the first inference call: the turn appears to hang for
 several gigabytes with nothing on screen. Instead the driver loads only from the
 store and, when the weights are absent, fails immediately with the `yolop weights
 pull` command that fixes it. The wait is explicit, has a progress bar, and
@@ -207,7 +207,7 @@ without the engine there would be nothing to run the bytes.
   [`evals/harness_basic/`](../../evals/harness_basic/) carries a `local` target
   for this, gated on `YOLOP_LOCAL_MODEL` naming a pulled model so an ordinary
   run skips it. That is the cheap first gate; SWE-bench Verified is the later
-  and far more expensive one. **No numbers exist yet** — until they do, this
+  and far more expensive one. **No numbers exist yet**; until they do, this
   provider stays an experiment.
 - Downloads resume only at file granularity: an interrupted shard restarts from
   zero on the next pull.
