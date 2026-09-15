@@ -18,7 +18,7 @@ Set Padding 14
 Set Margin 28
 Set MarginFill "#5b4b8a"
 Set Framerate 30
-Set PlaybackSpeed 2.4
+Set PlaybackSpeed 3.2
 
 Env NO_COLOR ""
 Env COLORTERM "truecolor"
@@ -33,9 +33,9 @@ Sleep 1s
 
 Type "yolop"
 Enter
-Sleep 3s
+Sleep 2s
 
-Type "Throw a pizza-rocket launch party: set clap=4.6.4, serde=1.0.229, serde_json=1.0.151; add --json for cheesy delivery status plus --party that prints an ASCII rocket, a 3-2-1 countdown, and extra cheese; unit-test text and JSON; run fmt and tests; then run cargo run -- --party to show the party. Skip Git. Keep it concise. Finish with Pizza+away! (replace + with space)."
+Type "Throw a pizza-rocket launch party: set clap=4.6.4, serde=1.0.229, serde_json=1.0.151; add --json for cheesy delivery status plus --party that prints an ASCII rocket, a 3-2-1 countdown, and extra cheese; unit-test text and JSON; run fmt and tests; then run cargo run -- --party to show the party. Skip Git. Keep it concise. End with a 4-line recap (files changed, tests passing) followed by Pizza+away! (replace + with space)."
 Enter
 Wait+Screen@3m /Pizza away!/
-Sleep 4s
+Sleep 12s
