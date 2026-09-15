@@ -4,7 +4,7 @@
 use crate::config::service::ConfigService;
 use crate::config::{ApprovalMode, SettingsStore};
 use crate::exec::tools::{BashTool, Workspace};
-use crate::runtime::{ProviderChoice, SUPPORTED_PROVIDERS, resolve_for_settings};
+use crate::runtime::{Provider, ProviderChoice, SUPPORTED_PROVIDERS, resolve_for_settings};
 use async_trait::async_trait;
 use chrono::Local;
 use everruns_core::command::{
@@ -668,22 +668,9 @@ fn format_shell_output(value: &serde_json::Value) -> String {
 
 pub(crate) const MODELS_CAPABILITY_ID: &str = "models";
 
-/// Providers that meaningfully consume an API token. `llmsim` is excluded
-/// (no key needed); `ollama` and `custom` are included for completeness even
-/// though most local setups don't authenticate.
-const TOKEN_PROVIDERS: &[&str] = &[
-    "openai",
-    "anthropic",
-    "google",
-    "openrouter",
-    "ollama",
-    "custom",
-];
-
-/// Providers whose endpoint base URL is user configuration stored in
-/// settings (vs. a compiled-in default with env override).
-const BASE_URL_PROVIDERS: &[&str] = &["custom"];
-
+// Token and base-URL capability lives on `Provider` (`accepts_token`,
+// `accepts_base_url`); the setup gates below derive from it so adding a
+// provider cannot drift a hand-written list again.
 pub(crate) struct ModelsCapability {
     pub(crate) provider: Arc<RwLock<ProviderChoice>>,
     pub(crate) provider_store: Arc<dyn RuntimeProviderStore>,
@@ -835,15 +822,19 @@ fn setup_command_arg() -> CommandArg {
         "approval normal".to_string(),
         "approval off".to_string(),
     ];
-    suggestions.extend(TOKEN_PROVIDERS.iter().flat_map(|provider| {
-        [
-            format!("token {provider} "),
-            format!("token {provider} clear"),
-        ]
-    }));
     suggestions.extend(
-        BASE_URL_PROVIDERS
-            .iter()
+        Provider::token_provider_names()
+            .into_iter()
+            .flat_map(|provider| {
+                [
+                    format!("token {provider} "),
+                    format!("token {provider} clear"),
+                ]
+            }),
+    );
+    suggestions.extend(
+        Provider::base_url_provider_names()
+            .into_iter()
             .flat_map(|provider| [format!("url {provider} "), format!("url {provider} clear")]),
     );
     suggestions.extend(
@@ -1217,8 +1208,8 @@ impl SetupController {
     fn change_token(&self, raw: &str) -> everruns_provider::error::Result<CommandResult> {
         if raw.is_empty() {
             let snapshot = self.config.snapshot();
-            let status: Vec<String> = TOKEN_PROVIDERS
-                .iter()
+            let status: Vec<String> = Provider::token_provider_names()
+                .into_iter()
                 .map(|p| {
                     let marker = if snapshot.has_token(p) { "stored" } else { "-" };
                     format!("{p}: {marker}")
@@ -1239,10 +1230,10 @@ impl SetupController {
         let mut parts = raw.splitn(2, char::is_whitespace);
         let provider = parts.next().unwrap_or_default().to_ascii_lowercase();
         let rest = parts.next().unwrap_or_default().trim();
-        if !TOKEN_PROVIDERS.contains(&provider.as_str()) {
+        if !Provider::accepts_token_name(&provider) {
             return Ok(failed_result(format!(
                 "setup token failed: unknown provider `{provider}`; expected one of {}",
-                TOKEN_PROVIDERS.join(", ")
+                Provider::token_provider_names().join(", ")
             )));
         }
         if rest.is_empty() {
@@ -1287,10 +1278,10 @@ impl SetupController {
         let mut parts = raw.splitn(2, char::is_whitespace);
         let provider = parts.next().unwrap_or_default().to_ascii_lowercase();
         let rest = parts.next().unwrap_or_default().trim();
-        if !BASE_URL_PROVIDERS.contains(&provider.as_str()) {
+        if !Provider::accepts_base_url_name(&provider) {
             return Ok(failed_result(format!(
                 "setup url failed: unknown provider `{provider}`; expected one of {}",
-                BASE_URL_PROVIDERS.join(", ")
+                Provider::base_url_provider_names().join(", ")
             )));
         }
         if rest.is_empty() {
@@ -1981,5 +1972,36 @@ mod tests {
     fn redact_git_remote_secret_leaves_https_without_userinfo_unchanged() {
         let remote = "https://github.com/everruns/everruns.git";
         assert_eq!(redact_git_remote_secret(remote), remote);
+    }
+
+    #[test]
+    fn setup_token_save_clear_status_covers_meta() {
+        let (controller, _provider, _dir) = test_controller(ProviderChoice::Sim);
+        // Save drives the real setup entry point; meta is the regression case
+        // that the old hand-written token list rejected.
+        let saved = controller
+            .change_token("meta sk-meta-test")
+            .expect("change token");
+        assert!(saved.success, "meta token save failed: {}", saved.message);
+        assert!(saved.message.contains("setup token stored for meta"));
+        assert!(controller.settings.snapshot().has_token("meta"));
+
+        let status = controller.change_token("").expect("token status");
+        assert!(status.success);
+        assert!(
+            status.message.contains("meta: stored"),
+            "status: {}",
+            status.message
+        );
+
+        let cleared = controller.change_token("meta clear").expect("clear token");
+        assert!(cleared.success, "meta clear failed: {}", cleared.message);
+        assert!(!controller.settings.snapshot().has_token("meta"));
+
+        let url = controller
+            .change_base_url("meta https://example.invalid")
+            .expect("base url gate");
+        assert!(!url.success);
+        assert!(url.message.contains("unknown provider `meta`"));
     }
 }

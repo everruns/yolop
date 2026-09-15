@@ -204,17 +204,9 @@ impl App {
     }
 
     pub(crate) fn provider_env_names(provider: &str) -> &'static [&'static str] {
-        match provider {
-            "openai" => &["OPENAI_API_KEY"],
-            "codex" => &["CODEX_ACCESS_TOKEN"],
-            "anthropic" => &["ANTHROPIC_API_KEY"],
-            "meta" => &["MODEL_API_KEY"],
-            "google" => &["GEMINI_API_KEY", "GOOGLE_API_KEY"],
-            "openrouter" => &["OPENROUTER_API_KEY"],
-            "ollama" => &["OLLAMA_BASE_URL", "OLLAMA_API_KEY"],
-            "custom" => &["CUSTOM_API_KEY"],
-            _ => &[],
-        }
+        crate::runtime::Provider::from_name(provider)
+            .map(|p| p.presence_env_vars())
+            .unwrap_or(&[])
     }
 
     /// Connection status shown in the provider picker. `true` means the

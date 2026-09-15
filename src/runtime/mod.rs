@@ -1382,6 +1382,84 @@ impl Provider {
             | Provider::Sim => None,
         }
     }
+
+    /// Whether setup token storage accepts this provider. Single source of truth
+    /// for the setup token gates. Codex has its own OAuth flow, local and sim
+    /// need no key.
+    pub const fn accepts_token(self) -> bool {
+        match self {
+            Provider::OpenAi
+            | Provider::Anthropic
+            | Provider::Meta
+            | Provider::Google
+            | Provider::OpenRouter
+            | Provider::Ollama
+            | Provider::Custom => true,
+            Provider::Codex | Provider::Local | Provider::Sim => false,
+        }
+    }
+
+    /// Whether setup base-URL storage accepts this provider. Only the generic
+    /// OpenAI-compatible provider has a user-configured base URL.
+    pub const fn accepts_base_url(self) -> bool {
+        matches!(self, Provider::Custom)
+    }
+
+    /// Token env vars for this provider, in detection order. Single source of
+    /// truth for env presence checks and token resolution (settings stay as
+    /// fallback via `resolve_token`).
+    pub fn token_env_vars(self) -> &'static [&'static str] {
+        match self {
+            Provider::OpenAi => &["OPENAI_API_KEY"],
+            Provider::Codex => &["CODEX_ACCESS_TOKEN"],
+            Provider::Anthropic => &["ANTHROPIC_API_KEY"],
+            Provider::Meta => &["MODEL_API_KEY"],
+            Provider::Google => &["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+            Provider::OpenRouter => &["OPENROUTER_API_KEY"],
+            Provider::Ollama => &["OLLAMA_API_KEY"],
+            Provider::Local | Provider::Sim => &[],
+            Provider::Custom => &["CUSTOM_API_KEY"],
+        }
+    }
+
+    /// Env vars that count as configured for presence checks. Mostly the token
+    /// vars, plus the Ollama host env which makes Ollama usable without a token.
+    pub fn presence_env_vars(self) -> &'static [&'static str] {
+        match self {
+            Provider::Ollama => &["OLLAMA_BASE_URL", "OLLAMA_API_KEY"],
+            _ => self.token_env_vars(),
+        }
+    }
+
+    /// Providers that meaningfully consume an API token, in `Provider::ALL`
+    /// order. `llmsim` is excluded (no key needed); `ollama` and `custom` are
+    /// included for completeness even though most local setups do not authenticate.
+    pub fn token_provider_names() -> Vec<&'static str> {
+        Provider::ALL
+            .into_iter()
+            .filter(|p| p.accepts_token())
+            .map(|p| p.as_str())
+            .collect()
+    }
+
+    /// Providers whose endpoint base URL is user configuration stored in settings.
+    pub fn base_url_provider_names() -> Vec<&'static str> {
+        Provider::ALL
+            .into_iter()
+            .filter(|p| p.accepts_base_url())
+            .map(|p| p.as_str())
+            .collect()
+    }
+
+    /// Token-gate helper for stringly setup paths.
+    pub fn accepts_token_name(name: &str) -> bool {
+        Provider::from_name(name).is_some_and(|p| p.accepts_token())
+    }
+
+    /// Base-URL-gate helper for stringly setup paths.
+    pub fn accepts_base_url_name(name: &str) -> bool {
+        Provider::from_name(name).is_some_and(|p| p.accepts_base_url())
+    }
 }
 
 /// Provider names recognized by `/setup` and persisted settings, in the
@@ -1406,27 +1484,34 @@ impl ProviderChoice {
     /// and Anthropic credential are present, and it is also the no-credential
     /// first-run default so llmsim is only selected explicitly.
     pub fn from_env_or_settings(settings: &Settings) -> Self {
-        if env_non_empty("OPENAI_API_KEY").is_some() || settings.has_token("openai") {
+        if has_any_env(Provider::OpenAi.token_env_vars())
+            || settings.has_token(Provider::OpenAi.as_str())
+        {
             return Self::default_openai();
         }
-        if env_non_empty("CODEX_ACCESS_TOKEN").is_some() || settings.has_codex_auth() {
+        if has_any_env(Provider::Codex.token_env_vars()) || settings.has_codex_auth() {
             return Self::default_codex();
         }
-        if env_non_empty("ANTHROPIC_API_KEY").is_some() || settings.has_token("anthropic") {
+        if has_any_env(Provider::Anthropic.token_env_vars())
+            || settings.has_token(Provider::Anthropic.as_str())
+        {
             return Self::default_anthropic();
         }
-        if env_non_empty("MODEL_API_KEY").is_some() || settings.has_token("meta") {
+        if has_any_env(Provider::Meta.token_env_vars())
+            || settings.has_token(Provider::Meta.as_str())
+        {
             return Self::default_meta();
         }
-        if env_non_empty("OPENROUTER_API_KEY").is_some() || settings.has_token("openrouter") {
+        if has_any_env(Provider::OpenRouter.token_env_vars())
+            || settings.has_token(Provider::OpenRouter.as_str())
+        {
             return Self::default_openrouter();
         }
-        if google_api_key().is_some() || settings.has_token("google") {
+        if google_api_key().is_some() || settings.has_token(Provider::Google.as_str()) {
             return Self::default_google();
         }
-        if env_non_empty("OLLAMA_BASE_URL").is_some()
-            || env_non_empty("OLLAMA_API_KEY").is_some()
-            || settings.has_token("ollama")
+        if has_any_env(Provider::Ollama.presence_env_vars())
+            || settings.has_token(Provider::Ollama.as_str())
         {
             return Self::default_ollama();
         }
@@ -2032,8 +2117,12 @@ impl ProviderChoice {
     pub(crate) fn model_with_provider(&self, settings: &Settings) -> Result<ResolvedModel> {
         match self {
             ProviderChoice::Anthropic { model, .. } => {
-                let key = resolve_token(settings, "anthropic", &["ANTHROPIC_API_KEY"])
-                    .ok_or_else(|| anyhow!("ANTHROPIC_API_KEY not set (and no token stored)"))?;
+                let key = resolve_token(
+                    settings,
+                    Provider::Anthropic.as_str(),
+                    Provider::Anthropic.token_env_vars(),
+                )
+                .ok_or_else(|| anyhow!("ANTHROPIC_API_KEY not set (and no token stored)"))?;
                 Ok(ResolvedModel {
                     model: model.clone(),
                     provider_type: DriverId::Anthropic,
@@ -2043,8 +2132,12 @@ impl ProviderChoice {
                 })
             }
             ProviderChoice::Meta { model, .. } => {
-                let key = resolve_token(settings, "meta", &["MODEL_API_KEY"])
-                    .ok_or_else(|| anyhow!("MODEL_API_KEY not set (and no token stored)"))?;
+                let key = resolve_token(
+                    settings,
+                    Provider::Meta.as_str(),
+                    Provider::Meta.token_env_vars(),
+                )
+                .ok_or_else(|| anyhow!("MODEL_API_KEY not set (and no token stored)"))?;
                 Ok(ResolvedModel {
                     model: model.clone(),
                     provider_type: DriverId::Meta,
@@ -2054,8 +2147,12 @@ impl ProviderChoice {
                 })
             }
             ProviderChoice::OpenAi { model, .. } => {
-                let key = resolve_token(settings, "openai", &["OPENAI_API_KEY"])
-                    .ok_or_else(|| anyhow!("OPENAI_API_KEY not set (and no token stored)"))?;
+                let key = resolve_token(
+                    settings,
+                    Provider::OpenAi.as_str(),
+                    Provider::OpenAi.token_env_vars(),
+                )
+                .ok_or_else(|| anyhow!("OPENAI_API_KEY not set (and no token stored)"))?;
                 Ok(ResolvedModel {
                     model: model.clone(),
                     provider_type: DriverId::OpenAI,
@@ -2093,10 +2190,14 @@ impl ProviderChoice {
             ProviderChoice::Google {
                 model, base_url, ..
             } => {
-                let key = resolve_token(settings, "google", &["GEMINI_API_KEY", "GOOGLE_API_KEY"])
-                    .ok_or_else(|| {
-                        anyhow!("GEMINI_API_KEY (or GOOGLE_API_KEY) not set (and no token stored)")
-                    })?;
+                let key = resolve_token(
+                    settings,
+                    Provider::Google.as_str(),
+                    Provider::Google.token_env_vars(),
+                )
+                .ok_or_else(|| {
+                    anyhow!("GEMINI_API_KEY (or GOOGLE_API_KEY) not set (and no token stored)")
+                })?;
                 Ok(ResolvedModel {
                     model: model.clone(),
                     provider_type: DriverId::OpenAI,
@@ -2108,8 +2209,12 @@ impl ProviderChoice {
             ProviderChoice::OpenRouter {
                 model, base_url, ..
             } => {
-                let key = resolve_token(settings, "openrouter", &["OPENROUTER_API_KEY"])
-                    .ok_or_else(|| anyhow!("OPENROUTER_API_KEY not set (and no token stored)"))?;
+                let key = resolve_token(
+                    settings,
+                    Provider::OpenRouter.as_str(),
+                    Provider::OpenRouter.token_env_vars(),
+                )
+                .ok_or_else(|| anyhow!("OPENROUTER_API_KEY not set (and no token stored)"))?;
                 Ok(ResolvedModel {
                     model: model.clone(),
                     // First-class OpenRouter driver (everruns 0.10+). It speaks
@@ -2130,8 +2235,12 @@ impl ProviderChoice {
             ProviderChoice::Ollama {
                 model, base_url, ..
             } => {
-                let key = resolve_token(settings, "ollama", &["OLLAMA_API_KEY"])
-                    .unwrap_or_else(|| DEFAULT_OLLAMA_API_KEY.to_string());
+                let key = resolve_token(
+                    settings,
+                    Provider::Ollama.as_str(),
+                    Provider::Ollama.token_env_vars(),
+                )
+                .unwrap_or_else(|| DEFAULT_OLLAMA_API_KEY.to_string());
                 Ok(ResolvedModel {
                     model: model.clone(),
                     provider_type: DriverId::OpenAI,
@@ -2151,8 +2260,12 @@ impl ProviderChoice {
                 // Chat Completions is the lowest common denominator that
                 // virtually every OpenAI-compatible server implements; the
                 // Responses driver would break on most of them.
-                let key = resolve_token(settings, "custom", &["CUSTOM_API_KEY"])
-                    .unwrap_or_else(|| DEFAULT_CUSTOM_API_KEY.to_string());
+                let key = resolve_token(
+                    settings,
+                    Provider::Custom.as_str(),
+                    Provider::Custom.token_env_vars(),
+                )
+                .unwrap_or_else(|| DEFAULT_CUSTOM_API_KEY.to_string());
                 Ok(ResolvedModel {
                     model: model.clone(),
                     provider_type: DriverId::OpenAICompletions,
@@ -2403,6 +2516,10 @@ fn turn_failure(result: &anyhow::Result<everruns_host::TurnResult>) -> Option<St
     }
 }
 
+fn has_any_env(names: &[&str]) -> bool {
+    names.iter().any(|name| env_non_empty(name).is_some())
+}
+
 fn env_non_empty(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|value| !value.is_empty())
 }
@@ -2410,7 +2527,10 @@ fn env_non_empty(name: &str) -> Option<String> {
 /// Gemini's OpenAI-compatible API accepts either `GEMINI_API_KEY` or
 /// `GOOGLE_API_KEY`; the Google docs lean on `GEMINI_API_KEY` so it wins.
 fn google_api_key() -> Option<String> {
-    env_non_empty("GEMINI_API_KEY").or_else(|| env_non_empty("GOOGLE_API_KEY"))
+    Provider::Google
+        .token_env_vars()
+        .iter()
+        .find_map(|name| env_non_empty(name))
 }
 
 /// Base URL for the generic OpenAI-compatible provider. Env beats the
@@ -7589,6 +7709,34 @@ mod tests {
         assert_eq!(Provider::Ollama.driver_id(), None);
         assert_eq!(Provider::Custom.driver_id(), None);
         assert_eq!(Provider::Sim.driver_id(), None);
+
+        // Token and base-URL capability is derived from Provider, so adding a
+        // provider cannot drift the setup gates again. Meta is the regression
+        // case: it accepts a token but no base URL.
+        assert_eq!(
+            Provider::token_provider_names(),
+            vec![
+                "openai",
+                "anthropic",
+                "meta",
+                "google",
+                "openrouter",
+                "ollama",
+                "custom"
+            ]
+        );
+        assert_eq!(Provider::base_url_provider_names(), vec!["custom"]);
+        assert!(Provider::Meta.accepts_token());
+        assert!(!Provider::Meta.accepts_base_url());
+        assert!(Provider::accepts_token_name("meta"));
+        assert!(!Provider::accepts_base_url_name("meta"));
+        assert_eq!(Provider::Meta.token_env_vars(), &["MODEL_API_KEY"]);
+        for name in Provider::token_provider_names() {
+            assert!(
+                Provider::accepts_token_name(name),
+                "token provider {name} must pass the stringly gate"
+            );
+        }
     }
 
     #[test]

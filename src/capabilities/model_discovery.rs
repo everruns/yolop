@@ -8,7 +8,7 @@
 // names and descriptions even when the provider's API returns bare ids.
 
 use crate::config::Settings;
-use crate::runtime::ProviderChoice;
+use crate::runtime::{Provider, ProviderChoice};
 use anyhow::{Context, Result, anyhow};
 use everruns_provider::model_profiles::get_model_profile;
 use everruns_provider::{DiscoveredModel, DriverRegistry, ProviderConfig};
@@ -326,17 +326,9 @@ fn local_model_is_installed(settings: &Settings) -> bool {
 }
 
 fn provider_env_present(provider: &str) -> bool {
-    let names: &[&str] = match provider {
-        "openai" => &["OPENAI_API_KEY"],
-        "codex" => &["CODEX_ACCESS_TOKEN"],
-        "anthropic" => &["ANTHROPIC_API_KEY"],
-        "meta" => &["MODEL_API_KEY"],
-        "google" => &["GEMINI_API_KEY", "GOOGLE_API_KEY"],
-        "openrouter" => &["OPENROUTER_API_KEY"],
-        "ollama" => &["OLLAMA_BASE_URL", "OLLAMA_API_KEY"],
-        "custom" => &["CUSTOM_API_KEY"],
-        _ => &[],
-    };
+    let names: &[&str] = Provider::from_name(provider)
+        .map(|p| p.presence_env_vars())
+        .unwrap_or(&[]);
     names.iter().any(|name| {
         std::env::var(name)
             .map(|value| !value.is_empty())
