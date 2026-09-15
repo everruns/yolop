@@ -159,7 +159,7 @@ The README hero is a checked-in VHS workflow, not a one-off screen recording:
 - `docs/demo.gif` is the generated asset embedded by `README.md`.
 
 Unlike feature-guide captures, the hero intentionally uses an authenticated
-Codex subscription with `gpt-5.6-sol` so it demonstrates the advertised live
+Codex subscription with `gpt-5.6-terra` so it demonstrates the advertised live
 agent. This is an explicit live-provider exception to the offline-capture
 preference above. Authentication comes from the operator's existing yolop
 settings; the tape and rendered frames must never contain credentials, personal
