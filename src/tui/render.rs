@@ -938,7 +938,7 @@ pub(crate) fn setup_overlay_content(app: &App) -> (Vec<Line<'static>>, Option<(u
             // No spacer before the footer here, unlike the other steps: that
             // row is worth more as a tenth provider than as whitespace.
             lines.push(setup_footer(
-                "Enter select · c configure key/URL · ↑/↓ move · Esc cancel",
+                "Enter select · c configure · x log out · ↑/↓ move · Esc cancel",
             ));
         }
         Some(SetupStep::BaseUrlInput { value, error }) => {
@@ -1234,7 +1234,7 @@ pub(crate) fn setup_picker(app: &App) -> Option<SetupPicker> {
                 })
                 .collect();
             let footer = vec![setup_footer(
-                "Enter select · c configure key/URL · ↑/↓ move · Esc cancel",
+                "Enter select · c configure · x log out · ↑/↓ move · Esc cancel",
             )];
             Some(SetupPicker {
                 header,
