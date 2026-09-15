@@ -25,7 +25,7 @@ Env COLORTERM "truecolor"
 Env RUST_LOG "error"
 
 Hide
-Type "cargo build -q && docs/demo-setup.sh && alias yolop='target/debug/yolop -C /tmp/yolop-hero-pizza-rocket --theme dracula --provider openai --reasoning-effort low --session-dir /tmp/yolop-hero-sessions' && clear"
+Type "cargo build -q && docs/demo-setup.sh && alias yolop='target/debug/yolop -C /tmp/yolop-hero-pizza-rocket --theme dracula --provider codex -m gpt-5.6-terra --reasoning-effort low --session-dir /tmp/yolop-hero-sessions' && clear"
 Enter
 Wait+Line@5m /[>$%#]/
 Show
