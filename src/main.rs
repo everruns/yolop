@@ -41,7 +41,6 @@ use crossterm::{execute, queue};
 use everruns_core::command::ExecuteCommandRequest;
 use everruns_core::{ContentPart, MessageRole};
 use everruns_provider::typed_id::SessionId;
-use ratatui::{Terminal, TerminalOptions};
 use runtime::{
     BuiltRuntime, DEFAULT_LOCAL_MODEL, ProviderChoice, ResolvedProviderChoice, resolve_for_settings,
 };
@@ -52,6 +51,7 @@ use tracing_subscriber::fmt::writer::BoxMakeWriter;
 use tui::{App, COMPOSER_VIEWPORT_HEIGHT};
 use tuika::term::capabilities::Capabilities;
 use tuika::term::hyperlink::{HyperlinkBackend, LinkPolicy};
+use tuika::term::terminal::{Terminal, TerminalOptions};
 
 const MAX_INTERACTIVE_TRACE_LOGS: usize = 5;
 const MAX_INTERACTIVE_TRACE_BYTES: u64 = 4 * 1024 * 1024;
@@ -259,10 +259,6 @@ enum Commands {
     /// user's model list (see `capabilities::model_list`); this command is
     /// about files on disk.
     Weights(WeightsArgs),
-    /// Live demo of the experimental `tuika` TUI toolkit (spinners, progress
-    /// bars, loader). Press `q` or `Esc` to quit. Hidden dev helper.
-    #[command(hide = true)]
-    TuikaGallery,
     /// Internal Linux Landlock/seccomp worker. Not a user-facing command.
     #[cfg(target_os = "linux")]
     #[command(name = "__sandbox-exec", hide = true)]
@@ -976,8 +972,7 @@ async fn async_main(crash_reporter: &crash_report::CrashReporter) -> Result<()> 
 }
 
 fn uses_interactive_renderer(cli: &Cli) -> bool {
-    (cli.command.is_none() && cli.print.is_none() && !cli.acp)
-        || matches!(cli.command.as_ref(), Some(Commands::TuikaGallery))
+    cli.command.is_none() && cli.print.is_none() && !cli.acp
 }
 
 fn trace_ansi_enabled(cli: &Cli) -> bool {
@@ -1431,7 +1426,6 @@ async fn run_command(command: Commands) -> Result<()> {
         }
         Commands::Mcp(args) => run_mcp_command(*args.command).await,
         Commands::Weights(args) => run_weights_command(args.command).await,
-        Commands::TuikaGallery => run_tuika_gallery(),
         #[cfg(target_os = "linux")]
         Commands::SandboxExec {
             cwd,
@@ -1751,137 +1745,6 @@ pub(crate) fn hyperlink_policy() -> LinkPolicy {
     policy
 }
 
-/// Live demo of the `tuika` motion components. Renders spinners, progress bars,
-/// and a loader on the alternate screen, and drives the terminal's native
-/// OSC 9;4 progress indicator while running. Quits on `q`/`Esc`/`Ctrl-C`.
-fn run_tuika_gallery() -> Result<()> {
-    use std::time::Duration;
-
-    // Route through the same hyperlink-aware backend as the main TUI so the
-    // demo's URL becomes a clickable OSC 8 link when YOLOP_HYPERLINKS is set.
-    let backend = HyperlinkBackend::with_policy(io::stdout(), hyperlink_policy());
-    let theme = tuika::Theme::default();
-    let mut progress = tuika::term::progress::TerminalProgress::new();
-    progress.indeterminate();
-    let runner = tuika::Runner::new(tuika::RunnerConfig {
-        tick_rate: Duration::from_millis(80),
-        // The gallery owns the whole terminal; `ScreenMode::Alternate` is the
-        // default, and split-footer mode is for hosts that publish scrollback.
-        ..tuika::RunnerConfig::default()
-    });
-    // The gallery has no state of its own, so the closure seam (`from_fn`) is
-    // cheaper than naming an `Application` type for a unit state.
-    let mut state = ();
-    runner.run_with_backend(
-        &theme,
-        backend,
-        tuika::runner::from_fn(
-            &mut state,
-            |_state, frame| build_gallery(frame, &theme),
-            |_state, signal| match signal {
-                tuika::Signal::Event(tuika::Event::Key(key))
-                    if matches!(key.code, tuika::KeyCode::Esc | tuika::KeyCode::Char('q'))
-                        || (key.ctrl && matches!(key.code, tuika::KeyCode::Char('c'))) =>
-                {
-                    tuika::UpdateResult::Exit
-                }
-                _ => tuika::UpdateResult::Dirty,
-            },
-        ),
-    )?;
-    progress.clear();
-    Ok(())
-}
-
-/// Build the gallery view tree for `frame`, using [`ratatui::text`] helpers via
-/// `tuika` components.
-fn build_gallery(frame: u64, theme: &tuika::Theme) -> tuika::Element {
-    use ratatui::style::Modifier;
-    use ratatui::text::{Line, Span};
-    use tuika::components::{Loader, MarkdownState, ProgressBar, Spinner, SpinnerStyle, Text};
-    use tuika::highlight::CodeHighlighter;
-
-    // The whole demo is expressed with the declarative `view!` DSL. Leaf and
-    // third-party components (Spinner, ProgressBar, Loader, Text) enter through
-    // `node(expr)`; layout is the `col`/`row`/`boxed`/`fixed`/`grow` sugar.
-    let labeled_spinner = |style: SpinnerStyle, label: &str| -> tuika::Element {
-        tuika::view! {
-            row(gap = 1) {
-                fixed(1) { node(Spinner::new(frame).style(style)) }
-                text(label.to_string())
-            }
-        }
-    };
-
-    let animated = tuika::anim::ping_pong(frame, 120);
-
-    // Markdown + syntax-highlighted code — the same renderer that formats
-    // assistant replies. (Rendered whole here; `MarkdownState` also streams
-    // deltas incrementally — see the `markdown` example in the tuika crate.)
-    let md_doc = "Highlighted `code` in **markdown**:\n\n```rust\nfn fib(n: u64) -> u64 { n }\n```";
-    let highlighter = tuika_codeformatters::TreeSitterHighlighter::new();
-    let sheet = tuika::StyleSheet::from_theme(theme);
-    let mut markdown = MarkdownState::new();
-    markdown.set(md_doc);
-    let markdown_lines = markdown
-        .lines(46, theme, &sheet, CodeHighlighter::With(&highlighter))
-        .to_vec();
-
-    tuika::view! {
-        col(
-            background = ratatui::style::Style::default().bg(theme.background),
-            padding = tuika::Padding::all(1),
-            gap = 1
-        ) {
-            fixed(5) {
-                boxed(title = Line::from(Span::styled(" spinners ", theme.accent_style()))) {
-                    col {
-                        fixed(1) { node(labeled_spinner(SpinnerStyle::Braille, "Braille")) }
-                        fixed(1) { node(labeled_spinner(SpinnerStyle::Line, "Line")) }
-                        fixed(1) { node(labeled_spinner(SpinnerStyle::Dots, "Dots")) }
-                    }
-                }
-            }
-            fixed(6) {
-                boxed(title = Line::from(Span::styled(" progress ", theme.accent_style()))) {
-                    col {
-                        fixed(1) { node(ProgressBar::determinate(0.25).percent(true)) }
-                        fixed(1) { node(ProgressBar::determinate(0.60).percent(true)) }
-                        fixed(1) { node(ProgressBar::determinate(animated).percent(true)) }
-                        fixed(1) { node(ProgressBar::indeterminate(frame)) }
-                    }
-                }
-            }
-            fixed(3) {
-                boxed(title = Line::from(Span::styled(" loader ", theme.accent_style()))) {
-                    node(Loader::new(frame, "working…").hint("esc to quit"))
-                }
-            }
-            // Takes the leftover space (replacing the old spacer) so the footer
-            // below always renders; on a short viewport it simply shows fewer
-            // lines rather than pushing the footer off-screen.
-            grow(1) {
-                boxed(title = Line::from(Span::styled(" markdown + code ", theme.accent_style()))) {
-                    node(Text::new(markdown_lines))
-                }
-            }
-            fixed(1) {
-                node(Text::new(vec![Line::from(vec![
-                    Span::styled("docs ", theme.muted_style()),
-                    Span::styled(
-                        "https://github.com/everruns/yolop",
-                        theme.accent_style().add_modifier(Modifier::UNDERLINED),
-                    ),
-                    Span::styled(
-                        "  ·  native progress is live · press q to quit",
-                        theme.muted_style(),
-                    ),
-                ])]))
-            }
-        }
-    }
-}
-
 async fn run_tui(
     runtime: BuiltRuntime,
     pending_images: Vec<ContentPart>,
@@ -1962,11 +1825,12 @@ async fn run_tui(
     // clear, which is what that mode wants anyway.
     //
     // Cosmetic cleanup must not turn a successful session into an error exit:
-    // since ratatui 0.30.1 `Terminal::clear` (which `close_footer` performs)
-    // issues the same blocking cursor query as pinning above. The two steps are
-    // independent — restoring the cursor is a plain escape write that should
-    // still happen when the clear's query times out. Raw-mode restore below
-    // still fails hard — leaving the terminal unusable is worth a nonzero exit.
+    // since tuika 0.12 `Terminal::clear` (which `close_footer` performs)
+    // clears the owned grid without the blocking cursor query pinning above
+    // needs. The two steps stay independent anyway — restoring the cursor is
+    // a plain escape write that should still happen if the clear ever fails.
+    // Raw-mode restore below still fails hard — leaving the terminal
+    // unusable is worth a nonzero exit.
     if let Err(err) = tuika::screen::close_footer(&mut terminal) {
         tracing::warn!("footer teardown failed: {err:#}");
     }
@@ -2529,14 +2393,12 @@ mod tests {
     #[test]
     fn trace_routing_follows_terminal_ownership() {
         let tui = Cli::try_parse_from(["yolop", "--provider", "llmsim"]).expect("parse TUI");
-        let gallery = Cli::try_parse_from(["yolop", "tuika-gallery"]).expect("parse TUI gallery");
         let print = Cli::try_parse_from(["yolop", "--provider", "llmsim", "-p", "hi"])
             .expect("parse print mode");
         let command = Cli::try_parse_from(["yolop", "version"]).expect("parse command");
         let acp = Cli::try_parse_from(["yolop", "--acp"]).expect("parse ACP");
 
         assert!(uses_interactive_renderer(&tui));
-        assert!(uses_interactive_renderer(&gallery));
         assert!(!uses_interactive_renderer(&print));
         assert!(!uses_interactive_renderer(&command));
         assert!(trace_ansi_enabled(&print));

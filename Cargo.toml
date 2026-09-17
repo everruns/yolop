@@ -92,7 +92,6 @@ hf-hub = { version = "0.4.3", default-features = false, features = [
     "rustls-tls",
 ], optional = true }
 rand = "0.10"
-ratatui = "0.30.2"
 # Already present through everruns-local. Yolop uses the same SQLite handle for
 # its capability-owned local session coordination tables.
 rusqlite = "0.39"
@@ -111,14 +110,14 @@ textwrap = "0.16"
 # The TUI toolkit behind both renderers. It lives in its own repository
 # (everruns/tuika) and is consumed from crates.io like any other dependency;
 # yolop gets no special treatment there.
-tuika = "0.11.0"
+tuika = "0.12"
 # Optional structured-markdown renderers stay outside tuika core. Mermaid
 # fences become terminal diagrams; safe block HTML becomes styled text.
-tuika-mermaid = "0.3.2"
-tuika-html = "0.1.4"
+tuika-mermaid = "0.4.0"
+tuika-html = "0.2.0"
 # Tree-sitter Highlighter impl for tuika's CodeBlock/Markdown; owns the grammar
 # deps so tuika core stays dependency-light. Published from the tuika repo.
-tuika-codeformatters = "0.5.0"
+tuika-codeformatters = "0.6.0"
 tokio = { version = "1.52", features = ["full"] }
 tokio-util = { version = "0.7", features = ["compat"] }
 tree-sitter = "0.26"

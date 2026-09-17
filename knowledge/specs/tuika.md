@@ -129,15 +129,12 @@ it receives, or a modifier-click opens the browser twice. See
 
 ## Testing boundary
 
-`tests/tuika_pty.rs` stays here because it drives the **yolop binary** under a
-pseudo-terminal: it proves yolop's renderer emits the right alternate-screen,
-progress, hyperlink, and truecolor protocol through its hidden `tuika-gallery`
-demo. tuika has its own equivalent over its `gallery` example, covering the
-toolkit in isolation. Neither replaces the other: a regression can live in
-either the toolkit or in how yolop composes it.
-
-The nightly cross-terminal workflow here likewise drives `yolop tuika-gallery`,
-because what it checks is how emulators paint *yolop's* output.
+Terminal protocol verification lives upstream in tuika now that the local
+gallery demo is gone: tuika's `gallery` example and its per-PR tmux gate prove
+the alternate-screen, progress, hyperlink, and truecolor protocol there.
+Yolop keeps composition-level tests over its own TUI state and CLI contract.
+A toolkit regression surfaces in tuika's gates before a version bump lands
+here; a composition regression surfaces in yolop's tests.
 
 ## Non-goals
 

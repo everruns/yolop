@@ -116,8 +116,7 @@ A release readiness verdict covers the release path in
 - The release build starts, per the release spec, and the binary size section
   below has fresh numbers against a stated baseline.
 - Terminal verification tiers for the changed UI surfaces are green: the
-  gallery assertion, the PTY test, and the cross terminal workflow where the
-  tuika spec requires it.
+  tuika upstream gates and the human walk where the tuika spec requires them.
 - Docs that gate a release still match: provider and model lists, flag
   tables, and the README scope statement.
 
@@ -195,8 +194,8 @@ markdown rendering, terminal escapes, and screen modes, belongs in the
   No path or git dependencies: a git dependency would make yolop
   unpublishable.
 - Read the upstream `tuika` changelog for rendering, input, and escape
-  changes that compile clean but alter the TUI. The gallery assertion, the
-  PTY test, and the cross terminal workflow are the detectors.
+  changes that compile clean but alter the TUI. The tuika upstream gates are
+  the detectors.
 - A needed toolkit change lands upstream first, releases, then bumps here.
   A local workaround that belongs upstream is a finding with an upstream
   issue, not a permanent local shortcut.
@@ -287,8 +286,9 @@ layer.
   something the environment may lack check at runtime and return early (a key
   via `live_key_or_skip`, a binary via a probe, an external service via
   `YOLOP_REQUIRE_LIVE_TESTS`); ignored tests are forbidden.
-- The PTY test stays as the binary level witness for the interactive TUI,
-  alongside the gallery assertion for buffer level coverage.
+- No PTY test remains: the gallery demo that carried it is gone, and terminal
+  protocol coverage lives in the tuika upstream gates. Flag any new
+  provider-free fullscreen mode as needing a replacement witness.
 - `evals/` holds Mira studies outside the Cargo workspace. The pass runs them
   only when the scope touches prompt or tool behavior and the scope asks for
   it. Otherwise the pass notes them as skipped with that reason. A prompt or
@@ -301,10 +301,10 @@ layer.
   whose assertions cannot fail or do not match their names. Fix, merge, or
   delete; never weaken an assertion to make a suite green.
 
-Rationale: unit tests prove logic, the PTY test proves the binary starts and
-interacts, the smoke tests prove the provider wiring works with and without
-keys, and evals prove the agent still accomplishes work. Each layer catches
-what the others cannot.
+Rationale: unit tests prove logic, the smoke tests prove the provider wiring
+works with and without keys, and evals prove the agent still accomplishes
+work. Terminal protocol proof lives in the tuika upstream gates. Each layer
+catches what the others cannot.
 
 ## Security and Threat Posture
 
@@ -384,8 +384,8 @@ accident to the next reader.
   the fix is an update or a deletion.
 - Prose across `knowledge/`, docs, commit messages, and PR bodies avoids
   em-dashes. A comma, colon, or separate sentence says the same thing.
-- Visual claims about the TUI carry fresh captures from the gallery or PTY
-  evidence where the docs spec requires them.
+- Visual claims about the TUI carry fresh captures from the real TUI or the
+  tuika upstream evidence where the docs spec requires them.
 
 Rationale: docs are a release artifact. A stale flag table or a phantom
 model name breaks user trust faster than a bug, because users stop believing

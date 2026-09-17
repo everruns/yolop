@@ -22,12 +22,6 @@ use everruns_core::SessionTaskRegistry;
 use everruns_core::command::{CommandDescriptor, CommandSource};
 use everruns_provider::typed_id::SessionId;
 use futures::FutureExt;
-use ratatui::Terminal;
-use ratatui::backend::Backend;
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
@@ -42,6 +36,9 @@ use tuika::routing::Router;
 use tuika::term::hyperlink::BufferLink;
 use tuika::term::pointer::{self, PointerShape};
 use tuika::term::progress::TerminalProgress;
+use tuika::term::terminal::Terminal;
+use tuika::term::traits::Backend;
+use tuika::ui::{Color, Line, Modifier, Rect, Span, Style};
 
 pub(crate) mod fullscreen;
 mod keymap;
@@ -673,7 +670,7 @@ pub(crate) struct ListedModelRow {
 /// Owned snapshot of the App fields the pure-render chrome helpers
 /// (command suggestions, stream preview, separators, session status)
 /// consume. Extracted from `App` so those helpers can be exercised by
-/// unit tests against `ratatui::backend::TestBackend` without standing
+/// unit tests against `tuika::term::testbackend::TestBackend` without standing
 /// up a full runtime.
 ///
 /// Owned rather than borrowed because building it does not need to
@@ -867,7 +864,7 @@ impl App {
     /// still be visible (a double click always lands on a visible cell), so we
     /// read the word bounds off the buffer and re-anchor the result in content
     /// space. Sets `pending_copy` so the word is copied like a drag.
-    pub(crate) fn resolve_selection(&mut self, buffer: &ratatui::buffer::Buffer) {
+    pub(crate) fn resolve_selection(&mut self, buffer: &tuika::ui::Buffer) {
         let Some((column, content_row)) = self.selection.take_pending_word() else {
             return;
         };
@@ -885,11 +882,7 @@ impl App {
         self.pending_copy = true;
     }
 
-    pub(crate) fn set_visible_links(
-        &mut self,
-        origin: ratatui::layout::Position,
-        links: &[BufferLink],
-    ) {
+    pub(crate) fn set_visible_links(&mut self, origin: tuika::ui::Position, links: &[BufferLink]) {
         self.visible_link_regions = links
             .iter()
             .filter(|link| link.end_col > link.start_col)
@@ -1031,7 +1024,7 @@ impl App {
         // to keep the row count inside a u16 without overflow.
         let row_count = (range.end.1.min(last) - start_row + 1).min(u16::MAX as usize);
         let end_row = start_row + row_count - 1;
-        let mut buf = ratatui::buffer::Buffer::empty(Rect::new(0, 0, area.width, row_count as u16));
+        let mut buf = tuika::ui::Buffer::empty(Rect::new(0, 0, area.width, row_count as u16));
         for (i, row) in (start_row..=end_row).enumerate() {
             buf.set_line(0, i as u16, &lines[row], area.width);
         }
@@ -4926,7 +4919,7 @@ mod tests {
         // Labeled `[text](url)` must stay clickable after the transcript paints —
         // the third time this regressed, style was kept but the destination was
         // dropped so Ghostty had nothing to open.
-        use ratatui::layout::Position;
+        use tuika::ui::Position;
         let mut lines: Vec<Line> = Vec::new();
         let links = append_markdown_lines(
             &mut lines,
@@ -4939,7 +4932,7 @@ mod tests {
             .iter()
             .find(|l| l.url.contains("pull/2875"))
             .expect("labeled markdown link must yield a BufferLink");
-        let mut buffer = ratatui::buffer::Buffer::empty(Rect::new(0, 0, 120, 4));
+        let mut buffer = tuika::ui::Buffer::empty(Rect::new(0, 0, 120, 4));
         for (row, line) in lines.iter().enumerate() {
             let mut x = 0u16;
             for span in &line.spans {
@@ -4969,7 +4962,7 @@ mod tests {
     fn openrouter_policy_hint_renders_a_clickable_labeled_link() {
         // Account/policy hints are Assistant markdown so compact work shows
         // them and the labeled destination survives painting as OSC 8.
-        use ratatui::layout::Position;
+        use tuika::ui::Position;
         let mut lines: Vec<Line> = Vec::new();
         let links = append_chat_lines(
             &mut lines,
@@ -4983,7 +4976,7 @@ mod tests {
             .iter()
             .find(|item| item.url == "https://openrouter.ai/settings/privacy")
             .expect("policy hint must yield a BufferLink");
-        let mut buffer = ratatui::buffer::Buffer::empty(Rect::new(0, 0, 140, 4));
+        let mut buffer = tuika::ui::Buffer::empty(Rect::new(0, 0, 140, 4));
         for (row, line) in lines.iter().enumerate() {
             let mut x = 0u16;
             for span in &line.spans {
@@ -6412,10 +6405,10 @@ flowchart TD
     // looks like end-to-end on the screen, without spinning up a runtime.
     // ====================================================================
 
-    use ratatui::Terminal;
-    use ratatui::TerminalOptions;
-    use ratatui::backend::TestBackend;
-    use ratatui::layout::Position;
+    use tuika::term::terminal::Terminal;
+    use tuika::term::terminal::TerminalOptions;
+    use tuika::term::testbackend::TestBackend;
+    use tuika::ui::Position;
 
     struct FooterComposerRender {
         lines: Vec<String>,
@@ -6687,7 +6680,7 @@ flowchart TD
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn fullscreen_renders_blue_and_gold_separators() {
-        use ratatui::backend::TestBackend;
+        use tuika::term::testbackend::TestBackend;
         let mut test = app_with_llmsim().await;
         test.app.setup = None;
         test.app.set_render_mode(RenderMode::Fullscreen);
@@ -6723,7 +6716,7 @@ flowchart TD
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn fullscreen_keeps_gold_separator_after_two_newlines() {
-        use ratatui::backend::TestBackend;
+        use tuika::term::testbackend::TestBackend;
         let mut test = app_with_llmsim().await;
         test.app.setup = None;
         test.app.set_render_mode(RenderMode::Fullscreen);
@@ -6753,7 +6746,7 @@ flowchart TD
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn fullscreen_composer_renders_multiline_input_via_tuika() {
-        use ratatui::backend::TestBackend;
+        use tuika::term::testbackend::TestBackend;
         let mut test = app_with_llmsim().await;
         test.app.setup = None;
         test.app.set_render_mode(RenderMode::Fullscreen);
@@ -6849,7 +6842,7 @@ flowchart TD
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn fullscreen_setup_overlay_renders_via_tuika() {
-        use ratatui::backend::TestBackend;
+        use tuika::term::testbackend::TestBackend;
         let mut test = app_with_llmsim().await;
         test.app.set_render_mode(RenderMode::Fullscreen);
         // First-run setup overlay is present; it should composite as a tuika
@@ -7066,7 +7059,7 @@ flowchart TD
         test.app.setup = None;
         test.app.set_render_mode(RenderMode::Fullscreen);
         test.app.set_visible_links(
-            ratatui::layout::Position { x: 4, y: 6 },
+            tuika::ui::Position { x: 4, y: 6 },
             &[BufferLink {
                 line: 1,
                 start_col: 3,
@@ -7146,7 +7139,7 @@ flowchart TD
         let highlighted = (range.start.0..=range.end.0).any(|x| {
             buffer[(x, row)]
                 .modifier
-                .contains(ratatui::style::Modifier::REVERSED)
+                .contains(tuika::ui::Modifier::REVERSED)
         });
         assert!(highlighted, "the selected row should be highlighted");
         let text = selected_text(buffer, test.app.selection_area, range);
@@ -9142,12 +9135,12 @@ flowchart TD
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn repinning_an_anchored_footer_reserves_no_further_rows() {
         let mut terminal = split_footer_terminal(100, 60);
-        let scrollback_after_pin = terminal.backend().scrollback().area.height;
+        let scrollback_after_pin = terminal.backend().scrollback().len() as u16;
 
         tuika::screen::pin_footer(&mut terminal).expect("re-pin footer");
 
         assert_eq!(
-            terminal.backend().scrollback().area.height,
+            terminal.backend().scrollback().len() as u16,
             scrollback_after_pin,
             "re-pinning an already-pinned footer should be a no-op"
         );
@@ -11929,7 +11922,7 @@ flowchart TD
         let mut terminal =
             Terminal::new(TestBackend::new(area.width, area.height)).expect("test terminal");
         terminal.draw(|f| draw(f, &mut *app)).expect("draw");
-        let style_of = |buffer: &ratatui::buffer::Buffer, x: u16, y: u16| {
+        let style_of = |buffer: &tuika::ui::Buffer, x: u16, y: u16| {
             let cell = &buffer[(x, y)];
             (cell.fg, cell.bg, cell.modifier)
         };
