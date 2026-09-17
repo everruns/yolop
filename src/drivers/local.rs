@@ -290,24 +290,25 @@ fn terminal_events(
         Some((prompt, completion)) => (Some(prompt), Some(completion)),
         None => (None, None),
     };
-    events.push(LlmStreamEvent::Done(Box::new(LlmCompletionMetadata {
-        model: Some(model.to_string()),
-        prompt_tokens,
-        completion_tokens,
-        total_tokens: prompt_tokens
-            .zip(completion_tokens)
-            .map(|(prompt, completion)| prompt + completion),
-        // Tool calls win over whatever the engine reported. A local chat
-        // template that stops to call a tool still finishes the sequence
-        // normally, so the engine says "stop"; the host reads this field to
-        // tell a finished answer from a turn that is waiting on tools.
-        finish_reason: if has_tool_calls {
-            Some("tool_calls".to_string())
-        } else {
-            finish_reason
-        },
-        ..Default::default()
-    })));
+    // LlmCompletionMetadata is non_exhaustive since everruns-provider 0.24.0:
+    // build it via Default and field assignment.
+    let mut metadata = LlmCompletionMetadata::default();
+    metadata.model = Some(model.to_string());
+    metadata.prompt_tokens = prompt_tokens;
+    metadata.completion_tokens = completion_tokens;
+    metadata.total_tokens = prompt_tokens
+        .zip(completion_tokens)
+        .map(|(prompt, completion)| prompt + completion);
+    // Tool calls win over whatever the engine reported. A local chat
+    // template that stops to call a tool still finishes the sequence
+    // normally, so the engine says "stop"; the host reads this field to
+    // tell a finished answer from a turn that is waiting on tools.
+    metadata.finish_reason = if has_tool_calls {
+        Some("tool_calls".to_string())
+    } else {
+        finish_reason
+    };
+    events.push(LlmStreamEvent::Done(Box::new(metadata)));
     events
 }
 
