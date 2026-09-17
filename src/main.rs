@@ -1585,8 +1585,12 @@ fn detached_cli_registry() -> Result<control::CliRegistry> {
     registry.register(Arc::new(capabilities::ProfilesCapability::new(
         settings.clone(),
     )))?;
-    registry.register(Arc::new(capabilities::ModelCliCapability::detached()))?;
-    registry.register(Arc::new(capabilities::SetupCliCapability::detached()))?;
+    registry.register(Arc::new(capabilities::ModelCliCapability::detached(
+        settings.clone(),
+    )))?;
+    registry.register(Arc::new(capabilities::SetupCliCapability::detached(
+        settings.clone(),
+    )))?;
     registry.register(Arc::new(capabilities::WorktreeCapability::detached()))?;
     let coordination_store = match runtime::session_log::default_sessions_dir()
         .ok()

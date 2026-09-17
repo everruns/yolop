@@ -243,7 +243,11 @@ fn extension_reload_is_rejected_without_an_attached_session() {
         .output()
         .expect("run detached reload");
     assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("requires a running Yolop session"));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("requires a running Yolop session"),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]
