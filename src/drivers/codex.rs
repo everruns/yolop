@@ -972,33 +972,36 @@ fn convert_message(message: &LlmMessage) -> CodexInputItem {
         LlmMessageContent::Parts(parts) => CodexContent::Parts(
             parts
                 .iter()
-                .map(|part| match part {
-                    LlmContentPart::Text { text } => CodexContentPart::InputText {
+                .filter_map(|part| match part {
+                    LlmContentPart::Text { text } => Some(CodexContentPart::InputText {
                         r#type: "input_text".to_string(),
                         text: text.clone(),
-                    },
-                    LlmContentPart::Image { url } => CodexContentPart::InputImage {
+                    }),
+                    LlmContentPart::Image { url } => Some(CodexContentPart::InputImage {
                         r#type: "input_image".to_string(),
                         image_url: url.clone(),
-                    },
-                    LlmContentPart::Audio { url } => CodexContentPart::InputAudio {
+                    }),
+                    LlmContentPart::Audio { url } => Some(CodexContentPart::InputAudio {
                         r#type: "input_audio".to_string(),
                         input_audio: CodexInputAudio {
                             data: url.clone(),
                             format: "wav".to_string(),
                         },
-                    },
+                    }),
                     // New in everruns-provider 0.22.0 (upstream v0.26.0 PDF
                     // input): file attachments travel as `input_file`, same
                     // shape as the Responses API.
-                    LlmContentPart::File { url, filename } => CodexContentPart::InputFile {
+                    LlmContentPart::File { url, filename } => Some(CodexContentPart::InputFile {
                         r#type: "input_file".to_string(),
                         input_file: CodexInputFile {
                             file_data: Some(url.clone()),
                             file_url: None,
                             filename: filename.clone(),
                         },
-                    },
+                    }),
+                    // LlmContentPart is non_exhaustive so future content kinds
+                    // arrive here; skip them rather than failing the request.
+                    _ => None,
                 })
                 .collect(),
         ),
@@ -1428,23 +1431,20 @@ fn done_event(
                 .unwrap_or("stop")
                 .to_string()
         });
-    LlmStreamEvent::Done(Box::new(LlmCompletionMetadata {
-        total_tokens: Some(input + output),
-        prompt_tokens: Some(input),
-        completion_tokens: Some(output),
-        cache_read_tokens: *cache_read_tokens.lock().expect("cache token lock"),
-        cache_creation_tokens: None,
-        provider_cost_usd: None,
-        model: Some(model.to_string()),
-        finish_reason: Some(finish),
-        retry_metadata: None,
-        cache_diagnostics: None,
-        response_id: response
-            .get("id")
-            .and_then(Value::as_str)
-            .map(str::to_string),
-        phase: None,
-    }))
+    // LlmCompletionMetadata is non_exhaustive since everruns-provider 0.24.0:
+    // build it via Default and field assignment.
+    let mut metadata = LlmCompletionMetadata::default();
+    metadata.total_tokens = Some(input + output);
+    metadata.prompt_tokens = Some(input);
+    metadata.completion_tokens = Some(output);
+    metadata.cache_read_tokens = *cache_read_tokens.lock().expect("cache token lock");
+    metadata.model = Some(model.to_string());
+    metadata.finish_reason = Some(finish);
+    metadata.response_id = response
+        .get("id")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    LlmStreamEvent::Done(Box::new(metadata))
 }
 
 fn codex_stream_error(json: &Value) -> LlmStreamError {
