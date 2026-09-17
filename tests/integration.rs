@@ -44,6 +44,20 @@ fn yolop_binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_yolop"))
 }
 
+/// Spawn the binary without the ambient session's control delegation, so
+/// entry-point tests exercise a fresh process instead of the session daemon
+/// that happens to host the test run. Delegation is keyed off
+/// `YOLOP_CONTROL_ENDPOINT` plus the route list, both inherited through the
+/// environment by default.
+fn yolop_command() -> Command {
+    let mut command = Command::new(yolop_binary());
+    command
+        .env_remove("YOLOP_CONTROL_ENDPOINT")
+        .env_remove("YOLOP_CONTROL_ROUTES")
+        .env_remove("YOLOP_CONTROL_TOKEN");
+    command
+}
+
 /// `models pull` must reach the download without panicking.
 ///
 /// 0.16.0 shipped a `Runtime::new().block_on(..)` inside the pull, which is
@@ -59,7 +73,7 @@ fn yolop_binary() -> PathBuf {
 #[test]
 fn models_pull_reaches_the_download_without_a_nested_runtime() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let output = Command::new(yolop_binary())
+    let output = yolop_command()
         .args([
             "models",
             "pull",
@@ -84,7 +98,7 @@ fn models_pull_reaches_the_download_without_a_nested_runtime() {
 #[test]
 fn coordination_cli_lists_workers_without_model_startup() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let output = Command::new(yolop_binary())
+    let output = yolop_command()
         .args(["coordination", "list", "--json"])
         .env("HOME", tmp.path())
         .env("XDG_DATA_HOME", tmp.path().join("data"))
@@ -101,7 +115,7 @@ fn coordination_cli_lists_workers_without_model_startup() {
 
 #[test]
 fn coordination_cli_advertises_dispatch_and_completion() {
-    let output = Command::new(yolop_binary())
+    let output = yolop_command()
         .args(["coordination", "--help"])
         .output()
         .expect("show coordination CLI help");
@@ -155,7 +169,7 @@ fn command_group_help_includes_realistic_examples() {
     ];
 
     for (args, example) in cases {
-        let output = Command::new(yolop_binary())
+        let output = yolop_command()
             .args(args)
             .output()
             .unwrap_or_else(|error| panic!("show help for {args:?}: {error}"));
@@ -196,7 +210,7 @@ fn extensions_cli_installs_and_lists_without_model_tools() {
     )
     .unwrap();
 
-    let install = Command::new(yolop_binary())
+    let install = yolop_command()
         .args(["extensions", "install"])
         .arg(&source)
         .env("HOME", tmp.path())
@@ -210,7 +224,7 @@ fn extensions_cli_installs_and_lists_without_model_tools() {
         String::from_utf8_lossy(&install.stderr)
     );
 
-    let list = Command::new(yolop_binary())
+    let list = yolop_command()
         .args(["extensions", "list", "--json"])
         .env("HOME", tmp.path())
         .env("XDG_CONFIG_HOME", &config_root)
@@ -224,7 +238,7 @@ fn extensions_cli_installs_and_lists_without_model_tools() {
 
 #[test]
 fn extension_reload_is_rejected_without_an_attached_session() {
-    let output = Command::new(yolop_binary())
+    let output = yolop_command()
         .args(["extensions", "reload", "demo"])
         .output()
         .expect("run detached reload");
@@ -237,7 +251,7 @@ fn attached_control_child_exchanges_one_versioned_pipe_request() {
     use std::io::{BufRead, BufReader};
     use std::process::Stdio;
 
-    let mut child = Command::new(yolop_binary())
+    let mut child = yolop_command()
         .args(["--__attached-control-child", "extensions", "enable", "demo"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -264,7 +278,7 @@ fn attached_control_child_exchanges_one_versioned_pipe_request() {
 #[cfg(unix)]
 #[test]
 fn attached_cli_refuses_detached_fallback_when_the_host_is_gone() {
-    let output = Command::new(yolop_binary())
+    let output = yolop_command()
         .args(["setup", "status"])
         .env(
             "YOLOP_CONTROL_ENDPOINT",
@@ -284,7 +298,7 @@ fn attached_cli_refuses_detached_fallback_when_the_host_is_gone() {
 fn meta_provider_reaches_credential_boundary_from_real_binary() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let config_root = tmp.path().join(".config");
-    let output = Command::new(yolop_binary())
+    let output = yolop_command()
         .args([
             "--provider",
             "meta",
@@ -314,7 +328,7 @@ fn run_linux_sandbox_worker(
     mode: &str,
     script: &str,
 ) -> std::process::Output {
-    Command::new(yolop_binary())
+    yolop_command()
         .arg("__sandbox-exec")
         .arg("--cwd")
         .arg(cwd)
@@ -548,7 +562,7 @@ fn session_log_line_count(sessions_dir: &Path, session_id: &str) -> usize {
 
 #[test]
 fn help_flag_succeeds() {
-    let output = Command::new(yolop_binary())
+    let output = yolop_command()
         .arg("--help")
         .output()
         .expect("spawn yolop --help");
@@ -600,7 +614,7 @@ fn named_profile_drives_real_print_run_without_copying_global_secrets() {
     )
     .expect("profile");
 
-    let output = Command::new(yolop_binary())
+    let output = yolop_command()
         .args([
             "--profile",
             "offline",
@@ -643,7 +657,7 @@ fn named_profile_drives_real_print_run_without_copying_global_secrets() {
 #[test]
 fn missing_named_profile_fails_before_starting_a_session() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let output = Command::new(yolop_binary())
+    let output = yolop_command()
         .args([
             "--profile",
             "missing",
@@ -685,7 +699,7 @@ fn profiles_and_config_profile_manage_named_overlay() {
     .expect("base settings");
 
     let run = |args: &[&str]| -> std::process::Output {
-        Command::new(yolop_binary())
+        yolop_command()
             .args(args)
             .env("HOME", tmp.path())
             .env("XDG_CONFIG_HOME", &config_root)
@@ -744,7 +758,7 @@ fn profiles_and_config_profile_manage_named_overlay() {
     );
 
     // A fresh session resolves the managed value.
-    let output = Command::new(yolop_binary())
+    let output = yolop_command()
         .args([
             "--profile",
             "review",
@@ -798,7 +812,7 @@ fn profiles_and_config_profile_manage_named_overlay() {
 
 #[test]
 fn version_flag_succeeds() {
-    let output = Command::new(yolop_binary())
+    let output = yolop_command()
         .arg("--version")
         .output()
         .expect("spawn yolop --version");
@@ -809,7 +823,7 @@ fn version_flag_succeeds() {
 
 #[test]
 fn version_command_succeeds() {
-    let output = Command::new(yolop_binary())
+    let output = yolop_command()
         .arg("version")
         .output()
         .expect("spawn yolop version");
@@ -924,7 +938,7 @@ fn config_and_data_dir_flags_move_the_global_footprint() {
     let home = tmp.path().join("home");
     std::fs::create_dir_all(&home).expect("create home");
 
-    let output = Command::new(yolop_binary())
+    let output = yolop_command()
         .args([
             "--provider",
             "llmsim",
@@ -987,7 +1001,7 @@ fn config_and_data_dir_environment_overrides_move_the_global_footprint() {
     let home = tmp.path().join("home");
     std::fs::create_dir_all(&home).expect("create home");
 
-    let output = Command::new(yolop_binary())
+    let output = yolop_command()
         .args(["--provider", "llmsim", "-p", "hi"])
         .env("HOME", &home)
         .env("YOLOP_CONFIG_DIR", &config_dir)
@@ -1024,7 +1038,7 @@ fn llmsim_print_smoke() {
     // We point --session-dir at a temp dir so the test never touches the
     // user's real ~/.local/share/yolop.
     let tmp = tempfile::tempdir().expect("tempdir");
-    let output = Command::new(yolop_binary())
+    let output = yolop_command()
         .args([
             "--provider",
             "llmsim",
@@ -1087,7 +1101,7 @@ fn unsafe_sandbox_opt_out_warns_from_the_real_binary() {
     std::fs::create_dir_all(mac_settings.parent().unwrap()).unwrap();
     std::fs::write(&mac_settings, "sandbox = \"off\"\n").unwrap();
 
-    let output = Command::new(yolop_binary())
+    let output = yolop_command()
         .args([
             "--provider",
             "llmsim",
@@ -1113,7 +1127,7 @@ fn unsafe_sandbox_opt_out_warns_from_the_real_binary() {
 #[test]
 fn windows_warns_that_sandboxing_is_unavailable_from_the_real_binary() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let output = Command::new(yolop_binary())
+    let output = yolop_command()
         .args([
             "--provider",
             "llmsim",
@@ -1167,7 +1181,7 @@ fn llmsim_print_writes_atif_trajectory() {
     // least one agent step.
     let tmp = tempfile::tempdir().expect("tempdir");
     let trajectory_path = tmp.path().join("trajectory.json");
-    let output = Command::new(yolop_binary())
+    let output = yolop_command()
         .args([
             "--provider",
             "llmsim",
@@ -1224,7 +1238,7 @@ fn llmsim_resume_replays_prior_events() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let session_dir = tmp.path().to_str().unwrap();
 
-    let first = Command::new(yolop_binary())
+    let first = yolop_command()
         .args([
             "--provider",
             "llmsim",
@@ -1252,7 +1266,7 @@ fn llmsim_resume_replays_prior_events() {
     let first_log_lines = session_log_line_count(tmp.path(), &session_id);
     assert!(first_log_lines > 0, "first run should write a session log");
 
-    let second = Command::new(yolop_binary())
+    let second = yolop_command()
         .args([
             "--provider",
             "llmsim",
@@ -1289,7 +1303,7 @@ fn llmsim_resume_replays_prior_events() {
 fn failed_post_build_startup_leaves_no_session_shell() {
     const EAGER_BASELINE_SHELLS_PER_STARTUP: usize = 1;
     let sessions = tempfile::tempdir().expect("sessions tempdir");
-    let output = Command::new(yolop_binary())
+    let output = yolop_command()
         .args([
             "--provider",
             "llmsim",
@@ -1333,7 +1347,7 @@ fn llmsim_unknown_session_id_is_invalid() {
     // A malformed `--session` value should fail at parse time with a clear
     // error, not crash later in the runtime layer.
     let tmp = tempfile::tempdir().expect("tempdir");
-    let output = Command::new(yolop_binary())
+    let output = yolop_command()
         .args([
             "--provider",
             "llmsim",
@@ -2323,7 +2337,7 @@ fn print_mode_sends_saved_model_selection_to_endpoint() {
         std::fs::write(settings_dir.join("settings.toml"), &settings_toml).expect("write settings");
     }
 
-    let output = Command::new(yolop_binary())
+    let output = yolop_command()
         .args([
             "--session-dir",
             sessions.path().to_str().unwrap(),
@@ -2392,7 +2406,7 @@ fn print_mode_attaches_images_to_provider_request() {
         std::fs::write(settings_dir.join("settings.toml"), &settings_toml).expect("write settings");
     }
 
-    let output = Command::new(yolop_binary())
+    let output = yolop_command()
         .args([
             "--session-dir",
             sessions.path().to_str().unwrap(),
@@ -3341,7 +3355,7 @@ fn openai_print_smoke() {
         return;
     };
     let tmp = tempfile::tempdir().expect("tempdir");
-    let output = Command::new(yolop_binary())
+    let output = yolop_command()
         .args([
             "--provider",
             "openai",
@@ -3384,7 +3398,7 @@ fn skills_cli_write_list_and_activate_uses_compiled_binary() {
     let direct_content = "---\nname: cli-direct\ndescription: Installed from direct text through the compiled CLI.\n---\n# CLI direct\n";
 
     let command = || {
-        let mut command = Command::new(yolop_binary());
+        let mut command = yolop_command();
         command
             .env("YOLOP_GLOBAL_SKILLS_DIR", &global_skills)
             .args([
@@ -3490,7 +3504,7 @@ fn openai_multistep_completion_smoke() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let session_dir = tmp.path().join("sessions");
     let proof = tmp.path().join("completion-proof.txt");
-    let output = Command::new(yolop_binary())
+    let output = yolop_command()
         .current_dir(tmp.path())
         .args([
             "--provider",
@@ -3578,7 +3592,7 @@ fn openrouter_print_smoke() {
     };
     let tmp = tempfile::tempdir().expect("tempdir");
     let model = live_openrouter_model();
-    let output = Command::new(yolop_binary())
+    let output = yolop_command()
         .args([
             "--provider",
             "openrouter",
@@ -3649,7 +3663,7 @@ fn openrouter_tool_call_executes_end_to_end() {
     .expect("write secret.txt");
 
     let model = live_openrouter_model();
-    let output = Command::new(yolop_binary())
+    let output = yolop_command()
         .args([
             "--provider",
             "openrouter",
@@ -3694,7 +3708,7 @@ fn config_model_entry_point_persists_show_set_and_clear() {
     let config_dir = temp.path();
 
     let run = |args: &[&str]| {
-        Command::new(yolop_binary())
+        yolop_command()
             .env("YOLOP_CONFIG_DIR", config_dir)
             .args(args)
             .output()
@@ -3791,7 +3805,7 @@ fn config_entry_point_get_set_json_and_clear() {
     let config_dir = temp.path();
 
     let run = |args: &[&str]| {
-        Command::new(yolop_binary())
+        yolop_command()
             .env("YOLOP_CONFIG_DIR", config_dir)
             .args(args)
             .output()
