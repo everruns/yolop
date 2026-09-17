@@ -9,7 +9,8 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
+use std::time::SystemTime;
 use toml::Table;
 use toml::Value as TomlValue;
 
@@ -22,9 +23,31 @@ pub struct StoredConnection {
     pub metadata: Option<Value>,
 }
 
+/// mtime plus length of connections.toml the last time this store read it.
+/// Every public read and every read-modify-write goes through the store lock,
+/// which refreshes on fingerprint mismatch, so hand edits or another yolop
+/// process show up on next access instead of at restart. A rewrite that keeps
+/// both mtime and length identical can slip past; that is the documented
+/// staleness bound.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FileFingerprint {
+    mtime: SystemTime,
+    len: u64,
+}
+
+fn file_fingerprint(path: &Path) -> Option<FileFingerprint> {
+    let metadata = std::fs::metadata(path).ok()?;
+    let mtime = metadata.modified().ok()?;
+    Some(FileFingerprint {
+        mtime,
+        len: metadata.len(),
+    })
+}
+
 #[derive(Debug, Clone, Default)]
 struct ConnectionsFile {
     connections: BTreeMap<String, StoredConnection>,
+    fingerprint: Option<FileFingerprint>,
 }
 
 impl ConnectionsFile {
@@ -52,7 +75,10 @@ impl ConnectionsFile {
                 connections.insert(provider.clone(), StoredConnection { fields, metadata });
             }
         }
-        Self { connections }
+        Self {
+            connections,
+            fingerprint: None,
+        }
     }
 
     fn to_table(&self) -> Table {
@@ -86,7 +112,9 @@ fn load_from(path: &Path) -> ConnectionsFile {
         return ConnectionsFile::default();
     };
     let table: Table = toml::from_str(&text).unwrap_or_default();
-    ConnectionsFile::from_table(&table)
+    let mut file = ConnectionsFile::from_table(&table);
+    file.fingerprint = file_fingerprint(path);
+    file
 }
 
 fn save_to(path: &Path, file: &ConnectionsFile) -> Result<()> {
@@ -148,6 +176,36 @@ pub struct ConnectionStore {
 }
 
 impl ConnectionStore {
+    /// Re-read connections.toml when it changed on disk since we last looked.
+    /// Must be called with the lock held, before every read and every
+    /// read-modify-write, so writers never clobber an external change they
+    /// did not see.
+    fn refresh_locked(&self, guard: &mut MutexGuard<ConnectionsFile>) {
+        let fingerprint = file_fingerprint(&self.path);
+        if fingerprint == guard.fingerprint {
+            return;
+        }
+        let fresh = load_from(&self.path);
+        guard.connections = fresh.connections;
+        guard.fingerprint = file_fingerprint(&self.path);
+    }
+
+    /// Lock the state and refresh it from disk first: the single entry point
+    /// for reads (hot reload) and for mutations (read before write).
+    fn lock_fresh(&self) -> MutexGuard<'_, ConnectionsFile> {
+        let mut guard = self.inner.lock().expect("connections lock poisoned");
+        self.refresh_locked(&mut guard);
+        guard
+    }
+
+    /// Persist the map and record the new fingerprint so our own write does
+    /// not look like an external change on next access.
+    fn persist_locked(&self, guard: &mut MutexGuard<ConnectionsFile>) -> Result<()> {
+        save_to(&self.path, &*guard)?;
+        guard.fingerprint = file_fingerprint(&self.path);
+        Ok(())
+    }
+
     pub fn open(path: PathBuf) -> Self {
         let file = load_from(&path);
         Self {
@@ -161,12 +219,7 @@ impl ConnectionStore {
     }
 
     pub fn get(&self, provider: &str) -> Option<StoredConnection> {
-        self.inner
-            .lock()
-            .expect("connections lock poisoned")
-            .connections
-            .get(provider)
-            .cloned()
+        self.lock_fresh().connections.get(provider).cloned()
     }
 
     pub fn is_connected(&self, provider: &str) -> bool {
@@ -176,15 +229,15 @@ impl ConnectionStore {
     }
 
     pub fn save(&self, provider: &str, connection: StoredConnection) -> Result<()> {
-        let mut guard = self.inner.lock().expect("connections lock poisoned");
+        let mut guard = self.lock_fresh();
         guard.connections.insert(provider.to_string(), connection);
-        save_to(&self.path, &guard)
+        self.persist_locked(&mut guard)
     }
 
     pub fn clear(&self, provider: &str) -> Result<bool> {
-        let mut guard = self.inner.lock().expect("connections lock poisoned");
+        let mut guard = self.lock_fresh();
         let existed = guard.connections.remove(provider).is_some();
-        save_to(&self.path, &guard)?;
+        self.persist_locked(&mut guard)?;
         Ok(existed)
     }
 }
@@ -234,5 +287,40 @@ mod tests {
             .expect("save");
         assert!(store.clear("daytona").expect("clear"));
         assert!(!store.is_connected("daytona"));
+    }
+
+    fn entry(key: &str) -> StoredConnection {
+        StoredConnection {
+            fields: BTreeMap::from([("key".to_string(), key.to_string())]),
+            metadata: None,
+        }
+    }
+
+    #[test]
+    fn hot_reload_picks_up_external_connection() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let path = tmp.path().join("connections.toml");
+        let first = ConnectionStore::open(path.clone());
+        let second = ConnectionStore::open(path.clone());
+        second.save("openai", entry("second")).expect("save");
+        assert_eq!(
+            first.get("openai").map(|c| c.fields["key"].clone()),
+            Some("second".to_string())
+        );
+    }
+
+    #[test]
+    fn concurrent_saves_preserve_both_connections() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let path = tmp.path().join("connections.toml");
+        let first = ConnectionStore::open(path.clone());
+        let second = ConnectionStore::open(path.clone());
+        first.save("openai", entry("first")).expect("save");
+        // The second writer opened before the first save; read-before-write
+        // must reload the first writer's entry instead of clobbering it.
+        second.save("github", entry("second")).expect("save");
+        let reloaded = ConnectionStore::open(path);
+        assert!(reloaded.is_connected("openai"));
+        assert!(reloaded.is_connected("github"));
     }
 }

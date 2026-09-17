@@ -30,7 +30,8 @@ use anyhow::{Context, Result};
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
+use std::time::SystemTime;
 use toml::Table;
 use toml::Value;
 
@@ -701,9 +702,33 @@ pub struct SettingsStore {
     inner: Mutex<SettingsState>,
 }
 
+/// mtime plus length of a settings file the last time this store read it.
+/// Every public read and every read-modify-write goes through the store lock,
+/// which refreshes on fingerprint mismatch, so hand edits, another yolop
+/// process, or the codex CLI show up on next access instead of at restart.
+/// A rewrite that keeps both mtime and length identical can slip past; that
+/// is the documented staleness bound, and the codex token path re-reads
+/// explicitly on every call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FileFingerprint {
+    mtime: SystemTime,
+    len: u64,
+}
+
+fn file_fingerprint(path: &Path) -> Option<FileFingerprint> {
+    let metadata = std::fs::metadata(path).ok()?;
+    let mtime = metadata.modified().ok()?;
+    Some(FileFingerprint {
+        mtime,
+        len: metadata.len(),
+    })
+}
+
 struct SettingsState {
     base: Settings,
+    base_fingerprint: Option<FileFingerprint>,
     profile: Option<profile::ActiveProfile>,
+    profile_fingerprint: Option<FileFingerprint>,
 }
 
 impl SettingsState {
@@ -719,11 +744,14 @@ impl SettingsState {
 impl SettingsStore {
     pub fn open(path: PathBuf) -> Self {
         let settings = load_from(&path);
+        let base_fingerprint = file_fingerprint(&path);
         Self {
             path,
             inner: Mutex::new(SettingsState {
                 base: settings,
+                base_fingerprint,
                 profile: None,
+                profile_fingerprint: None,
             }),
         }
     }
@@ -731,20 +759,85 @@ impl SettingsStore {
     pub fn open_with_profile(path: PathBuf, profile_name: &str) -> Result<Self> {
         let settings = load_from(&path);
         let active_profile = profile::ActiveProfile::load(&path, profile_name)?;
+        let base_fingerprint = file_fingerprint(&path);
+        let profile_fingerprint = file_fingerprint(&active_profile.path);
         Ok(Self {
             path,
             inner: Mutex::new(SettingsState {
                 base: settings,
+                base_fingerprint,
                 profile: Some(active_profile),
+                profile_fingerprint,
             }),
         })
     }
 
     pub fn snapshot(&self) -> Settings {
-        self.inner
-            .lock()
-            .expect("settings lock poisoned")
-            .effective()
+        self.lock_fresh().effective()
+    }
+
+    /// Re-read whichever settings files changed on disk since we last looked.
+    /// Must be called with the lock held, before every read and every
+    /// read-modify-write, so writers never clobber an external change they
+    /// did not see.
+    fn refresh_locked(&self, state: &mut SettingsState) {
+        if file_fingerprint(&self.path) != state.base_fingerprint {
+            state.base = load_from(&self.path);
+            state.base_fingerprint = file_fingerprint(&self.path);
+        }
+        let Some(active) = state.profile.as_mut() else {
+            state.profile_fingerprint = None;
+            return;
+        };
+        // Clone out of the guard so the reload below cannot race the lock.
+        let overlay_path = active.path.clone();
+        let profile_name = active.name.clone();
+        if file_fingerprint(&overlay_path) == state.profile_fingerprint {
+            return;
+        }
+        match profile::ActiveProfile::load(&self.path, profile_name.as_str()) {
+            Ok(reloaded) => {
+                let new_fingerprint = file_fingerprint(&reloaded.path);
+                *active = reloaded;
+                state.profile_fingerprint = new_fingerprint;
+            }
+            Err(_) => {
+                // Keep the last good overlay when the file is unparseable;
+                // record the fingerprint so we retry only after it changes
+                // again. A deleted profile file freezes the overlay until
+                // restart, it never silently falls back to base settings.
+                state.profile_fingerprint = file_fingerprint(&overlay_path);
+            }
+        }
+    }
+
+    /// Lock the state and refresh it from disk first: the single entry point
+    /// for reads (hot reload) and for mutations (read before write).
+    fn lock_fresh(&self) -> MutexGuard<'_, SettingsState> {
+        let mut guard = self.inner.lock().expect("settings lock poisoned");
+        self.refresh_locked(&mut guard);
+        guard
+    }
+
+    /// Persist the base layer and record the new fingerprint so our own
+    /// write does not look like an external change on next access.
+    fn save_base_locked(&self, state: &mut SettingsState) -> Result<()> {
+        save_to(&self.path, &state.base)?;
+        state.base_fingerprint = file_fingerprint(&self.path);
+        Ok(())
+    }
+
+    /// Persist the profile overlay the same way. The overlay is cloned out
+    /// of the state so the atomic write cannot race the lock.
+    fn save_overlay_locked(&self, state: &mut SettingsState) -> Result<()> {
+        let Some(active) = state.profile.as_ref() else {
+            anyhow::bail!("no active profile selected");
+        };
+        let overlay_path = active.path.clone();
+        let overlay = active.overlay.clone();
+        save_profile_to(&overlay_path, &overlay)?;
+        state.profile_fingerprint = file_fingerprint(&overlay_path);
+        Ok(())
     }
 
     pub fn path(&self) -> &Path {
@@ -752,18 +845,14 @@ impl SettingsStore {
     }
 
     pub fn active_profile_name(&self) -> Option<String> {
-        self.inner
-            .lock()
-            .expect("settings lock poisoned")
+        self.lock_fresh()
             .profile
             .as_ref()
             .map(|profile| profile.name.as_str().to_string())
     }
 
     pub fn active_profile_path(&self) -> Option<PathBuf> {
-        self.inner
-            .lock()
-            .expect("settings lock poisoned")
+        self.lock_fresh()
             .profile
             .as_ref()
             .map(|profile| profile.path.clone())
@@ -775,7 +864,7 @@ impl SettingsStore {
     }
 
     pub fn source_for(&self, target: &schema::KeyTarget) -> String {
-        let guard = self.inner.lock().expect("settings lock poisoned");
+        let guard = self.lock_fresh();
         let Some(active) = &guard.profile else {
             return "global".to_string();
         };
@@ -801,9 +890,7 @@ impl SettingsStore {
     }
 
     pub fn profile_warnings(&self) -> Vec<String> {
-        self.inner
-            .lock()
-            .expect("settings lock poisoned")
+        self.lock_fresh()
             .profile
             .as_ref()
             .map(|profile| profile.warnings.clone())
@@ -815,13 +902,13 @@ impl SettingsStore {
         update_base: impl FnOnce(&mut Settings),
         update_profile: impl FnOnce(&mut profile::SettingsOverlay),
     ) -> Result<()> {
-        let mut guard = self.inner.lock().expect("settings lock poisoned");
+        let mut guard = self.lock_fresh();
         if let Some(active) = &mut guard.profile {
             update_profile(&mut active.overlay);
-            save_profile_to(&active.path, &active.overlay)
+            self.save_overlay_locked(&mut guard)
         } else {
             update_base(&mut guard.base);
-            save_to(&self.path, &guard.base)
+            self.save_base_locked(&mut guard)
         }
     }
 
@@ -851,7 +938,7 @@ impl SettingsStore {
 
     /// Clear the configured provider and its provider-specific default model.
     pub fn clear_configured_model(&self) -> Result<bool> {
-        let mut guard = self.inner.lock().expect("settings lock poisoned");
+        let mut guard = self.lock_fresh();
         let base_provider = guard.base.default_provider.clone();
         if let Some(active) = &mut guard.profile {
             let provider = active
@@ -865,7 +952,7 @@ impl SettingsStore {
             if let Some(provider) = provider {
                 active.overlay.default_models.insert(provider, None);
             }
-            save_profile_to(&active.path, &active.overlay)?;
+            self.save_overlay_locked(&mut guard)?;
             Ok(existed)
         } else {
             let provider = guard.base.default_provider.take();
@@ -873,33 +960,33 @@ impl SettingsStore {
             if let Some(provider) = provider {
                 guard.base.default_models.remove(&provider);
             }
-            save_to(&self.path, &guard.base)?;
+            self.save_base_locked(&mut guard)?;
             Ok(existed)
         }
     }
 
     pub fn set_attribution(&self, enabled: bool) -> Result<()> {
-        let mut guard = self.inner.lock().expect("settings lock poisoned");
+        let mut guard = self.lock_fresh();
         guard.base.attribution = enabled;
-        save_to(&self.path, &guard.base)
+        self.save_base_locked(&mut guard)
     }
 
     pub fn set_theme(&self, theme: Option<String>) -> Result<()> {
-        let mut guard = self.inner.lock().expect("settings lock poisoned");
+        let mut guard = self.lock_fresh();
         guard.base.theme = theme;
-        save_to(&self.path, &guard.base)
+        self.save_base_locked(&mut guard)
     }
 
     pub fn set_proactive_wake(&self, enabled: bool) -> Result<()> {
-        let mut guard = self.inner.lock().expect("settings lock poisoned");
+        let mut guard = self.lock_fresh();
         guard.base.proactive_wake = enabled;
-        save_to(&self.path, &guard.base)
+        self.save_base_locked(&mut guard)
     }
 
     pub fn set_acp_setup_page(&self, enabled: bool) -> Result<()> {
-        let mut guard = self.inner.lock().expect("settings lock poisoned");
+        let mut guard = self.lock_fresh();
         guard.base.acp_setup_page = enabled;
-        save_to(&self.path, &guard.base)
+        self.save_base_locked(&mut guard)
     }
 
     pub fn set_approval_mode(&self, mode: ApprovalMode) -> Result<()> {
@@ -959,16 +1046,16 @@ impl SettingsStore {
     }
 
     pub fn set_token(&self, provider: String, token: String) -> Result<()> {
-        let mut guard = self.inner.lock().expect("settings lock poisoned");
+        let mut guard = self.lock_fresh();
         guard.base.tokens.insert(provider, token);
-        save_to(&self.path, &guard.base)
+        self.save_base_locked(&mut guard)
     }
 
     /// Returns whether a token was actually present before removal.
     pub fn clear_token(&self, provider: &str) -> Result<bool> {
-        let mut guard = self.inner.lock().expect("settings lock poisoned");
+        let mut guard = self.lock_fresh();
         let existed = guard.base.tokens.remove(provider).is_some();
-        save_to(&self.path, &guard.base)?;
+        self.save_base_locked(&mut guard)?;
         Ok(existed)
     }
 
@@ -987,14 +1074,14 @@ impl SettingsStore {
 
     /// Returns whether a per-provider model was actually present before removal.
     pub fn clear_model(&self, provider: &str) -> Result<bool> {
-        let mut guard = self.inner.lock().expect("settings lock poisoned");
+        let mut guard = self.lock_fresh();
         let existed = if let Some(active) = &mut guard.profile {
             let existed = active.overlay.default_models.remove(provider).is_some();
-            save_profile_to(&active.path, &active.overlay)?;
+            self.save_overlay_locked(&mut guard)?;
             existed
         } else {
             let existed = guard.base.default_models.remove(provider).is_some();
-            save_to(&self.path, &guard.base)?;
+            self.save_base_locked(&mut guard)?;
             existed
         };
         Ok(existed)
@@ -1027,23 +1114,23 @@ impl SettingsStore {
 
     /// Returns whether a base URL was actually present before removal.
     pub fn clear_base_url(&self, provider: &str) -> Result<bool> {
-        let mut guard = self.inner.lock().expect("settings lock poisoned");
+        let mut guard = self.lock_fresh();
         let existed = if let Some(active) = &mut guard.profile {
             let existed = active.overlay.base_urls.remove(provider).is_some();
-            save_profile_to(&active.path, &active.overlay)?;
+            self.save_overlay_locked(&mut guard)?;
             existed
         } else {
             let existed = guard.base.base_urls.remove(provider).is_some();
-            save_to(&self.path, &guard.base)?;
+            self.save_base_locked(&mut guard)?;
             existed
         };
         Ok(existed)
     }
 
     pub fn set_codex_auth(&self, auth: CodexAuth) -> Result<()> {
-        let mut guard = self.inner.lock().expect("settings lock poisoned");
+        let mut guard = self.lock_fresh();
         guard.base.codex_auth = Some(auth);
-        save_to(&self.path, &guard.base)
+        self.save_base_locked(&mut guard)
     }
 
     /// Re-read `[codex_auth]` from disk and adopt it into the in-memory cache.
@@ -1051,41 +1138,46 @@ impl SettingsStore {
     /// Used by the Codex driver before/after refresh so a concurrent yolop
     /// process that already rotated the refresh token is not overwritten by
     /// stale in-memory credentials (OpenAI returns `refresh_token_reused`).
+    /// Re-read only the codex token from disk, adopting rotations made by the
+    /// codex CLI or another yolop process. Unlike the mtime-based refresh,
+    /// this reads the file on every call so a rotation can never hide inside
+    /// the filesystem timestamp granularity.
     pub fn refresh_codex_auth_from_disk(&self) -> Option<CodexAuth> {
+        let mut guard = self.lock_fresh();
         let from_disk = load_from(&self.path).codex_auth;
-        let mut guard = self.inner.lock().expect("settings lock poisoned");
+        guard.base_fingerprint = file_fingerprint(&self.path);
         guard.base.codex_auth = from_disk.clone();
         from_disk
     }
 
     /// Returns whether a Codex login was actually present before removal.
     pub fn clear_codex_auth(&self) -> Result<bool> {
-        let mut guard = self.inner.lock().expect("settings lock poisoned");
+        let mut guard = self.lock_fresh();
         let existed = guard.base.codex_auth.take().is_some();
-        save_to(&self.path, &guard.base)?;
+        self.save_base_locked(&mut guard)?;
         Ok(existed)
     }
 
     pub fn replace_mcp(&self, mcp: McpSettings) -> Result<()> {
-        let mut guard = self.inner.lock().expect("settings lock poisoned");
+        let mut guard = self.lock_fresh();
         guard.base.mcp = mcp;
-        save_to(&self.path, &guard.base)
+        self.save_base_locked(&mut guard)
     }
 
     /// Append a harness capability override to the ordered list of the active
     /// layer: the profile when one is selected, global settings otherwise.
     /// Returns the entry's index within that layer.
     pub fn append_capability_override(&self, entry: CapabilityOverride) -> Result<usize> {
-        let mut guard = self.inner.lock().expect("settings lock poisoned");
+        let mut guard = self.lock_fresh();
         if let Some(active) = &mut guard.profile {
             active.overlay.capabilities.push(entry);
             let index = active.overlay.capabilities.len() - 1;
-            save_profile_to(&active.path, &active.overlay)?;
+            self.save_overlay_locked(&mut guard)?;
             return Ok(index);
         }
         guard.base.capabilities.push(entry);
         let index = guard.base.capabilities.len() - 1;
-        save_to(&self.path, &guard.base)?;
+        self.save_base_locked(&mut guard)?;
         Ok(index)
     }
 
@@ -1093,13 +1185,13 @@ impl SettingsStore {
     /// a profile selected this clears the profile's list and reveals the global
     /// one; it never edits global settings behind the profile's back.
     pub fn clear_capability_overrides(&self) -> Result<()> {
-        let mut guard = self.inner.lock().expect("settings lock poisoned");
+        let mut guard = self.lock_fresh();
         if let Some(active) = &mut guard.profile {
             active.overlay.capabilities.clear();
-            return save_profile_to(&active.path, &active.overlay);
+            return self.save_overlay_locked(&mut guard);
         }
         guard.base.capabilities.clear();
-        save_to(&self.path, &guard.base)
+        self.save_base_locked(&mut guard)
     }
 
     /// Enable or disable a capability by `ref`, idempotently. Enabling
@@ -1110,7 +1202,7 @@ impl SettingsStore {
     /// enable|disable` — a targeted alternative to hand-editing the ordered
     /// override list.
     pub fn set_capability_enabled(&self, capability_ref: &str, enabled: bool) -> Result<bool> {
-        let mut guard = self.inner.lock().expect("settings lock poisoned");
+        let mut guard = self.lock_fresh();
         if guard.profile.is_some() {
             return self.set_capability_enabled_in_profile(&mut guard, capability_ref, enabled);
         }
@@ -1145,7 +1237,7 @@ impl SettingsStore {
             true
         };
         if changed {
-            save_to(&self.path, &guard.base)?;
+            self.save_base_locked(&mut guard)?;
         }
         Ok(changed)
     }
@@ -1160,7 +1252,7 @@ impl SettingsStore {
         key: &str,
         value: serde_json::Value,
     ) -> Result<()> {
-        let mut guard = self.inner.lock().expect("settings lock poisoned");
+        let mut guard = self.lock_fresh();
         if let Some(active) = &mut guard.profile {
             let overrides = &mut active.overlay.capabilities;
             let index = overrides
@@ -1174,7 +1266,7 @@ impl SettingsStore {
                 }
             };
             set_config_key(entry, key, value);
-            return save_profile_to(&active.path, &active.overlay);
+            return self.save_overlay_locked(&mut guard);
         }
         // The active (last non-remove) override for this ref, or a fresh one.
         let index = guard
@@ -1193,7 +1285,7 @@ impl SettingsStore {
             }
         };
         set_config_key(entry, key, value);
-        save_to(&self.path, &guard.base)
+        self.save_base_locked(&mut guard)
     }
 
     /// Profile-layer counterpart of [`Self::set_capability_enabled`]. Enabling
@@ -1244,7 +1336,7 @@ impl SettingsStore {
             }
         };
         if changed {
-            save_profile_to(&active.path, &active.overlay)?;
+            self.save_overlay_locked(guard)?;
         }
         Ok(changed)
     }
@@ -1960,6 +2052,55 @@ Authorization = "Bearer ${LINEAR_API_KEY}"
         assert_eq!(
             reloaded.default_models.get("openai").map(String::as_str),
             None
+        );
+    }
+
+    #[test]
+    fn hot_reload_picks_up_external_settings_edits() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let path = tmp.path().join("settings.toml");
+        let store = SettingsStore::open(path.clone());
+        store
+            .set_theme(Some("dark".to_string()))
+            .expect("set theme");
+        assert_eq!(store.snapshot().theme.as_deref(), Some("dark"));
+
+        // Simulate a hand edit or another process rewriting the file.
+        let raw = std::fs::read_to_string(&path).expect("read");
+        std::fs::write(&path, raw.replace("dark", "light-mode")).expect("write");
+        assert_eq!(store.snapshot().theme.as_deref(), Some("light-mode"));
+    }
+
+    #[test]
+    fn concurrent_writers_preserve_each_others_changes() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let path = tmp.path().join("settings.toml");
+        let first = SettingsStore::open(path.clone());
+        let second = SettingsStore::open(path.clone());
+        first
+            .set_theme(Some("dark".to_string()))
+            .expect("set theme");
+        // The second writer opened before the first write; read-before-write
+        // must reload the first writer's change instead of clobbering it.
+        second.set_proactive_wake(false).expect("set wake");
+        let reloaded = SettingsStore::open(path).snapshot();
+        assert_eq!(reloaded.theme.as_deref(), Some("dark"));
+        assert!(!reloaded.proactive_wake);
+    }
+
+    #[test]
+    fn hot_reload_picks_up_external_profile_edits() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let store = store_with_profile(tmp.path(), "triage", "approval_policy = 'never'\n");
+        assert_eq!(store.snapshot().approval_policy(), ApprovalPolicy::Never);
+        std::fs::write(
+            tmp.path().join("profiles").join("triage.toml"),
+            "approval_policy = 'untrusted'\n",
+        )
+        .expect("write");
+        assert_eq!(
+            store.snapshot().approval_policy(),
+            ApprovalPolicy::Untrusted
         );
     }
 }

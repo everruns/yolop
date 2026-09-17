@@ -99,6 +99,7 @@ announce the merge in a text-only response: a text-only response ends the turn
 and leaves the PR unmerged. Give async reviewer bots at least 2 minutes after CI turns green. Do not
 enable auto-merge — bots can post after the last push. After the merge lands,
 watch main CI for the merge commit and fix or revert promptly if it fails.
+After the merge lands and main CI is green, close out with the shipped link: the merged PR URL and the merge commit on main. Never end a ship run without handing the user the link to what shipped.
 
 ## Approval
 
