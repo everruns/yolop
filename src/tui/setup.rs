@@ -833,8 +833,8 @@ impl App {
     }
 
     /// Click support for the setup overlay option lists: a left click on an
-    /// option row selects it and confirms, the same as moving to it with the
-    /// keyboard and pressing Enter. The click is fed through tuika's
+    /// option row moves the highlight there; clicking the already-highlighted
+    /// row confirms, the same as pressing Enter. The click is fed through tuika's
     /// [`SelectState`](tuika::components::SelectState) mouse handling against
     /// the same list body the fullscreen renderer draws (panel border and
     /// padding plus the picker header lines), with the scroll window derived
@@ -929,6 +929,14 @@ impl App {
             }
             _ => return false,
         };
+        // tuika reports every row click as Submitted, so compare against the
+        // previous highlight: a click that moves the selection only selects,
+        // leaving the overlay open so the user sees the new highlight. A
+        // second click on the already-highlighted row confirms, the same as
+        // pressing Enter.
+        if index != picker.selected {
+            return true;
+        }
         match choice {
             Choice::Provider => self.confirm_provider(index).await,
             Choice::Credential(provider) => self.confirm_credential(provider, index).await,

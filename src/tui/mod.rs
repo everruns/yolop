@@ -11918,6 +11918,21 @@ flowchart TD
             modifiers: KeyModifiers::empty(),
         };
 
+        // Clicking an unselected row only moves the highlight; the overlay
+        // stays open so the user sees the new selection.
+        assert!(app.handle_setup_mouse(mouse, area).await);
+        assert!(matches!(
+            app.setup,
+            Some(SetupStep::PickEffort { selected: 0, .. })
+        ));
+
+        // Clicking the highlighted row confirms, the same as Enter.
+        let mouse = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: panel.x + 2,
+            row: panel.y + 1 + picker.header.len() as u16,
+            modifiers: KeyModifiers::empty(),
+        };
         assert!(app.handle_setup_mouse(mouse, area).await);
         assert!(app.setup.is_none());
         assert!(
