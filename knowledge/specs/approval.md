@@ -122,6 +122,33 @@ The paranoia level can be changed three ways, all writing the same setting:
   careful", "stop asking me", "yolo mode"), the `set_approval_mode` tool lets
   the model switch the level in response.
 
+## Upstream migration
+
+Everruns generalized this layer into a portable capability, `soft_approval` in
+`everruns-builtins`, with the same three levels, the same `<soft_approval>`
+block, and the same three tools. It is on by default there for the Generic and
+Platform Chat harnesses. Yolop's copy is the origin of that design, not a fork
+of it, so the two should not diverge: once a release of `everruns-builtins`
+carries the capability, yolop drops `src/capabilities/approval.rs` and
+registers the upstream one.
+
+Two seams exist for exactly that move:
+
+- **The level.** Upstream resolves it as host or session override, then
+  capability config, then `normal`. Yolop's level is central configuration in
+  `settings.toml`, not per-agent config, so it supplies an `ApprovalModeStore`
+  backed by `ConfigService` / `SettingsStore`. `set_approval_mode` then writes
+  through to `settings.toml` as it does today, `/setup approval` keeps working
+  unchanged, and the level stays cross-session.
+- **The pause.** Upstream's `PendingApprovalStore` is keyed by session, since a
+  server holds many at once. Yolop's TUI holds one session, so it reads the
+  store with that session's id where it reads the local store today. The shape
+  of what it renders, action plus question, is unchanged.
+
+What yolop keeps on its own side either way: the status-bar level, the
+`/setup approval` command, and the `/ship` pre-authorization, which are host
+surfaces rather than capability behavior.
+
 ## Non-goals
 
 - **Not a hard sandbox.** Soft approval cannot *prevent* a tool call; it asks
