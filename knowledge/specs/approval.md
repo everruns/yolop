@@ -145,6 +145,12 @@ Two seams exist for exactly that move:
   store with that session's id where it reads the local store today. The shape
   of what it renders, action plus question, is unchanged.
 
+- **The audit trail.** Upstream's tools stamp the turn and input message a
+  consent was spoken in, and leave naming the approver to the host, which is
+  the only party holding an authenticated record of who spoke. Yolop is
+  single-user and local, so the owner of the `events.jsonl` line is the
+  approver and nothing further is needed; the extra fields ride along harmless.
+
 What yolop keeps on its own side either way: the status-bar level, the
 `/setup approval` command, and the `/ship` pre-authorization, which are host
 surfaces rather than capability behavior.
