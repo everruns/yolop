@@ -832,9 +832,9 @@ impl App {
         }
     }
 
-    /// Click support for the setup overlay option lists: a left click on an
-    /// option row moves the highlight there; clicking the already-highlighted
-    /// row confirms, the same as pressing Enter. The click is fed through tuika's
+    /// Click support for the setup overlay option lists: a single left click
+    /// on an option row shows the new selection, then confirms. The click is
+    /// fed through tuika's
     /// [`SelectState`](tuika::components::SelectState) mouse handling against
     /// the same list body the fullscreen renderer draws (panel border and
     /// padding plus the picker header lines), with the scroll window derived
@@ -842,7 +842,12 @@ impl App {
     /// exactly as drawn, including windowed lists. Returns true when the click
     /// was consumed; anything outside the option rows falls through so
     /// transcript selection and status buttons keep working.
-    pub(crate) async fn handle_setup_mouse(&mut self, mouse: MouseEvent, area: Rect) -> bool {
+    pub(crate) async fn handle_setup_mouse<B: Backend>(
+        &mut self,
+        mouse: MouseEvent,
+        area: Rect,
+        terminal: &mut Terminal<B>,
+    ) -> bool {
         if !matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
             return false;
         }
@@ -929,14 +934,13 @@ impl App {
             }
             _ => return false,
         };
-        // tuika reports every row click as Submitted, so compare against the
-        // previous highlight: a click that moves the selection only selects,
-        // leaving the overlay open so the user sees the new highlight. A
-        // second click on the already-highlighted row confirms, the same as
-        // pressing Enter.
-        if index != picker.selected {
-            return true;
-        }
+        // The click already moved the highlight above. Paint one frame so the
+        // click is visible as a selection, hold it briefly, then confirm:
+        // tuika reports every row click as Submitted, so without this beat
+        // the dialog would close before the user sees what they picked. The
+        // paint is best-effort; a failed frame still confirms the click.
+        let _ = terminal.draw(|frame| draw(frame, &mut *self));
+        tokio::time::sleep(SETUP_CLICK_FLASH).await;
         match choice {
             Choice::Provider => self.confirm_provider(index).await,
             Choice::Credential(provider) => self.confirm_credential(provider, index).await,

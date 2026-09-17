@@ -87,6 +87,10 @@ const MAX_TERMINAL_IO_FAILURES: usize = 5;
 /// After the first Ctrl+C arms exit, typing does not disarm the prompt until
 /// this grace elapses so a slow second Ctrl+C still exits.
 const CTRL_C_EXIT_ARM_GRACE: Duration = Duration::from_secs(5);
+/// How long a setup-overlay mouse click keeps its new highlight on screen
+/// before confirming, so the click reads as a selection instead of the
+/// dialog vanishing under the cursor.
+const SETUP_CLICK_FLASH: Duration = Duration::from_millis(150);
 const MAX_INPUT_HEIGHT: u16 = 12;
 const RECENT_TRANSCRIPT_SOURCE_LINES: usize = 80;
 const RECENT_TRANSCRIPT_MAX_TEXT_BYTES: usize = 4_000;
@@ -2105,7 +2109,9 @@ impl App {
                         if let Some(shape) = self.update_link_pointer(mouse) {
                             let _ = pointer::write(&mut std::io::stdout(), shape);
                         }
-                        if self.setup.is_some() && self.handle_setup_mouse(mouse, area).await {
+                        if self.setup.is_some()
+                            && self.handle_setup_mouse(mouse, area, &mut *terminal).await
+                        {
                             continue;
                         }
                         if self.handle_fullscreen_scroll(mouse.kind) {
@@ -11918,23 +11924,32 @@ flowchart TD
             modifiers: KeyModifiers::empty(),
         };
 
-        // Clicking an unselected row only moves the highlight; the overlay
-        // stays open so the user sees the new selection.
-        assert!(app.handle_setup_mouse(mouse, area).await);
-        assert!(matches!(
-            app.setup,
-            Some(SetupStep::PickEffort { selected: 0, .. })
-        ));
-
-        // Clicking the highlighted row confirms, the same as Enter.
-        let mouse = MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
-            column: panel.x + 2,
-            row: panel.y + 1 + picker.header.len() as u16,
-            modifiers: KeyModifiers::empty(),
+        // A single click shows the new selection, then confirms: the handler
+        // paints the moved highlight into this terminal before proceeding.
+        let mut terminal =
+            Terminal::new(TestBackend::new(area.width, area.height)).expect("test terminal");
+        terminal.draw(|f| draw(f, &mut *app)).expect("draw");
+        let style_of = |buffer: &ratatui::buffer::Buffer, x: u16, y: u16| {
+            let cell = &buffer[(x, y)];
+            (cell.fg, cell.bg, cell.modifier)
         };
-        assert!(app.handle_setup_mouse(mouse, area).await);
+        let before = terminal.backend().buffer();
+        let highlighted = style_of(before, mouse.column, mouse.row + 3);
+        let plain = style_of(before, mouse.column, mouse.row);
+        assert_ne!(
+            highlighted, plain,
+            "selected and plain rows should paint differently"
+        );
+
+        assert!(app.handle_setup_mouse(mouse, area, &mut terminal).await);
         assert!(app.setup.is_none());
+        // The flash frame painted the clicked row with the highlight style.
+        let flash = terminal.backend().buffer();
+        assert_eq!(
+            style_of(flash, mouse.column, mouse.row),
+            highlighted,
+            "click should paint the new selection before confirming"
+        );
         assert!(
             app.lines
                 .iter()
