@@ -8,6 +8,7 @@ use serde_json::{Value, json};
 
 use super::host::SetupController;
 use super::model_list::{ModelListAction, ModelListCapability};
+use crate::config::SettingsStore;
 use crate::control::{
     CliCapability, ControlCapability, ControlRequest, ControlResponse, ControlRoute,
 };
@@ -22,13 +23,15 @@ enum ModelAction {
 }
 
 pub(crate) struct ModelCliCapability {
+    settings: Option<Arc<SettingsStore>>,
     model_list: Option<Arc<ModelListCapability>>,
     controller: Option<SetupController>,
 }
 
 impl ModelCliCapability {
-    pub(crate) fn detached() -> Self {
+    pub(crate) fn detached(settings: Arc<SettingsStore>) -> Self {
         Self {
+            settings: Some(settings),
             model_list: None,
             controller: None,
         }
@@ -36,9 +39,32 @@ impl ModelCliCapability {
 
     pub(crate) fn live(model_list: Arc<ModelListCapability>, controller: SetupController) -> Self {
         Self {
+            settings: None,
             model_list: Some(model_list),
             controller: Some(controller),
         }
+    }
+
+    /// Terminal-native show for headless `yolop model`: reports the saved
+    /// default provider and model from settings. There is no live session
+    /// here, so this is the persisted default, not a session override.
+    fn detached_show(&self) -> ToolExecutionResult {
+        let Some(settings) = self.settings.as_deref() else {
+            return ToolExecutionResult::tool_error(
+                "model status is unavailable: settings store is not configured",
+            );
+        };
+        let snapshot = settings.snapshot();
+        let provider = snapshot
+            .default_provider
+            .clone()
+            .unwrap_or_else(|| "<unset>".to_string());
+        let model = snapshot
+            .default_models
+            .get(&provider)
+            .cloned()
+            .unwrap_or_else(|| "<default>".to_string());
+        ToolExecutionResult::Success(json!({ "message": format!("{provider}/{model}") }))
     }
 
     fn command() -> Command {
@@ -103,22 +129,22 @@ impl ControlCapability for ModelCliCapability {
         };
         match action {
             ModelAction::Show => {
-                let Some(controller) = &self.controller else {
-                    return ToolExecutionResult::tool_error("model requires an attached session");
-                };
-                let choice = controller.current_choice();
-                let message = format!("{}/{}", choice.provider_name(), choice.model_id());
-                ToolExecutionResult::Success(json!({ "message": message }))
+                if let Some(controller) = &self.controller {
+                    let choice = controller.current_choice();
+                    let message = format!("{}/{}", choice.provider_name(), choice.model_id());
+                    return ToolExecutionResult::Success(json!({ "message": message }));
+                }
+                self.detached_show()
             }
             ModelAction::Use { target } => {
-                let Some(model_list) = &self.model_list else {
-                    return ToolExecutionResult::tool_error(
-                        "model use requires an attached session",
-                    );
-                };
-                model_list
-                    .execute_action(&ModelListAction::Use { model: target })
-                    .await
+                if let Some(model_list) = &self.model_list {
+                    return model_list
+                        .execute_action(&ModelListAction::Use { model: target })
+                        .await;
+                }
+                ToolExecutionResult::tool_error(
+                    "model use switches the current session model; outside a session, set the default with `yolop config model set <provider> <model>`",
+                )
             }
         }
     }
@@ -210,9 +236,16 @@ mod tests {
         );
     }
 
+    fn test_settings() -> Arc<SettingsStore> {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("settings.json");
+        std::mem::forget(dir);
+        Arc::new(SettingsStore::open(path))
+    }
+
     #[test]
     fn cli_request_targets_the_singular_control_route() {
-        let capability = ModelCliCapability::detached();
+        let capability = ModelCliCapability::detached(test_settings());
         let matches = ModelCliCapability::command()
             .try_get_matches_from([MODEL_ROUTE, "use", "openai/gpt-5"])
             .expect("model use should parse");
@@ -230,13 +263,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn detached_control_refuses_live_model_operations() {
-        let capability = ModelCliCapability::detached();
+    async fn detached_show_reports_saved_default() {
+        let settings = test_settings();
+        settings
+            .set_default_provider(Some("openai".to_string()))
+            .expect("default provider");
+        let capability = ModelCliCapability::detached(settings);
 
         let show = capability
             .execute_control(&serde_json::to_value(ModelAction::Show).unwrap())
             .await;
-        assert!(show.is_error(), "{show:?}");
+        let ToolExecutionResult::Success(value) = show else {
+            panic!("expected detached show success");
+        };
+        assert_eq!(
+            value.get("message").and_then(Value::as_str),
+            Some("openai/<default>")
+        );
+    }
+
+    #[tokio::test]
+    async fn detached_use_guides_to_config_command() {
+        let capability = ModelCliCapability::detached(test_settings());
 
         let use_model = capability
             .execute_control(
@@ -246,12 +294,18 @@ mod tests {
                 .unwrap(),
             )
             .await;
-        assert!(use_model.is_error(), "{use_model:?}");
+        let ToolExecutionResult::ToolError(message) = use_model else {
+            panic!("expected detached use error");
+        };
+        assert!(
+            message.contains("yolop config model set"),
+            "message: {message}"
+        );
     }
 
     #[test]
     fn model_use_response_renders_the_selected_model_and_detail() {
-        let capability = ModelCliCapability::detached();
+        let capability = ModelCliCapability::detached(test_settings());
         let response = ControlResponse::from_tool_result(ToolExecutionResult::Success(json!({
             "using": "review",
             "detail": "setup provider changed: OpenAI gpt-5.6-terra (current session only)"
