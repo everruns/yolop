@@ -1,5 +1,15 @@
 # Knowledge Log
 
+## 2026-09-17, Soft approval upstreamed to everruns-builtins
+
+Everruns generalized yolop's soft-approval layer into a portable
+`soft_approval` capability, on by default for its Generic and Platform Chat
+harnesses. Same levels, same prompt block, same three tools, plus two seams
+yolop needs: a host-owned `ApprovalModeStore` so the level can stay in
+`settings.toml`, and a session-keyed `PendingApprovalStore`. Recorded the
+migration in [Approval](specs/approval.md); it lands once a release of
+`everruns-builtins` carries the capability.
+
 ## 2026-09-14, Maintenance review angles second pass
 
 - [Maintenance](specs/maintenance.md): added simplicity, soundness, and
