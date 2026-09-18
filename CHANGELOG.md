@@ -10,6 +10,34 @@ mechanical `### What's Changed` list of merged PRs.
 Releases are cut via [`/release`](./.agents/skills/release/SKILL.md), which
 tags the version and publishes to crates.io and the Homebrew tap.
 
+## [0.18.3] - 2026-09-18
+
+### Highlights
+
+- Coordinator staffing: `yolop coordination spawn-workers` prints validated per-worker launch commands, and `yolop_spawn` routes agent versus session spawns.
+- Setup can log out: leave model setup without saving, and drivers log out on exit.
+- Settings and connections hot-reload; integration tests use isolated spawns.
+- TUI adopts tuika 0.12 ToolShell and drops legacy shell paths.
+
+### What's Changed
+
+* feat(coordination): add spawn-workers planner and yolop_spawn router ([#731](https://github.com/everruns/yolop/pull/731)) by @chaliy
+* fix(progress-guard): auto-submit checkpoint on mutation when saturated ([#730](https://github.com/everruns/yolop/pull/730)) by @chaliy
+* refactor(tui): adopt tuika 0.12 ToolShell, drop legacy shell paths ([#729](https://github.com/everruns/yolop/pull/729)) by @chaliy
+* chore(deps): bump everruns batch 0.28.0 follow-up widths and ids ([#728](https://github.com/everruns/yolop/pull/728)) by @chaliy
+* fix(cli): keep logs command self-contained, quote config echo value ([#727](https://github.com/everruns/yolop/pull/727)) by @chaliy
+* Bump everruns to v0.28.0 batch ([#726](https://github.com/everruns/yolop/pull/726)) by @chaliy
+* fix(tui): drop obsolete scroll-region escape from inline footer ([#725](https://github.com/everruns/yolop/pull/725)) by @chaliy
+* Hot-reload settings and connections, isolate integration spawns ([#723](https://github.com/everruns/yolop/pull/723)) by @chaliy
+* chore(deps): bump jsonschema from 0.33.0 to 0.34.0 ([#722](https://github.com/everruns/yolop/pull/722)) by @dependabot
+* chore(deps): bump the cargo-minor-and-patch group across 1 directory with 5 updates ([#721](https://github.com/everruns/yolop/pull/721)) by @dependabot
+* fix(setup): handle Enter on provider/model rows, q to quit ([#720](https://github.com/everruns/yolop/pull/720)) by @chaliy
+* feat(setup): allow logout from model setup, logout drivers on exit ([#719](https://github.com/everruns/yolop/pull/719)) by @chaliy
+* chore(maint): rustls security bump, YEP README boundary ([#718](https://github.com/everruns/yolop/pull/718)) by @chaliy
+* docs(demo): rerecord home demo as pizza rocket launch party ([#708](https://github.com/everruns/yolop/pull/708)) by @chaliy
+
+**Full Changelog**: https://github.com/everruns/yolop/compare/v0.18.2...v0.18.3
+
 ## [0.18.2] - 2026-09-14
 
 ### Highlights

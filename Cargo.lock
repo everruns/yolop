@@ -9499,7 +9499,7 @@ dependencies = [
 
 [[package]]
 name = "yolop"
-version = "0.18.2"
+version = "0.18.3"
 dependencies = [
  "agent-client-protocol",
  "anyhow",
