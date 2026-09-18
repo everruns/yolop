@@ -21,14 +21,16 @@
 //   * global    — `~/.agents/skills`                     (writable; override: YOLOP_GLOBAL_SKILLS_DIR)
 //   * system    — pre-packed, materialized once          (read-only; override: YOLOP_SYSTEM_SKILLS_DIR)
 
+use crate::SessionId;
 use crate::capabilities::narration::stable_labeled;
 use crate::control::{
     CliCapability, ControlCapability, ControlRequest, ControlResponse, ControlRoute,
 };
 use async_trait::async_trait;
 use everruns_builtins::{SkillDirResolver, SkillScope, SkillsConfig};
+use everruns_core::command::{CommandDescriptor, CommandSource};
 use everruns_core::tool_narration::{ToolNarrationPhase, arg_str, truncate};
-use everruns_core::{Capability, CapabilityStatus};
+use everruns_core::{Capability, CapabilityStatus, SessionFileSystem};
 use everruns_core::{Tool, ToolExecutionResult};
 use everruns_provider::ToolCall;
 use include_dir::{Dir, include_dir};
@@ -110,6 +112,48 @@ pub fn relative_under(path: &str, root: &str) -> Option<String> {
 /// Only disk-backed scopes whose directory resolved are included. System and
 /// environment scopes are read-only; workspace/global are writable.
 /// `${SKILL_DIR}` and display paths resolve through [`HostSkillDirResolver`].
+/// Discover user-invocable skills as ACP command descriptors.
+///
+/// This mirrors the scoped capability's precedence: earlier scopes shadow later
+/// scopes by directory name. The ACP server needs the descriptors up front,
+/// while the capability itself exposes skills only through agent tools.
+pub async fn user_invocable_commands(
+    dirs: &SkillDirs,
+    extensions: &[(String, PathBuf)],
+    fs: &dyn SessionFileSystem,
+    session_id: SessionId,
+) -> Vec<CommandDescriptor> {
+    let mut commands = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for scope in skills_config(dirs, extensions).scopes {
+        let Ok(entries) = fs.list_directory(session_id, &scope.vfs_root).await else {
+            continue;
+        };
+        for entry in entries.into_iter().filter(|entry| entry.is_directory) {
+            let skill_md = format!("{}/SKILL.md", entry.path.trim_end_matches('/'));
+            let Ok(Some(file)) = fs.read_file(session_id, &skill_md).await else {
+                continue;
+            };
+            let Some(contents) = file.content else {
+                continue;
+            };
+            let Ok(skill) = everruns_core::skill::parse_skill_md(&contents) else {
+                continue;
+            };
+            if !skill.user_invocable || !seen.insert(skill.name.clone()) {
+                continue;
+            }
+            commands.push(CommandDescriptor {
+                name: skill.name,
+                description: skill.description,
+                source: CommandSource::Skill,
+                args: Vec::new(),
+            });
+        }
+    }
+    commands
+}
+
 pub fn skills_config(dirs: &SkillDirs, extensions: &[(String, PathBuf)]) -> SkillsConfig {
     let mut scopes = vec![SkillScope::new(
         "workspace",
