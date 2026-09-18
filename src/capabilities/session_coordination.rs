@@ -46,6 +46,17 @@ const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(2);
 const INBOX_INTERVAL: Duration = Duration::from_millis(350);
 const PRESENCE_LEASE_MS: i64 = 15_000;
 const MAX_REQUEST_BYTES: usize = 32 * 1024;
+/// Upper bound for one `spawn-workers` plan. Coordinators needing more than ten
+/// reviews run the spawner again; small batches keep worker tracking readable.
+const MAX_SPAWN_WORKERS: u32 = 10;
+/// Accepted `--worktrees` values for spawned workers. `inherit` leaves the
+/// choice to each worker's profile; the rest mirror `WorktreesMode`.
+const WORKTREE_MODES: [&str; 4] = ["inherit", "auto", "always", "off"];
+/// Yolop-owned unified spawner: `agent` mode delegates to the platform
+/// `spawn_agent` primitive, `session` mode plans separate Yolop worker sessions.
+/// Kept here (not upstream) until everruns grows a matching `spawn_agent` option.
+// INCREMENTAL_PROBE_xyzzy
+pub const YOLOP_SPAWN_COMMAND: &str = "yolop_spawn";
 const MAX_SUMMARY_BYTES: usize = 8 * 1024;
 const MAX_ARTIFACTS: usize = 16;
 
@@ -837,6 +848,20 @@ impl SessionCoordinationCapability {
                     Err(error) => ToolExecutionResult::tool_error(error.to_string()),
                 }
             }
+            CoordinationAction::SpawnWorkers {
+                count,
+                profile,
+                provider,
+                model,
+                worktrees,
+            } => {
+                // No role gate: the plan is read-only launch guidance (like list).
+                // Dispatching real assignments still requires the coordinator role.
+                match spawn_workers_plan(*count, profile, provider, model, worktrees) {
+                    Ok(plan) => ToolExecutionResult::success(plan),
+                    Err(error) => ToolExecutionResult::tool_error(error),
+                }
+            }
             CoordinationAction::Status => {
                 let Some(session_id) = self.session_id else {
                     return ToolExecutionResult::tool_error(
@@ -895,7 +920,7 @@ impl Capability for SessionCoordinationCapability {
     }
 
     fn description(&self) -> &str {
-        "Discover opt-in local Yolop workers (including spawn_agent children), dispatch durable assignments with parent linkage, manage them with cancel, and return completion to the owning coordinator."
+        "Discover opt-in local Yolop workers (including spawn_agent children), plan new worker sessions with spawn-workers, dispatch durable assignments with parent linkage, manage them with cancel, and return completion to the owning coordinator."
     }
 
     fn status(&self) -> CapabilityStatus {
@@ -951,7 +976,21 @@ impl Capability for SessionCoordinationCapability {
                     "complete".into(),
                     "accept".into(),
                     "drain".into(),
+                    "spawn-workers".into(),
                 ],
+            }],
+        },
+        CommandDescriptor {
+            name: YOLOP_SPAWN_COMMAND.to_string(),
+            description: "Spawn a child worker: mode agent delegates to the spawn_agent primitive (in-process child), mode session plans separate yolop worker sessions with their own model and worktree."
+                .to_string(),
+            source: CommandSource::System,
+            args: vec![CommandArg {
+                name: "request".to_string(),
+                description: "CLI-style spawn request: --mode agent|session --task <work> [--title <t>] [--count N] [--target-session-id <id>] [--profile P] [--provider X] [--model Y] [--worktrees inherit|auto|always|off]."
+                    .to_string(),
+                required: true,
+                suggestions: vec!["--mode agent".into(), "--mode session".into()],
             }],
         }]
     }
@@ -961,6 +1000,44 @@ impl Capability for SessionCoordinationCapability {
         request: &ExecuteCommandRequest,
         _ctx: &CommandExecutionContext,
     ) -> everruns_provider::error::Result<CommandResult> {
+        if request.name == YOLOP_SPAWN_COMMAND {
+            let parsed = SpawnRequest::try_parse_from(
+                std::iter::once(YOLOP_SPAWN_COMMAND).chain(
+                    request
+                        .arguments
+                        .as_deref()
+                        .unwrap_or("")
+                        .split_ascii_whitespace(),
+                ),
+            )
+            .map_err(|error| everruns_provider::AgentLoopError::config(error.to_string()))?;
+            let task = parsed.task.join(" ");
+            let title = if parsed.title.is_empty() {
+                None
+            } else {
+                Some(parsed.title.join(" "))
+            };
+            let routed = yolop_spawn_route(
+                parsed.mode.as_deref().unwrap_or(""),
+                &task,
+                &title,
+                parsed.count,
+                &parsed.target_session_id,
+                &parsed.profile,
+                &parsed.provider,
+                &parsed.model,
+                &parsed.worktrees,
+            )
+            .map_err(everruns_provider::AgentLoopError::config)?;
+            let message = serde_json::to_string_pretty(&routed)
+                .map_err(|error| everruns_provider::AgentLoopError::config(error.to_string()))?;
+            return Ok(CommandResult {
+                success: true,
+                message,
+                error_code: None,
+                error_fields: None,
+            });
+        }
         if request.name != COORDINATION_COMMAND {
             return Err(everruns_provider::AgentLoopError::config(format!(
                 "{} cannot execute /{}",
@@ -1323,6 +1400,168 @@ fn parse_artifacts(values: &[String]) -> Result<Vec<TaskArtifact>, String> {
         .collect()
 }
 
+/// Quote a CLI value so generated launch commands stay one shell token.
+fn shell_quote(value: &str) -> String {
+    if !value.is_empty()
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/' | ':'))
+    {
+        return value.to_string();
+    }
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+fn normalize_spawn_option(
+    value: &Option<String>,
+    field: &'static str,
+) -> Result<Option<String>, String> {
+    match value {
+        None => Ok(None),
+        Some(raw) => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() || trimmed.len() > 200 {
+                return Err(format!(
+                    "coordination {field} must be 1-200 non-blank characters"
+                ));
+            }
+            Ok(Some(trimmed.to_string()))
+        }
+    }
+}
+
+/// Build a coordinator-side worker launch plan: one `yolop` session per worker
+/// that the caller starts (one terminal each) with the requested profile,
+/// provider, and model. Pure so detached CLI, live tools, and tests share one
+/// validation path; the coordinator tracks arrivals with `status` and hands out
+/// reviews with `dispatch`.
+pub fn spawn_workers_plan(
+    count: u32,
+    profile: &Option<String>,
+    provider: &Option<String>,
+    model: &Option<String>,
+    worktrees: &Option<String>,
+) -> Result<Value, String> {
+    if count == 0 || count > MAX_SPAWN_WORKERS {
+        return Err(format!(
+            "coordination spawn-workers count must be 1-{MAX_SPAWN_WORKERS} (run again for more workers)"
+        ));
+    }
+    let profile = normalize_spawn_option(profile, "profile")?;
+    let provider = normalize_spawn_option(provider, "provider")?;
+    let model = normalize_spawn_option(model, "model")?;
+    let worktrees = match worktrees {
+        None => "inherit".to_string(),
+        Some(raw) => {
+            let mode = raw.trim().to_lowercase();
+            if !WORKTREE_MODES.contains(&mode.as_str()) {
+                return Err(
+                    "coordination worktrees must be one of inherit, auto, always, off".to_string(),
+                );
+            }
+            mode
+        }
+    };
+    let mut workers = Vec::with_capacity(count as usize);
+    for index in 1..=count {
+        let mut launch_command = String::from("yolop");
+        if let Some(value) = &profile {
+            launch_command.push_str(&format!(" --profile {}", shell_quote(value)));
+        }
+        if let Some(value) = &provider {
+            launch_command.push_str(&format!(" --provider {}", shell_quote(value)));
+        }
+        if let Some(value) = &model {
+            launch_command.push_str(&format!(" --model {}", shell_quote(value)));
+        }
+        workers.push(json!({
+            "index": index,
+            "launch_command": launch_command,
+            "worktrees": worktrees,
+        }));
+    }
+    Ok(json!({
+        "status": "spawn-plan",
+        "count": count,
+        "workers": workers,
+        "worktrees": worktrees,
+        "next": "Start one worker per launch command (one terminal each) in this project, run `yolop coordination status` until they appear as live workers, then `yolop coordination dispatch --title <review> --request <scope>` once per review.",
+    }))
+}
+
+/// Route a unified spawn request. `agent` delegates to the platform
+/// `spawn_agent` primitive for in-process children (same session, same model);
+/// `session` plans separate Yolop worker sessions (own model, provider,
+/// worktree), dispatching directly when a target worker is named.
+#[allow(clippy::too_many_arguments)]
+pub fn yolop_spawn_route(
+    mode: &str,
+    task: &str,
+    title: &Option<String>,
+    count: u32,
+    target_session_id: &Option<String>,
+    profile: &Option<String>,
+    provider: &Option<String>,
+    model: &Option<String>,
+    worktrees: &Option<String>,
+) -> Result<Value, String> {
+    let mode = mode.trim();
+    if mode != "agent" && mode != "session" {
+        return Err(
+            "yolop_spawn mode must be \"agent\" or \"session\": agent spawns an in-process child, session spawns separate yolop worker sessions"
+                .to_string(),
+        );
+    }
+    if task.trim().is_empty() || task.len() > MAX_REQUEST_BYTES {
+        return Err(format!(
+            "yolop_spawn task must be 1-{MAX_REQUEST_BYTES} bytes"
+        ));
+    }
+    let title = match title {
+        Some(raw) if !raw.trim().is_empty() => bounded_nonblank(raw, "title", 200)?.to_string(),
+        _ => task
+            .split_whitespace()
+            .take(24)
+            .collect::<Vec<_>>()
+            .join(" ")
+            .chars()
+            .take(120)
+            .collect(),
+    };
+    if mode == "agent" {
+        return Ok(json!({
+            "status": "spawn-agent",
+            "mode": "agent",
+            "title": title,
+            "task": task,
+            "next": "Call the `spawn_agent` primitive with this task and title for an in-process child (same session, same model; progress shows in /background). Use mode \"session\" when the child needs a different model, provider, or worktree.",
+        }));
+    }
+    if let Some(target) = normalize_spawn_option(target_session_id, "target-session-id")? {
+        return Ok(json!({
+            "status": "spawn-session",
+            "mode": "session",
+            "title": title,
+            "task": task,
+            "target_session_id": target,
+            "next": format!(
+                "Run `yolop coordination dispatch --title {} --request <scope> --target-session-id {}` to hand this review to that worker; the worker reports back with `yolop coordination complete`.",
+                shell_quote(&title),
+                shell_quote(&target),
+            ),
+        }));
+    }
+    let plan = spawn_workers_plan(count, profile, provider, model, worktrees)?;
+    Ok(json!({
+        "status": "spawn-session",
+        "mode": "session",
+        "title": title,
+        "task": task,
+        "plan": plan,
+        "next": "Start the planned workers from `plan.workers[].launch_command` (re-run `yolop coordination spawn-workers --count N --profile P` for more), wait for `yolop coordination status`, then dispatch one review per worker.",
+    }))
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "operation", rename_all = "snake_case")]
 enum CoordinationAction {
@@ -1349,6 +1588,13 @@ enum CoordinationAction {
     },
     Accept,
     Drain,
+    SpawnWorkers {
+        count: u32,
+        profile: Option<String>,
+        provider: Option<String>,
+        model: Option<String>,
+        worktrees: Option<String>,
+    },
 }
 
 impl CoordinationAction {
@@ -1409,13 +1655,31 @@ enum CoordinationCliCommand {
     Accept,
     /// Stop the attached worker from receiving new assignments.
     Drain,
+    /// Plan worker sessions for a coordinator: prints one `yolop` launch command per worker.
+    SpawnWorkers {
+        /// Number of workers to plan (1-10).
+        #[arg(long, default_value_t = 1)]
+        count: u32,
+        /// Profile for each worker session (for example review-worker).
+        #[arg(long)]
+        profile: Option<String>,
+        /// Provider for each worker session (for example openai).
+        #[arg(long)]
+        provider: Option<String>,
+        /// Model for each worker session (for example gpt-5).
+        #[arg(long)]
+        model: Option<String>,
+        /// Worktree mode note per worker: inherit, auto, always, or off.
+        #[arg(long, default_value = "inherit")]
+        worktrees: String,
+    },
 }
 
 #[derive(Parser)]
 #[command(
     name = "coordination",
     about = "Coordinate work across local Yolop sessions",
-    after_help = "Examples:\n  Delegate an isolated test task to a specific idle session:\n    yolop coordination dispatch --title 'Add parser tests' --request 'Cover malformed frontmatter' --target-session-id <session-id>\n\n  Finish assigned work and report validation plus the changed artifact:\n    yolop coordination complete --status succeeded --summary 'Fixed parser' --validation 'cargo test' --artifact src/parser.rs\n\n  Cancel a running assignment owned by this coordinator:\n    yolop coordination cancel --task-id <task-id> --reason 'Superseded by newer plan'",
+    after_help = "Examples:\n  Delegate an isolated test task to a specific idle session:\n    yolop coordination dispatch --title 'Add parser tests' --request 'Cover malformed frontmatter' --target-session-id <session-id>\n\n  Finish assigned work and report validation plus the changed artifact:\n    yolop coordination complete --status succeeded --summary 'Fixed parser' --validation 'cargo test' --artifact src/parser.rs\n\n  Cancel a running assignment owned by this coordinator:\n    yolop coordination cancel --task-id <task-id> --reason 'Superseded by newer plan'\n\n  Plan three review workers with a shared profile:\n    yolop coordination spawn-workers --count 3 --profile review-worker",
     disable_help_subcommand = true
 )]
 struct CoordinationCommandLine {
@@ -1454,8 +1718,57 @@ impl From<CoordinationCliCommand> for CoordinationAction {
             },
             CoordinationCliCommand::Accept => Self::Accept,
             CoordinationCliCommand::Drain => Self::Drain,
+            CoordinationCliCommand::SpawnWorkers {
+                count,
+                profile,
+                provider,
+                model,
+                worktrees,
+            } => Self::SpawnWorkers {
+                count,
+                profile,
+                provider,
+                model,
+                worktrees: Some(worktrees),
+            },
         }
     }
+}
+
+#[derive(Debug, Parser)]
+#[command(
+    name = "yolop_spawn",
+    about = "Spawn a child worker: agent mode uses spawn_agent, session mode plans separate yolop sessions",
+    disable_help_subcommand = true
+)]
+struct SpawnRequest {
+    /// Spawn target: `agent` for an in-process child, `session` for separate yolop worker sessions.
+    #[arg(long)]
+    mode: Option<String>,
+    /// Work for the child, passed to spawn_agent or recorded on the dispatch.
+    #[arg(long, num_args = 1..)]
+    task: Vec<String>,
+    /// Short title for tracking (defaults to the task's first words).
+    #[arg(long, num_args = 1..)]
+    title: Vec<String>,
+    /// Workers to plan in session mode without a target (1-10).
+    #[arg(long, default_value_t = 1)]
+    count: u32,
+    /// Existing worker session for session mode (dispatches directly).
+    #[arg(long)]
+    target_session_id: Option<String>,
+    /// Profile for session-mode workers.
+    #[arg(long)]
+    profile: Option<String>,
+    /// Provider for session-mode workers.
+    #[arg(long)]
+    provider: Option<String>,
+    /// Model for session-mode workers.
+    #[arg(long)]
+    model: Option<String>,
+    /// Worktree mode note for session-mode workers.
+    #[arg(long)]
+    worktrees: Option<String>,
 }
 
 #[async_trait]
@@ -1492,7 +1805,10 @@ impl CliCapability for SessionCoordinationCapability {
     }
     async fn execute_cli(&self, request: &ControlRequest) -> anyhow::Result<()> {
         let action = serde_json::from_value::<CoordinationAction>(request.action.clone())?;
-        if !matches!(action, CoordinationAction::List { .. }) {
+        if !matches!(
+            action,
+            CoordinationAction::List { .. } | CoordinationAction::SpawnWorkers { .. }
+        ) {
             anyhow::bail!(
                 "this coordination operation requires a running Yolop session; invoke the command through that session's Bash"
             );
@@ -1532,6 +1848,26 @@ fn render_coordination_response(action: &CoordinationAction, response: &ControlR
                 worker["status"].as_str().unwrap_or("?"),
                 worker["accepting_work"].as_bool().unwrap_or(false),
             ));
+        }
+        return lines.join("\n");
+    }
+    if let CoordinationAction::SpawnWorkers { .. } = action {
+        let count = value.get("count").and_then(Value::as_u64).unwrap_or(0);
+        let mut lines = vec![format!(
+            "Spawn plan: {count} worker(s). Start one per terminal:"
+        )];
+        if let Some(workers) = value.get("workers").and_then(Value::as_array) {
+            for worker in workers {
+                let index = worker.get("index").and_then(Value::as_u64).unwrap_or(0);
+                let command = worker
+                    .get("launch_command")
+                    .and_then(Value::as_str)
+                    .unwrap_or("yolop");
+                lines.push(format!("  {index}. {command}"));
+            }
+        }
+        if let Some(next) = value.get("next").and_then(Value::as_str) {
+            lines.push(next.to_string());
         }
         return lines.join("\n");
     }
@@ -2081,5 +2417,209 @@ mod tests {
         assert!(store.next_delivery(worker, "old-host").unwrap().is_some());
         assert!(store.next_delivery(worker, "old-host").unwrap().is_none());
         assert!(store.next_delivery(worker, "new-host").unwrap().is_some());
+    }
+
+    #[test]
+    fn spawn_workers_plan_builds_numbered_launch_commands() {
+        let plan = spawn_workers_plan(
+            2,
+            &Some("review-worker".to_string()),
+            &Some("openai".to_string()),
+            &Some("gpt-5".to_string()),
+            &Some("inherit".to_string()),
+        )
+        .expect("valid spawn plan");
+        assert_eq!(plan["count"].as_u64(), Some(2));
+        let workers = plan["workers"].as_array().expect("workers array");
+        assert_eq!(workers.len(), 2);
+        let first = workers[0]["launch_command"]
+            .as_str()
+            .expect("launch command");
+        assert!(
+            first.contains("--profile review-worker"),
+            "profile flag: {first}"
+        );
+        assert!(
+            first.contains("--provider openai"),
+            "provider flag: {first}"
+        );
+        assert!(first.contains("--model gpt-5"), "model flag: {first}");
+        assert!(
+            plan["next"]
+                .as_str()
+                .unwrap()
+                .contains("coordination status")
+        );
+    }
+
+    #[test]
+    fn spawn_workers_plan_rejects_out_of_range_counts() {
+        assert!(spawn_workers_plan(0, &None, &None, &None, &None).is_err());
+        assert!(spawn_workers_plan(MAX_SPAWN_WORKERS + 1, &None, &None, &None, &None).is_err());
+    }
+
+    #[test]
+    fn spawn_workers_plan_validates_worktrees_mode() {
+        assert!(spawn_workers_plan(1, &None, &None, &None, &Some("bogus".to_string())).is_err());
+        for mode in ["inherit", "auto", "always", "off"] {
+            assert!(
+                spawn_workers_plan(1, &None, &None, &None, &Some(mode.to_string())).is_ok(),
+                "mode {mode}"
+            );
+        }
+    }
+
+    #[test]
+    fn spawn_workers_plan_quotes_shell_metacharacters() {
+        let plan = spawn_workers_plan(
+            1,
+            &Some("worker; rm -rf /".to_string()),
+            &None,
+            &None,
+            &None,
+        )
+        .expect("valid spawn plan");
+        let command = plan["workers"][0]["launch_command"].as_str().unwrap();
+        assert!(command.contains("'worker; rm -rf /'"), "quoted: {command}");
+    }
+
+    #[test]
+    fn yolop_spawn_routes_agent_and_session_modes() {
+        let agent = yolop_spawn_route(
+            "agent",
+            "Review auth session handling",
+            &None,
+            1,
+            &None,
+            &None,
+            &None,
+            &None,
+            &None,
+        )
+        .expect("agent route");
+        assert!(agent["next"].as_str().unwrap().contains("spawn_agent"));
+
+        let session = yolop_spawn_route(
+            "session",
+            "Review auth session handling",
+            &None,
+            2,
+            &None,
+            &Some("review-worker".to_string()),
+            &None,
+            &None,
+            &None,
+        )
+        .expect("session route");
+        assert!(session["next"].as_str().unwrap().contains("spawn-workers"));
+
+        let targeted = yolop_spawn_route(
+            "session",
+            "Review auth session handling",
+            &None,
+            1,
+            &Some("01K6N9Y3X7Q2M5Z8W4V6T0A2BC".to_string()),
+            &None,
+            &None,
+            &None,
+            &None,
+        )
+        .expect("targeted route");
+        assert!(targeted["next"].as_str().unwrap().contains("dispatch"));
+    }
+
+    #[test]
+    fn yolop_spawn_validates_inputs() {
+        assert!(
+            yolop_spawn_route("fleet", "task", &None, 1, &None, &None, &None, &None, &None)
+                .is_err()
+        );
+        assert!(
+            yolop_spawn_route("agent", "   ", &None, 1, &None, &None, &None, &None, &None).is_err()
+        );
+        assert!(
+            yolop_spawn_route(
+                "session", "task", &None, 0, &None, &None, &None, &None, &None
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn cli_parses_spawn_workers() {
+        let action = CoordinationAction::parse(Some(
+            "spawn-workers --count 3 --profile review-worker --worktrees always",
+        ))
+        .expect("spawn-workers parses");
+        match action {
+            CoordinationAction::SpawnWorkers {
+                count,
+                profile,
+                worktrees,
+                ..
+            } => {
+                assert_eq!(count, 3);
+                assert_eq!(profile.as_deref(), Some("review-worker"));
+                assert_eq!(worktrees.as_deref(), Some("always"));
+            }
+            other => panic!("unexpected action: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn control_spawn_workers_needs_no_coordinator_role() {
+        // The plan is read-only launch guidance (like list): any role may use it.
+        let (store, tasks) = test_store();
+        let owner = SessionId::new();
+        let worker = SessionCoordinationCapability::live(
+            store,
+            tasks,
+            owner,
+            "file:/repo".into(),
+            Some(CoordinationConfig {
+                role: CoordinationRole::Worker,
+                accept_work: true,
+            }),
+        );
+        let action = serde_json::to_value(CoordinationAction::SpawnWorkers {
+            count: 1,
+            profile: None,
+            provider: None,
+            model: None,
+            worktrees: None,
+        })
+        .expect("action serializes");
+        let ToolExecutionResult::Success(plan) = worker.execute_control(&action).await else {
+            panic!("worker-role spawn-workers failed");
+        };
+        assert_eq!(plan["count"].as_u64(), Some(1));
+    }
+
+    #[tokio::test]
+    async fn control_spawn_workers_returns_launch_plan() {
+        let (store, tasks) = test_store();
+        let owner = SessionId::new();
+        let coordinator = SessionCoordinationCapability::live(
+            store,
+            tasks,
+            owner,
+            "file:/repo".into(),
+            Some(CoordinationConfig {
+                role: CoordinationRole::Coordinator,
+                accept_work: false,
+            }),
+        );
+        let action = serde_json::to_value(CoordinationAction::SpawnWorkers {
+            count: 3,
+            profile: Some("review-worker".to_string()),
+            provider: None,
+            model: None,
+            worktrees: None,
+        })
+        .expect("action serializes");
+        let ToolExecutionResult::Success(plan) = coordinator.execute_control(&action).await else {
+            panic!("spawn-workers control call failed");
+        };
+        assert_eq!(plan["workers"].as_array().map(Vec::len), Some(3));
     }
 }

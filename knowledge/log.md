@@ -1414,3 +1414,17 @@ wording, formatting, and link fixes do not need entries.
   after its isolated run and retains provider token usage in the report. Full
   JSON reports used as durable evidence are committed under the harness's
   `reports/` directory instead of being left in its gitignored local archive.
+
+## 2026-09-17, Coordinator worker spawner
+
+- [Session coordination](specs/session-coordination.md): coordinators can now
+  plan worker sessions with `yolop coordination spawn-workers` (one launch
+  command per worker with profile, provider, and model selection, up to 10
+  per call) and route spawn requests with the yolop-owned `yolop_spawn`
+  command (mode `agent` for in-process `spawn_agent` children, mode `session`
+  for separate worker sessions). Tracking stays on presence plus dispatch
+  plus complete; the spawner is read-only planning, so dispatch still fails
+  visibly with no live workers.
+- Evals: new `management-coordination-spawn-workers` (launch-plan flow) and
+  `management-coordination-backcall` (worker complete back-call) harness
+  samples.
