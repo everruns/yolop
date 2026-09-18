@@ -8,11 +8,10 @@ description: Defines local coordinator and worker session orchestration.
 
 Status: first local transport implemented. Live opt-in workers can receive
 durable assignments and return explicit completion to a coordinator. Worker
-processes are spawned and owned outside the capability (for example with the
-`spawn_agent` tool, which creates linked child sessions with their own
-history); the capability routes to those live workers, records parent and
-child session IDs on every assignment, and lets the owning coordinator manage
-running work with cancel.
+processes are started by the operator from launch plans the capability
+generates (see Lifecycle); the capability routes to those live workers,
+records parent and child session IDs on every assignment, and lets the owning
+coordinator manage running work with cancel.
 
 ## Ownership
 
@@ -39,8 +38,11 @@ profile is the intended way to define a standing coordinator or worker.
 The capability contributes no model tools. Coordinator and worker agents use
 the ordinary Bash tool to invoke `yolop coordination ...`, matching
 extension administration and the shared attached-control contract. The
-contributed CLI covers `list`, `status`, `dispatch`, `complete`, `cancel`, `accept`, and
-`drain`; `/coordination` parses the same action grammar. Multiword payload
+contributed CLI covers `list`, `status`, `dispatch`, `complete`, `cancel`, `accept`,
+`drain`, and `spawn-workers`; `/coordination` parses the same action grammar.
+The `yolop_spawn` command routes a spawn request to the right primitive: mode
+`agent` delegates to the platform `spawn_agent` for an in-process child, mode
+`session` plans separate worker sessions (own model, provider, worktree). Multiword payload
 fields consume unquoted words until the next option. Ordinary shell quoting and
 composition are also supported by the attached endpoint.
 
@@ -48,7 +50,8 @@ The attached host derives session identity and role. `dispatch` requires a
 coordinator or combined role, `complete` requires a worker or combined role and
 an active assignment, `cancel` requires a coordinator or combined role and
 ownership of the running assignment, and availability changes operate only on
-the attached host. Detached execution is read-only and may only list presence. Attached
+the attached host. Detached execution is side-effect free and may list presence
+or plan worker launches with `spawn-workers`. Attached
 lists are project-scoped; detached lists are an operator view across projects.
 
 ## Identity and selection
@@ -100,11 +103,14 @@ Hosts heartbeat every two seconds and leases expire after fifteen seconds.
 Graceful drop marks the host offline immediately. Presence and inbox state use
 the private WAL-mode `everruns-local` database under the sessions directory.
 
-The capability does not launch worker processes in this version. Starting a
-worker requires lifecycle ownership for process identity, profile selection,
-logs, restarts, worktree cleanup, and orphan recovery. Until that owner exists,
-`yolop coordination dispatch` fails when no eligible live worker is available
-instead of creating an untracked process.
+The capability plans worker launches but does not supervise processes.
+`yolop coordination spawn-workers` generates one launch command per worker
+with the coordinator's chosen profile, provider, and model (up to 10 per
+call); starting those processes stays with the operator, so presence only ever
+reports workers that actually heartbeat. `yolop coordination dispatch` still
+fails when no eligible live worker is available instead of creating an
+untracked process. Full supervision with owned restarts, logs, worktree
+cleanup, and orphan recovery waits for a durable worker lifecycle.
 
 ## Safety constraints
 

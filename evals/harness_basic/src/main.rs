@@ -1701,6 +1701,24 @@ fn management_samples() -> Vec<Sample> {
             ]),
         ),
         management_sample(
+            "management-coordination-spawn-workers",
+            "Plan 2 yolop review workers for this project with the supported coordination spawner (profile review-worker). Report the exact launch commands.",
+            json!([
+                {"tool_call": {"name": "bash", "argument_contains": {"command": ["yolop coordination spawn-workers"]}, "success": true}},
+                {"tool_not_called": ["edit_file", "write_file"]},
+                {"response_contains": ["yolop --profile review-worker"]}
+            ]),
+        ),
+        management_sample(
+            "management-coordination-backcall",
+            "You are a worker finishing review work. Settle through the supported worker back-call (`yolop coordination complete`) and report exactly what the coordinator channel says.",
+            json!([
+                {"tool_call": {"name": "bash", "argument_contains": {"command": ["yolop coordination complete"]}}},
+                {"tool_not_called": ["edit_file", "write_file"]},
+                {"response_contains": ["requires a running Yolop session"]}
+            ]),
+        ),
+        management_sample(
             "management-command-help",
             "Privately inspect which slash commands are available in this Yolop session, then summarize them without opening the visible help screen.",
             json!([
@@ -4692,6 +4710,8 @@ mod tests {
             "management-connector-inventory",
             "management-session-inventory",
             "management-coordination-inventory",
+            "management-coordination-spawn-workers",
+            "management-coordination-backcall",
             "management-worktree-inventory",
             "management-command-help",
             "management-command-goal",

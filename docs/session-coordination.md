@@ -50,7 +50,7 @@ a running session, invoke `yolop coordination ...` through Bash. A local
 session endpoint carries raw argv to the host, whose exact Yolop executable
 parses and dispatches the typed request to the live capability.
 
-The CLI covers discovery, dispatch, completion, cancellation, and worker availability:
+The CLI covers discovery, worker planning, dispatch, completion, cancellation, and worker availability:
 
 ```bash
 yolop coordination list
@@ -61,6 +61,28 @@ yolop coordination complete --status succeeded --summary Parser fixed --validati
 yolop coordination cancel --task-id <task-id> --reason Superseded by newer plan
 yolop coordination accept
 yolop coordination drain
+yolop coordination spawn-workers --count 3 --profile review-worker
+```
+
+### Start workers for a review round
+
+A coordinator that needs more workers plans them with `spawn-workers`, which
+prints one `yolop` launch command per worker with the requested profile,
+provider, and model (up to 10 per call; run it again for more). Start one
+worker per launch command (one terminal each) in the project, wait until
+`yolop coordination status` shows them as live workers, then dispatch one
+review per worker. `spawn-workers` needs no role and works outside a session;
+dispatching still requires the coordinator role.
+
+The `yolop_spawn` command routes a spawn request to the right primitive: mode
+`agent` delegates to `spawn_agent` for an in-process child (same session, same
+model), mode `session` plans separate Yolop worker sessions with their own
+model, provider, and worktree, dispatching directly when a target worker is
+named:
+
+```text
+yolop_spawn --mode session --count 2 --profile review-worker --task <work>
+yolop_spawn --mode agent --task <work> --title <short title>
 ```
 
 Multiword `--title`, `--request`, `--summary`, and `--validation` values consume
@@ -69,7 +91,8 @@ Run `yolop coordination <operation> --help` for the canonical grammar. The
 built-in `/coordination` command accepts the same operation syntax.
 
 An attached `list` is scoped to the current Git project. A CLI outside a
-session may list all live sessions, but every other operation requires a running session
+session may list all live sessions and plan worker launches with
+`spawn-workers`, but every other operation requires a running session
 and derives its identity and role from that attachment. A caller cannot mutate
 another session by supplying a session ID.
 
@@ -80,17 +103,18 @@ invoke `yolop coordination complete` from its own attached session. Completion
 settles the task and wakes the coordinator with the durable result. Every dispatch
 records parent (coordinator) and child (worker) session IDs in the success
 payload and status views. When no worker is available, dispatch fails instead
-of creating an untracked process: spawn one with the `spawn_agent` tool (same
-project, accepting coordination work) or start a session with
-`yolop coordination accept`, then retry dispatch. The owning coordinator can
+of creating an untracked process: plan workers with
+`yolop coordination spawn-workers` and start them (or spawn one with the
+`spawn_agent` tool for an in-process child), then retry dispatch. The owning coordinator can
 cancel its running assignment with `yolop coordination cancel`, which fails
 the coordinator task, releases the worker for new work, and delivers a one-shot
 cancellation inbox message to the worker.
 
-If no eligible worker is live, dispatch fails visibly. This version does not
-launch a new operating-system process. Process supervision and pool sizing are
-kept outside the capability until Yolop has a durable worker lifecycle that can
-own restarts, logs, and cleanup.
+If no eligible worker is live, dispatch fails visibly. The spawner generates
+launch commands with the coordinator's chosen profile, provider, and model;
+starting the worker processes themselves stays with the operator, so tracking
+stays honest about which workers are actually live. Full process supervision
+with owned restarts, logs, and cleanup waits for a durable worker lifecycle.
 
 ## Delivery and safety
 
