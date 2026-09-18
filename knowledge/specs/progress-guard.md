@@ -21,7 +21,12 @@ the same tool path, even when the command text or target path was rewritten.
 
 Repeated file paging is tracked separately by normalized path and line interval,
 so changing offsets does not disguise overlapping reads as new investigations.
-Four overlapping reads without semantic navigation warn and redirect toward
+Shell paging feeds the same gate: `sed` and `awk` line ranges, `head` and `tail`
+windows, and whole-file `cat`, `less`, `more`, `nl`, `bat`, and `wc` reads are
+parsed into path intervals, and interpreter one-liners that read files (or any
+other shell command referencing workspace source) count as exploration rather
+than falling through as unclassified shell use. Four overlapping reads without
+semantic navigation warn and redirect toward `read_file` with offset and limit,
 `repo_map`, `repo_symbols`, `ast_grep`, or targeted grep. Eight reads require a
 checkpoint. This resource history survives mutations, while relevant semantic
 navigation resets its pressure, and retained intervals are bounded.
@@ -59,6 +64,12 @@ blocked before the checkpoint executor and receive the structured correction
 defined by [tool-call shape enforcement](tool-calling.md).
 
 An accepted checkpoint resets the exploration tranche and re-enables exploration.
+Acceptance also requires progress across checkpoints: the host remembers the
+mutation-plus-validation total each accepted checkpoint observed, and rejects
+the third consecutive checkpoint filed without a mutation or decisive validation
+in between. A rejected checkpoint leaves the gate closed, so restated
+checkpoints cannot reset the counters forever; the agent must run a mutation, a
+decisive validation, or ask the user a question instead.
 Submitting the same checkpoint again on unchanged state is rejected. Mutation
 or validation clears the gate directly, so the guard cannot trap a decisive
 action behind its own checkpoint. On the next reasoning step, the host removes
@@ -76,6 +87,12 @@ until the agent takes a different tool/action or submits `progress_checkpoint`.
 A failure-recovery checkpoint is accepted even when the long-exploration
 checkpoint is not active. This makes the transition enforceable without
 replaying, suppressing, or changing the failed invocation.
+
+Session tool budget. The host warns once at 400 tool calls and blocks further
+exploration at 800. Mutations and decisive validations stay allowed past the
+budget, so recovery is never deadlocked; read-only work past that point belongs
+in a fresh session opened with a summary. The budget is a backstop behind the
+tranche and overlap gates, sized so ordinary sessions never notice it.
 
 ## State and reset boundaries
 
@@ -115,5 +132,7 @@ baseline/candidate study requires at least 50% fewer calls and result bytes with
 the same completed diagnosis. Mutation, validation, long read-only diagnosis,
 persisted-session boundaries, expected diagnostic failures, distinct failure
 classes, forced recovery, and checkpoint recovery have focused negative-path
-tests. The harness study compares the equivalent-failure loop over three trials
+tests. Stuck-session regression tests cover shell paging feeding the overlap
+gate, rejection of the third consecutive checkpoint without progress, and the
+session budget warn and block boundary. The harness study compares the equivalent-failure loop over three trials
 per binary and runs five-trial diagnostic and distinct-failure controls.

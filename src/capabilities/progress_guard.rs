@@ -38,6 +38,29 @@ const REPEATED_STATUS_THRESHOLD: usize = 3;
 const WAITING_WINDOW_SIZE: usize = 8;
 const WAITING_WINDOW_THRESHOLD: usize = 4;
 const SEMANTIC_HISTORY_LIMIT: usize = 512;
+// Rejects the third consecutive checkpoint filed without a mutation or
+// decisive validation in between. Copy-pasted checkpoints must not reset the
+// gates forever; the stuck session filed 14 of them across a 1,319-call burn.
+const CHECKPOINTS_WITHOUT_PROGRESS_LIMIT: usize = 2;
+// Warns once when a session crosses this many tool calls, then blocks further
+// exploration at SESSION_TOOL_BUDGET. A backstop for loops the classifier
+// cannot see; the stuck session burned ~$10.77 over 1,319 calls.
+const SESSION_TOOL_BUDGET_WARN: usize = 400;
+const SESSION_TOOL_BUDGET: usize = 800;
+// Workspace locations and source extensions that mark a shell command as a
+// source read (see references_workspace_path and bash_path_tokens).
+const WORKSPACE_SOURCE_DIRS: [&str; 7] = [
+    "src/",
+    "crates/",
+    "tests/",
+    "knowledge/",
+    "docs/",
+    "scripts/",
+    "evals/",
+];
+const WORKSPACE_SOURCE_EXTS: [&str; 12] = [
+    ".rs", ".toml", ".md", ".py", ".ts", ".tsx", ".js", ".json", ".yaml", ".yml", ".txt", ".log",
+];
 const TRACKED_PATH_LIMIT: usize = 1024;
 const MIN_REUSABLE_RESULT_BYTES: usize = 512;
 const FAILURE_DIAGNOSTIC_LIMIT: usize = 4096;
@@ -174,6 +197,14 @@ struct SessionProgress {
     consecutive_truncated_exploration: usize,
     warning_count: usize,
     checkpoint_required: bool,
+    /// Mutation-plus-validation total the last accepted checkpoint observed.
+    /// Compared against the live total to tell checkpoints that carry
+    /// progress apart from checkpoints that only restate the loop.
+    progress_marker_at_checkpoint: usize,
+    /// Consecutive accepted checkpoints with no mutation or validation since
+    /// the previous one. The third in a row is rejected (see
+    /// CHECKPOINTS_WITHOUT_PROGRESS_LIMIT).
+    checkpoints_without_progress: usize,
     checkpoint_count: usize,
     workspace_epoch: u64,
     workspace_hashes: HashMap<String, String>,
@@ -298,6 +329,12 @@ impl SessionProgress {
                 self.exploration_warning()
             }
             ToolClass::Exploration => {
+                if self.tool_count == SESSION_TOOL_BUDGET_WARN {
+                    self.warning_count += 1;
+                    return Some(format!(
+                        "progress_guard: session tool budget warning ({SESSION_TOOL_BUDGET_WARN}/{SESSION_TOOL_BUDGET} calls). Summarize for the user and stop exploring; only mutations, decisive validations, and explicit user requests should continue past this point."
+                    ));
+                }
                 self.exploration_since_progress += 1;
                 let mut file_read_warning = None;
                 if is_semantic_navigation(tool_call) {
@@ -305,7 +342,15 @@ impl SessionProgress {
                 } else {
                     for (path, start, end) in file_read_intervals(tool_call) {
                         if file_read_warning.is_none() {
-                            file_read_warning = self.file_read_warning(path, start, end);
+                            file_read_warning = self
+                                .file_read_warning(path, start, end)
+                                .map(|warning| {
+                                    if tool_call.name == "bash" {
+                                        format!("{warning} Prefer read_file with offset/limit over shell paging (when a structured read fails, retry it once with the same path, offset, and limit before falling back to the shell); navigate with repo_map, repo_symbols, or ast_grep.")
+                                    } else {
+                                        warning
+                                    }
+                                });
                         } else {
                             let _ = self.file_read_warning(path, start, end);
                         }
@@ -319,6 +364,11 @@ impl SessionProgress {
                     return Some(warning);
                 }
                 if let Some(warning) = self.repetition_warning(tool_call) {
+                    if is_bash_file_read(tool_call) {
+                        return Some(format!(
+                            "{warning} Prefer read_file with offset/limit over shell paging; navigate with repo_map, repo_symbols, or ast_grep."
+                        ));
+                    }
                     return Some(warning);
                 }
                 self.exploration_warning().or(file_read_warning)
@@ -326,6 +376,12 @@ impl SessionProgress {
             ToolClass::Other => {
                 self.observe_waiting_signal(false);
                 self.reset_result_streaks();
+                if self.tool_count == SESSION_TOOL_BUDGET_WARN {
+                    self.warning_count += 1;
+                    return Some(format!(
+                        "progress_guard: session tool budget warning ({SESSION_TOOL_BUDGET_WARN}/{SESSION_TOOL_BUDGET} calls). Summarize for the user and stop; only mutations, decisive validations, and explicit user requests should continue past this point."
+                    ));
+                }
                 None
             }
         }
@@ -345,6 +401,22 @@ impl SessionProgress {
             reject_checkpoint(
                 result,
                 "this checkpoint is unchanged; add new evidence or take the stated decisive action",
+            );
+            return;
+        }
+        let progress_marker = self.mutation_count + self.validation_count;
+        if progress_marker == self.progress_marker_at_checkpoint {
+            self.checkpoints_without_progress += 1;
+        } else {
+            self.checkpoints_without_progress = 0;
+            self.progress_marker_at_checkpoint = progress_marker;
+        }
+        if self.checkpoints_without_progress > CHECKPOINTS_WITHOUT_PROGRESS_LIMIT {
+            self.checkpoint_required = true;
+            self.warning_count += 1;
+            reject_checkpoint(
+                result,
+                "two consecutive checkpoints were already filed without a mutation or decisive validation; run a mutation, a decisive validation, or ask the user a question instead of filing another checkpoint",
             );
             return;
         }
@@ -881,6 +953,19 @@ impl PreToolUseHook for ProgressGuardGate {
                 };
             }
             progress.failure_gate = None;
+        }
+        if progress.tool_count >= SESSION_TOOL_BUDGET
+            && matches!(classify_tool_call(&tool_call), ToolClass::Exploration)
+        {
+            progress.warning_count += 1;
+            return PreToolUseDecision::Block {
+                reason: format!(
+                    "progress_guard: session tool budget exhausted ({} calls). Summarize for the user; exploration stays blocked for this session, verify with mutations and validations or start a fresh session with a summary.",
+                    progress.tool_count
+                ),
+                user_message: None,
+                tool_call,
+            };
         }
         let blocked = progress.checkpoint_required
             && matches!(
@@ -1480,7 +1565,185 @@ fn file_read_intervals(tool_call: &ToolCall) -> Vec<(String, u64, u64)> {
             .filter_map(Value::as_str)
             .map(|path| (path.to_string(), start, end))
             .collect(),
+        "bash" => tool_call
+            .arguments
+            .get("command")
+            .and_then(Value::as_str)
+            .map(bash_file_read_intervals)
+            .unwrap_or_default(),
         _ => Vec::new(),
+    }
+}
+
+/// Reports whether a bash call reads files through shell paging, used to
+/// point shell-read warnings back at the structured tools.
+fn is_bash_file_read(tool_call: &ToolCall) -> bool {
+    tool_call
+        .arguments
+        .get("command")
+        .and_then(Value::as_str)
+        .map(|command| !bash_file_read_intervals(command).is_empty())
+        .unwrap_or(false)
+}
+
+/// Extracts (path, start, end) line intervals from common shell paging
+/// commands so shell reads feed the same overlap gate as read_file. Ranges
+/// use exclusive ends, matching the read_file offset/limit convention.
+/// Search commands (rg, grep, find) return nothing here; they keep their
+/// existing signature-based repetition tracking.
+fn bash_file_read_intervals(command: &str) -> Vec<(String, u64, u64)> {
+    let text = command.to_lowercase();
+    let verb = text.split_whitespace().next().unwrap_or("");
+    let range = match verb {
+        "sed" => bash_sed_range(&text),
+        "awk" => bash_awk_range(&text),
+        "head" => bash_head_range(&text),
+        "tail" => bash_tail_range(&text),
+        "cat" | "less" | "more" | "nl" | "bat" | "wc" => Some((1, u64::MAX)),
+        _ => None,
+    };
+    // A paging verb without a parseable range still reads the file; cover it
+    // whole rather than staying blind to it.
+    let (start, end) = range.unwrap_or((1, u64::MAX));
+    bash_path_tokens(command)
+        .into_iter()
+        .map(|path| {
+            (
+                path.strip_prefix("./").unwrap_or(&path).to_string(),
+                start,
+                end,
+            )
+        })
+        .collect()
+}
+
+/// Splits shell file-path operands out of a paging command: whitespace tokens
+/// that name a file (contain a slash or end in a known extension), minus
+/// flags, range expressions, assignments, and transient /tmp or /dev/null
+/// operands (command output, not source reads).
+fn bash_path_tokens(command: &str) -> Vec<String> {
+    command
+        .split_whitespace()
+        .map(|token| token.trim_matches(|c| matches!(c, '\'' | '"' | '`' | '(' | ')' | ';' | ',')))
+        .filter(|token| {
+            !token.is_empty()
+                && !token.starts_with('-')
+                && !token.starts_with('$')
+                && !token.contains('=')
+                && !token.starts_with("/tmp/")
+                && *token != "/dev/null"
+                && (token.contains('/')
+                    || WORKSPACE_SOURCE_EXTS.iter().any(|ext| token.ends_with(ext)))
+        })
+        .map(str::to_string)
+        .collect()
+}
+
+/// Parses sed -n 'A,Bp' (lines A..=B) and sed -n 'Ap' (line A) into an
+/// exclusive-end interval.
+fn bash_sed_range(text: &str) -> Option<(u64, u64)> {
+    let expr = text.split('\'').nth(1).or_else(|| text.split('"').nth(1))?;
+    if let Some((left, right)) = expr.split_once(',') {
+        if right.contains('p') {
+            return Some((
+                trailing_digits(left)?,
+                leading_digits(right)?.saturating_add(1),
+            ));
+        }
+        return None;
+    }
+    if expr.contains('p') {
+        let line = trailing_digits(expr.trim_end_matches('p'))?;
+        return Some((line, line.saturating_add(1)));
+    }
+    None
+}
+
+/// Parses awk 'NR>=A && NR<=B ...' bounds into an exclusive-end interval.
+/// One-sided bounds extend to the file start or end.
+fn bash_awk_range(text: &str) -> Option<(u64, u64)> {
+    let lower_inclusive = bound_after(text, "nr>=");
+    let lower_exclusive = bound_after(text, "nr>");
+    let upper_inclusive = bound_after(text, "nr<=");
+    let upper_exclusive = bound_after(text, "nr<");
+    if lower_inclusive.is_none()
+        && lower_exclusive.is_none()
+        && upper_inclusive.is_none()
+        && upper_exclusive.is_none()
+    {
+        return None;
+    }
+    let start = lower_inclusive
+        .or(lower_exclusive.map(|bound| bound.saturating_add(1)))
+        .unwrap_or(1);
+    let end = upper_inclusive
+        .map(|bound| bound.saturating_add(1))
+        .or(upper_exclusive)
+        .unwrap_or(u64::MAX);
+    Some((start, end))
+}
+
+/// Reads the first number after a marker like nr>=, skipping spaces. Markers
+/// that are prefixes of longer markers (nr< of nr<=) yield nothing when the
+/// longer one matched, because the remainder starts with '='.
+fn bound_after(text: &str, marker: &str) -> Option<u64> {
+    leading_digits(text.split(marker).nth(1)?.trim_start())
+}
+
+/// Parses head -n N (and head -N) into lines 1..=N.
+fn bash_head_range(text: &str) -> Option<(u64, u64)> {
+    let after_head = text.split("head").nth(1)?;
+    let count = after_head
+        .split("-n")
+        .nth(1)
+        .and_then(|rest| leading_digits(rest.trim_start()))
+        .or_else(|| {
+            after_head.split_whitespace().skip(1).find_map(|token| {
+                token.strip_prefix('-').and_then(|flag| {
+                    if !flag.is_empty() && flag.chars().all(|c| c.is_ascii_digit()) {
+                        leading_digits(flag)
+                    } else {
+                        None
+                    }
+                })
+            })
+        })?;
+    Some((1, count.saturating_add(1)))
+}
+
+/// Parses tail -n +A into lines A..=EOF. A trailing count without '+' reads
+/// the file end, which no interval can place, so it conservatively covers the
+/// whole file.
+fn bash_tail_range(text: &str) -> Option<(u64, u64)> {
+    let after_tail = text.split("tail").nth(1)?;
+    let rest = after_tail.split("-n").nth(1).unwrap_or(after_tail);
+    let rest = rest.trim_start();
+    if let Some(from) = rest.strip_prefix('+').and_then(leading_digits) {
+        return Some((from, u64::MAX));
+    }
+    Some((1, u64::MAX))
+}
+
+fn leading_digits(text: &str) -> Option<u64> {
+    let digits: String = text.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if digits.is_empty() {
+        None
+    } else {
+        digits.parse().ok()
+    }
+}
+
+fn trailing_digits(text: &str) -> Option<u64> {
+    let trimmed = text.trim_end_matches(|c: char| !c.is_ascii_digit());
+    let digit_len = trimmed
+        .chars()
+        .rev()
+        .take_while(|c| c.is_ascii_digit())
+        .count();
+    if digit_len == 0 {
+        None
+    } else {
+        trimmed[trimmed.len() - digit_len..].parse().ok()
     }
 }
 
@@ -1602,6 +1865,14 @@ fn is_exploration_command(command: &str) -> bool {
         "find ",
         "sed ",
         "cat ",
+        "awk ",
+        "head ",
+        "tail ",
+        "wc ",
+        "less ",
+        "more ",
+        "nl ",
+        "bat ",
         "ls",
         "git show",
         "git log",
@@ -1609,7 +1880,63 @@ fn is_exploration_command(command: &str) -> bool {
         "git grep",
         "git ls-files",
     ];
-    prefixes.iter().any(|prefix| command.starts_with(prefix))
+    if prefixes.iter().any(|prefix| command.starts_with(prefix)) {
+        return true;
+    }
+    let text = command.to_lowercase();
+    if is_interpreter_read(&text) {
+        return true;
+    }
+    !looks_like_write(&text) && references_workspace_path(&text)
+}
+
+/// Reports whether a shell command is an interpreted one-liner that reads a
+/// file, such as python3 -c "print(open('src/foo.rs').read())". The stuck
+/// session era classified anything outside a small prefix list as Other, so
+/// new readers only need to land here, not in the prefix list.
+fn is_interpreter_read(text: &str) -> bool {
+    let interpreter = [
+        "python ", "python3 ", "node ", "deno ", "ruby ", "perl ", "php ",
+    ]
+    .iter()
+    .any(|prefix| text.starts_with(prefix));
+    if !interpreter {
+        return false;
+    }
+    let reads = ["open(", "readfile", "read_file", "read_text", "readsync"]
+        .iter()
+        .any(|marker| text.contains(marker));
+    reads && !looks_like_write(text)
+}
+
+/// Write markers that disqualify a command from counting as a read, so an
+/// interpreter one-liner that writes a file is never mistaken for recon.
+fn looks_like_write(text: &str) -> bool {
+    [
+        "'w'",
+        "\"w\"",
+        "'a'",
+        "\"a\"",
+        "'+'",
+        "write(",
+        ">>",
+        "os.remove",
+        "shutil.",
+        "unlink",
+        "remove(",
+    ]
+    .iter()
+    .any(|marker| text.contains(marker))
+}
+
+/// Reports whether a shell command references workspace source files. Outside
+/// validation, mutation, waiting, and status (all classified earlier), such a
+/// reference is reconnaissance, not progress.
+fn references_workspace_path(text: &str) -> bool {
+    if WORKSPACE_SOURCE_DIRS.iter().any(|dir| text.contains(dir)) {
+        return true;
+    }
+    WORKSPACE_SOURCE_EXTS.iter().any(|ext| text.contains(ext))
 }
 
 fn inject_warning(result: &mut ToolResult, warning: String) {
@@ -3573,6 +3900,239 @@ mod tests {
                 .and_then(|value| value.get("progress_guard_warning"))
                 .and_then(Value::as_str)
                 .is_some_and(|warning| warning.contains("repeated git status"))
+        );
+    }
+    // Stuck-session regression coverage (session_01a0ad27): ~400 `awk`
+    // page reads of a single file never registered as exploration, so the
+    // overlap gate, repetition detector, and checkpoint gate all stayed blind
+    // while 14 copy-pasted checkpoints kept resetting the counters that did
+    // exist. These tests fail until shell paging feeds the same gates as
+    // read_file, checkpoints require progress, and the session budget exists.
+    fn regression_warning_text(tool_result: &ToolResult) -> String {
+        tool_result
+            .result
+            .as_ref()
+            .and_then(|value| value.get("progress_guard_warning"))
+            .and_then(|value| value.as_str())
+            .unwrap_or("")
+            .to_string()
+    }
+
+    fn regression_checkpoint_accepted(tool_result: &ToolResult) -> bool {
+        tool_result
+            .result
+            .as_ref()
+            .and_then(|value| value.get("accepted"))
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+    }
+
+    #[test]
+    fn stuck_session_shell_paging_counts_as_exploration() {
+        let path = "src/capabilities/session_coordination.rs";
+        for command in [
+            format!("awk 'NR>=750 && NR<=1250 {{printf \"%d:%s\\n\", NR, $0}}' {path}"),
+            format!("head -n 50 {path}"),
+            format!("tail -n +800 {path}"),
+            format!("less {path}"),
+            format!("more {path}"),
+            format!("wc -l {path}"),
+            format!("nl -ba {path}"),
+            format!("cat {path}"),
+            format!("python3 -c \"print(open('{path}').read())\""),
+        ] {
+            assert!(
+                is_exploration_command(&command),
+                "shell file read should count as exploration: {command}"
+            );
+        }
+        assert!(!is_exploration_command("echo hi"));
+        assert!(!is_exploration_command("sleep 300"));
+        // A write through an interpreter is not a read; it must not be
+        // misclassified as exploration.
+        assert!(!is_exploration_command(
+            "python3 -c \"open('src/generated.rs', 'w').write('x')\""
+        ));
+    }
+
+    #[tokio::test]
+    async fn stuck_session_awk_reads_feed_the_overlap_gate() {
+        let state = Arc::new(Mutex::new(ProgressGuardState::default()));
+        let hook = ProgressGuardHook {
+            state: state.clone(),
+        };
+        let context = ToolContext::new(SessionId::new());
+        let path = "src/capabilities/session_coordination.rs";
+        // Sliding windows that all contain line 400, so every later read
+        // overlaps all earlier ones without ever repeating one signature.
+        let mut warnings = Vec::new();
+        for start in [1u64, 50, 100, 150, 200, 250, 300, 350] {
+            let end = start + 499;
+            let command =
+                format!("awk 'NR>={start} && NR<={end} {{printf \"%d:%s\\n\", NR, $0}}' {path}");
+            let mut tool_result = result();
+            hook.after_exec(
+                &call("bash", json!({ "command": command })),
+                &tool_def("bash"),
+                &mut tool_result,
+                &context,
+            )
+            .await;
+            warnings.push(regression_warning_text(&tool_result));
+        }
+        assert!(
+            warnings[..3].iter().all(|warning| warning.is_empty()),
+            "early overlapping reads should stay quiet, got: {warnings:?}"
+        );
+        assert!(
+            warnings[3].contains("overlap"),
+            "fourth overlapping awk read should trip the overlap warning, got: {:?}",
+            warnings[3]
+        );
+        assert!(
+            warnings[3].contains("read_file"),
+            "overlap warning on a shell read should point back at structured reads, got: {:?}",
+            warnings[3]
+        );
+        assert!(
+            warnings[7].contains("without semantic navigation"),
+            "eighth read without navigation should require a checkpoint, got: {:?}",
+            warnings[7]
+        );
+    }
+
+    #[tokio::test]
+    async fn stuck_session_checkpoints_without_progress_stay_gated() {
+        let state = Arc::new(Mutex::new(ProgressGuardState::default()));
+        let hook = ProgressGuardHook {
+            state: state.clone(),
+        };
+        let gate = ProgressGuardGate {
+            state: state.clone(),
+        };
+        let context = ToolContext::new(SessionId::new());
+        // Mirror the real loop: each checkpoint follows a fresh gated stretch
+        // of reads, with no mutation or validation anywhere in between.
+        for (round, label) in ["first pass notes", "second pass notes", "third pass notes"]
+            .iter()
+            .enumerate()
+        {
+            for i in 0..CHECKPOINT_WITHOUT_PROGRESS_THRESHOLD {
+                let mut tool_result = result();
+                let line = round * 10_000 + i + 1;
+                hook.after_exec(
+                    &call(
+                        "bash",
+                        json!({ "command": format!("sed -n '{line},{}p' src/capabilities/session_coordination.rs", line + 9) }),
+                    ),
+                    &tool_def("bash"),
+                    &mut tool_result,
+                    &context,
+                )
+                .await;
+            }
+            let mut checkpoint = result();
+            hook.after_exec(
+                &call(PROGRESS_CHECKPOINT_TOOL, checkpoint_arguments(label)),
+                &tool_def(PROGRESS_CHECKPOINT_TOOL),
+                &mut checkpoint,
+                &context,
+            )
+            .await;
+            if round < 2 {
+                assert!(
+                    regression_checkpoint_accepted(&checkpoint),
+                    "checkpoint {} should be accepted",
+                    round + 1
+                );
+            } else {
+                assert!(
+                    checkpoint.error.is_some(),
+                    "third consecutive checkpoint without progress should be rejected, got: {}",
+                    serde_json::to_string_pretty(&checkpoint)
+                        .unwrap_or_else(|_| "<unserializable result>".to_string())
+                );
+            }
+        }
+        // Exploration must stay blocked until real progress lands.
+        assert!(
+            matches!(
+                gate.before_exec(
+                    call(
+                        "bash",
+                        json!({ "command": "sed -n '1,50p' src/capabilities/session_coordination.rs" }),
+                    ),
+                    &tool_def("bash"),
+                    &context,
+                )
+                .await,
+                PreToolUseDecision::Block { .. }
+            ),
+            "exploration should stay gated after a rejected checkpoint"
+        );
+    }
+
+    #[tokio::test]
+    async fn stuck_session_tool_budget_warns_then_blocks_exploration() {
+        // Literals must match SESSION_TOOL_BUDGET_WARN (400) and
+        // SESSION_TOOL_BUDGET (800) defined with the fix.
+        let state = Arc::new(Mutex::new(ProgressGuardState::default()));
+        let hook = ProgressGuardHook {
+            state: state.clone(),
+        };
+        let gate = ProgressGuardGate {
+            state: state.clone(),
+        };
+        let context = ToolContext::new(SessionId::new());
+        let mut warned_at = None;
+        for i in 1..=800 {
+            let mut tool_result = result();
+            hook.after_exec(
+                &call("bash", json!({ "command": "true" })),
+                &tool_def("bash"),
+                &mut tool_result,
+                &context,
+            )
+            .await;
+            if !regression_warning_text(&tool_result).is_empty() && warned_at.is_none() {
+                warned_at = Some(i);
+            }
+        }
+        assert_eq!(
+            warned_at,
+            Some(400),
+            "session budget warning should fire exactly once at 400 calls"
+        );
+        assert!(
+            matches!(
+                gate.before_exec(
+                    call(
+                        "bash",
+                        json!({ "command": "sed -n '1,50p' src/capabilities/session_coordination.rs" }),
+                    ),
+                    &tool_def("bash"),
+                    &context,
+                )
+                .await,
+                PreToolUseDecision::Block { .. }
+            ),
+            "exploration should be blocked once the session budget is exhausted"
+        );
+        // Recovery stays possible: mutations are still allowed past the budget.
+        assert!(
+            !matches!(
+                gate.before_exec(
+                    call(
+                        "write_file",
+                        json!({ "path": "src/fix.rs", "content": "fixed" }),
+                    ),
+                    &tool_def("write_file"),
+                    &context,
+                )
+                .await,
+                PreToolUseDecision::Block { .. }
+            ),
+            "mutations must stay allowed past the budget so the agent can land progress"
         );
     }
 }
