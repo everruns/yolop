@@ -68,7 +68,7 @@ use everruns_builtins::{
 // host 0.19 absorbed the session services; the standalone crate's copy writes to
 // a store this runtime no longer reads.
 use everruns_host::{
-    SESSION_CAPABILITY_ID, SESSION_STORAGE_CAPABILITY_ID, SessionCapability,
+    RuntimeHostAdapter, SESSION_CAPABILITY_ID, SESSION_STORAGE_CAPABILITY_ID, SessionCapability,
     SessionStorageCapability,
 };
 // #3111/#3119 moved the hosted and environment capability implementations out
@@ -3185,6 +3185,8 @@ pub struct StartupInfo {
     /// `ClientCommandsCapability`; the TUI also accepts `!shell` as the local
     /// shell alias for `/shell`.
     pub capability_commands: Vec<CommandDescriptor>,
+    /// User-invocable skills resolved from the effective startup scopes.
+    pub skill_commands: Vec<CommandDescriptor>,
     /// On-disk JSONL log for this session. Populated even for fresh ids
     /// so the startup banner can show where new events are being written.
     pub session_log_path: PathBuf,
@@ -4785,6 +4787,13 @@ pub async fn build_with_options(
         .map(|t| t.name().to_string())
         .collect();
     let capability_commands = runtime.list_commands(session_id).await?;
+    let skill_commands = crate::capabilities::skills::user_invocable_commands(
+        &skill_dirs,
+        &extension_skill_scopes,
+        &runtime.file_store(),
+        session_id,
+    )
+    .await;
 
     herdr.start_monitor(session_id, event_bus_typed.subscribe());
 
@@ -4827,6 +4836,7 @@ pub async fn build_with_options(
             workspace_root: effective_root,
             tool_names,
             capability_commands,
+            skill_commands,
             session_log_path: log_path,
             session_dir,
             replayed_events: replayed_events_count,

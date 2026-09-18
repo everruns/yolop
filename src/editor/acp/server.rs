@@ -306,6 +306,7 @@ struct Session {
     handles: RuntimeHandles,
     model: ModelState,
     commands: StdMutex<Vec<CommandDescriptor>>,
+    skill_commands: Vec<CommandDescriptor>,
     cancel: StdMutex<Option<oneshot::Sender<()>>>,
     /// Settings source, read for the `proactive_wake` opt-out and the
     /// approval-level ↔ session-mode mapping.
@@ -741,7 +742,9 @@ fn register_session<F: RuntimeFactory>(
     built: BuiltRuntime,
 ) -> String {
     let acp_id = built.handles.session_id.to_string();
-    let commands = built.startup.capability_commands.clone();
+    let mut commands = built.startup.capability_commands.clone();
+    let skill_commands = built.startup.skill_commands;
+    commands.extend(skill_commands.clone());
     let user_ask_store = built.user_ask_store.clone();
     let user_ask_enabled = built.user_ask_enabled;
     let task_registry = built.task_registry.clone();
@@ -750,6 +753,7 @@ fn register_session<F: RuntimeFactory>(
         handles: built.handles,
         model: built.model,
         commands: StdMutex::new(commands.clone()),
+        skill_commands,
         cancel: StdMutex::new(None),
         last_mode: StdMutex::new(built.settings.snapshot().approval_mode()),
         settings: built.settings,
@@ -1111,9 +1115,6 @@ fn notify_available_commands(peer: &Arc<Peer>, session_id: &str, commands: &[Com
 }
 
 fn command_meta(command: &CommandDescriptor) -> Option<serde_json::Map<String, Value>> {
-    if command.args.is_empty() {
-        return None;
-    }
     let source = match command.source {
         CommandSource::System => "system",
         CommandSource::Skill => "skill",
@@ -1519,7 +1520,8 @@ async fn refresh_available_commands(peer: &Arc<Peer>, session: &Arc<Session>) {
         .list_commands(session.handles.session_id)
         .await
     {
-        Ok(commands) => {
+        Ok(mut commands) => {
+            commands.extend(session.skill_commands.clone());
             *session.commands.lock().unwrap() = commands.clone();
             notify_available_commands(peer, &session.acp_id, &commands);
         }

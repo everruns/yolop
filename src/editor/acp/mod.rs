@@ -388,6 +388,14 @@ mod tests {
         ) -> agent_client_protocol::Result<agent_client_protocol::ActiveSession<'static, Agent>>
         {
             let cwd = tempfile::tempdir().expect("cwd tempdir").keep();
+            self.new_session_at(cwd).await
+        }
+
+        async fn new_session_at(
+            &self,
+            cwd: PathBuf,
+        ) -> agent_client_protocol::Result<agent_client_protocol::ActiveSession<'static, Agent>>
+        {
             self.cx
                 .build_session_from(NewSessionRequest::new(cwd))
                 .block_task()
@@ -1755,9 +1763,23 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn new_session_advertises_available_commands() {
-        let command_updates = with_sdk_client(fixed("hi"), |client| async move {
-            let mut session = client.new_session().await?;
-            collect_available_commands(&mut session).await
+        let workspace = tempfile::tempdir().expect("workspace tempdir");
+        let skill_dir = workspace.path().join(".agents/skills/release");
+        std::fs::create_dir_all(&skill_dir).expect("create skill directory");
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: release\ndescription: Prepare a release.\nuser-invocable: true\n---\n\nRelease instructions.\n",
+        )
+        .expect("write user-invocable skill");
+        let workspace = workspace.keep();
+
+        let command_workspace = workspace.clone();
+        let command_updates = with_sdk_client(fixed("hi"), move |client| {
+            let workspace = command_workspace.clone();
+            async move {
+                let mut session = client.new_session_at(workspace).await?;
+                collect_available_commands(&mut session).await
+            }
         })
         .await;
         assert!(
@@ -1781,6 +1803,30 @@ mod tests {
                 "expected /{name} to be advertised, got: {commands:?}"
             );
         }
+        let release = commands
+            .iter()
+            .find(|c| c["name"] == "release")
+            .expect("user-invocable /release skill command");
+        assert_eq!(
+            release["_meta"]["yolop.dev/command"]["source"], "skill",
+            "skills must remain identifiable when ACP has no first-class skill type"
+        );
+
+        let run = with_sdk_client(fixed("release model response"), move |client| {
+            let workspace = workspace.clone();
+            async move {
+                let mut session = client.new_session_at(workspace).await?;
+                SdkClient::prompt(&mut session, "/release").await
+            }
+        })
+        .await;
+        assert_eq!(run.stop_reason, StopReason::EndTurn);
+        assert!(
+            run.assistant_text().contains("release model response"),
+            "expected scoped skill to proceed as a normal model turn, got updates: {:?}",
+            run.updates
+        );
+
         let setup = commands
             .iter()
             .find(|c| c["name"] == "setup")
