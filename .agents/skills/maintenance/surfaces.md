@@ -13,7 +13,7 @@ gh run view <failing-run-id> --log-failed
 
 A red `main` outranks everything. Fix it first or report **blocked**. Common
 causes: a stale lockfile, a yanked crate, an upstream behavior change that
-compiles clean, a gallery or PTY regression.
+compiles clean, or a TUI regression.
 
 ## Dependency and toolchain health
 
@@ -64,10 +64,9 @@ cargo update --dry-run -p tuika -p tuika-codeformatters -p tuika-mermaid
 Heuristics: the three versions move together where they are companion
 releases, `Cargo.toml` and `Cargo.lock` agree, and no path or git dependency
 exists. Read the upstream changelog for rendering, input, and escape changes
-that compile clean. Prove TUI changes with the gallery assertion, the PTY
-test (`tests/tuika_pty.rs`), and the cross terminal workflow where the tuika
-spec requires it. Toolkit shaped fixes belong upstream first, then release,
-then bump here.
+that compile clean. Prove TUI changes with unit coverage and the tuika
+upstream gates where the tuika spec requires it. Toolkit shaped fixes belong
+upstream first, then release, then bump here.
 
 ## YEP wire compat
 
@@ -122,7 +121,7 @@ significant changes under `DATE, Title` headings.
 Walk every surface a behavior touches: CLI flags, fullscreen TUI,
 `--inline`, print mode, ACP, skills, README, `docs/`, specs, and tests. Check
 recent diffs for behaviors added to one renderer and forgotten in another.
-Every user-facing terminal state stays reachable in the gallery wiring, and
+Every user-facing terminal state stays reachable in the real TUI, and
 every status or new behavior carries a behavior anchored test with an
 explicit transcript or status line assertion.
 

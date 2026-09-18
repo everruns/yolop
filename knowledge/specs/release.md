@@ -195,7 +195,7 @@ The agent verifies before opening the release PR:
       § Agent Steps).
 - [ ] `X.Y.Z` is greater than the latest crates.io version.
 - [ ] Terminal verification current (see below) if the TUI renderer changed,
-      Tier 1 green on the release commit, Tier 3 walked by a human.
+      Tier 1 green on the release commit, Tier 2 walked by a human.
 
 Which end-to-end paths to smoke follows from what the release changed. Work out
 that impact from the commits since the previous tag, then draw the paths from
@@ -218,38 +218,21 @@ Rust, so they are green on the release commit before the release PR is cut.
 
 | Check | What it proves |
 |-------|----------------|
-| `tests/tuika_pty.rs` | Drives the real binary under a PTY and asserts against a `vt100` reference terminal: alternate-screen enter/exit, OSC 9;4 progress set **and** cleared, OSC 8 hyperlinks present when enabled and absent when not, a 24-bit truecolor RGB cell in the grid, a Braille glyph in the grid, and survival across a resize. |
-| tmux gallery capture | Runs `yolop tuika-gallery` inside real tmux at 120×40 under `TERM=tmux-256color`, gated by `scripts/assert-gallery.sh`: box chrome, a real Braille glyph, and the footer URL. This is an independent implementation *interpreting* the bytes, where `tuika_pty` parses them with a reference crate. |
+| tuika upstream gates | Alternate screen enter/leave, OSC 9;4 progress set and cleared, OSC 8 hyperlinks, truecolor, and glyphs are proven in the tuika repository (its `gallery` example and tmux gate) against the pinned version. A release that bumps tuika cites that repo's gate run. |
 
 A release PR cites the CI run for these rows. It does not list them as
 unverified, and it does not ask a human to walk them.
 
-### Tier 2, best-effort nightly
-
-`.github/workflows/nightly-terminals.yml` drives GUI emulators on a schedule and
-on `workflow_dispatch`. Being nightly, it can lag the commit being released,
-dispatch it against the tag when a cut needs the evidence fresh.
-
-| Leg | Runner | Capture | Status |
-|-----|--------|---------|--------|
-| kitty | Linux (Xvfb, software GL) | remote-control text + screenshot | Best-effort, captured as an artifact; assertion is a warning, not a failure. |
-| iTerm2 | macOS | AppleScript session text + `screencapture` | Best-effort, artifact for inspection. |
-| Windows Terminal | Windows | screenshot | Best-effort, artifact for inspection. |
-
-Promote a leg to Tier 1 once its capture is proven stable on the runner. The
-best-effort legs are `continue-on-error`, so a flaky GUI runner never reports the
-nightly red on its own.
-
-### Tier 3, the human walk
+### Tier 2, the human walk
 
 What no tier above reaches: how a specific GUI emulator *paints* the bytes. Walk
 this before a release when the TUI renderer changed. It is a checklist, not a
 record of results, tick a box only after confirming it yourself, and leave it
 unticked rather than inferring it from a green CI run.
 
-Run `cargo run -- tuika-gallery` in each terminal and check truecolor fidelity,
+Run the real TUI offline (`cargo run -- --provider llmsim`) in each terminal and check truecolor fidelity,
 wide and Braille glyph shaping, mouse-wheel scroll, and, with
-`YOLOP_HYPERLINKS=1`, that the footer URL is a clickable OSC 8 link with the
+`YOLOP_HYPERLINKS=1`, that links in assistant messages are clickable OSC 8 links with the
 surrounding text, colors, and wrapping undamaged:
 
 - [ ] Ghostty
@@ -259,9 +242,9 @@ surrounding text, colors, and wrapping undamaged:
 - [ ] Windows Terminal
 - [ ] Konsole
 
-tmux is deliberately absent: Tier 1 gates it per PR. Walk it by hand only when
-changing tmux-specific behavior, where truecolor needs `Tc`/`RGB` in
-`terminal-overrides`.
+tmux protocol coverage lives upstream in tuika's tmux gate now that the local
+gallery is gone. Walk tmux by hand only when changing tmux-specific behavior,
+where truecolor needs `Tc`/`RGB` in `terminal-overrides`.
 
 ### Terminal capability reference
 
@@ -280,7 +263,7 @@ still auto-linkified) text, so emitting it is safe everywhere. Unlike OSC 9;4,
 this one *is* worth re-checking, because it writes styled spans straight to the
 terminal: confirm the link is clickable **and** that surrounding text, colors,
 and wrapping are undamaged. In yolop it is opt-in (`YOLOP_HYPERLINKS=1`),
-default-off until Tier 3 is walked, that is what the checkboxes above verify.
+default-off until Tier 2 is walked, that is what the checkboxes above verify.
 
 ## Post-Release Verification
 

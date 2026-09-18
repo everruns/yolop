@@ -1959,15 +1959,14 @@ fn tui_combined_resize_reconstructs_composer_at_screen_bottom() {
     assert!(tui.wait_or_kill(Duration::from_secs(5)).success());
 }
 
-// ratatui 0.30.1 `Terminal::clear` snapshots the cursor with a blocking
-// `CSI 6n` query, and the inline viewport calls `clear` inside
-// `insert_before` — so viewport anchoring, every transcript flush, and exit
-// cleanup all issue cursor-position queries beyond the one
-// `Terminal::with_options` always made. A slow emulator (ttyd / xterm.js,
-// see the resize test above) may answer the first query and then go silent.
-// These paths are cosmetic: crossterm's ~2s per-query timeout must degrade
-// the session, not kill it. The two tests below pin that down for startup
-// and for exit.
+// Startup anchoring (`Terminal::with_options`) issues a blocking `CSI 6n`
+// cursor-position query. A slow emulator (ttyd / xterm.js, see the resize
+// test above) may answer the first query and then go silent. That path is
+// cosmetic: crossterm's ~2s per-query timeout must degrade the session, not
+// kill it. The startup test below pins that down. Exit cleanup, by contrast,
+// issues no query at all since tuika 0.12 (`Terminal::clear` clears the
+// owned grid), so a silent emulator cannot break teardown: the exit test
+// below pins down that cleanup stays silent too.
 
 #[test]
 fn tui_starts_when_emulator_answers_only_the_first_cursor_query() {
@@ -2008,15 +2007,15 @@ fn tui_exits_cleanly_when_emulator_stops_answering_cursor_queries() {
         tui.output_text()
     );
 
-    // The emulator goes silent after startup; Ctrl-C's terminal cleanup
-    // (`Terminal::clear`) gets no answer to its cursor query. The session
-    // was successful, so the exit must still be clean.
+    // The emulator goes silent after startup. Exit cleanup issues no cursor
+    // query since tuika 0.12, so the silent emulator must change nothing:
+    // the exit stays clean and teardown logs no warning.
     tui.set_answer_cursor_queries(false);
     tui.write_input(b"\x03\x03");
     let status = tui.wait_or_kill(Duration::from_secs(10));
     assert!(
         status.success(),
-        "double Ctrl-C should exit cleanly despite cleanup query going unanswered, got {status:?}: {}",
+        "double Ctrl-C should exit cleanly despite the silent emulator, got {status:?}: {}",
         tui.output_text()
     );
     assert!(
@@ -2037,8 +2036,8 @@ fn tui_exits_cleanly_when_emulator_stops_answering_cursor_queries() {
         .map(|entry| std::fs::read_to_string(entry.path()).expect("read interactive trace log"))
         .collect::<String>();
     assert!(
-        traces.contains("footer teardown failed"),
-        "the terminal-safe trace log should retain the teardown warning: {traces}"
+        !traces.contains("footer teardown failed"),
+        "teardown issues no cursor query since tuika 0.12, so nothing should warn: {traces}"
     );
 }
 

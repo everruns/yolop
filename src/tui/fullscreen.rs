@@ -22,10 +22,8 @@
 //! The activity rail is the one shared painter: it is itself a native tuika
 //! view, reused verbatim by inline mode so its dock/drawer chrome cannot drift.
 
-use ratatui::Frame;
-use ratatui::layout::{Position, Rect};
-use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
+use tuika::term::terminal::Frame;
+use tuika::ui::{Color, Line, Modifier, Position, Rect, Span, Style};
 
 use tuika::components::{
     Boxed, Rule, Scroll, SelectList, SelectState, Spacer, Text, TextInput, TextInputState,

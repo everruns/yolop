@@ -8,8 +8,10 @@ use crate::tui::session_tasks_view::{
     ActivityRail, ActivityRailRow, ActivityStatus, ActivityTaskKind,
 };
 use tuika::components::{Scroll, Text};
+use tuika::term::terminal::Frame;
+use tuika::ui::{Buffer, Cell, Position};
 use tuika::width::str_cols;
-use tuika::{Element, Padding, view};
+use tuika::{Dimension, Element, Item, LayoutStyle, Padding, Size, solve, view};
 
 pub(crate) const STATUS_SEPARATOR_HEIGHT: u16 = 1;
 
@@ -42,7 +44,7 @@ impl StreamKind {
     }
 }
 
-pub(crate) fn draw(f: &mut ratatui::Frame, app: &mut App) {
+pub(crate) fn draw(f: &mut Frame<'_>, app: &mut App) {
     if app.render_mode.is_fullscreen() {
         super::fullscreen::draw(f, app);
     } else {
@@ -50,7 +52,7 @@ pub(crate) fn draw(f: &mut ratatui::Frame, app: &mut App) {
     }
 }
 
-pub(super) fn draw_shared(f: &mut ratatui::Frame, app: &mut App) {
+pub(super) fn draw_shared(f: &mut Frame<'_>, app: &mut App) {
     let area = f.area();
     // Inline viewports cannot place a true full-screen modal above terminal
     // scrollback. Treat overlays as sheets that own this complete viewport so
@@ -144,16 +146,21 @@ impl ChromeLayout {
         preview_visible: bool,
     ) -> Self {
         let preview_height = u16::from(input_height == 1 && preview_visible);
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(preview_height),
-                Constraint::Length(1),
-                Constraint::Length(input_height),
-                Constraint::Length(STATUS_SEPARATOR_HEIGHT),
-                Constraint::Length(status_rows),
-            ])
-            .split(area);
+        // The status separator yields its row when the terminal runs short,
+        // matching the old solver: the status block stays visible instead.
+        let mut status_separator = Item::new(Dimension::Fixed(STATUS_SEPARATOR_HEIGHT), Size::ZERO);
+        status_separator.style.shrink = 1;
+        let chunks = solve(
+            area,
+            &LayoutStyle::column(),
+            &[
+                Item::new(Dimension::Fixed(preview_height), Size::ZERO),
+                Item::new(Dimension::Fixed(1), Size::ZERO),
+                Item::new(Dimension::Fixed(input_height), Size::ZERO),
+                status_separator,
+                Item::new(Dimension::Fixed(status_rows), Size::ZERO),
+            ],
+        );
         Self {
             area,
             preview: chunks[0],
@@ -225,15 +232,74 @@ fn chrome_fixed_rows(input_height: u16, status_rows: u16, preview_visible: bool)
         .saturating_add(status_rows)
 }
 
-pub(crate) fn clear_transcript_viewport(f: &mut ratatui::Frame, area: Rect) {
+/// Reset every cell in `area` to the default, the tuika 0.12 equivalent of
+/// ratatui's `Clear` widget.
+fn clear_rect(buf: &mut Buffer, area: Rect) {
+    for y in area.y..area.bottom() {
+        for x in area.x..area.right() {
+            buf[Position::new(x, y)] = Cell::default();
+        }
+    }
+}
+
+/// Paint pre-built lines the way ratatui `Paragraph` without wrap or scroll
+/// did: left-aligned, truncated at the area edge.
+fn paint_lines(f: &mut Frame<'_>, area: Rect, lines: Vec<Line<'static>>) {
+    let theme = super::fullscreen::yolop_theme();
+    tuika::paint(f.buffer_mut(), area, &theme, &Text::new(lines), &[]);
+}
+
+/// Draw an overlay panel border pixel-identical to the old ratatui `Block`
+/// with `Borders::ALL`: square corners over a panel background fill.
+/// (Integration tests assert the corner glyphs, so the rounded `Boxed`
+/// component cannot be used here.)
+fn draw_panel_box(f: &mut Frame<'_>, panel: Rect, style: Style) {
+    let buf = f.buffer_mut();
+    buf.set_style(panel, style);
+    if panel.width >= 2 && panel.height >= 2 {
+        let x0 = panel.x;
+        let x1 = panel.x + panel.width - 1;
+        let y0 = panel.y;
+        let y1 = panel.y + panel.height - 1;
+        for x in x0..=x1 {
+            buf[Position::new(x, y0)].set_symbol("\u{2500}");
+            buf[Position::new(x, y1)].set_symbol("\u{2500}");
+        }
+        for y in y0..=y1 {
+            buf[Position::new(x0, y)].set_symbol("\u{2502}");
+            buf[Position::new(x1, y)].set_symbol("\u{2502}");
+        }
+        buf[Position::new(x0, y0)].set_symbol("\u{250c}");
+        buf[Position::new(x1, y0)].set_symbol("\u{2510}");
+        buf[Position::new(x0, y1)].set_symbol("\u{2514}");
+        buf[Position::new(x1, y1)].set_symbol("\u{2518}");
+    }
+}
+
+/// Paint panel body lines over the panel background, the way ratatui
+/// `Paragraph::new(lines).style(style)` did: the style sits beneath every
+/// span's own style.
+fn paint_panel_body(f: &mut Frame<'_>, inner: Rect, lines: Vec<Line<'static>>, style: Style) {
+    let theme = super::fullscreen::yolop_theme();
+    let lines: Vec<Line<'static>> = lines
+        .into_iter()
+        .map(|mut line| {
+            line.style = style.patch(line.style);
+            line
+        })
+        .collect();
+    tuika::paint(f.buffer_mut(), inner, &theme, &Text::new(lines), &[]);
+}
+
+pub(crate) fn clear_transcript_viewport(f: &mut Frame<'_>, area: Rect) {
     if area.width == 0 || area.height == 0 {
         return;
     }
 
-    f.render_widget(Clear, area);
+    clear_rect(f.buffer_mut(), area);
 }
 
-pub(crate) fn draw_recent_transcript(f: &mut ratatui::Frame, area: Rect, app: &App) {
+pub(crate) fn draw_recent_transcript(f: &mut Frame<'_>, area: Rect, app: &App) {
     if area.width < 4 || area.height == 0 {
         return;
     }
@@ -259,7 +325,7 @@ pub(crate) fn draw_recent_transcript(f: &mut ratatui::Frame, area: Rect, app: &A
         height: rendered_height,
         ..inner
     };
-    f.render_widget(Paragraph::new(rendered), render_area);
+    paint_lines(f, render_area, rendered);
 }
 
 pub(crate) fn recent_transcript_lines(
@@ -411,7 +477,7 @@ pub(crate) fn bounded_recent_chat_line(chat: &ChatLine) -> ChatLine {
 /// against.
 #[cfg(test)]
 pub(crate) fn draw_chrome(
-    f: &mut ratatui::Frame,
+    f: &mut Frame<'_>,
     area: Rect,
     input_height: u16,
     state: &ViewState,
@@ -435,7 +501,7 @@ pub(crate) fn chrome_preview_visible(state: &ViewState) -> bool {
 /// The preview row multiplexes (in priority order) the Ctrl+R reverse-search
 /// prompt, the `@`/command suggestions, and the streaming preview. Shared by the
 /// inline chrome and the full-screen renderer so both show the same popups.
-pub(crate) fn draw_preview_slot(f: &mut ratatui::Frame, area: Rect, state: &ViewState) {
+pub(crate) fn draw_preview_slot(f: &mut Frame<'_>, area: Rect, state: &ViewState) {
     if let Some(search) = &state.history_search {
         draw_history_search(f, area, search);
     } else if state.command_suggestions.is_empty() {
@@ -460,14 +526,14 @@ pub(crate) fn preview_slot_line(state: &ViewState, width: u16) -> Option<Line<'s
     }
 }
 
-pub(crate) fn draw_chrome_layout(f: &mut ratatui::Frame, layout: ChromeLayout, state: &ViewState) {
+pub(crate) fn draw_chrome_layout(f: &mut Frame<'_>, layout: ChromeLayout, state: &ViewState) {
     draw_preview_slot(f, layout.preview, state);
     draw_message_separator(f, layout.message_separator, state);
     draw_status_separator(f, layout.status_separator);
     draw_session_status(f, layout.session_status, state);
 }
 
-pub(crate) fn draw_setup_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) {
+pub(crate) fn draw_setup_overlay(f: &mut Frame<'_>, area: Rect, app: &App) {
     if app.setup.is_none() || area.width == 0 || area.height == 0 {
         return;
     }
@@ -475,12 +541,9 @@ pub(crate) fn draw_setup_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) 
     if panel.width == 0 || panel.height == 0 {
         return;
     }
-    f.render_widget(Clear, area);
-    f.render_widget(Clear, panel);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .style(Style::default().bg(PANEL_BG).fg(TEXT_PRIMARY));
-    f.render_widget(block, panel);
+    clear_rect(f.buffer_mut(), area);
+    clear_rect(f.buffer_mut(), panel);
+    draw_panel_box(f, panel, Style::default().bg(PANEL_BG).fg(TEXT_PRIMARY));
     let inner = Rect {
         x: panel.x.saturating_add(2),
         y: panel.y.saturating_add(1),
@@ -488,10 +551,7 @@ pub(crate) fn draw_setup_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) 
         height: panel.height.saturating_sub(2),
     };
     let (lines, cursor) = setup_overlay_content(app);
-    f.render_widget(
-        Paragraph::new(lines).style(Style::default().bg(PANEL_BG)),
-        inner,
-    );
+    paint_panel_body(f, inner, lines, Style::default().bg(PANEL_BG));
     if let Some((row, col)) = cursor
         && inner.height > 0
         && inner.width > 0
@@ -572,7 +632,7 @@ pub(crate) fn ask_overlay_content(ask: &PendingAsk) -> (Vec<Line<'static>>, (usi
 
 /// Overlay for an extension `ui/ask` prompt: the question plus a live echo of
 /// the answer being typed. Owns the viewport like the setup overlay.
-pub(crate) fn draw_ask_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) {
+pub(crate) fn draw_ask_overlay(f: &mut Frame<'_>, area: Rect, app: &App) {
     let Some(ask) = app.pending_ask.as_ref() else {
         return;
     };
@@ -583,12 +643,9 @@ pub(crate) fn draw_ask_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) {
     if panel.width == 0 || panel.height == 0 {
         return;
     }
-    f.render_widget(Clear, area);
-    f.render_widget(Clear, panel);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .style(Style::default().bg(PANEL_BG).fg(TEXT_PRIMARY));
-    f.render_widget(block, panel);
+    clear_rect(f.buffer_mut(), area);
+    clear_rect(f.buffer_mut(), panel);
+    draw_panel_box(f, panel, Style::default().bg(PANEL_BG).fg(TEXT_PRIMARY));
     let inner = Rect {
         x: panel.x.saturating_add(2),
         y: panel.y.saturating_add(1),
@@ -596,10 +653,7 @@ pub(crate) fn draw_ask_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) {
         height: panel.height.saturating_sub(2),
     };
     let (lines, (cursor_row, cursor_col)) = ask_overlay_content(ask);
-    f.render_widget(
-        Paragraph::new(lines).style(Style::default().bg(PANEL_BG)),
-        inner,
-    );
+    paint_panel_body(f, inner, lines, Style::default().bg(PANEL_BG));
     // Park the cursor after the typed value.
     if inner.width > 0 && inner.height > cursor_row as u16 {
         f.set_cursor_position((
@@ -612,14 +666,14 @@ pub(crate) fn draw_ask_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) {
 }
 
 /// Paint the flat activity rail shared by the inline and full-screen modes.
-pub(crate) fn draw_activity_rail(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+pub(crate) fn draw_activity_rail(f: &mut Frame<'_>, area: Rect, app: &mut App) {
     if app.background_panel.is_none() {
         return;
     }
     if area.width == 0 || area.height == 0 {
         return;
     }
-    f.render_widget(Clear, area);
+    clear_rect(f.buffer_mut(), area);
     let rail = activity_rail_view(app, area.width, area.height);
     let theme = super::fullscreen::yolop_theme();
     tuika::paint(f.buffer_mut(), area, &theme, rail.as_ref(), &[]);
@@ -1494,27 +1548,25 @@ pub(crate) fn push_setup_error(lines: &mut Vec<Line<'static>>, error: Option<&st
     }
 }
 
-pub(crate) fn draw_suggestions(
-    f: &mut ratatui::Frame,
-    area: Rect,
-    suggestions: &[CommandSuggestion],
-) {
+pub(crate) fn draw_suggestions(f: &mut Frame<'_>, area: Rect, suggestions: &[CommandSuggestion]) {
     if area.height == 0 || area.width == 0 {
         return;
     }
-    f.render_widget(
-        Paragraph::new(suggestion_preview_line(suggestions, area.width)),
+    paint_lines(
+        f,
         area,
+        vec![suggestion_preview_line(suggestions, area.width)],
     );
 }
 
-pub(crate) fn draw_history_search(f: &mut ratatui::Frame, area: Rect, search: &HistorySearchView) {
+pub(crate) fn draw_history_search(f: &mut Frame<'_>, area: Rect, search: &HistorySearchView) {
     if area.height == 0 || area.width == 0 {
         return;
     }
-    f.render_widget(
-        Paragraph::new(history_search_preview_line(search, area.width)),
+    paint_lines(
+        f,
         area,
+        vec![history_search_preview_line(search, area.width)],
     );
 }
 
@@ -1606,14 +1658,14 @@ pub(crate) fn stream_preview_line(state: &ViewState, width: u16) -> Option<Line<
     ]))
 }
 
-pub(crate) fn draw_stream_preview(f: &mut ratatui::Frame, area: Rect, state: &ViewState) {
+pub(crate) fn draw_stream_preview(f: &mut Frame<'_>, area: Rect, state: &ViewState) {
     if area.height == 0 {
         return;
     }
     let Some(line) = stream_preview_line(state, area.width) else {
         return;
     };
-    f.render_widget(Paragraph::new(line), area);
+    paint_lines(f, area, vec![line]);
 }
 
 /// Keep the last `max_chars` of `text`. Streaming preview reads better
@@ -1791,7 +1843,7 @@ fn append_work_summary<'a>(lines: &mut Vec<Line<'a>>, text: &str, inner_width: u
         Span::styled(rest.to_string(), Style::default().fg(TEXT_MUTED)),
     ];
     let line = Line::from(first);
-    if line.width() <= inner_width {
+    if usize::from(line.width()) <= inner_width {
         lines.push(line);
         return;
     }
@@ -2163,22 +2215,14 @@ pub(crate) fn separator_line(mut title: Line<'static>, width: u16, style: Style)
     title
 }
 
-pub(crate) fn draw_separator(
-    f: &mut ratatui::Frame,
-    area: Rect,
-    title: Line<'static>,
-    style: Style,
-) {
+pub(crate) fn draw_separator(f: &mut Frame<'_>, area: Rect, title: Line<'static>, style: Style) {
     if area.height == 0 {
         return;
     }
-    f.render_widget(
-        Paragraph::new(separator_line(title, area.width, style)),
-        area,
-    );
+    paint_lines(f, area, vec![separator_line(title, area.width, style)]);
 }
 
-pub(crate) fn draw_input(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+pub(crate) fn draw_input(f: &mut Frame<'_>, area: Rect, app: &mut App) {
     let area = inset_x(area, 0);
     let prompt_width = area.width.min(2);
     let prompt_area = Rect {
@@ -2190,14 +2234,15 @@ pub(crate) fn draw_input(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         width: area.width.saturating_sub(prompt_width),
         ..area
     };
-    f.render_widget(
-        Paragraph::new(Span::styled(
+    paint_lines(
+        f,
+        prompt_area,
+        vec![Line::from(Span::styled(
             "> ",
             Style::default()
                 .fg(ACCENT_BLUE)
                 .add_modifier(Modifier::BOLD),
-        )),
-        prompt_area,
+        ))],
     );
     // Render the shared composer through tuika's TextInput view — the same
     // component and word-wrap the full-screen renderer uses, so the two modes
@@ -2210,7 +2255,7 @@ pub(crate) fn draw_input(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
     draw_input_cursor(f, input_area, app);
 }
 
-pub(crate) fn draw_input_cursor(f: &mut ratatui::Frame, area: Rect, app: &App) {
+pub(crate) fn draw_input_cursor(f: &mut Frame<'_>, area: Rect, app: &App) {
     if app.setup.is_some() {
         return;
     }
@@ -2288,7 +2333,7 @@ pub(crate) fn format_elapsed(secs: u64) -> String {
     }
 }
 
-pub(crate) fn draw_message_separator(f: &mut ratatui::Frame, area: Rect, state: &ViewState) {
+pub(crate) fn draw_message_separator(f: &mut Frame<'_>, area: Rect, state: &ViewState) {
     draw_separator(
         f,
         area,
@@ -2297,7 +2342,7 @@ pub(crate) fn draw_message_separator(f: &mut ratatui::Frame, area: Rect, state: 
     );
 }
 
-pub(crate) fn draw_status_separator(f: &mut ratatui::Frame, area: Rect) {
+pub(crate) fn draw_status_separator(f: &mut Frame<'_>, area: Rect) {
     draw_separator(f, area, Line::from(""), Style::default().fg(ACCENT_GOLD));
 }
 
@@ -2330,8 +2375,8 @@ pub(crate) fn fullscreen_status_layout(state: &ViewState, width: u16) -> Fullscr
     section_status_layout(&state.presentation.expanded_status_sections(), width)
 }
 
-pub(crate) fn draw_session_status(f: &mut ratatui::Frame, area: Rect, state: &ViewState) {
-    f.render_widget(Paragraph::new(session_status_lines(state)), area);
+pub(crate) fn draw_session_status(f: &mut Frame<'_>, area: Rect, state: &ViewState) {
+    paint_lines(f, area, session_status_lines(state));
 }
 
 fn linear_status_layout(lines: &[StatusLine], width: u16) -> FullscreenStatusLayout {

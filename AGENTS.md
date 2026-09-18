@@ -145,7 +145,7 @@ rendering, terminal escapes, screen modes, belongs in
 [everruns/tuika](https://github.com/everruns/tuika), not here; what belongs here
 is how yolop *composes* it. Land a needed toolkit change there, release it, then
 bump the version, a git dependency would make yolop unpublishable.
-`tests/tuika_pty.rs` stays because it drives the `yolop` binary. See [`knowledge/specs/tuika.md`](knowledge/specs/tuika.md).
+Terminal protocol verification lives upstream with tuika's own gallery and tmux gate. See [`knowledge/specs/tuika.md`](knowledge/specs/tuika.md).
 
 ## Upstream relationship
 
