@@ -110,8 +110,9 @@ impl TraceExporter {
             (f, p) if PAIRED_FAMILIES.contains(&f) && is_terminal_phase(p) => {
                 self.close_span(&parsed)
             }
-            // `llm.generation` is a point event: a zero-duration span under the
-            // turn, carrying model/token attributes.
+            // `llm.generation` is a point event under the turn, carrying
+            // model/token attributes. Its span covers `metadata.duration_ms`
+            // when the host reports one, so Logfire can derive tok/s.
             ("llm", _) => self.point_span(&parsed),
             _ => {}
         }
@@ -200,13 +201,16 @@ impl TraceExporter {
         }
     }
 
-    /// Start a zero-duration span at the event's timestamp, parented to its turn.
+    /// Start a point span at the event's timestamp, parented to its turn.
+    /// An `llm.generation` covers its reported `metadata.duration_ms`
+    /// instead (see `point_start`), so Logfire can derive tok/s from the
+    /// span duration.
     fn point(&self, parsed: &Parsed) -> SdkSpan {
         let parent_cx = self.parent_cx(parsed);
         self.tracer
             .span_builder(span_name(parsed))
             .with_kind(SpanKind::Internal)
-            .with_start_time(parsed.ts)
+            .with_start_time(point_start(parsed))
             .with_attributes(attributes(parsed))
             .start_with_context(&self.tracer, &parent_cx)
     }
@@ -266,6 +270,23 @@ fn parse(params: &yolop_yep::TraceEventParams) -> Option<Parsed<'_>> {
         turn_id: params.turn_id(),
         exec_id: params.exec_id(),
     })
+}
+
+/// Start of a point span: the event timestamp, except an `llm.generation`
+/// carrying `metadata.duration_ms`, which backdates to cover the reported
+/// generation time. Falls back to the timestamp when the duration is absent
+/// or predates the clock, so the span never starts after it ends.
+fn point_start(parsed: &Parsed) -> SystemTime {
+    if parsed.family != "llm" {
+        return parsed.ts;
+    }
+    parsed
+        .data
+        .get("metadata")
+        .and_then(|metadata| metadata.get("duration_ms"))
+        .and_then(Value::as_u64)
+        .and_then(|duration_ms| parsed.ts.checked_sub(Duration::from_millis(duration_ms)))
+        .unwrap_or(parsed.ts)
 }
 
 fn ts_to_system_time(ts: &str) -> Option<SystemTime> {
@@ -402,9 +423,17 @@ fn gen_ai_attributes(parsed: &Parsed) -> Vec<KeyValue> {
         }
         // Cost has no Gen-AI convention, so it keeps the `yolop.` namespace.
         // Emitted explicitly because it sits two levels deep, below the one
-        // level the generic flattening walks.
+        // level the generic flattening walks. The estimate is joined by the
+        // provider-reported real cost and the compaction-folded turn total:
+        // Logfire prices known models itself, these cover the rest.
         if let Some(cost) = usage.get("estimated_cost_usd").and_then(Value::as_f64) {
             attrs.push(KeyValue::new("yolop.usage.estimated_cost_usd", cost));
+        }
+        if let Some(cost) = usage.get("actual_cost_usd").and_then(Value::as_f64) {
+            attrs.push(KeyValue::new("yolop.usage.actual_cost_usd", cost));
+        }
+        if let Some(cost) = usage.get("effective_cost_usd").and_then(Value::as_f64) {
+            attrs.push(KeyValue::new("yolop.usage.effective_cost_usd", cost));
         }
     }
     attrs
@@ -779,6 +808,81 @@ mod tests {
                 .iter()
                 .map(|kv| kv.key.as_str().to_string())
                 .collect::<Vec<_>>()
+        );
+    }
+
+    /// OpenRouter reports the real inline cost and compaction folds prior
+    /// spend into the turn total. Both must survive the mapping next to the
+    /// estimate, or Logfire can never show real prices for unpriced models.
+    #[test]
+    fn llm_generation_forwards_all_three_costs() {
+        let (mut exp, mem) = exporter();
+        exp.handle(&ev(
+            "llm.generation",
+            "2024-01-01T00:00:02Z",
+            serde_json::json!({ "turn_id": "t1", "span_id": "gen-1" }),
+            serde_json::json!({
+                "metadata": {
+                    "model": "m",
+                    "provider": "openrouter",
+                    "usage": {
+                        "input_tokens": 432,
+                        "output_tokens": 92,
+                        "actual_cost_usd": 0.00008,
+                        "estimated_cost_usd": 0.0001,
+                        "effective_cost_usd": 0.0003,
+                    }
+                }
+            }),
+        ));
+
+        let spans = mem.get_finished_spans().expect("spans");
+        let span = spans.first().expect("one span");
+        let attr = |key: &str| {
+            span.attributes
+                .iter()
+                .find(|kv| kv.key.as_str() == key)
+                .map(|kv| kv.value.to_string())
+        };
+
+        assert_eq!(
+            attr("yolop.usage.actual_cost_usd").as_deref(),
+            Some("0.00008"),
+            "the provider-reported real cost must survive the mapping"
+        );
+        assert_eq!(
+            attr("yolop.usage.estimated_cost_usd").as_deref(),
+            Some("0.0001")
+        );
+        assert_eq!(
+            attr("yolop.usage.effective_cost_usd").as_deref(),
+            Some("0.0003"),
+            "the compaction-folded turn total must survive the mapping"
+        );
+    }
+
+    /// Logfire derives tok/s from span duration, and `llm.generation`
+    /// arrives with `metadata.duration_ms`. The span must cover it instead
+    /// of staying a point.
+    #[test]
+    fn llm_generation_span_covers_its_duration() {
+        let (mut exp, mem) = exporter();
+        exp.handle(&ev(
+            "llm.generation",
+            "2024-01-01T00:00:02Z",
+            serde_json::json!({ "turn_id": "t1", "span_id": "gen-1" }),
+            serde_json::json!({
+                "metadata": { "model": "m", "duration_ms": 2350 },
+            }),
+        ));
+
+        let spans = mem.get_finished_spans().expect("spans");
+        let span = spans.first().expect("one span");
+        assert_eq!(
+            span.end_time
+                .duration_since(span.start_time)
+                .expect("the generation ends after it starts"),
+            Duration::from_millis(2350)
         );
     }
 
