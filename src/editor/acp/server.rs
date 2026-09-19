@@ -1073,11 +1073,28 @@ fn available_commands(commands: &[CommandDescriptor]) -> Vec<AvailableCommand> {
     commands
         .iter()
         .map(|command| {
-            AvailableCommand::new(command.name.clone(), command.description.clone())
+            AvailableCommand::new(command.name.clone(), command_description(command))
                 .input(command_input(command))
                 .meta(command_meta(command))
         })
         .collect()
+}
+
+fn command_description(command: &CommandDescriptor) -> String {
+    if command.args.is_empty() {
+        return command.description.clone();
+    }
+
+    let args = command
+        .args
+        .iter()
+        .map(|arg| {
+            let required = if arg.required { "required" } else { "optional" };
+            format!("{} ({required}): {}", arg.name, arg.description)
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    format!("{} Arguments: {args}", command.description)
 }
 
 fn command_input(command: &CommandDescriptor) -> Option<AvailableCommandInput> {

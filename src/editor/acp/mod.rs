@@ -1775,6 +1775,16 @@ mod tests {
             commands.iter().any(|c| c["name"] == "shell"),
             "expected /shell to be advertised, got: {commands:?}"
         );
+        for command in commands {
+            let name = command["name"].as_str().expect("command name");
+            let description = command["description"]
+                .as_str()
+                .expect("command description");
+            assert!(
+                !description.trim().is_empty() && description.trim() != name,
+                "/{name} needs a description that explains what it does, got: {description:?}"
+            );
+        }
         for name in ["rewind", "undo", "redo"] {
             assert!(
                 commands.iter().any(|command| command["name"] == name),
@@ -1787,7 +1797,7 @@ mod tests {
             .expect("setup command");
         assert_eq!(
             setup["description"],
-            "Configure provider, API key, and model."
+            "Configure provider, API key, and model. Arguments: action (optional): status | provider <name> [model] | token <provider> <value|clear> | url <provider> <base-url|clear> | model <id> | effort <level> | attribution <on|off> | approval <protective|normal|off>"
         );
         assert_eq!(setup["input"]["hint"], "<action>");
         let suggestions = setup["_meta"]["yolop.dev/command"]["args"][0]["suggestions"]

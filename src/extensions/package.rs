@@ -410,6 +410,26 @@ pub fn parse_manifest(raw: &str) -> Result<ExtensionManifest, String> {
                 command.name
             ));
         }
+        if command.description.trim().is_empty() || command.description.trim() == command.name {
+            return Err(format!(
+                "command `{}` needs a description that explains what it does",
+                command.name
+            ));
+        }
+        for arg in &command.args {
+            if arg.name.trim().is_empty() {
+                return Err(format!(
+                    "command `{}` has an argument with no name",
+                    command.name
+                ));
+            }
+            if arg.description.trim().is_empty() || arg.description.trim() == arg.name {
+                return Err(format!(
+                    "command `{}` argument `{}` needs a description that explains its value",
+                    command.name, arg.name
+                ));
+            }
+        }
     }
     for (server_name, server) in &raw.yolop.mcp_servers {
         match server.transport {
@@ -663,8 +683,8 @@ mod tests {
             "name": "greeter", "description": "t",
             "yolop": { "protocol_version": "1.0",
                 "capabilityServer": { "command": "x" },
-                "commands": [{ "name": "hello", "description": "Say hi",
-                    "args": [{ "name": "who", "required": true }] }] }
+                "commands": [{ "name": "hello", "description": "Say hello to someone.",
+                    "args": [{ "name": "who", "description": "Person to greet.", "required": true }] }] }
         });
         let manifest = parse_manifest(&ok.to_string()).expect("commands parse");
         assert_eq!(manifest.commands.len(), 1);
@@ -679,6 +699,46 @@ mod tests {
             parse_manifest(&bad.to_string())
                 .unwrap_err()
                 .contains("invalid command name")
+        );
+    }
+
+    #[test]
+    fn rejects_commands_without_descriptions() {
+        let base = json!({
+            "name": "greeter", "description": "A greeting extension.",
+            "yolop": { "protocol_version": "1.0",
+                "capabilityServer": { "command": "x" },
+                "commands": [{ "name": "hello", "description": "Say hello.",
+                    "args": [{ "name": "who", "description": "Person to greet." }] }] }
+        });
+
+        let mut missing_command_description = base.clone();
+        missing_command_description["yolop"]["commands"][0]["description"] = json!("");
+        assert!(
+            parse_manifest(&missing_command_description.to_string())
+                .unwrap_err()
+                .contains("command `hello` needs a description that explains what it does")
+        );
+
+        let mut repeated_argument_placeholder = base.clone();
+        repeated_argument_placeholder["yolop"]["commands"][0]["args"][0]["description"] =
+            json!("who");
+        assert!(
+            parse_manifest(&repeated_argument_placeholder.to_string())
+                .unwrap_err()
+                .contains(
+                    "command `hello` argument `who` needs a description that explains its value"
+                )
+        );
+
+        let mut missing_argument_description = base;
+        missing_argument_description["yolop"]["commands"][0]["args"][0]["description"] = json!("");
+        assert!(
+            parse_manifest(&missing_argument_description.to_string())
+                .unwrap_err()
+                .contains(
+                    "command `hello` argument `who` needs a description that explains its value"
+                )
         );
     }
 
