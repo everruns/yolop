@@ -500,11 +500,27 @@ async fn grep_workspace_with_options(
                     continue;
                 }
                 let canonical_path = entry.path().display().to_string();
-                if path_matcher
-                    .as_ref()
-                    .is_some_and(|matcher| !matcher.is_match(&canonical_path))
-                {
-                    continue;
+                if let Some(matcher) = path_matcher.as_ref() {
+                    // `GrepPathPattern::is_match` normalizes its input as a path
+                    // relative to the search root (it strips a leading `/workspace`
+                    // alias and a leading slash), not a real disk path. A directory-
+                    // anchored pattern like `src/**/*.rs` can never match the full
+                    // absolute `canonical_path`, which starts with the workspace's
+                    // real, unrelated filesystem prefix (temp dir, home dir, ...).
+                    // Match against the root-relative path instead; `canonical_path`
+                    // itself stays absolute for the returned match's `path` field.
+                    let relative_match_path = entry
+                        .path()
+                        .strip_prefix(&root)
+                        .map(|relative| {
+                            relative
+                                .to_string_lossy()
+                                .replace(std::path::MAIN_SEPARATOR, "/")
+                        })
+                        .unwrap_or_else(|_| canonical_path.clone());
+                    if !matcher.is_match(&relative_match_path) {
+                        continue;
+                    }
                 }
                 let Ok(metadata) = entry.metadata() else {
                     continue;
@@ -8635,6 +8651,92 @@ mod tests {
         );
         assert_eq!(result["matches"][0]["line_number"], 2);
         assert_eq!(result["truncation"]["next_offset"], 1);
+    }
+
+    // Regression for a bug introduced by #643 (`refactor(filesystem): use
+    // physical repository paths`): `grep_workspace_with_options` started
+    // matching `path_pattern` against the file's absolute disk path instead
+    // of a path relative to the search root. `GrepPathPattern::is_match`
+    // normalizes its input as a workspace-relative session path, so a
+    // directory-anchored glob like `src/**/*.rs` could never match, because
+    // the absolute path is rooted at an unrelated temp/home prefix, not
+    // `src/`. An unanchored pattern like `*.rs` still matched by luck (it
+    // expands to `**/*.rs`, a suffix match), which hid the regression from
+    // every case except a nested, directory-anchored `path_pattern`.
+    #[tokio::test]
+    async fn grep_tool_matches_directory_anchored_nested_glob_path_pattern() {
+        use everruns_core::Capability;
+        use everruns_core::ToolContext;
+        use everruns_core::ToolExecutionResult;
+
+        let workspace = tempfile::tempdir().expect("workspace");
+        let session = tempfile::tempdir().expect("session");
+        let session_id = SessionId::from_seed(14);
+        let host = Arc::new(
+            WorkspaceHost::new(
+                Arc::new(RwLock::new(workspace.path().to_path_buf())),
+                workspace.path().to_path_buf(),
+            )
+            .expect("workspace host"),
+        );
+        let factory = CodingCliSessionFileSystemFactory {
+            workspace: host,
+            session_dir: session.path().to_path_buf(),
+            materializer: Arc::new(session_log::SessionMaterializer::new(
+                session.path().to_path_buf(),
+                None,
+            )),
+            skill_global: None,
+            skill_profile: None,
+            skill_system: None,
+            skill_environment: None,
+            extension_skills: Vec::new(),
+        };
+        let store = factory
+            .create_session_file_system(SessionFileSystemFactoryContext::default())
+            .await
+            .expect("session file system");
+
+        std::fs::create_dir_all(workspace.path().join("src/outer/inner")).expect("nested dirs");
+        std::fs::write(
+            workspace.path().join("src/outer/inner/answer.rs"),
+            "const NESTED_SEARCH_CODE: &str = \"GLOB-3917\";\n",
+        )
+        .expect("nested source file");
+        std::fs::write(workspace.path().join("decoy.rs"), "// not the target\n")
+            .expect("decoy file");
+
+        let context = ToolContext::with_file_store(session_id, store);
+        let grep_tool = FileSystemCapability
+            .tools()
+            .into_iter()
+            .find(|tool| tool.name() == "grep_files")
+            .expect("grep tool");
+        let result = grep_tool
+            .execute_with_context(
+                serde_json::json!({
+                    "pattern": "NESTED_SEARCH_CODE",
+                    "path_pattern": "src/**/*.rs",
+                    "limit": 10
+                }),
+                &context,
+            )
+            .await;
+        let ToolExecutionResult::Success(result) = result else {
+            panic!("grep tool should match the nested, directory-anchored glob: {result:?}");
+        };
+
+        assert_eq!(
+            result["total_matches"], 1,
+            "src/**/*.rs must match a file nested under src/, not just a top-level one: {result:?}"
+        );
+        assert!(
+            result["matches"][0]["path"]
+                .as_str()
+                .expect("match path")
+                .ends_with("src/outer/inner/answer.rs"),
+            "unexpected match: {result:?}"
+        );
     }
 
     #[test]
