@@ -109,7 +109,10 @@ fn command_descriptors() -> Vec<CommandDescriptor> {
         cmd(
             "mcp",
             "add/list/reload/login or enable/disable/remove MCP servers live",
-            &[opt("action")],
+            &[opt(
+                "action",
+                "MCP operation: add, list, reload, login, enable, disable, or remove; some operations need a server name.",
+            )],
         ),
         cmd("cwd", "show workspace root", &[]),
         cmd(
@@ -117,16 +120,31 @@ fn command_descriptors() -> Vec<CommandDescriptor> {
             "toggle compact or expanded session status",
             &[opt_with_suggestions(
                 "layout",
+                "Status layout: compact, expanded, or toggle.",
                 &["compact", "expanded", "toggle"],
             )],
         ),
-        cmd("model", "show or switch model", &[opt("id")]),
-        cmd("effort", "show or set reasoning effort", &[opt("level")]),
+        cmd(
+            "model",
+            "show the current model or open the model picker",
+            &[opt("id", "Model ID to select; omit to open the picker.")],
+        ),
+        cmd(
+            "effort",
+            "show the current reasoning effort or open the effort picker",
+            &[opt(
+                "level",
+                "Reasoning effort to select; omit to open the picker.",
+            )],
+        ),
         cmd("clear", "clear transcript", &[]),
         cmd(
             "shell",
             "run shell command from workspace root",
-            &[required("command")],
+            &[required(
+                "command",
+                "Shell command to run from the workspace root.",
+            )],
         ),
         cmd("quit", "exit", &[]),
     ]
@@ -159,25 +177,25 @@ fn cmd(name: &str, description: &str, args: &[CommandArg]) -> CommandDescriptor 
     }
 }
 
-fn opt(name: &str) -> CommandArg {
-    arg(name, false)
+fn opt(name: &str, description: &str) -> CommandArg {
+    arg(name, description, false)
 }
 
-fn opt_with_suggestions(name: &str, suggestions: &[&str]) -> CommandArg {
+fn opt_with_suggestions(name: &str, description: &str, suggestions: &[&str]) -> CommandArg {
     CommandArg {
         suggestions: suggestions.iter().map(|s| (*s).to_string()).collect(),
-        ..arg(name, false)
+        ..arg(name, description, false)
     }
 }
 
-fn required(name: &str) -> CommandArg {
-    arg(name, true)
+fn required(name: &str, description: &str) -> CommandArg {
+    arg(name, description, true)
 }
 
-fn arg(name: &str, required: bool) -> CommandArg {
+fn arg(name: &str, description: &str, required: bool) -> CommandArg {
     CommandArg {
         name: name.to_string(),
-        description: name.to_string(),
+        description: description.to_string(),
         required,
         suggestions: Vec::new(),
     }
@@ -234,6 +252,32 @@ mod tests {
             1,
             "assembled prompt must close exactly once: {contribution:?}"
         );
+    }
+
+    #[test]
+    fn command_descriptors_have_useful_argument_descriptions() {
+        for command in command_descriptors() {
+            assert!(
+                !command.description.trim().is_empty(),
+                "/{} needs a description",
+                command.name
+            );
+            for arg in command.args {
+                assert!(
+                    !arg.description.trim().is_empty(),
+                    "/{} <{}> needs an argument description",
+                    command.name,
+                    arg.name
+                );
+                assert_ne!(
+                    arg.description.trim(),
+                    arg.name,
+                    "/{} <{}> needs a description, not a repeated placeholder",
+                    command.name,
+                    arg.name
+                );
+            }
+        }
     }
 
     #[test]

@@ -366,11 +366,7 @@ impl Capability for ExtensionCapability {
                     .iter()
                     .map(|a| CommandArg {
                         name: a.name.clone(),
-                        description: if a.description.is_empty() {
-                            a.name.clone()
-                        } else {
-                            a.description.clone()
-                        },
+                        description: a.description.clone(),
                         required: a.required,
                         suggestions: Vec::new(),
                     })
