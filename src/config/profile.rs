@@ -131,8 +131,8 @@ pub struct SettingsOverlay {
     pub capabilities: Vec<CapabilityOverride>,
     pub capabilities_mode: ListMode,
     /// MCP servers merged by name over the global ones (or instead of them
-    /// under [`ListMode::Replace`]). Workspace `.mcp.json` still overlays the
-    /// result, so a repo can still override a profile server by name.
+    /// under [`ListMode::Replace`]). Workspace `.mcp.json` HTTP entries still
+    /// overlay the result; repository-controlled stdio entries are ignored.
     pub mcp: McpSettings,
     pub mcp_mode: ListMode,
     /// Extra system-prompt text appended after `system.md` and the capability

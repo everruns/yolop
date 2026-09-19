@@ -262,7 +262,8 @@ pub struct Settings {
     /// tuika preset name. `None` means the default (yolop's palette). The
     /// `--theme` flag overrides this for a single run.
     pub theme: Option<String>,
-    /// Global MCP servers (`[mcp.servers.<name>]` in settings.toml). Repo `.mcp.json` entries override these by name.
+    /// Global MCP servers (`[mcp.servers.<name>]` in settings.toml). Repo
+    /// `.mcp.json` HTTP entries override these by name; stdio entries are ignored.
     pub mcp: McpSettings,
     /// Ordered harness capability overrides (`[[capabilities]]` in settings.toml).
     pub capabilities: Vec<CapabilityOverride>,

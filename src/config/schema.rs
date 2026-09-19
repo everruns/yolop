@@ -263,8 +263,9 @@ pub fn schema() -> &'static [ConfigField] {
             aliases: &["mcp_servers"],
             title: "Global MCP servers",
             description: "Global Model Context Protocol servers loaded from settings.toml under \
-                          `[mcp.servers.<name>]`. Workspace `.mcp.json` entries override global \
-                          servers by name. Use `${ENV_VAR}` placeholders for secrets.",
+                          `[mcp.servers.<name>]`. Workspace `.mcp.json` HTTP entries override global \
+                          servers by name; workspace stdio entries are ignored. Use `${ENV_VAR}` \
+                          placeholders for secrets.",
             kind: ValueKind::List,
             default: Some("{}"),
             examples: &[
