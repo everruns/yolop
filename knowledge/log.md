@@ -1,5 +1,12 @@
 # Knowledge Log
 
+## 2026-09-19, MCP environment credentials require explicit bindings
+
+- [MCP](specs/mcp.md): removed bearer-token lookup derived from MCP server and
+  provider names. Environment credentials now reach MCP servers only through
+  explicit `${VAR}` header bindings, so workspace metadata cannot select an
+  unrelated process credential.
+
 ## 2026-09-14, Maintenance review angles second pass
 
 - [Maintenance](specs/maintenance.md): added simplicity, soundness, and
