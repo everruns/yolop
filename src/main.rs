@@ -2414,10 +2414,13 @@ mod tests {
         run_mcp_command(McpCommand::Add {
             scope: McpScopeArg::Workspace,
             name: "env-demo".to_string(),
-            transport_type: "stdio".to_string(),
-            command: Some("true".to_string()),
+            // Workspace-scoped stdio adds are rejected (repository config
+            // cannot start a process); http carries `env` too, so it still
+            // exercises env persistence through the add command.
+            transport_type: "http".to_string(),
+            command: None,
             args: Vec::new(),
-            url: None,
+            url: Some("https://example.com/mcp".to_string()),
             headers: Vec::new(),
             env: vec![("TOKEN".to_string(), "abc".to_string())],
             login: false,

@@ -6,7 +6,8 @@ description: Defines the mcp, model context protocol client support contract for
 
 # MCP, Model Context Protocol client support
 
-Status: v1 implemented (HTTP + stdio, workspace + global config).
+Status: v1 implemented (HTTP in workspace/global config, stdio in user-owned
+global config).
 
 ## Why
 
@@ -35,8 +36,9 @@ path, so MCP tools flow through the same agent loop as the built-in tools.
     [configuration](configuration.md). `yolop mcp` and `/mcp` writes stay
     scope-explicit (global or workspace); a profile's servers are edited in the
     profile file.
-  - **workspace**: `<workspace_root>/.mcp.json`, overrides global and profile by
-    name.
+  - **workspace**: `<workspace_root>/.mcp.json`, overrides global and profile HTTP
+    servers by name. Stdio entries are ignored because repository-controlled
+    commands are not an execution-consent boundary.
   A malformed file warns and is skipped rather than failing startup.
   - **ACP client**: servers passed in `session/new` `mcpServers` (see
     `knowledge/specs/acp.md`) overlay both file scopes for that session, so a
@@ -72,9 +74,7 @@ Config shape:
 {
   "mcpServers": {
     "docs": { "type": "http", "url": "https://example.com/mcp",
-              "headers": { "Authorization": "Bearer ${DOCS_TOKEN}" } },
-    "fs":   { "type": "stdio", "command": "mcp-server-filesystem",
-              "args": ["${WORKSPACE}"], "env": { "RUST_LOG": "info" } }
+              "headers": { "Authorization": "Bearer ${DOCS_TOKEN}" } }
   }
 }
 ```
@@ -116,9 +116,9 @@ host's response text in the tool result; `/tools` includes live discovered
 ## Trust model
 
 - **HTTP** keeps the runtime's DNS-pinned SSRF protection, no relaxation.
-- **stdio** spawns local processes the user explicitly listed in their own
-  `.mcp.json`. Authoring that file is the act of consent, mirroring how other
-  MCP clients treat a project-scoped server list.
+- **stdio** spawns local processes only from user-owned global settings or an
+  explicit client session. Workspace `.mcp.json` stdio entries are ignored, so
+  a tracked repository file cannot execute a command during tool discovery.
 - **OAuth** discovery/token calls use `everruns-core`'s egress-bound OAuth
   client. Public endpoints require DNS-pinned SSRF validation and discovered
   endpoints must be `https`. Literal loopback endpoints may use `http` because

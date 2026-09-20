@@ -1,5 +1,12 @@
 # Knowledge Log
 
+## 2026-09-19, Workspace MCP configuration is not process consent
+
+- [MCP](specs/mcp.md): repository-controlled `.mcp.json` files can configure
+  remote HTTP servers, but their stdio entries are ignored. Local child
+  processes require user-owned global configuration or an explicit client
+  session, preventing tool discovery from executing a tracked command.
+
 ## 2026-09-19, MCP environment credentials require explicit bindings
 
 - [MCP](specs/mcp.md): removed bearer-token lookup derived from MCP server and
