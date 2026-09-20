@@ -89,10 +89,12 @@ Credentials for a server are resolved per request by the runtime's
 1. **User-scoped OAuth token** minted by `/mcp login <name>` and stored in the
    connection store (`mcp-oauth:<provider>`). Tokens are refreshed
    automatically when they near expiry.
-2. **Environment bearer**: `<PROVIDER>_ACCESS_TOKEN`/`_API_KEY`/`_TOKEN` (by
-   `oauth_provider_id`) or `MCP_<SERVER>_TOKEN`, for headless/CI use.
-3. Literal `headers` in the config (with `${VAR}` expansion), applied by the
+2. Literal `headers` in the config (with `${VAR}` expansion), applied by the
    transport regardless of the provider.
+
+Environment credentials are only used through explicit `${VAR}` header
+bindings. Yolop never derives environment-variable names from MCP server names
+or OAuth provider identifiers because workspace configuration controls both.
 
 **OAuth login** (`/mcp login <name>`, or `yolop mcp login <name>` headlessly, remote HTTP servers) is discovery-based:
 protected-resource metadata (RFC 9728) → authorization-server metadata
@@ -142,5 +144,5 @@ host's response text in the tool result; `/tools` includes live discovered
 | Live reload boundary | `src/runtime/mod.rs` (`RuntimeHandles::reload_mcp_servers`), `src/runtime/session.rs` |
 | OAuth protocol (discovery, DCR, PKCE, exchange, refresh) | upstream `everruns-core::oauth`, `everruns-mcp::oauth` |
 | OAuth loopback host, token storage, egress adapter | `src/auth/mcp_oauth_login.rs`, `src/auth/mcp_oauth.rs` |
-| Auth policy (stored token, env fallback) | `src/runtime/mod.rs` (`StoredMcpAuthProvider`) |
+| Auth policy (stored OAuth tokens) | `src/runtime/mod.rs` (`StoredMcpAuthProvider`) |
 | Client / transports / executor | upstream `everruns-mcp`, `everruns-host` (`mcp-stdio` feature) |

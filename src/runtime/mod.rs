@@ -182,68 +182,11 @@ pub(crate) fn provider_recovery_config() -> everruns_provider::llm_retry::LlmRet
 // yolop's single-level execution model and our specific tool
 // names. The agent prompt below stays small on purpose; harness covers it.
 
-#[derive(Debug, Default)]
-struct EnvMcpAuthProvider;
-
-#[async_trait]
-impl McpAuthProvider for EnvMcpAuthProvider {
-    async fn authorization(
-        &self,
-        request: &McpAuthRequest<'_>,
-    ) -> anyhow::Result<Option<McpCredential>> {
-        let Some(token) = env_token_names(request)
-            .into_iter()
-            .find_map(|name| std::env::var(name).ok())
-        else {
-            return Ok(None);
-        };
-        let token = token.trim().to_string();
-        if token.is_empty() {
-            return Ok(None);
-        }
-        Ok(Some(McpCredential::bearer(token)))
-    }
-}
-
-fn env_token_names(request: &McpAuthRequest<'_>) -> Vec<String> {
-    let mut keys = Vec::new();
-    if let Some(provider) = request.oauth_provider_id {
-        let prefix = env_key_prefix(provider);
-        keys.push(format!("{prefix}_ACCESS_TOKEN"));
-        keys.push(format!("{prefix}_API_KEY"));
-        keys.push(format!("{prefix}_TOKEN"));
-    }
-    let server = env_key_prefix(request.server_name);
-    keys.push(format!("MCP_{server}_ACCESS_TOKEN"));
-    keys.push(format!("MCP_{server}_API_KEY"));
-    keys.push(format!("MCP_{server}_TOKEN"));
-    keys
-}
-
-fn env_key_prefix(value: &str) -> String {
-    value
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() {
-                ch.to_ascii_uppercase()
-            } else {
-                '_'
-            }
-        })
-        .collect::<String>()
-        .split('_')
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>()
-        .join("_")
-}
-
-/// MCP auth provider that prefers user-scoped OAuth tokens minted by
-/// `/mcp login` (refreshing them when they near expiry) and falls back to
-/// environment-provided bearer credentials. The stored connection is keyed by
+/// MCP auth provider for user-scoped OAuth tokens minted by `/mcp login`,
+/// refreshing them when they near expiry. The stored connection is keyed by
 /// the server's `oauth_provider_id` when set, otherwise its name.
 pub(crate) struct StoredMcpAuthProvider {
     oauth: everruns_mcp::oauth::OAuthAuthProvider<crate::auth::mcp_oauth::ConnectionTokenStore>,
-    env: EnvMcpAuthProvider,
 }
 
 impl StoredMcpAuthProvider {
@@ -253,7 +196,6 @@ impl StoredMcpAuthProvider {
                 crate::auth::mcp_oauth::ConnectionTokenStore::new(connections),
                 crate::auth::mcp_oauth::oauth_egress(),
             ),
-            env: EnvMcpAuthProvider,
         }
     }
 
@@ -274,10 +216,7 @@ impl McpAuthProvider for StoredMcpAuthProvider {
             auth_mode: request.auth_mode.clone(),
             oauth_provider_id: None,
         };
-        match self.oauth.authorization(&keyed_request).await? {
-            Some(credential) => Ok(Some(credential)),
-            None => self.env.authorization(request).await,
-        }
+        self.oauth.authorization(&keyed_request).await
     }
 }
 
@@ -4954,63 +4893,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn env_token_names_prefers_oauth_provider_then_server_specific_keys() {
-        let request = McpAuthRequest {
-            server_name: "linear-prod",
-            auth_mode: McpServerAuthMode::OAuth,
-            oauth_provider_id: Some("linear"),
-        };
-
-        assert_eq!(
-            env_token_names(&request),
-            vec![
-                "LINEAR_ACCESS_TOKEN",
-                "LINEAR_API_KEY",
-                "LINEAR_TOKEN",
-                "MCP_LINEAR_PROD_ACCESS_TOKEN",
-                "MCP_LINEAR_PROD_API_KEY",
-                "MCP_LINEAR_PROD_TOKEN",
-            ]
-        );
-    }
-
-    #[test]
-    fn env_key_prefix_normalizes_separators_and_case() {
-        assert_eq!(env_key_prefix("Acme Linear/OAuth"), "ACME_LINEAR_OAUTH");
-        assert_eq!(env_key_prefix("linear"), "LINEAR");
-    }
-
-    #[test]
-    fn env_mcp_auth_provider_returns_bearer_credential_from_provider_env() {
-        let _guard = ENV_LOCK.lock().expect("env lock");
-        unsafe {
-            std::env::set_var("LINEAR_ACCESS_TOKEN", "linear-test-token");
-        }
-        let request = McpAuthRequest {
-            server_name: "linear",
-            auth_mode: McpServerAuthMode::OAuth,
-            oauth_provider_id: Some("linear"),
-        };
-
-        let credential = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("tokio runtime")
-            .block_on(EnvMcpAuthProvider.authorization(&request))
-            .expect("auth provider result")
-            .expect("credential from env");
-
-        assert_eq!(
-            credential.authorization.as_deref(),
-            Some("Bearer linear-test-token")
-        );
-        assert!(credential.headers.is_empty());
-        unsafe {
-            std::env::remove_var("LINEAR_ACCESS_TOKEN");
-        }
-    }
-
     fn oauth_request(server_name: &str) -> McpAuthRequest<'_> {
         McpAuthRequest {
             server_name,
@@ -5150,20 +5032,32 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn stored_provider_without_token_or_env_returns_none() {
-        // Uses a server name no env credential can match, so it needs no
-        // ENV_LOCK (and holding a std mutex across await would be a lint error).
+    #[test]
+    fn stored_provider_does_not_infer_credentials_from_mcp_metadata() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        unsafe {
+            std::env::set_var("OPENAI_API_KEY", "must-not-leak");
+        }
         let tmp = tempfile::tempdir().expect("tmp");
         let store = Arc::new(ConnectionStore::open(tmp.path().join("connections.toml")));
         let provider = StoredMcpAuthProvider::new(store);
-        let credential = provider
-            .authorization(&oauth_request("yolop-test-unconfigured-server"))
-            .await
+        let request = McpAuthRequest {
+            server_name: "attacker-selected",
+            auth_mode: McpServerAuthMode::OAuth,
+            oauth_provider_id: Some("openai"),
+        };
+        let credential = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime")
+            .block_on(provider.authorization(&request))
             .expect("provider result");
+        unsafe {
+            std::env::remove_var("OPENAI_API_KEY");
+        }
         assert!(
             credential.is_none(),
-            "no stored token and no env var yields no credential"
+            "repository-controlled MCP metadata must not select process credentials"
         );
     }
 
