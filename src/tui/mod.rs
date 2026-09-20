@@ -10040,15 +10040,28 @@ flowchart TD
             app.lines
         );
 
-        // A stdio server is not eligible for OAuth login.
-        std::fs::write(
-            app.startup.workspace_root.join(".mcp.json"),
-            serde_json::to_vec_pretty(&serde_json::json!({
-                "mcpServers": { "fs": { "type": "stdio", "command": "true" } }
-            }))
-            .unwrap(),
-        )
-        .expect("write .mcp.json");
+        // A stdio server is not eligible for OAuth login. Workspace-scoped
+        // stdio is blocked outright (see `workspace_server_is_safe`), so seed
+        // a global-scoped one directly on the app's own settings store to
+        // reach the OAuth-ineligibility check (going through `/mcp add ...
+        // global` would persist to the real machine config path).
+        {
+            let mut mcp = app.settings.snapshot().mcp;
+            mcp.servers.insert(
+                "fs".to_string(),
+                crate::config::mcp::McpServerEntry {
+                    enabled: true,
+                    server: everruns_core::ScopedMcpServer {
+                        transport_type: everruns_core::McpServerTransportType::Stdio,
+                        command: Some("true".to_string()),
+                        ..everruns_core::ScopedMcpServer::default()
+                    },
+                },
+            );
+            app.settings
+                .replace_mcp(mcp)
+                .expect("seed global stdio server");
+        }
         app.lines.clear();
         app.dispatch_command_for_test("mcp login fs").await;
         assert!(
@@ -10062,26 +10075,25 @@ flowchart TD
     }
 
     #[tokio::test]
-    async fn mcp_add_stdio_server_goes_live() {
+    async fn mcp_add_workspace_stdio_server_is_rejected() {
         let mut fixture = app_with_llmsim().await;
         let app = &mut fixture.app;
         app.dispatch_command_for_test("mcp add cli-add workspace --command=true")
             .await;
-        // The slash add saves and reloads by default: the prelude plus the
-        // live report naming the new server.
+        // Repository-controlled workspace config cannot start a process:
+        // the add is rejected outright and never reaches a live reload.
         assert!(
-            app.lines.iter().any(|line| line
-                .text
-                .contains("added MCP server `cli-add` (workspace), live")),
-            "missing add report: {:?}",
+            app.lines.iter().any(|line| line.text.contains(
+                "error: workspace MCP configuration cannot start stdio processes; use global scope"
+            )),
+            "missing rejection report: {:?}",
             app.lines
         );
         assert!(
-            app.lines
+            !app.lines
                 .iter()
-                .any(|line| line.text.contains("active MCP servers")
-                    && line.text.contains("cli-add")),
-            "added server is not live: {:?}",
+                .any(|line| line.text.contains("active MCP servers")),
+            "rejected add must not reload the session: {:?}",
             app.lines
         );
     }
@@ -10090,8 +10102,13 @@ flowchart TD
     async fn mcp_add_no_reload_defers_liveness() {
         let mut fixture = app_with_llmsim().await;
         let app = &mut fixture.app;
-        app.dispatch_command_for_test("mcp add cli-staged workspace --command=true --no-reload")
-            .await;
+        // http (not stdio) because workspace-scoped stdio adds are rejected
+        // outright; the --no-reload deferral being tested here is generic
+        // add/reload mechanics, unrelated to transport type.
+        app.dispatch_command_for_test(
+            "mcp add cli-staged workspace --type=http --url=https://example.com/mcp --no-reload",
+        )
+        .await;
         assert!(
             app.lines
                 .iter()
@@ -10124,8 +10141,13 @@ flowchart TD
     async fn mcp_disable_no_reload_defers_until_reload() {
         let mut fixture = app_with_llmsim().await;
         let app = &mut fixture.app;
-        app.dispatch_command_for_test("mcp add cli-live workspace --command=true")
-            .await;
+        // http (not stdio) because workspace-scoped stdio adds are rejected
+        // outright; the disable/--no-reload deferral being tested here is
+        // generic mechanics, unrelated to transport type.
+        app.dispatch_command_for_test(
+            "mcp add cli-live workspace --type=http --url=https://example.com/mcp",
+        )
+        .await;
         app.lines.clear();
         app.dispatch_command_for_test("mcp disable cli-live workspace --no-reload")
             .await;
@@ -10203,27 +10225,14 @@ flowchart TD
         };
         let marker = tempfile::tempdir().expect("marker").keep();
         let tool = crate::testing::mcp_e2e::mcp_tool("echo", "echo");
-        let fixture_path = crate::testing::mcp_e2e::fixture_server();
 
         let mut fixture = app_with_llmsim().await;
         let app = &mut fixture.app;
-        std::fs::write(
-            app.startup.workspace_root.join(".mcp.json"),
-            serde_json::to_vec_pretty(&serde_json::json!({
-                "mcpServers": {
-                    "echo": {
-                        "type": "stdio",
-                        "command": python.to_str().unwrap(),
-                        "args": [
-                            fixture_path.to_str().unwrap(),
-                            marker.to_str().unwrap(),
-                        ]
-                    }
-                }
-            }))
-            .unwrap(),
-        )
-        .expect("write .mcp.json");
+        // Global scope (not workspace, which is filtered from stdio
+        // entirely): seed it directly on the app's own settings store rather
+        // than through `/mcp add ... global`, which persists to the real
+        // machine config path.
+        crate::testing::mcp_e2e::seed_global_echo_server(&app.settings, &python, &marker);
         app.dispatch_command_for_test("mcp reload").await;
         assert!(
             app.startup.mcp_server_names.iter().any(|n| n == "echo"),
@@ -10231,19 +10240,21 @@ flowchart TD
             app.startup.mcp_server_names
         );
 
-        // Control: the same workspace MCP config is executable via a fresh
-        // runtime (proves the tool name is real, not hypothetical).
+        // Control: the same MCP config is executable via a fresh runtime
+        // (proves the tool name is real, not hypothetical).
+        let control_settings = std::sync::Arc::new(crate::config::SettingsStore::open(
+            tempfile::tempdir()
+                .expect("settings dir")
+                .keep()
+                .join("settings.toml"),
+        ));
+        crate::testing::mcp_e2e::seed_global_echo_server(&control_settings, &python, &marker);
         let scripted = crate::runtime::build_with_options(
             app.startup.workspace_root.clone(),
             crate::runtime::ProviderChoice::Sim,
             None,
             tempfile::tempdir().expect("sessions").keep(),
-            std::sync::Arc::new(crate::config::SettingsStore::open(
-                tempfile::tempdir()
-                    .expect("settings dir")
-                    .keep()
-                    .join("settings.toml"),
-            )),
+            control_settings,
             crate::runtime::BuildOptions {
                 llmsim_override: Some(
                     crate::testing::mcp_e2e::script(&tool, "repro-visible")
