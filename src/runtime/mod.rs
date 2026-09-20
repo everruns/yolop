@@ -4133,7 +4133,6 @@ pub async fn build_with_options(
         skill_dirs.clone(),
     ));
     capabilities.register(RepoMapCapability::new(workspace_host.clone()));
-    capabilities.register(SessionsCapability::new(sessions_dir.clone(), session_id));
     capabilities.register(AstGrepCapability::new(workspace_host.clone()));
     // `ast_edit` — structural rewrites with preview-first `dry_run`. Registered
     // for the catalog but intentionally NOT part of the default harness; enable
@@ -4217,6 +4216,14 @@ pub async fn build_with_options(
     // iteration) without a yolop restart.
     let live_processes = crate::extensions::LiveProcessRegistry::default();
     let session_control_registry = Arc::new(crate::control::ControlRegistry::default());
+    // `sessions` is control-registered (not just catalog-registered) so its
+    // `yolop sessions search` route appears in the `yolop` capability's
+    // administration banner (src/capabilities/yolop.rs); it previously had no
+    // in-prompt breadcrumb at all, leaving a cold session to discover the CLI
+    // subcommand by guesswork.
+    let sessions_capability = Arc::new(SessionsCapability::new(sessions_dir.clone(), session_id));
+    session_control_registry.register(sessions_capability.clone())?;
+    capabilities.register_arc(sessions_capability);
     session_control_registry.register(skill_management)?;
     session_control_registry.register(coordination_capability)?;
     // Hook management is exposed through the control plane and `yolop config hooks`.
@@ -5550,6 +5557,43 @@ mod tests {
                 .expect("resolve")
                 .is_none(),
             "no credential configured yet"
+        );
+    }
+
+    /// `sessions` must be control-registered, not just catalog-registered, or
+    /// its `yolop sessions search` route never reaches the `yolop`
+    /// capability's administration banner (src/capabilities/yolop.rs) and a
+    /// cold session has no breadcrumb that the CLI subcommand exists.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn build_advertises_the_sessions_cli_route_in_the_system_prompt() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let sessions = tempfile::tempdir().expect("sessions");
+        let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
+
+        let built = build_with_options(
+            workspace.path().to_path_buf(),
+            ProviderChoice::Sim,
+            None,
+            sessions.path().to_path_buf(),
+            settings,
+            BuildOptions::default(),
+        )
+        .await
+        .expect("build runtime");
+        let context = built
+            .handles
+            .runtime
+            .load_context(built.handles.session_id)
+            .await
+            .expect("assemble context");
+
+        assert!(
+            context
+                .runtime_agent
+                .system_prompt
+                .contains("`sessions`, search prior local Yolop sessions"),
+            "a cold session must be told `yolop sessions search` exists: {}",
+            context.runtime_agent.system_prompt
         );
     }
 
