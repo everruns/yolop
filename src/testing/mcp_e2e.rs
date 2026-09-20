@@ -17,10 +17,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use everruns_core::{McpServerTransportType, ScopedMcpServer};
 use everruns_llmsim::{LlmSimConfig, SimToolCall, SimTurn};
 use serde_json::json;
 
 use crate::config::SettingsStore;
+use crate::config::mcp::McpServerEntry;
 use crate::runtime::{BuildOptions, BuiltRuntime, ProviderChoice, build_with_options};
 
 const TURN_TIMEOUT: Duration = Duration::from_secs(20);
@@ -71,21 +73,37 @@ pub(crate) fn script(tool: &str, message: &str) -> LlmSimConfig {
     ])
 }
 
-/// The `.mcp.json` value pointing the `echo` server at the Python fixture,
-/// passing `marker_dir` so calls leave a filesystem trace.
-fn echo_mcp_json(python: &Path, marker_dir: &Path) -> serde_json::Value {
-    json!({
-        "mcpServers": {
-            "echo": {
-                "type": "stdio",
-                "command": python.to_str().unwrap(),
-                "args": [
-                    fixture_server().to_str().unwrap(),
-                    marker_dir.to_str().unwrap(),
-                ]
-            }
-        }
-    })
+/// Seed a **global** `echo` stdio server pointed at the Python fixture,
+/// passing `marker_dir` so calls leave a filesystem trace. Workspace
+/// `.mcp.json` stdio entries are blocked at the trust boundary (repository
+/// config cannot spawn a process), so these e2e tests configure the live
+/// stdio server through global settings instead.
+pub(crate) fn seed_global_echo_server(settings: &SettingsStore, python: &Path, marker_dir: &Path) {
+    let mut mcp = settings.snapshot().mcp;
+    mcp.servers.insert(
+        "echo".to_string(),
+        McpServerEntry {
+            enabled: true,
+            server: ScopedMcpServer {
+                transport_type: McpServerTransportType::Stdio,
+                command: Some(python.to_str().unwrap().to_string()),
+                args: vec![
+                    fixture_server().to_str().unwrap().to_string(),
+                    marker_dir.to_str().unwrap().to_string(),
+                ],
+                ..ScopedMcpServer::default()
+            },
+        },
+    );
+    settings.replace_mcp(mcp).expect("seed global echo server");
+}
+
+fn remove_global_echo_server(settings: &SettingsStore) {
+    let mut mcp = settings.snapshot().mcp;
+    mcp.servers.remove("echo");
+    settings
+        .replace_mcp(mcp)
+        .expect("remove global echo server");
 }
 
 /// A `.mcp.json` with no servers configured.
@@ -142,10 +160,28 @@ async fn build_runtime_with(config: LlmSimConfig, mcp_json: &serde_json::Value) 
     .expect("build runtime")
 }
 
-/// Build a runtime whose workspace `.mcp.json` points the `echo` server at the
+/// Build a runtime with the `echo` server configured globally, pointed at the
 /// Python fixture, passing `marker_dir` so calls leave a filesystem trace.
 async fn build_runtime(config: LlmSimConfig, marker_dir: &Path, python: &Path) -> BuiltRuntime {
-    build_runtime_with(config, &echo_mcp_json(python, marker_dir)).await
+    let workspace_root = tempfile::tempdir().expect("workspace").keep();
+    let sessions_root = tempfile::tempdir().expect("sessions").keep();
+
+    let settings = Arc::new(SettingsStore::open(sessions_root.join("settings.toml")));
+    seed_global_echo_server(&settings, python, marker_dir);
+
+    build_with_options(
+        workspace_root,
+        ProviderChoice::Sim,
+        None,
+        sessions_root,
+        settings,
+        BuildOptions {
+            llmsim_override: Some(config.with_model("llmsim-yolop")),
+            ..BuildOptions::default()
+        },
+    )
+    .await
+    .expect("build runtime")
 }
 
 async fn run_turn(runtime: &BuiltRuntime, text: &str) -> everruns_host::TurnResult {
@@ -233,9 +269,9 @@ async fn reload_swaps_live_session_mcp_servers() {
     );
 }
 
-/// A server added to `.mcp.json` after startup is discovered and executable on
-/// the next turn once reloaded — no restart. Proven end-to-end via the real
-/// stdio fixture writing its marker file.
+/// A server added to global settings after startup is discovered and
+/// executable on the next turn once reloaded — no restart. Proven end-to-end
+/// via the real stdio fixture writing its marker file.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reload_adds_mcp_server_and_executes_live() {
     let Some(python) = require_python3("reload_adds_mcp_server_and_executes_live") else {
@@ -254,11 +290,9 @@ async fn reload_adds_mcp_server_and_executes_live() {
         "echo server is absent before reload"
     );
 
-    // Add the server and reload the live session.
-    write_mcp_json(
-        &runtime.startup.workspace_root,
-        &echo_mcp_json(&python, &marker),
-    );
+    // Add the server (global scope; workspace stdio is blocked) and reload
+    // the live session.
+    seed_global_echo_server(&runtime.settings, &python, &marker);
     let names = runtime
         .handles
         .reload_mcp_servers()
@@ -277,9 +311,9 @@ async fn reload_adds_mcp_server_and_executes_live() {
     );
 }
 
-/// A server removed from `.mcp.json` after startup stops being executable once
-/// reloaded. Proven via the absence of the fixture's marker file after a turn
-/// that scripts the (now-removed) tool call.
+/// A server removed from global settings after startup stops being executable
+/// once reloaded. Proven via the absence of the fixture's marker file after a
+/// turn that scripts the (now-removed) tool call.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reload_removes_mcp_server_live() {
     let Some(python) = require_python3("reload_removes_mcp_server_live") else {
@@ -288,12 +322,8 @@ async fn reload_removes_mcp_server_live() {
     let marker = tempfile::tempdir().expect("marker").keep();
     let tool = mcp_tool("echo", "echo");
 
-    // Start with the echo server present.
-    let runtime = build_runtime_with(
-        script(&tool, "should-not-run"),
-        &echo_mcp_json(&python, &marker),
-    )
-    .await;
+    // Start with the echo server present (global scope).
+    let runtime = build_runtime(script(&tool, "should-not-run"), &marker, &python).await;
     assert!(
         live_mcp_server_names(&runtime)
             .await
@@ -303,7 +333,7 @@ async fn reload_removes_mcp_server_live() {
     );
 
     // Remove it and reload the live session.
-    write_mcp_json(&runtime.startup.workspace_root, &empty_mcp_json());
+    remove_global_echo_server(&runtime.settings);
     let names = runtime
         .handles
         .reload_mcp_servers()

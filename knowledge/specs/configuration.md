@@ -168,8 +168,8 @@ selectable per run:
   user's global preferences.
 - **`mcp`**, `[mcp.servers.<name>]` entries merged by name over the global ones,
   or the whole set under `mcp_mode = "replace"`. Precedence is unchanged
-  otherwise: workspace `.mcp.json` still overlays the result, and an ACP
-  client's `session/new` servers still win over both.
+  otherwise: workspace `.mcp.json` HTTP entries still overlay the result, and
+  an ACP client's `session/new` servers still win over both.
 - **`instructions`** (inline) and **`instructions_file`**, appended to the
   harness system prompt after `system.md` and the capability blocks. This is the
   standing job of the profile, not a durable user preference; the boundary with
