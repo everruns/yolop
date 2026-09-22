@@ -17,6 +17,7 @@ use everruns_core::Event;
 use everruns_core::InputMessage;
 use everruns_core::Tool;
 use everruns_core::command::ExecuteCommandRequest;
+use everruns_host::InProcessRuntime;
 use everruns_provider::typed_id::SessionId;
 use tokio::sync::{broadcast, mpsc, oneshot};
 
@@ -60,6 +61,11 @@ impl Session {
 
     pub fn session_id(&self) -> SessionId {
         self.handles.session_id
+    }
+
+    /// Runtime handle for host-owned services (classifier guard checks).
+    pub(crate) fn runtime(&self) -> &Arc<InProcessRuntime> {
+        &self.handles.runtime
     }
 
     pub(crate) fn report_herdr_state(&self, state: crate::capabilities::herdr::HerdrState) {

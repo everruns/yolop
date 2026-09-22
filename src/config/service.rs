@@ -76,6 +76,10 @@ pub(crate) fn current_value(settings: &Settings, target: &KeyTarget) -> Value {
             .theme()
             .map(|t| Value::String(t.to_string()))
             .unwrap_or(Value::Null),
+        KeyTarget::ClassifierModel => settings
+            .classifier_model()
+            .map(|m| Value::String(m.to_string()))
+            .unwrap_or(Value::Null),
         KeyTarget::Model(p) => settings
             .model_for(p)
             .map(|s| Value::String(s.to_string()))

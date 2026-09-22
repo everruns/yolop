@@ -1810,7 +1810,30 @@ async fn completion_followup(
             crate::session_state::user_ask::parse_evaluation_response(&command.message).ok()?
         }
         GateDecision::Conclusive(state) => {
-            let evaluation = crate::session_state::task_completion::evaluation_for_state(state);
+            let mut evaluation = crate::session_state::task_completion::evaluation_for_state(state);
+            // Muse-only idle-promise guard: the sync gate treats any
+            // tool-free text as Achieved, so a promised action with zero
+            // tool calls would end the turn. Ask the Jev classifier; a hit
+            // continues the turn instead of presenting the promise. Misses,
+            // errors, and a missing key keep Achieved (fail open).
+            if evaluation.outcome == AskOutcome::Achieved
+                && result.tool_calls_count == 0
+                && crate::capabilities::is_muse(Some(session.model.model_id().as_str()))
+                && let Some(classifier) =
+                    everruns_host::RuntimeHostAdapter::classifier(session.handles.runtime.as_ref())
+                && crate::capabilities::evaluate_actionable_promise(
+                    &result.response,
+                    result.tool_calls_count,
+                    &classifier,
+                    None,
+                )
+                .await
+            {
+                evaluation = crate::session_state::user_ask::UserAskEvaluation {
+                    outcome: AskOutcome::InProgress,
+                    reason: "promised action but made no tool call".to_string(),
+                };
+            }
             if session
                 .user_ask_store
                 .record_evaluation(session_id, &evaluation)

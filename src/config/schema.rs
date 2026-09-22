@@ -245,6 +245,16 @@ pub fn schema() -> &'static [ConfigField] {
             provider_scoped: false,
         },
         ConfigField {
+            key: "classifier_model",
+            aliases: &["classifier-model", "classifier.model"],
+            title: "Classifier model",
+            description: "Model for the Muse-only actionable-promise guard (Jev, TypeSafe backend).",
+            kind: ValueKind::Text,
+            default: None,
+            examples: &["\"jev-2\""],
+            provider_scoped: false,
+        },
+        ConfigField {
             key: "capabilities",
             aliases: &["capability"],
             title: "Harness capabilities",
@@ -292,6 +302,8 @@ pub enum KeyTarget {
     Sandbox,
     /// Interactive TUI color theme.
     Theme,
+    /// Classifier model for the Muse-only actionable-promise guard.
+    ClassifierModel,
     /// Per-provider model spec, for the named provider.
     Model(String),
     /// The ordered `[[models]]` list, edited through `yolop config models`.
@@ -321,6 +333,7 @@ impl KeyTarget {
             KeyTarget::Worktrees => "worktrees",
             KeyTarget::Sandbox => "sandbox_mode",
             KeyTarget::Theme => "theme",
+            KeyTarget::ClassifierModel => "classifier_model",
             KeyTarget::Model(_) => "default_models",
             KeyTarget::Models => "models",
             KeyTarget::Token(_) => "tokens",
@@ -378,6 +391,9 @@ pub fn parse_key(input: &str) -> Result<KeyTarget, String> {
         "worktrees" | "worktree" => scalar(KeyTarget::Worktrees),
         "sandbox_mode" | "sandbox" | "containment" => scalar(KeyTarget::Sandbox),
         "theme" => scalar(KeyTarget::Theme),
+        "classifier_model" | "classifier-model" | "classifier.model" => {
+            scalar(KeyTarget::ClassifierModel)
+        }
         // `models` is the ordered list; the per-provider memory it used to name
         // is `default_models`. A bare `models.<provider>` still routes to the
         // per-provider key so older muscle memory and settings files work.

@@ -1,5 +1,11 @@
 # Knowledge Log
 
+## 2026-09-22, Muse-only actionable-promise guard
+
+- [Action guard](specs/action-guard.md): new capability plus Jev Classifier
+  wiring (TypeSafe key, CLI-accessible model) that continues the turn when a
+  Muse reply promises action but makes no tool call. Fail open without a key.
+
 ## 2026-09-14, Maintenance review angles second pass
 
 - [Maintenance](specs/maintenance.md): added simplicity, soundness, and

@@ -262,6 +262,10 @@ pub struct Settings {
     /// tuika preset name. `None` means the default (yolop's palette). The
     /// `--theme` flag overrides this for a single run.
     pub theme: Option<String>,
+    /// Classifier model for the Muse-only actionable-promise guard (Jev,
+    /// TypeSafe backend). `None` means the backend default. The
+    /// `--classifier-model` flag overrides this for a single run.
+    pub classifier_model: Option<String>,
     /// Global MCP servers (`[mcp.servers.<name>]` in settings.toml). Repo `.mcp.json` entries override these by name.
     pub mcp: McpSettings,
     /// Ordered harness capability overrides (`[[capabilities]]` in settings.toml).
@@ -292,6 +296,7 @@ impl Default for Settings {
             worktrees: WorktreesMode::Auto,
             sandbox: SandboxMode::DangerFullAccess,
             theme: None,
+            classifier_model: None,
             mcp: McpSettings::default(),
             capabilities: Vec::new(),
             instructions: None,
@@ -346,6 +351,10 @@ impl Settings {
             .get("theme")
             .and_then(Value::as_str)
             .map(str::to_string);
+        let classifier_model = table
+            .get("classifier_model")
+            .and_then(Value::as_str)
+            .map(str::to_string);
         let string_map = |key: &str| {
             let mut map = BTreeMap::new();
             if let Some(t) = table.get(key).and_then(Value::as_table) {
@@ -382,6 +391,7 @@ impl Settings {
             worktrees,
             sandbox,
             theme,
+            classifier_model,
             mcp: parse_mcp_settings(table),
             capabilities: parse_capabilities_table(table),
             instructions: None,
@@ -437,6 +447,12 @@ impl Settings {
             .filter(|t| !t.eq_ignore_ascii_case("yolop"))
         {
             table.insert("theme".to_string(), Value::String(theme.to_string()));
+        }
+        if let Some(classifier_model) = self.classifier_model.as_deref() {
+            table.insert(
+                "classifier_model".to_string(),
+                Value::String(classifier_model.to_string()),
+            );
         }
         let mut insert_map = |key: &str, map: &BTreeMap<String, String>| {
             if !map.is_empty() {
@@ -549,6 +565,10 @@ impl Settings {
         self.theme
             .as_deref()
             .filter(|t| !t.eq_ignore_ascii_case("yolop"))
+    }
+
+    pub fn classifier_model(&self) -> Option<&str> {
+        self.classifier_model.as_deref()
     }
 
     pub fn capability_overrides_for(&self, id: &str) -> Vec<(usize, &CapabilityOverride)> {
@@ -974,6 +994,12 @@ impl SettingsStore {
     pub fn set_theme(&self, theme: Option<String>) -> Result<()> {
         let mut guard = self.lock_fresh();
         guard.base.theme = theme;
+        self.save_base_locked(&mut guard)
+    }
+
+    pub fn set_classifier_model(&self, classifier_model: Option<String>) -> Result<()> {
+        let mut guard = self.lock_fresh();
+        guard.base.classifier_model = classifier_model;
         self.save_base_locked(&mut guard)
     }
 
