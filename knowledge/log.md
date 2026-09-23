@@ -20,8 +20,9 @@ Everruns generalized yolop's soft-approval layer into a portable
 harnesses. Same levels, same prompt block, same three tools, plus two seams
 yolop needs: a host-owned `ApprovalModeStore` so the level can stay in
 `settings.toml`, and a session-keyed `PendingApprovalStore`. Recorded the
-migration in [Approval](specs/approval.md); it lands once a release of
-`everruns-builtins` carries the capability.
+migration in [Approval](specs/approval.md). `everruns-builtins` 0.29.0 carries
+the capability and this tree pins `=0.29.0`, so the swap is unblocked and
+`approval.rs` is now a duplicate of an upstream implementation.
 
 ## 2026-09-14, Maintenance review angles second pass
 
