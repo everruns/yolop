@@ -6,6 +6,20 @@
   wiring (TypeSafe key, CLI-accessible model) that continues the turn when a
   Muse reply promises action but makes no tool call. Fail open without a key.
 
+## 2026-09-19, Workspace MCP configuration is not process consent
+
+- [MCP](specs/mcp.md): repository-controlled `.mcp.json` files can configure
+  remote HTTP servers, but their stdio entries are ignored. Local child
+  processes require user-owned global configuration or an explicit client
+  session, preventing tool discovery from executing a tracked command.
+
+## 2026-09-19, MCP environment credentials require explicit bindings
+
+- [MCP](specs/mcp.md): removed bearer-token lookup derived from MCP server and
+  provider names. Environment credentials now reach MCP servers only through
+  explicit `${VAR}` header bindings, so workspace metadata cannot select an
+  unrelated process credential.
+
 ## 2026-09-14, Maintenance review angles second pass
 
 - [Maintenance](specs/maintenance.md): added simplicity, soundness, and

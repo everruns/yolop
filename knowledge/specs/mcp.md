@@ -6,7 +6,8 @@ description: Defines the mcp, model context protocol client support contract for
 
 # MCP, Model Context Protocol client support
 
-Status: v1 implemented (HTTP + stdio, workspace + global config).
+Status: v1 implemented (HTTP in workspace/global config, stdio in user-owned
+global config).
 
 ## Why
 
@@ -35,8 +36,9 @@ path, so MCP tools flow through the same agent loop as the built-in tools.
     [configuration](configuration.md). `yolop mcp` and `/mcp` writes stay
     scope-explicit (global or workspace); a profile's servers are edited in the
     profile file.
-  - **workspace**: `<workspace_root>/.mcp.json`, overrides global and profile by
-    name.
+  - **workspace**: `<workspace_root>/.mcp.json`, overrides global and profile HTTP
+    servers by name. Stdio entries are ignored because repository-controlled
+    commands are not an execution-consent boundary.
   A malformed file warns and is skipped rather than failing startup.
   - **ACP client**: servers passed in `session/new` `mcpServers` (see
     `knowledge/specs/acp.md`) overlay both file scopes for that session, so a
@@ -72,9 +74,7 @@ Config shape:
 {
   "mcpServers": {
     "docs": { "type": "http", "url": "https://example.com/mcp",
-              "headers": { "Authorization": "Bearer ${DOCS_TOKEN}" } },
-    "fs":   { "type": "stdio", "command": "mcp-server-filesystem",
-              "args": ["${WORKSPACE}"], "env": { "RUST_LOG": "info" } }
+              "headers": { "Authorization": "Bearer ${DOCS_TOKEN}" } }
   }
 }
 ```
@@ -89,10 +89,12 @@ Credentials for a server are resolved per request by the runtime's
 1. **User-scoped OAuth token** minted by `/mcp login <name>` and stored in the
    connection store (`mcp-oauth:<provider>`). Tokens are refreshed
    automatically when they near expiry.
-2. **Environment bearer**: `<PROVIDER>_ACCESS_TOKEN`/`_API_KEY`/`_TOKEN` (by
-   `oauth_provider_id`) or `MCP_<SERVER>_TOKEN`, for headless/CI use.
-3. Literal `headers` in the config (with `${VAR}` expansion), applied by the
+2. Literal `headers` in the config (with `${VAR}` expansion), applied by the
    transport regardless of the provider.
+
+Environment credentials are only used through explicit `${VAR}` header
+bindings. Yolop never derives environment-variable names from MCP server names
+or OAuth provider identifiers because workspace configuration controls both.
 
 **OAuth login** (`/mcp login <name>`, or `yolop mcp login <name>` headlessly, remote HTTP servers) is discovery-based:
 protected-resource metadata (RFC 9728) → authorization-server metadata
@@ -114,9 +116,9 @@ host's response text in the tool result; `/tools` includes live discovered
 ## Trust model
 
 - **HTTP** keeps the runtime's DNS-pinned SSRF protection, no relaxation.
-- **stdio** spawns local processes the user explicitly listed in their own
-  `.mcp.json`. Authoring that file is the act of consent, mirroring how other
-  MCP clients treat a project-scoped server list.
+- **stdio** spawns local processes only from user-owned global settings or an
+  explicit client session. Workspace `.mcp.json` stdio entries are ignored, so
+  a tracked repository file cannot execute a command during tool discovery.
 - **OAuth** discovery/token calls use `everruns-core`'s egress-bound OAuth
   client. Public endpoints require DNS-pinned SSRF validation and discovered
   endpoints must be `https`. Literal loopback endpoints may use `http` because
@@ -142,5 +144,5 @@ host's response text in the tool result; `/tools` includes live discovered
 | Live reload boundary | `src/runtime/mod.rs` (`RuntimeHandles::reload_mcp_servers`), `src/runtime/session.rs` |
 | OAuth protocol (discovery, DCR, PKCE, exchange, refresh) | upstream `everruns-core::oauth`, `everruns-mcp::oauth` |
 | OAuth loopback host, token storage, egress adapter | `src/auth/mcp_oauth_login.rs`, `src/auth/mcp_oauth.rs` |
-| Auth policy (stored token, env fallback) | `src/runtime/mod.rs` (`StoredMcpAuthProvider`) |
+| Auth policy (stored OAuth tokens) | `src/runtime/mod.rs` (`StoredMcpAuthProvider`) |
 | Client / transports / executor | upstream `everruns-mcp`, `everruns-host` (`mcp-stdio` feature) |

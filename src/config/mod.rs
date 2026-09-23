@@ -266,7 +266,8 @@ pub struct Settings {
     /// TypeSafe backend). `None` means the backend default. The
     /// `--classifier-model` flag overrides this for a single run.
     pub classifier_model: Option<String>,
-    /// Global MCP servers (`[mcp.servers.<name>]` in settings.toml). Repo `.mcp.json` entries override these by name.
+    /// Global MCP servers (`[mcp.servers.<name>]` in settings.toml). Repo
+    /// `.mcp.json` HTTP entries override these by name; stdio entries are ignored.
     pub mcp: McpSettings,
     /// Ordered harness capability overrides (`[[capabilities]]` in settings.toml).
     pub capabilities: Vec<CapabilityOverride>,
