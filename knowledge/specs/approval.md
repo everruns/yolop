@@ -128,9 +128,14 @@ Everruns generalized this layer into a portable capability, `soft_approval` in
 `everruns-builtins`, with the same three levels, the same `<soft_approval>`
 block, and the same three tools. It is on by default there for the Generic and
 Platform Chat harnesses. Yolop's copy is the origin of that design, not a fork
-of it, so the two should not diverge: once a release of `everruns-builtins`
-carries the capability, yolop drops `src/capabilities/approval.rs` and
-registers the upstream one.
+of it, so the two should not diverge: yolop drops
+`src/capabilities/approval.rs` and registers the upstream one.
+
+That move is unblocked. `everruns-builtins` 0.29.0 carries the capability, and
+this tree already pins the whole `everruns-*` set at `=0.29.0`, so the upstream
+`soft_approval` is on the dependency graph while `approval.rs` is still the
+copy in use. Until the swap lands, the two are duplicate implementations of one
+design, which is the divergence risk this section exists to prevent.
 
 Two seams exist for exactly that move:
 
