@@ -24,9 +24,9 @@ chrono = { version = "0.4", default-features = false, features = ["std"] }
 # "alternative clients" guide documents. `reqwest-blocking-client` fits the
 # synchronous serve loop (no tokio runtime); `reqwest-rustls` is required per
 # the Logfire docs to avoid a cryptic TLS export failure.
-opentelemetry = { version = "0.32", default-features = false, features = ["trace"] }
-opentelemetry_sdk = { version = "0.32", default-features = false, features = ["trace"] }
-opentelemetry-otlp = { version = "0.32", default-features = false, features = [
+opentelemetry = { version = "0.33", default-features = false, features = ["trace"] }
+opentelemetry_sdk = { version = "0.33", default-features = false, features = ["trace"] }
+opentelemetry-otlp = { version = "0.33", default-features = false, features = [
     "trace",
     "http-proto",
     "reqwest-blocking-client",
@@ -35,4 +35,4 @@ opentelemetry-otlp = { version = "0.32", default-features = false, features = [
 
 [dev-dependencies]
 # In-memory span exporter for offline assertions on the emitted spans.
-opentelemetry_sdk = { version = "0.32", default-features = false, features = ["trace", "testing"] }
+opentelemetry_sdk = { version = "0.33", default-features = false, features = ["trace", "testing"] }
