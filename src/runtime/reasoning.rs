@@ -295,10 +295,10 @@ mod tests {
 
     #[test]
     fn a_host_built_message_is_given_the_models_level_only_when_it_has_none() {
-        use everruns_core::{ContentPart, MessageRole};
+        use everruns_core::{ContentPart, RuntimeMessageRole};
 
         let wake = || InputMessage {
-            role: MessageRole::User,
+            role: RuntimeMessageRole::User,
             content: vec![ContentPart::text("a background task finished")],
             controls: None,
             metadata: None,
@@ -323,10 +323,10 @@ mod tests {
 
     #[test]
     fn the_effort_a_message_carries_is_readable() {
-        use everruns_core::{ContentPart, MessageRole};
+        use everruns_core::{ContentPart, RuntimeMessageRole};
 
         let mut input = InputMessage {
-            role: MessageRole::User,
+            role: RuntimeMessageRole::User,
             content: vec![ContentPart::text("hello")],
             controls: None,
             metadata: None,
@@ -340,10 +340,10 @@ mod tests {
 
     #[test]
     fn applying_an_effort_keeps_the_rest_of_the_message() {
-        use everruns_core::{ContentPart, MessageRole};
+        use everruns_core::{ContentPart, RuntimeMessageRole};
 
         let mut input = InputMessage {
-            role: MessageRole::User,
+            role: RuntimeMessageRole::User,
             content: vec![ContentPart::text("hello")],
             controls: None,
             metadata: None,

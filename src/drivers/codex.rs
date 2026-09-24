@@ -5,11 +5,13 @@ use eventsource_stream::Eventsource;
 use everruns_provider::ProviderEndpoint;
 use everruns_provider::driver_registry::DriverConfig;
 use everruns_provider::error::Result as EverrunsResult;
+use everruns_provider::message::{
+    Message as LlmMessage, MessageContent as LlmMessageContent, MessageRole as LlmMessageRole,
+};
 use everruns_provider::{AgentLoopError, LlmErrorKind};
 use everruns_provider::{
-    ChatDriver, LlmCallConfig, LlmCompletionMetadata, LlmContentPart, LlmMessage,
-    LlmMessageContent, LlmMessageRole, LlmResponseStream, LlmStreamError, LlmStreamEvent,
-    ProviderMetadata, ProviderOpaqueContext,
+    ChatDriver, LlmCallConfig, LlmCompletionMetadata, LlmContentPart, LlmResponseStream,
+    LlmStreamError, LlmStreamEvent, ProviderMetadata, ProviderOpaqueContext,
 };
 use everruns_provider::{
     CompactContent, CompactContentPart, CompactOutputItem, CompactRequest, CompactResponse,
@@ -1499,8 +1501,8 @@ fn metadata_extra_i64(metadata: &ProviderMetadata, key: &str) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use everruns_provider::message::{Message as LlmMessage, MessageRole as LlmMessageRole};
     use everruns_provider::{BuiltinTool, DeferrablePolicy, ToolDefinition, ToolHints, ToolPolicy};
-    use everruns_provider::{LlmMessage, LlmMessageRole};
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::sync::Mutex as StdMutex;

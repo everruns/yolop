@@ -1932,7 +1932,7 @@ async fn completion_followup(
                 && result.tool_calls_count == 0
                 && crate::capabilities::is_muse(Some(session.model.model_id().as_str()))
                 && let Some(classifier) =
-                    everruns_host::RuntimeHostAdapter::classifier(session.handles.runtime.as_ref())
+                    everruns_host::RuntimeHostAdapter::decisions(session.handles.runtime.as_ref())
                 && crate::capabilities::evaluate_actionable_promise(
                     &result.response,
                     result.tool_calls_count,
