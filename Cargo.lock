@@ -2101,6 +2101,7 @@ dependencies = [
  "everruns-capability",
  "everruns-core",
  "everruns-host",
+ "everruns-integrations-typesafe",
  "everruns-llmsim",
  "everruns-platform",
  "everruns-provider",
@@ -2315,6 +2316,24 @@ dependencies = [
  "reqwest 0.13.5",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "everruns-integrations-typesafe"
+version = "0.29.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "91b9a0febac6e4243e7ec901a0b329ceef67028d09ba1cf80a53294112e191ad"
+dependencies = [
+ "async-trait",
+ "everruns-capability",
+ "everruns-core",
+ "everruns-provider",
+ "reqwest 0.13.5",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

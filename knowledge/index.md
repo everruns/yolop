@@ -15,6 +15,7 @@ and [`docs/`](../docs/); it must not link back into this internal bundle.
 - [Presentation](specs/presentation.md), terminal-independent presentation semantics.
 - [Commands](specs/commands.md), client command behavior.
 - [User ask](specs/user-ask.md), request tracking and turn-end validation.
+- [Action guard](specs/action-guard.md), Muse-only idle-promise detection and turn continuation.
 - [Mid-turn steering](specs/steering.md), input received during execution.
 - [System prompt composition](specs/system-prompt.md), what earns a place in the per-turn prefix.
 

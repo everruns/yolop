@@ -186,9 +186,11 @@ everruns-openrouter = "=0.29.0"
 # log backend, re-exported under `everruns::local`. `everruns-local` is not a
 # substitute: its last non-yanked release builds only against host ^0.18.0, and
 # its latest release (0.18.0) is yanked outright.
-# Only the `local` feature is wanted; the facade's provider and capability
-# re-exports would duplicate the direct dependencies below.
-everruns = { version = "=0.29.0", default-features = false, features = ["local"] }
+# Only the `local` and `typesafe` features are wanted; the facade's other provider
+# and capability re-exports would duplicate the direct dependencies below.
+# `typesafe` exposes Jev, TypeSafeAI, and the Classifier for the Muse-only
+# actionable-promise guard (decision: classifier over text matching).
+everruns = { version = "=0.29.0", default-features = false, features = ["local", "typesafe"] }
 everruns-mcp = { version = "=0.29.0", features = ["stdio"] }
 # `mcp-stdio` lets yolop talk to local-process MCP servers; the hosted
 # everruns server/worker never enable it (knowledge/specs/mcp.md, upstream runtime-mcp.md D2).

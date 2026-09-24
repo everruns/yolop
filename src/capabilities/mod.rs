@@ -3,6 +3,7 @@
 // These are host/example behavior rather than runtime primitives. Keep the
 // module boundary here small; capability implementations live in submodules.
 
+pub(crate) mod action_guard;
 pub(crate) mod agent_commands;
 // `pub` rather than `pub(crate)`: `BuiltRuntime` hands hosts the session's
 // pending soft-approval so a pause is visible in the UI.
@@ -47,6 +48,7 @@ pub(crate) mod yolop;
 
 pub(crate) use crate::session_state::goal::GOAL_CAPABILITY_ID;
 pub(crate) use crate::session_state::user_ask::USER_ASK_CAPABILITY_ID;
+pub(crate) use action_guard::{ActionGuardCapability, evaluate_actionable_promise, is_muse};
 pub(crate) use agent_commands::{
     AGENT_COMMANDS_CAPABILITY_ID, AgentCommandsCapability, CommandDispatch,
 };
