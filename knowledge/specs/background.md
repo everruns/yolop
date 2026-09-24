@@ -157,6 +157,11 @@ Yolop installs a platform store to close that gap (`crate::background_wake`):
   prompt is in flight, drains the channel from a push-based per-session task
   (`spawn_background_wake_drain`) that takes the same `turn_lock` as client
   prompts so a wake turn never overlaps one, and joins on connection teardown.
+  Before running the wake turn the drain sends a specific notice naming each
+  finished task and its outcome, so the client shows facts even when the turn
+  itself emits no text. The framed wake prompt requires a closing one- or
+  two-sentence text verdict for the same reason. Each announced task is marked
+  reported for the session.
 - Both frame the completion message as an `[automatic]` prompt
   (`frame_wake_prompt`): explicitly not a user message. The authenticated
   terminal snapshot is authoritative, so the model does not re-query task state,
@@ -184,7 +189,8 @@ Yolop installs a platform store to close that gap (`crate::background_wake`):
   one bounded handoff; a mixed or unusually large burst falls back safely and
   the durable task registry remains authoritative.
 - Opt-out: the `proactive_wake` setting (on by default) suppresses the auto-turn
-  and surfaces a one-line notice instead.
+  and surfaces a one-line notice instead. The next user turn then reconciles
+  the still-unreported completion deterministically (see below).
 - `--print` is one-shot, so it does not auto-wake.
 
 ## Durability and restart
@@ -195,7 +201,11 @@ restart. In-flight OS processes do not: a run whose worker died is not resumed
 unless an orphan reaper re-attaches it (Yolop runs none, so non-reattachable
 runs simply stop). The wake is a live, in-process signal, a completion that
 happened while Yolop was down is observed on the next `/background` / `get_task`,
-not replayed as a wake.
+not replayed as a wake. As a backstop, the ACP server reconciles on each user
+turn under `turn_lock`: every terminal background task that is neither observed
+through a task inspection tool nor already reported for the session is announced
+once as a deterministic summary chunk and added to the model input, then marked
+reported. Already-observed completions stay silent.
 
 Schedules are different: their trigger state is durable. The local runner uses
 atomic, leased SQLite claims, advances recurring schedules only after delivery,

@@ -2583,6 +2583,200 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn wake_notice_carries_task_title_and_outcome() {
+        // The pre-turn wake notice must name the finished task and its outcome,
+        // so the client shows facts even when the wake model turn emits no text.
+        let config = LlmSimConfig::scripted(vec![
+            SimTurn::Assistant("recorded long parent context".to_string()),
+            SimTurn::ToolCalls(vec![SimToolCall {
+                name: "spawn_background".to_string(),
+                arguments: json!({
+                    "tool": "bash",
+                    "args": { "command": "printf validated" },
+                    "title": "validate notice content",
+                    "signal_on_completion": true,
+                }),
+                id: None,
+            }]),
+            SimTurn::Assistant("spawned background bash".to_string()),
+            SimTurn::Assistant("reviewed spawn_background result".to_string()),
+        ]);
+
+        let sessions = tempfile::tempdir().expect("sessions tempdir").keep();
+        let (mut client_w, mut reader, _server) = start_raw_server(config, sessions.clone());
+
+        send_json(
+            &mut client_w,
+            json!({ "jsonrpc": "2.0", "id": 0, "method": "initialize", "params": { "protocolVersion": 1 } }),
+        )
+        .await;
+        collect_until_response_id(&mut reader, 0).await;
+
+        let cwd = tempfile::tempdir().expect("cwd tempdir").keep();
+        send_json(
+            &mut client_w,
+            json!({ "jsonrpc": "2.0", "id": 1, "method": "session/new", "params": { "cwd": cwd.to_str().unwrap(), "mcpServers": [] } }),
+        )
+        .await;
+        let (new_session, _) = collect_until_response_id(&mut reader, 1).await;
+        let session_id = new_session["result"]["sessionId"]
+            .as_str()
+            .expect("sessionId")
+            .to_string();
+
+        // Two prompts: the spawn prompt consumes the tool-call turn and its
+        // closing text, leaving the final scripted turn for the wake. The fast
+        // completion may land anywhere in the stream, so accumulate everything.
+        let mut seen: Vec<serde_json::Value> = Vec::new();
+        for (id, text) in [(2, "record context"), (3, "spawn")] {
+            send_json(
+                &mut client_w,
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "method": "session/prompt",
+                    "params": { "sessionId": session_id, "prompt": [{ "type": "text", "text": text }] },
+                }),
+            )
+            .await;
+            let (_, updates) = collect_until_response_id(&mut reader, id).await;
+            seen.extend(updates);
+        }
+        let woke = tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                let msg = next_json(&mut reader).await;
+                if msg.get("method").and_then(Value::as_str) != Some("session/update") {
+                    continue;
+                }
+                let done = msg.to_string().contains("reviewed spawn_background result");
+                seen.push(msg);
+                if done {
+                    return true;
+                }
+            }
+        })
+        .await;
+        assert!(
+            woke.unwrap_or(false),
+            "expected a proactive wake turn after spawn_background finished"
+        );
+        let texts = update_texts(&seen, "agent_message_chunk").join("\n");
+        assert!(
+            texts.contains("spawned background bash"),
+            "expected the spawn turn text, got: {texts}"
+        );
+        assert!(
+            texts.contains("validate notice content"),
+            "wake updates must name the finished task, got: {texts}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn next_prompt_reconciles_completion_when_proactive_wake_off() {
+        // With proactive wake off the drain only points at /background. The next
+        // user turn must still surface the specific finished task and outcome.
+        let config = LlmSimConfig::scripted(vec![
+            SimTurn::ToolCalls(vec![SimToolCall {
+                name: "spawn_background".to_string(),
+                arguments: json!({
+                    "tool": "bash",
+                    "args": { "command": "printf reconciled" },
+                    "title": "reconcile me",
+                    "signal_on_completion": true,
+                }),
+                id: None,
+            }]),
+            SimTurn::Assistant("spawned background task".to_string()),
+            SimTurn::Assistant("nothing new".to_string()),
+        ]);
+
+        let sessions = tempfile::tempdir().expect("sessions tempdir").keep();
+        std::fs::write(sessions.join("settings.toml"), "proactive_wake = false\n").unwrap();
+        let (mut client_w, mut reader, _server) = start_raw_server(config, sessions.clone());
+
+        send_json(
+            &mut client_w,
+            json!({ "jsonrpc": "2.0", "id": 0, "method": "initialize", "params": { "protocolVersion": 1 } }),
+        )
+        .await;
+        collect_until_response_id(&mut reader, 0).await;
+
+        let cwd = tempfile::tempdir().expect("cwd tempdir").keep();
+        send_json(
+            &mut client_w,
+            json!({ "jsonrpc": "2.0", "id": 1, "method": "session/new", "params": { "cwd": cwd.to_str().unwrap(), "mcpServers": [] } }),
+        )
+        .await;
+        let (new_session, _) = collect_until_response_id(&mut reader, 1).await;
+        let session_id = new_session["result"]["sessionId"]
+            .as_str()
+            .expect("sessionId")
+            .to_string();
+
+        send_json(
+            &mut client_w,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "session/prompt",
+                "params": { "sessionId": session_id, "prompt": [{ "type": "text", "text": "spawn" }] },
+            }),
+        )
+        .await;
+        let (_, spawn_updates) = collect_until_response_id(&mut reader, 2).await;
+        let spawn_texts = update_texts(&spawn_updates, "agent_message_chunk").join("\n");
+        assert!(
+            spawn_texts.contains("spawned background task"),
+            "expected the spawn turn text, got: {spawn_texts}"
+        );
+        assert!(
+            !spawn_texts.contains("reconcile me"),
+            "proactive-off notice must not carry specifics yet, got: {spawn_texts}"
+        );
+
+        let noticed = tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                let msg = next_json(&mut reader).await;
+                if msg.get("method").and_then(Value::as_str) != Some("session/update") {
+                    continue;
+                }
+                if update_texts(std::slice::from_ref(&msg), "agent_message_chunk")
+                    .iter()
+                    .any(|t| t.contains("proactive wake off"))
+                {
+                    return true;
+                }
+            }
+        })
+        .await;
+        assert!(
+            noticed.unwrap_or(false),
+            "expected the proactive-off completion notice"
+        );
+
+        send_json(
+            &mut client_w,
+            json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "session/prompt",
+                "params": { "sessionId": session_id, "prompt": [{ "type": "text", "text": "anything new?" }] },
+            }),
+        )
+        .await;
+        let (_, second_updates) = collect_until_response_id(&mut reader, 3).await;
+        let second_texts = update_texts(&second_updates, "agent_message_chunk").join("\n");
+        assert!(
+            second_texts.contains("nothing new"),
+            "expected the second turn text, got: {second_texts}"
+        );
+        assert!(
+            second_texts.contains("reconcile me"),
+            "next turn must reconcile the unreported completion, got: {second_texts}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn observed_terminal_background_task_does_not_wake_agent_again() {
         let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
         let config = LlmSimConfig::scripted(vec![
