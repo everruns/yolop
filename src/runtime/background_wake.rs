@@ -19,7 +19,7 @@ use everruns_core::Event;
 use everruns_core::EventData;
 use everruns_core::ExecutionSession;
 use everruns_core::InputMessage;
-use everruns_core::MessageRole;
+use everruns_core::RuntimeMessageRole;
 use everruns_core::{PlatformCreateSessionRequest, PlatformMessage};
 use everruns_core::{SessionTask, SessionTaskRegistry};
 use everruns_core::{TaskTransition, wake_text_for};
@@ -148,6 +148,45 @@ impl WakeMessage {
             "↻ coordination message received, waking agent"
         } else {
             "↻ background task finished, waking agent to review"
+        }
+    }
+
+    /// User-visible summary naming the finished tasks and their outcomes.
+    /// The ACP drain sends this before the wake model turn, so the client
+    /// shows facts even when that turn emits no text of its own.
+    pub(crate) fn notice_text(&self) -> String {
+        let Some(handoff) = self.handoff.as_ref() else {
+            return self.notice().to_string();
+        };
+        if handoff.tasks.is_empty() {
+            return self.notice().to_string();
+        }
+        let mut lines = Vec::with_capacity(handoff.tasks.len());
+        for task in &handoff.tasks {
+            lines.push(format!(
+                "↻ background task finished: {} — {}",
+                task.title, task.status
+            ));
+        }
+        if handoff.omitted_tasks > 0 {
+            lines.push(format!("(+{} more)", handoff.omitted_tasks));
+        }
+        lines.join("\n")
+    }
+
+    /// Task ids carried by this message's handoff, if any.
+    pub(crate) fn task_ids(&self) -> Vec<String> {
+        self.handoff
+            .as_ref()
+            .map(|h| h.tasks.iter().map(|t| t.task_id.clone()).collect())
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn handoff_message(raw: String, handoff: WakeHandoff) -> Self {
+        Self {
+            raw,
+            handoff: Some(handoff),
+            kind: WakeKind::Background,
         }
     }
 
@@ -409,7 +448,7 @@ pub fn frame_wake_prompt(message: &WakeMessage) -> String {
          user message. Treat the terminal summary as authoritative. Read its `result_path` or \
          `log_path` only when the summary lacks detail required for the active ask. Do not update \
          the session title. Do not retry or replace failed work unchanged. Continue the work it \
-         was for or report the result.",
+         was for or report the result. End your turn with a one- or two-sentence text verdict stating what finished and its outcome, even when no further action is needed.",
         message.raw
     )
 }
@@ -494,7 +533,7 @@ pub fn input_for_wake(message: &WakeMessage) -> InputMessage {
     input
 }
 
-fn task_handoff(task: SessionTask) -> Option<TaskHandoff> {
+pub(crate) fn task_handoff(task: SessionTask) -> Option<TaskHandoff> {
     let summary = task.summary.as_deref()?.trim();
     if summary.is_empty() {
         return None;
@@ -693,8 +732,8 @@ impl LocalSessionRunner for WakeRunner {
             .iter()
             .map(|message| PlatformMessage {
                 role: match &message.role {
-                    MessageRole::Agent => "agent".to_string(),
-                    MessageRole::User => "user".to_string(),
+                    RuntimeMessageRole::Agent => "agent".to_string(),
+                    RuntimeMessageRole::User => "user".to_string(),
                     other => format!("{other:?}").to_lowercase(),
                 },
                 content: message.text().unwrap_or_default().to_string(),

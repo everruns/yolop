@@ -4,14 +4,14 @@
 //! This module owns the display data types (`ChatLine`, `Author`,
 //! `ActivityStatus`, `StreamPreview`, `StreamKind`) and the `TurnEvent` channel
 //! protocol that [`crate::runtime::session::Session`] emits while a turn runs. It is the
-//! one boundary that knows about `EventData` / `Message`; the rest of the TUI
+//! one boundary that knows about `EventData` / `RuntimeMessage`; the rest of the TUI
 //! (`crate::tui`) consumes only the view-model types defined here. Functions are
 //! pure over runtime types — no terminal I/O. Presentation concerns (colors)
 //! live in `crate::tui::render`.
 
 use everruns_core::ToolExecutionResult;
 use everruns_core::events::Event as RuntimeEvent;
-use everruns_core::{ContentPart, Message, MessageRole};
+use everruns_core::{ContentPart, RuntimeMessage, RuntimeMessageRole};
 use everruns_core::{EventData, ToolCompletedData, ToolStartedData};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -338,7 +338,7 @@ pub(crate) fn lines_for_replayed_event(event: &RuntimeEvent) -> Vec<ChatLine> {
             .into_iter()
             .collect(),
         EventData::OutputMessageCompleted(data) => {
-            if data.message.role == MessageRole::Agent {
+            if data.message.role == RuntimeMessageRole::Agent {
                 message_line(Author::Assistant, &data.message)
                     .into_iter()
                     .collect()
@@ -353,10 +353,10 @@ pub(crate) fn lines_for_replayed_event(event: &RuntimeEvent) -> Vec<ChatLine> {
 /// Assistant text lines produced by a turn, read from the messages appended
 /// after `skip`. Mirrors the message-loop reconciliation the session does at
 /// end of turn.
-pub(crate) fn assistant_lines_since(messages: &[Message], skip: usize) -> Vec<ChatLine> {
+pub(crate) fn assistant_lines_since(messages: &[RuntimeMessage], skip: usize) -> Vec<ChatLine> {
     let mut out = Vec::new();
     for msg in messages.iter().skip(skip) {
-        if msg.role == MessageRole::Agent
+        if msg.role == RuntimeMessageRole::Agent
             && !msg.has_tool_calls()
             && let Some(text) = msg.text()
         {
@@ -372,7 +372,7 @@ pub(crate) fn assistant_lines_since(messages: &[Message], skip: usize) -> Vec<Ch
     out
 }
 
-pub(crate) fn message_line(author: Author, message: &Message) -> Option<ChatLine> {
+pub(crate) fn message_line(author: Author, message: &RuntimeMessage) -> Option<ChatLine> {
     let image_count = message
         .content
         .iter()
@@ -782,7 +782,7 @@ pub(crate) fn shell_result_lines(result: ToolExecutionResult) -> Vec<ChatLine> {
             author: Author::System,
             text: "shell failed: internal error".into(),
         }],
-        ToolExecutionResult::ConnectionRequired { provider } => vec![ChatLine {
+        ToolExecutionResult::ConnectionRequired { provider, .. } => vec![ChatLine {
             author: Author::System,
             text: format!("shell failed: connection required for {provider}"),
         }],

@@ -57,7 +57,7 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use everruns_core::EventEmitter;
-use everruns_core::{ContentPart, Message};
+use everruns_core::{ContentPart, RuntimeMessage};
 use everruns_core::{
     Event, EventData, EventRequest, INPUT_MESSAGE, OUTPUT_MESSAGE_COMPLETED,
     OutputMessageCompletedData, REASON_COMPLETED, REASON_ITEM, SESSION_TITLE_UPDATED,
@@ -403,7 +403,7 @@ pub fn migrate_legacy_session_log(
 #[derive(Debug, Default)]
 pub struct ReplayedSession {
     pub events: Vec<Event>,
-    pub messages: Vec<Message>,
+    pub messages: Vec<RuntimeMessage>,
     /// Highest `Event.sequence` value found in the file (None if no
     /// events had sequence numbers). The new emitter resumes from
     /// `max_sequence + 1`.
@@ -961,7 +961,7 @@ impl EventSink for JsonlEventEmitter {
 // copied here for the replay path. The three event types matched are
 // exactly those `is_replay_relevant` lets through to disk.
 
-fn message_from_event(data: &EventData) -> Option<Message> {
+fn message_from_event(data: &EventData) -> Option<RuntimeMessage> {
     match data {
         EventData::InputMessage(d) => Some(d.message.clone()),
         EventData::OutputMessageCompleted(OutputMessageCompletedData { message, .. }) => {
@@ -975,14 +975,14 @@ fn message_from_event(data: &EventData) -> Option<Message> {
 // Only checkpoint tests project messages from events now: the runtime reads the
 // conversation back through the event log itself.
 #[cfg(test)]
-pub(crate) fn messages_from_events(events: &[Event]) -> Vec<Message> {
+pub(crate) fn messages_from_events(events: &[Event]) -> Vec<RuntimeMessage> {
     events
         .iter()
         .filter_map(|event| message_from_event(&event.data))
         .collect()
 }
 
-fn tool_completed_to_message(data: everruns_core::events::ToolCompletedData) -> Message {
+fn tool_completed_to_message(data: everruns_core::events::ToolCompletedData) -> RuntimeMessage {
     let mut images: Vec<ToolResultImage> = Vec::new();
     let result = data.result.map(|parts| {
         for part in &parts {
@@ -1013,9 +1013,9 @@ fn tool_completed_to_message(data: everruns_core::events::ToolCompletedData) -> 
     });
 
     if images.is_empty() {
-        Message::tool_result(&data.tool_call_id, result, data.error)
+        RuntimeMessage::tool_result(&data.tool_call_id, result, data.error)
     } else {
-        Message::tool_result_with_images(&data.tool_call_id, result, images)
+        RuntimeMessage::tool_result_with_images(&data.tool_call_id, result, images)
     }
 }
 
@@ -1034,7 +1034,7 @@ fn parse_structured_tool_result_text(text: &str) -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use everruns_core::Message;
+    use everruns_core::RuntimeMessage;
     use everruns_core::{
         EventContext, InputMessageData, OutputMessageCompletedData, SessionTitleUpdatedData,
         ToolCompletedData,
@@ -1045,7 +1045,7 @@ mod tests {
         Event::new(
             session_id,
             EventContext::default(),
-            InputMessageData::new(Message::user(text)),
+            InputMessageData::new(RuntimeMessage::user(text)),
         )
     }
 
@@ -1059,7 +1059,7 @@ mod tests {
             .append(EventRequest::new(
                 session_id,
                 EventContext::default(),
-                InputMessageData::new(Message::user(text)),
+                InputMessageData::new(RuntimeMessage::user(text)),
             ))
             .await
             .expect("append")
@@ -1273,7 +1273,7 @@ mod tests {
         let req = EventRequest::new(
             session_id,
             EventContext::default(),
-            InputMessageData::new(Message::user("new")),
+            InputMessageData::new(RuntimeMessage::user("new")),
         );
         let _new = emitter.emit(req).await.expect("emit");
 
@@ -1432,7 +1432,7 @@ mod tests {
             .emit(EventRequest::new(
                 session_id,
                 EventContext::default(),
-                InputMessageData::new(Message::user("persist me")),
+                InputMessageData::new(RuntimeMessage::user("persist me")),
             ))
             .await
             .expect("emit first event");
@@ -1547,7 +1547,7 @@ mod tests {
             .emit(EventRequest::new(
                 session_id,
                 EventContext::default(),
-                InputMessageData::new(Message::user("after crash")),
+                InputMessageData::new(RuntimeMessage::user("after crash")),
             ))
             .await
             .expect("emit after tail repair");
@@ -1575,7 +1575,7 @@ mod tests {
         let path = session_log_path(&session_dir);
         let emitter = JsonlEventEmitter::open(&path, 1).expect("open");
 
-        let mut message = Message::assistant("I will inspect the files.");
+        let mut message = RuntimeMessage::assistant("I will inspect the files.");
         message.content.insert(
             0,
             ContentPart::reasoning(

@@ -207,7 +207,7 @@ impl ControlResponse {
             ToolExecutionResult::InternalError(_) => {
                 Self::error("administration failed internally")
             }
-            ToolExecutionResult::ConnectionRequired { provider } => {
+            ToolExecutionResult::ConnectionRequired { provider, .. } => {
                 Self::error(format!("connection `{provider}` is required"))
             }
         }

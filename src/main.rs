@@ -39,7 +39,7 @@ use crossterm::event::{
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use crossterm::{execute, queue};
 use everruns_core::command::ExecuteCommandRequest;
-use everruns_core::{ContentPart, MessageRole};
+use everruns_core::{ContentPart, RuntimeMessageRole};
 use everruns_provider::typed_id::SessionId;
 use runtime::{
     BuiltRuntime, DEFAULT_LOCAL_MODEL, ProviderChoice, ResolvedProviderChoice, resolve_for_settings,
@@ -238,6 +238,12 @@ struct Cli {
     /// comes from settings when unset.
     #[arg(long, value_name = "NAME")]
     theme: Option<String>,
+
+    /// Classifier model for the Muse-only actionable-promise guard (Jev,
+    /// TypeSafe backend). Overrides the `classifier_model` setting for this
+    /// run. Deliberately a flag, not TUI sidebar state.
+    #[arg(long, value_name = "MODEL")]
+    classifier_model: Option<String>,
 
     /// Enable shell sandboxing for this run. Commands may write only in the
     /// workspace and temporary directories, and network access is blocked.
@@ -928,6 +934,9 @@ async fn async_main(crash_reporter: &crash_report::CrashReporter) -> Result<()> 
             initial_prompt: cli.print.clone(),
             sandbox_mode_override,
             extra_environment_context,
+            // The `--classifier-model` flag wins; the setting and the
+            // backend default are resolved at composition time.
+            classifier_model_override: cli.classifier_model.clone(),
             ..Default::default()
         },
     )
@@ -2174,7 +2183,32 @@ async fn run_print_mode(
         let (outcome, reason) =
             match session_state::task_completion::gate_turn(&turn.result, has_background) {
                 session_state::task_completion::GateDecision::Conclusive(state) => {
-                    let evaluation = session_state::task_completion::evaluation_for_state(state);
+                    let mut evaluation =
+                        session_state::task_completion::evaluation_for_state(state);
+                    // Muse-only idle-promise guard: the sync gate treats any
+                    // tool-free text as Achieved, so a promised action with
+                    // zero tool calls would end the turn. Ask the Jev
+                    // classifier; a hit continues the turn instead of
+                    // presenting the promise. Misses, errors, and a missing
+                    // key keep Achieved (fail open).
+                    if evaluation.outcome == session_state::user_ask::AskOutcome::Achieved
+                        && turn.result.tool_calls_count == 0
+                        && crate::capabilities::is_muse(Some(model.model_id().as_str()))
+                        && let Some(classifier) =
+                            everruns_host::RuntimeHostAdapter::decisions(handles.runtime.as_ref())
+                        && crate::capabilities::evaluate_actionable_promise(
+                            &turn.result.response,
+                            turn.result.tool_calls_count,
+                            &classifier,
+                            None,
+                        )
+                        .await
+                    {
+                        evaluation = session_state::user_ask::UserAskEvaluation {
+                            outcome: session_state::user_ask::AskOutcome::InProgress,
+                            reason: "promised action but made no tool call".to_string(),
+                        };
+                    }
                     user_ask_store.record_evaluation(handles.session_id, &evaluation)?;
                     (evaluation.outcome, evaluation.reason)
                 }
@@ -2346,7 +2380,7 @@ async fn collect_print_turn(
         .iter()
         .skip(runtime::agent_output_start(&messages, before_msgs, retried))
     {
-        if msg.role == MessageRole::Agent
+        if msg.role == RuntimeMessageRole::Agent
             && !msg.has_tool_calls()
             && let Some(text) = msg.text()
         {
@@ -2770,6 +2804,7 @@ mod tests {
             compact_work: true,
             force_compact_work: false,
             theme: None,
+            classifier_model: None,
             sandbox: false,
         }
     }
@@ -2884,6 +2919,7 @@ mod tests {
             compact_work: false,
             force_compact_work: false,
             theme: None,
+            classifier_model: None,
             sandbox: false,
         };
 

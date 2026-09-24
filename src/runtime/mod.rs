@@ -23,11 +23,11 @@ use crate::capabilities::tool_reveal::{
 use crate::capabilities::yolop::{YOLOP_CAPABILITY_ID, YolopCapability};
 use crate::capabilities::{
     AGENT_COMMANDS_CAPABILITY_ID, APPROVAL_CAPABILITY_ID, AST_GREP_CAPABILITY_ID,
-    ATTRIBUTION_CAPABILITY_ID, AgentCommandsCapability, ApprovalCapability, AstEditCapability,
-    AstGrepCapability, AttributionCapability, BACKGROUND_CAPABILITY_ID, BackgroundCapability,
-    CHECKPOINT_CAPABILITY_ID, CLIENT_COMMANDS_CAPABILITY_ID, CODING_BASH_CAPABILITY_ID,
-    CONFIG_CAPABILITY_ID, CONTEXT_COST_CONTROL_CAPABILITY_ID, CheckpointCapability,
-    ClientCommandsCapability, ClientUiContext, CodingBashCapability,
+    ATTRIBUTION_CAPABILITY_ID, ActionGuardCapability, AgentCommandsCapability, ApprovalCapability,
+    AstEditCapability, AstGrepCapability, AttributionCapability, BACKGROUND_CAPABILITY_ID,
+    BackgroundCapability, CHECKPOINT_CAPABILITY_ID, CLIENT_COMMANDS_CAPABILITY_ID,
+    CODING_BASH_CAPABILITY_ID, CONFIG_CAPABILITY_ID, CONTEXT_COST_CONTROL_CAPABILITY_ID,
+    CheckpointCapability, ClientCommandsCapability, ClientUiContext, CodingBashCapability,
     CodingCliEnvironmentCapability, CommandDispatch, ConfigCapability,
     ContextCostControlCapability, CoordinationConfig, CoordinationHost, CoordinationStore,
     ENVIRONMENT_CONTEXT_CAPABILITY_ID, EnvironmentContextRegistry, GOAL_CAPABILITY_ID,
@@ -84,7 +84,7 @@ use everruns_core::{
     CapabilityRegistry, Controls, InputMessage, ReasoningConfig, ScopedMcpServers,
     SessionFileSystem,
 };
-use everruns_core::{ContentPart, MessageRole};
+use everruns_core::{ContentPart, RuntimeMessageRole};
 use everruns_core::{
     FileInfo, FileStat, GrepMatch, GrepOptions, GrepSearchResult, InitialFile, SessionFile,
 };
@@ -2332,7 +2332,7 @@ impl ProviderChoice {
             _ => true,
         });
         let mut input = InputMessage {
-            role: MessageRole::User,
+            role: RuntimeMessageRole::User,
             content: parts,
             controls: None,
             metadata: None,
@@ -2446,7 +2446,7 @@ where
 /// assistant text is an apology for an error the host went on to repair, so the
 /// answer starts after the last user message: the input the retry re-sent.
 pub(crate) fn agent_output_start(
-    messages: &[everruns_core::Message],
+    messages: &[everruns_core::RuntimeMessage],
     before: usize,
     retried: bool,
 ) -> usize {
@@ -2455,7 +2455,7 @@ pub(crate) fn agent_output_start(
     }
     messages
         .iter()
-        .rposition(|message| message.role == everruns_core::MessageRole::User)
+        .rposition(|message| message.role == everruns_core::RuntimeMessageRole::User)
         .map(|index| index + 1)
         .unwrap_or(before)
 }
@@ -3522,6 +3522,10 @@ pub struct BuildOptions {
     /// context entry. Set per session by the ACP host; `None` everywhere
     /// else, which omits the entry entirely.
     pub editor_context_value: Option<String>,
+    /// Classifier model override for the Muse-only actionable-promise guard
+    /// (`--classifier-model`). `None` falls back to the `classifier_model`
+    /// setting, then the TypeSafe backend default.
+    pub classifier_model_override: Option<String>,
 }
 
 impl Default for BuildOptions {
@@ -3540,6 +3544,7 @@ impl Default for BuildOptions {
             provider_retry_config: None,
             extra_environment_context: Vec::new(),
             editor_context_value: None,
+            classifier_model_override: None,
         }
     }
 }
@@ -4429,6 +4434,9 @@ pub async fn build_with_options(
         session_id,
         replayed_tool_count,
     ));
+    // Muse-only idle-promise guard: the prompt is Muse-gated and enforcement
+    // runs only on Muse sessions (see the task_completion call sites).
+    capabilities.register(ActionGuardCapability::new());
     // Soft approval — spoken-consent guidance + audit tool, gated by the
     // central `approval_mode` setting (read live each turn).
     let pending_approval = crate::capabilities::approval::PendingApprovalStore::default();
@@ -4614,7 +4622,12 @@ pub async fn build_with_options(
     let model_driver_registry = driver_registry.clone();
 
     // 0.18 replaced PlatformDefinition with HostComposition; same shape.
-    let platform = everruns_host::HostComposition::builder()
+    // TypeSafe classifier for the Muse-only actionable-promise guard. Same
+    // key pattern as chat providers: TYPESAFE_API_KEY env first,
+    // tokens.typesafe in settings second. Absent key keeps the builder
+    // default (Disabled), so the guard stays dormant and turns proceed
+    // unchanged (fail open).
+    let mut platform_builder = everruns_host::HostComposition::builder()
         .capability_registry(capabilities)
         .driver_registry(driver_registry)
         .egress_service(everruns_host::runtime_egress_service())
@@ -4627,8 +4640,22 @@ pub async fn build_with_options(
             skill_system: skill_dirs.system.clone(),
             skill_environment: skill_dirs.environment.clone(),
             extension_skills: extension_skill_scopes.clone(),
-        }))
-        .build();
+        }));
+    if let Some(api_key) = resolve_token(&settings_snapshot, "typesafe", &["TYPESAFE_API_KEY"]) {
+        // CLI wins over the setting; both fall back to the backend default.
+        let classifier_model = options
+            .classifier_model_override
+            .clone()
+            .or_else(|| settings_snapshot.classifier_model().map(str::to_string));
+        let mut service = everruns::TypeSafeAI::without_retries(api_key);
+        if let Some(model) = classifier_model.as_deref() {
+            service = service.model(model);
+        }
+        platform_builder = platform_builder.decisions(Arc::new(service));
+    } else {
+        tracing::info!("typesafe API key absent; actionable-promise guard dormant");
+    }
+    let platform = platform_builder.build();
 
     // Seed harness/agent/session explicitly so Yolop can attach harness
     // metadata that Everruns forwards to LLM calls and observability.
@@ -6192,7 +6219,7 @@ mod tests {
                 .first()
                 .and_then(|call| {
                     call.iter().find(|message| {
-                        message.role == everruns_provider::driver_registry::LlmMessageRole::User
+                        message.role == everruns_provider::driver_registry::MessageRole::User
                             && message.content_as_text().contains("<runtime_context>")
                     })
                 })
@@ -6303,7 +6330,7 @@ mod tests {
             .await
             .expect("read child messages");
         assert!(child_messages.iter().any(|message| {
-            message.role == MessageRole::Agent
+            message.role == RuntimeMessageRole::Agent
                 && message.text() == Some("Orbit subsystem inspected.")
         }));
 
@@ -9073,13 +9100,13 @@ mod tests {
     /// one; the first is an apology for an error the host repaired.
     #[test]
     fn a_retried_turn_reads_its_answer_from_the_re_sent_input() {
-        use everruns_core::Message;
+        use everruns_core::RuntimeMessage;
 
         let messages = vec![
-            Message::user("say pong"),
-            Message::assistant("I encountered an error while processing your request."),
-            Message::user("say pong"),
-            Message::assistant("pong"),
+            RuntimeMessage::user("say pong"),
+            RuntimeMessage::assistant("I encountered an error while processing your request."),
+            RuntimeMessage::user("say pong"),
+            RuntimeMessage::assistant("pong"),
         ];
 
         assert_eq!(agent_output_start(&messages, 0, true), 3);

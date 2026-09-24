@@ -21,7 +21,7 @@
 //! reference on-disk paths, which yolop does not materialize). Empty and
 //! `None` fields are skipped when serializing, per the RFC's convention.
 
-use everruns_core::{ContentPart, Message, MessageRole};
+use everruns_core::{ContentPart, RuntimeMessage, RuntimeMessageRole};
 use everruns_core::{Event, EventData, TokenUsage, ToolCompletedData};
 use everruns_provider::typed_id::SessionId;
 use serde::{Deserialize, Serialize};
@@ -149,8 +149,8 @@ pub fn trajectory_from_events(
         match &event.data {
             EventData::InputMessage(data) => {
                 let source = match data.message.role {
-                    MessageRole::System => StepSource::System,
-                    MessageRole::User => StepSource::User,
+                    RuntimeMessageRole::System => StepSource::System,
+                    RuntimeMessageRole::User => StepSource::User,
                     // Agent/tool-result inputs are runtime plumbing, not
                     // conversation steps.
                     _ => continue,
@@ -177,7 +177,7 @@ pub fn trajectory_from_events(
                 );
             }
             EventData::OutputMessageCompleted(data) => {
-                if data.message.role != MessageRole::Agent {
+                if data.message.role != RuntimeMessageRole::Agent {
                     continue;
                 }
                 // 0.19 moved reasoning onto ordered content parts, and only the
@@ -272,7 +272,7 @@ fn timestamp(event: &Event) -> String {
 
 /// All text parts joined with newlines. Image and tool-call parts are
 /// intentionally dropped (tool calls are exported via `tool_calls`).
-fn message_text(message: &Message) -> String {
+fn message_text(message: &RuntimeMessage) -> String {
     message
         .content
         .iter()
@@ -351,7 +351,7 @@ fn add_f64(total: &mut Option<f64>, value: Option<f64>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use everruns_core::Message;
+    use everruns_core::RuntimeMessage;
     use everruns_core::{
         EventContext, InputMessageData, OutputMessageCompletedData, ReasonItemData,
         ToolCompletedData,
@@ -378,7 +378,7 @@ mod tests {
     /// tool call and result, then the final assistant message, with usage on
     /// both generations.
     fn synthetic_events() -> Vec<Event> {
-        let mut with_tools = Message::assistant_with_tools(
+        let mut with_tools = RuntimeMessage::assistant_with_tools(
             "Let me check the file.",
             vec![RuntimeToolCall {
                 id: "call_1".to_string(),
@@ -398,7 +398,7 @@ mod tests {
         );
         vec![
             event(EventData::InputMessage(InputMessageData::new(
-                Message::user("fix the bug"),
+                RuntimeMessage::user("fix the bug"),
             ))),
             event(EventData::ReasonItem(ReasonItemData {
                 turn_id: everruns_provider::typed_id::TurnId::from_seed(1),
@@ -423,7 +423,7 @@ mod tests {
                 Some(12),
             ))),
             event(EventData::OutputMessageCompleted(
-                OutputMessageCompletedData::new(Message::assistant("Fixed."))
+                OutputMessageCompletedData::new(RuntimeMessage::assistant("Fixed."))
                     .with_usage(TokenUsage::new(30, 10)),
             )),
         ]
@@ -452,7 +452,7 @@ mod tests {
         let act = &steps[1];
         assert_eq!(act.source, StepSource::Agent);
         assert_eq!(act.message, "Let me check the file.");
-        // Message-level thinking wins over buffered reason.item summaries.
+        // RuntimeMessage-level thinking wins over buffered reason.item summaries.
         assert_eq!(
             act.reasoning_content.as_deref(),
             Some("The user wants the file contents.")
@@ -493,7 +493,7 @@ mod tests {
     fn reason_item_summaries_feed_next_agent_step() {
         let events = vec![
             event(EventData::InputMessage(InputMessageData::new(
-                Message::user("hi"),
+                RuntimeMessage::user("hi"),
             ))),
             event(EventData::ReasonItem(ReasonItemData {
                 turn_id: everruns_provider::typed_id::TurnId::from_seed(2),
@@ -504,7 +504,7 @@ mod tests {
                 token_count: None,
             })),
             event(EventData::OutputMessageCompleted(
-                OutputMessageCompletedData::new(Message::assistant("Hello!")),
+                OutputMessageCompletedData::new(RuntimeMessage::assistant("Hello!")),
             )),
         ];
         let trajectory = trajectory_from_events(agent_info(), session(), &events);
@@ -522,7 +522,7 @@ mod tests {
     fn failed_tool_result_exports_error_and_status() {
         let events = vec![
             event(EventData::OutputMessageCompleted(
-                OutputMessageCompletedData::new(Message::assistant_with_tools(
+                OutputMessageCompletedData::new(RuntimeMessage::assistant_with_tools(
                     "",
                     vec![RuntimeToolCall {
                         id: "call_9".to_string(),

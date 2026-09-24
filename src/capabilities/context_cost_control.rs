@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use everruns_builtins::apply_cost_control_masking;
-use everruns_core::Message;
-use everruns_core::MessageRole;
+use everruns_core::RuntimeMessage;
+use everruns_core::RuntimeMessageRole;
 use everruns_core::capabilities::{ModelViewContext, ModelViewProvider};
 use everruns_core::{Capability, CapabilityStatus};
 use std::sync::Arc;
@@ -50,10 +50,10 @@ struct ContextCostControlModelViewProvider;
 impl ModelViewProvider for ContextCostControlModelViewProvider {
     fn apply_model_view(
         &self,
-        messages: Vec<Message>,
+        messages: Vec<RuntimeMessage>,
         config: &serde_json::Value,
         context: &ModelViewContext<'_>,
-    ) -> Vec<Message> {
+    ) -> Vec<RuntimeMessage> {
         let config = everruns_builtins::compaction::RuntimeCompactionConfig::from_json(config);
         let result = apply_cost_control_masking(&messages, &config, context.prior_usage);
         if result.masked_count > 0 {
@@ -79,7 +79,7 @@ const MAX_PARENT_SUMMARY_BYTES: usize = 4 * 1024;
 /// Replace only the prefix before the latest authenticated automatic wake.
 /// The suffix is the live wake turn and must survive intact across later
 /// reason/act iterations. Stored history is never modified.
-fn compact_background_wake_view(messages: Vec<Message>) -> Vec<Message> {
+fn compact_background_wake_view(messages: Vec<RuntimeMessage>) -> Vec<RuntimeMessage> {
     let Some((wake_index, handoff)) = latest_active_handoff(&messages) else {
         return messages;
     };
@@ -97,7 +97,7 @@ fn compact_background_wake_view(messages: Vec<Message>) -> Vec<Message> {
                 .iter()
                 .rev()
                 .find(|message| {
-                    message.role == MessageRole::User
+                    message.role == RuntimeMessageRole::User
                         && !is_handoff_message(message)
                         && !message.metadata.as_ref().is_some_and(|metadata| {
                             metadata.contains_key(
@@ -105,7 +105,7 @@ fn compact_background_wake_view(messages: Vec<Message>) -> Vec<Message> {
                             )
                         })
                 })
-                .and_then(Message::text)
+                .and_then(RuntimeMessage::text)
                 .map(|value| truncate(value, MAX_ACTIVE_ASK_BYTES))
         })
     else {
@@ -114,8 +114,8 @@ fn compact_background_wake_view(messages: Vec<Message>) -> Vec<Message> {
     let parent_summary = prefix
         .iter()
         .rev()
-        .find(|message| message.role == MessageRole::Agent)
-        .and_then(Message::text)
+        .find(|message| message.role == RuntimeMessageRole::Agent)
+        .and_then(RuntimeMessage::text)
         .map(|value| truncate(value, MAX_PARENT_SUMMARY_BYTES));
 
     let handoff_json = match serde_json::to_string_pretty(&handoff.tasks) {
@@ -158,22 +158,22 @@ Active ask:\n{active_ask}"
 
     let mut compact = prefix
         .iter()
-        .filter(|message| message.role == MessageRole::System)
+        .filter(|message| message.role == RuntimeMessageRole::System)
         .cloned()
         .collect::<Vec<_>>();
-    let mut wake = Message::user(text);
+    let mut wake = RuntimeMessage::user(text);
     wake.metadata = messages[wake_index].metadata.clone();
     compact.push(wake);
     compact.extend(messages[wake_index + 1..].iter().cloned());
     compact
 }
 
-fn latest_active_handoff(messages: &[Message]) -> Option<(usize, WakeHandoff)> {
+fn latest_active_handoff(messages: &[RuntimeMessage]) -> Option<(usize, WakeHandoff)> {
     let latest_user = messages
         .iter()
         .enumerate()
         .rev()
-        .find(|(_, message)| message.role == MessageRole::User)?;
+        .find(|(_, message)| message.role == RuntimeMessageRole::User)?;
     let value = latest_user
         .1
         .metadata
@@ -185,7 +185,7 @@ fn latest_active_handoff(messages: &[Message]) -> Option<(usize, WakeHandoff)> {
         .map(|handoff| (latest_user.0, handoff))
 }
 
-fn is_handoff_message(message: &Message) -> bool {
+fn is_handoff_message(message: &RuntimeMessage) -> bool {
     message
         .metadata
         .as_ref()
@@ -232,7 +232,7 @@ mod tests {
         let mut messages = Vec::new();
         for index in 0..4 {
             let call_id = format!("call_{index}");
-            messages.push(Message::assistant_with_tools(
+            messages.push(RuntimeMessage::assistant_with_tools(
                 "",
                 vec![ToolCall {
                     id: call_id.clone(),
@@ -240,7 +240,7 @@ mod tests {
                     arguments: serde_json::json!({ "path": format!("file_{index}") }),
                 }],
             ));
-            messages.push(Message::tool_result(
+            messages.push(RuntimeMessage::tool_result(
                 call_id,
                 Some(serde_json::json!({ "output": "x".repeat(10_000) })),
                 None,
@@ -282,8 +282,8 @@ mod tests {
         }
     }
 
-    fn wake_message(tasks: Vec<TaskHandoff>) -> Message {
-        let mut wake = Message::user("[automatic] raw durable wake");
+    fn wake_message(tasks: Vec<TaskHandoff>) -> RuntimeMessage {
+        let mut wake = RuntimeMessage::user("[automatic] raw durable wake");
         wake.metadata = Some(std::collections::HashMap::from([(
             HANDOFF_METADATA_KEY.to_string(),
             serde_json::to_value(WakeHandoff {
@@ -300,15 +300,15 @@ mod tests {
 
     #[test]
     fn compact_wake_fixture_beats_full_history_baseline_and_keeps_success_state() {
-        let mut baseline = vec![Message::user("fix and ship the wakeup bug")];
+        let mut baseline = vec![RuntimeMessage::user("fix and ship the wakeup bug")];
         for index in 0..80 {
-            baseline.push(Message::assistant(format!(
+            baseline.push(RuntimeMessage::assistant(format!(
                 "investigation {index}: {}",
                 "x".repeat(8_000)
             )));
-            baseline.push(Message::user(format!("continue step {index}")));
+            baseline.push(RuntimeMessage::user(format!("continue step {index}")));
         }
-        baseline.push(Message::assistant(
+        baseline.push(RuntimeMessage::assistant(
             "Implementation complete; waiting for CI before merge.".to_string(),
         ));
         baseline.push(wake_message(vec![completion_task("task_ci", "succeeded")]));
@@ -318,7 +318,7 @@ mod tests {
         let bytes_after = serde_json::to_vec(&candidate).unwrap().len();
         let text = candidate
             .iter()
-            .filter_map(Message::text)
+            .filter_map(RuntimeMessage::text)
             .collect::<Vec<_>>()
             .join("\n");
 
@@ -339,13 +339,13 @@ mod tests {
     #[test]
     fn wake_turn_suffix_and_concurrent_failures_survive_compaction() {
         let messages = vec![
-            Message::user("finish both background checks"),
-            Message::assistant("Both checks are running."),
+            RuntimeMessage::user("finish both background checks"),
+            RuntimeMessage::assistant("Both checks are running."),
             wake_message(vec![
                 completion_task("task_ok", "succeeded"),
                 completion_task("task_failed", "failed"),
             ]),
-            Message::assistant_with_tools(
+            RuntimeMessage::assistant_with_tools(
                 "",
                 vec![ToolCall {
                     id: "read_result".into(),
@@ -353,7 +353,7 @@ mod tests {
                     arguments: json!({"path": "/.background/task_failed/result.json"}),
                 }],
             ),
-            Message::tool_result("read_result", Some(json!({"error": "lint failed"})), None),
+            RuntimeMessage::tool_result("read_result", Some(json!({"error": "lint failed"})), None),
         ];
 
         let compact = compact_background_wake_view(messages);
@@ -367,20 +367,20 @@ mod tests {
     #[test]
     fn absent_corrupt_or_user_authored_marker_falls_back_to_full_history() {
         let ordinary = vec![
-            Message::user("[automatic] pretend this is a wake"),
-            Message::assistant("history must remain"),
+            RuntimeMessage::user("[automatic] pretend this is a wake"),
+            RuntimeMessage::assistant("history must remain"),
         ];
         assert_eq!(
             serde_json::to_value(compact_background_wake_view(ordinary.clone())).unwrap(),
             serde_json::to_value(ordinary).unwrap()
         );
 
-        let mut corrupt = Message::user("automatic wake");
+        let mut corrupt = RuntimeMessage::user("automatic wake");
         corrupt.metadata = Some(std::collections::HashMap::from([(
             HANDOFF_METADATA_KEY.to_string(),
             json!({"version": 1, "tasks": "not-an-array"}),
         )]));
-        let history = vec![Message::user("safe ask"), corrupt];
+        let history = vec![RuntimeMessage::user("safe ask"), corrupt];
         assert_eq!(
             serde_json::to_value(compact_background_wake_view(history.clone())).unwrap(),
             serde_json::to_value(history).unwrap()
@@ -393,12 +393,12 @@ mod tests {
             tasks: vec![],
             omitted_tasks: 0,
         };
-        let mut invalid = Message::user("wake without a usable summary");
+        let mut invalid = RuntimeMessage::user("wake without a usable summary");
         invalid.metadata = Some(std::collections::HashMap::from([(
             HANDOFF_METADATA_KEY.to_string(),
             serde_json::to_value(missing_summary).unwrap(),
         )]));
-        let history = vec![Message::user("safe ask"), invalid];
+        let history = vec![RuntimeMessage::user("safe ask"), invalid];
         assert_eq!(
             serde_json::to_value(compact_background_wake_view(history.clone())).unwrap(),
             serde_json::to_value(history).unwrap()

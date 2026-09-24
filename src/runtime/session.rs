@@ -17,6 +17,7 @@ use everruns_core::Event;
 use everruns_core::InputMessage;
 use everruns_core::Tool;
 use everruns_core::command::ExecuteCommandRequest;
+use everruns_host::InProcessRuntime;
 use everruns_provider::typed_id::SessionId;
 use tokio::sync::{broadcast, mpsc, oneshot};
 
@@ -60,6 +61,11 @@ impl Session {
 
     pub fn session_id(&self) -> SessionId {
         self.handles.session_id
+    }
+
+    /// Runtime handle for host-owned services (classifier guard checks).
+    pub(crate) fn runtime(&self) -> &Arc<InProcessRuntime> {
+        &self.handles.runtime
     }
 
     pub(crate) fn report_herdr_state(&self, state: crate::capabilities::herdr::HerdrState) {
@@ -587,9 +593,8 @@ mod tests {
     use everruns_core::{EventContext, ToolCompletedData};
     use everruns_provider::DriverId;
     use everruns_provider::error::Result as EverrunsResult;
-    use everruns_provider::{
-        ChatDriver, DiscoveredModel, LlmCallConfig, LlmMessage, LlmResponseStream,
-    };
+    use everruns_provider::message::Message as LlmMessage;
+    use everruns_provider::{ChatDriver, DiscoveredModel, LlmCallConfig, LlmResponseStream};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]

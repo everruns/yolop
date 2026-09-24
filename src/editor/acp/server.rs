@@ -13,7 +13,7 @@
 //!   * `session/prompt` runs in its own Tokio task, so `session/cancel`
 //!     keeps flowing while a turn is in progress.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
@@ -40,7 +40,9 @@ use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 use crate::capabilities::{ApprovalDecision, ToolApprover};
 use crate::config::{ApprovalMode, SettingsStore};
-use crate::runtime::background_wake::{WakeReceiver, coalesce_pending_wakes, frame_wake_prompt};
+use crate::runtime::background_wake::{
+    WakeHandoff, WakeMessage, WakeReceiver, coalesce_pending_wakes, frame_wake_prompt,
+};
 use crate::runtime::{BuiltRuntime, ModelState, RuntimeHandles};
 use crate::session_state::task_completion::{CompletionBudget, GateDecision};
 use crate::session_state::user_ask::{AskOutcome, UserAskStore};
@@ -326,6 +328,10 @@ struct Session {
     /// Serializes turns for this session. Both a client prompt and a background
     /// wake turn take it, so two `run_turn`s never overlap.
     turn_lock: tokio::sync::Mutex<()>,
+    /// Background task ids already surfaced to the client (wake notice, wake
+    /// turn, or next-turn reconcile), so the reconcile backstop never repeats
+    /// them. Only touched while `turn_lock` is held.
+    reported_background_tasks: StdMutex<HashSet<String>>,
 }
 
 impl Session {
@@ -764,6 +770,7 @@ fn register_session<F: RuntimeFactory>(
         task_registry,
         completion_budget: StdMutex::new(CompletionBudget::default()),
         turn_lock: tokio::sync::Mutex::new(()),
+        reported_background_tasks: StdMutex::new(HashSet::new()),
     });
     server
         .sessions
@@ -787,6 +794,80 @@ fn register_session<F: RuntimeFactory>(
 /// client prompt is in flight, so — unlike the TUI's idle event loop — nothing
 /// otherwise reacts to a background task finishing between prompts. This closes
 /// that gap: it awaits the wake channel (fed by the platform-store wake seam,
+/// Record a wake message's tasks as surfaced so the reconcile backstop never
+/// repeats them. Call after the completion is announced to the client.
+fn mark_background_reported(session: &Session, message: &WakeMessage) {
+    let ids = message.task_ids();
+    if ids.is_empty() {
+        return;
+    }
+    let mut reported = session.reported_background_tasks.lock().unwrap();
+    reported.extend(ids);
+}
+
+/// Backstop for completions that never got a wake announcement: terminal
+/// background tasks the agent has not observed (via `list_tasks`/`get_task`)
+/// and this session has not reported yet. Returns one deterministic summary
+/// per task; the caller sends each as a chunk and adds it to the model input.
+/// Runs under `turn_lock`, so it never races the wake drain.
+async fn reconcile_finished_background_tasks(session: &Arc<Session>) -> Vec<String> {
+    let tasks = match session
+        .task_registry
+        .list(session.handles.session_id, None)
+        .await
+    {
+        Ok(tasks) => tasks,
+        Err(err) => {
+            tracing::debug!(%err, "acp: reconcile list background tasks failed");
+            return Vec::new();
+        }
+    };
+    let events = match session.handles.runtime.events().await {
+        Ok(events) => events,
+        Err(err) => {
+            tracing::debug!(%err, "acp: reconcile load events failed");
+            return Vec::new();
+        }
+    };
+    let mut pending: Vec<WakeMessage> = Vec::new();
+    {
+        let reported = session.reported_background_tasks.lock().unwrap();
+        for task in &tasks {
+            if !task.state.is_terminal() {
+                continue;
+            }
+            let Some(single) = crate::runtime::background_wake::task_handoff(task.clone()) else {
+                continue;
+            };
+            if reported.contains(&single.task_id) {
+                continue;
+            }
+            let message = WakeMessage::handoff_message(
+                format!("background task {} finished", single.task_id),
+                WakeHandoff {
+                    version: 1,
+                    active_ask: None,
+                    active_goal: None,
+                    tasks: vec![single],
+                    omitted_tasks: 0,
+                },
+            );
+            if crate::runtime::background_wake::completion_already_observed(&message, &events) {
+                continue;
+            }
+            pending.push(message);
+        }
+    }
+    let mut texts = Vec::with_capacity(pending.len());
+    for message in &pending {
+        // Record first so a failed send still leaves the model input below as
+        // the delivery path.
+        mark_background_reported(session, message);
+        texts.push(message.notice_text());
+    }
+    texts
+}
+
 /// `crate::runtime::background_wake`) and takes the same `turn_lock` as client prompts so
 /// a wake turn never overlaps one. Stops on connection teardown or when the
 /// runtime (and its wake sender) drops. See knowledge/specs/background.md.
@@ -847,8 +928,11 @@ fn spawn_background_wake_drain(
             }
             peer.session_update(
                 &session.acp_id,
-                SessionUpdate::AgentMessageChunk(protocol::text_chunk(message.notice())),
+                SessionUpdate::AgentMessageChunk(protocol::text_chunk(message.notice_text())),
             );
+            // Specific notice first: the client shows facts even when the wake
+            // turn below emits no text of its own.
+            mark_background_reported(&session, &message);
             let prompt = frame_wake_prompt(&message);
             let input = crate::runtime::background_wake::input_for_wake(&message);
             run_prompt(peer.clone(), session.clone(), prompt, input).await;
@@ -961,7 +1045,7 @@ async fn handle_prompt<F: RuntimeFactory>(
     let session = server
         .session(&session_id)
         .ok_or_else(|| invalid_params("unknown session id"))?;
-    let prompt = protocol::prompt_text(&params.prompt);
+    let mut prompt = protocol::prompt_text(&params.prompt);
     let input = prompt_input(&session.model, &params.prompt);
 
     // Serialize with any proactive background wake turn (and any other in-flight
@@ -969,6 +1053,17 @@ async fn handle_prompt<F: RuntimeFactory>(
     // dispatch; `run_prompt` does not take the lock itself, so the poller can
     // reuse it under its own guard.
     let _turn = session.turn_lock.lock().await;
+    // Backstop for completions that finished without a wake announcement
+    // (missed wake, notice-only opt-out, session gap): surface each once as a
+    // deterministic chunk and give the model the same facts.
+    for text in reconcile_finished_background_tasks(&session).await {
+        prompt.push_str("\n\n[background completion]\n");
+        prompt.push_str(&text);
+        peer.session_update(
+            &session.acp_id,
+            SessionUpdate::AgentMessageChunk(protocol::text_chunk(text)),
+        );
+    }
     let mode_peer = peer.clone();
     let parsed_command = parse_command_prompt(&prompt);
     let model_before = if parsed_command.is_none() {
@@ -1827,7 +1922,30 @@ async fn completion_followup(
             crate::session_state::user_ask::parse_evaluation_response(&command.message).ok()?
         }
         GateDecision::Conclusive(state) => {
-            let evaluation = crate::session_state::task_completion::evaluation_for_state(state);
+            let mut evaluation = crate::session_state::task_completion::evaluation_for_state(state);
+            // Muse-only idle-promise guard: the sync gate treats any
+            // tool-free text as Achieved, so a promised action with zero
+            // tool calls would end the turn. Ask the Jev classifier; a hit
+            // continues the turn instead of presenting the promise. Misses,
+            // errors, and a missing key keep Achieved (fail open).
+            if evaluation.outcome == AskOutcome::Achieved
+                && result.tool_calls_count == 0
+                && crate::capabilities::is_muse(Some(session.model.model_id().as_str()))
+                && let Some(classifier) =
+                    everruns_host::RuntimeHostAdapter::decisions(session.handles.runtime.as_ref())
+                && crate::capabilities::evaluate_actionable_promise(
+                    &result.response,
+                    result.tool_calls_count,
+                    &classifier,
+                    None,
+                )
+                .await
+            {
+                evaluation = crate::session_state::user_ask::UserAskEvaluation {
+                    outcome: AskOutcome::InProgress,
+                    reason: "promised action but made no tool call".to_string(),
+                };
+            }
             if session
                 .user_ask_store
                 .record_evaluation(session_id, &evaluation)
