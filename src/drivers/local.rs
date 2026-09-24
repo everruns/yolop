@@ -15,10 +15,11 @@
 
 use async_trait::async_trait;
 use everruns_provider::driver_registry::{
-    ChatDriver, DriverConfig, DriverRegistry, LlmCallConfig, LlmCompletionMetadata, LlmMessage,
-    LlmMessageRole, LlmResponseStream, LlmStreamEvent,
+    ChatDriver, DriverConfig, DriverRegistry, LlmCallConfig, LlmCompletionMetadata,
+    LlmResponseStream, LlmStreamEvent,
 };
 use everruns_provider::error::{AgentLoopError, LlmErrorKind, Result as EverrunsResult};
+use everruns_provider::message::{Message as LlmMessage, MessageRole as LlmMessageRole};
 use everruns_provider::tool_types::{ToolCall, ToolDefinition};
 use futures::stream::Stream;
 use mistralrs::{
@@ -355,7 +356,7 @@ fn inference_error(model: &str, message: String) -> AgentLoopError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use everruns_provider::driver_registry::LlmMessageContent;
+    use everruns_provider::message::MessageContent as LlmMessageContent;
     use mistralrs::RequestLike;
 
     fn message(role: LlmMessageRole, text: &str) -> LlmMessage {
