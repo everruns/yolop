@@ -19,7 +19,7 @@ use everruns_core::Event;
 use everruns_core::EventData;
 use everruns_core::ExecutionSession;
 use everruns_core::InputMessage;
-use everruns_core::MessageRole;
+use everruns_core::RuntimeMessageRole;
 use everruns_core::{PlatformCreateSessionRequest, PlatformMessage};
 use everruns_core::{SessionTask, SessionTaskRegistry};
 use everruns_core::{TaskTransition, wake_text_for};
@@ -732,8 +732,8 @@ impl LocalSessionRunner for WakeRunner {
             .iter()
             .map(|message| PlatformMessage {
                 role: match &message.role {
-                    MessageRole::Agent => "agent".to_string(),
-                    MessageRole::User => "user".to_string(),
+                    RuntimeMessageRole::Agent => "agent".to_string(),
+                    RuntimeMessageRole::User => "user".to_string(),
                     other => format!("{other:?}").to_lowercase(),
                 },
                 content: message.text().unwrap_or_default().to_string(),

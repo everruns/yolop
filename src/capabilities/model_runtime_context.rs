@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use async_trait::async_trait;
 use everruns_core::capabilities::{ModelViewContext, ModelViewProvider};
 use everruns_core::{Capability, CapabilityStatus};
-use everruns_core::{ContentPart, Message, MessageRole};
+use everruns_core::{ContentPart, RuntimeMessage, RuntimeMessageRole};
 use everruns_provider::typed_id::MessageId;
 use serde_json::Value;
 
@@ -86,10 +86,10 @@ struct ModelRuntimeContextProvider {
 impl ModelViewProvider for ModelRuntimeContextProvider {
     fn apply_model_view(
         &self,
-        mut messages: Vec<Message>,
+        mut messages: Vec<RuntimeMessage>,
         _config: &Value,
         _context: &ModelViewContext<'_>,
-    ) -> Vec<Message> {
+    ) -> Vec<RuntimeMessage> {
         let current = ModelRuntimeContext::from_provider(
             &self.provider.read().expect("provider lock poisoned"),
         );
@@ -112,7 +112,7 @@ impl ModelViewProvider for ModelRuntimeContextProvider {
             && let Some(message) = messages
                 .iter()
                 .rev()
-                .find(|message| message.role == MessageRole::User)
+                .find(|message| message.role == RuntimeMessageRole::User)
         {
             if let Some((_, context)) = annotations.iter_mut().find(|(id, _)| *id == message.id) {
                 *context = current.clone();
@@ -152,7 +152,7 @@ mod tests {
     use super::*;
     use everruns_provider::typed_id::SessionId;
 
-    fn markers(message: &Message) -> Vec<&str> {
+    fn markers(message: &RuntimeMessage) -> Vec<&str> {
         message
             .content
             .iter()
@@ -174,8 +174,8 @@ mod tests {
             session_id: SessionId::new(),
             prior_usage: None,
         };
-        let first = Message::user("first");
-        let second = Message::user("second");
+        let first = RuntimeMessage::user("first");
+        let second = RuntimeMessage::user("second");
 
         let initial = view.apply_model_view(vec![first.clone()], &Value::Null, &context);
         assert!(markers(&initial[0])[0].contains("<reasoning_effort>low</reasoning_effort>"));
@@ -199,7 +199,7 @@ mod tests {
         assert!(markers(&changed[0])[0].contains("<reasoning_effort>low</reasoning_effort>"));
         assert!(markers(&changed[1])[0].contains("<reasoning_effort>high</reasoning_effort>"));
 
-        let surviving = Message::user("surviving history");
+        let surviving = RuntimeMessage::user("surviving history");
         let rebuilt = view.apply_model_view(vec![surviving.clone()], &Value::Null, &context);
         assert!(markers(&rebuilt[0])[0].contains("<reasoning_effort>high</reasoning_effort>"));
         assert_eq!(surviving.text(), Some("surviving history"));

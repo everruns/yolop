@@ -137,7 +137,7 @@ mod tests {
             let session_id = SessionId::new();
             Ok(CommandTurnContext {
                 session_id,
-                messages: vec![everruns_core::message::Message::user(
+                messages: vec![everruns_core::message::RuntimeMessage::user(
                     "ran cargo test and all tests passed",
                 )],
                 system_prompt: "system".into(),

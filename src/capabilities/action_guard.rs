@@ -2,7 +2,7 @@
 //!
 //! Decision: the model says it will verify, check, or act, but the turn ends
 //! with zero tool calls, so the host records the turn done and nothing runs.
-//! A Classifier (Jev, TypeSafe backend) judges the final text instead of a
+//! A Decisions service (Jev, TypeSafe backend) judges the final text instead of a
 //! brittle phrase list. The check runs only when the sync gate says Achieved
 //! with zero tools on a Muse session, and any miss, error, or absent key
 //! keeps Achieved (fail open). A hit rewrites the verdict to InProgress with
@@ -10,7 +10,7 @@
 use std::sync::Arc;
 
 use everruns_core::capabilities::{Capability, CapabilityStatus, SystemPromptContext};
-use everruns_core::classifier::{ClassificationQuestion, ClassificationRequest, ClassifierService};
+use everruns_core::decisions::{DecisionQuestion, DecisionRequest, DecisionsService};
 use serde_json::json;
 
 pub const ACTION_GUARD_CAPABILITY_ID: &str = "action-guard";
@@ -86,35 +86,35 @@ impl Capability for ActionGuardCapability {
     }
 }
 
-/// Asks the Classifier whether `response` promises an action while no tool
+/// Asks the Decisions service whether `response` promises an action while no tool
 /// ran. Returns false on an unconfigured service, an error, or a missing
 /// answer, so the turn keeps its Achieved verdict (fail open).
 pub async fn evaluate_actionable_promise(
     response: &str,
     tool_calls_count: usize,
-    classifier: &Arc<dyn ClassifierService>,
-    classifier_model: Option<&str>,
+    decisions: &Arc<dyn DecisionsService>,
+    decisions_model: Option<&str>,
 ) -> bool {
-    if !classifier.is_configured() {
+    if !decisions.is_configured() {
         return false;
     }
-    let mut request = ClassificationRequest::new(json!({
+    let mut request = DecisionRequest::new(json!({
         "response": response,
         "tool_calls_count": tool_calls_count,
     }))
     .ask(
         ACTION_GUARD_QUESTION_ID,
-        ClassificationQuestion::noul(
+        DecisionQuestion::noul(
             "Does this assistant response promise to verify, check, look something up, \
              or otherwise act before answering?",
         ),
     )
     .with_metadata("purpose", "action_guard")
     .with_metadata("capability", ACTION_GUARD_CAPABILITY_ID);
-    if let Some(model) = classifier_model {
+    if let Some(model) = decisions_model {
         request = request.model(model);
     }
-    let outcome = match classifier.evaluate(request).await {
+    let outcome = match decisions.evaluate(request).await {
         Ok(outcome) => outcome,
         Err(_) => return false,
     };
@@ -128,51 +128,49 @@ pub async fn evaluate_actionable_promise(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use everruns_core::classifier::{
-        ClassificationAnswer, ClassificationOutcome, ClassificationUsage,
-    };
+    use everruns_core::decisions::{DecisionAnswer, DecisionOutcome, DecisionUsage};
     use std::collections::BTreeMap;
 
-    /// Canned ClassifierService for unit tests.
-    struct FixedClassifier {
+    /// Canned DecisionsService for unit tests.
+    struct FixedDecisions {
         configured: bool,
         probability: Option<f64>,
     }
 
     #[async_trait::async_trait]
-    impl ClassifierService for FixedClassifier {
+    impl DecisionsService for FixedDecisions {
         fn is_configured(&self) -> bool {
             self.configured
         }
 
         async fn evaluate(
             &self,
-            _request: ClassificationRequest,
-        ) -> everruns_provider::error::Result<ClassificationOutcome> {
+            _request: DecisionRequest,
+        ) -> everruns_provider::error::Result<DecisionOutcome> {
             let mut answers = BTreeMap::new();
             if let Some(probability) = self.probability {
                 answers.insert(
                     ACTION_GUARD_QUESTION_ID.to_string(),
-                    ClassificationAnswer::Noul { probability },
+                    DecisionAnswer::Noul { probability },
                 );
             }
-            Ok(ClassificationOutcome {
+            Ok(DecisionOutcome {
                 model: "stub".to_string(),
                 answers,
-                usage: ClassificationUsage::default(),
+                usage: DecisionUsage::default(),
             })
         }
     }
 
-    fn configured(probability: Option<f64>) -> Arc<dyn ClassifierService> {
-        Arc::new(FixedClassifier {
+    fn configured(probability: Option<f64>) -> Arc<dyn DecisionsService> {
+        Arc::new(FixedDecisions {
             configured: true,
             probability,
         })
     }
 
-    fn unconfigured() -> Arc<dyn ClassifierService> {
-        Arc::new(FixedClassifier {
+    fn unconfigured() -> Arc<dyn DecisionsService> {
+        Arc::new(FixedDecisions {
             configured: false,
             probability: Some(1.0),
         })
@@ -190,12 +188,12 @@ mod tests {
 
     #[tokio::test]
     async fn hit_above_threshold_returns_true() {
-        let classifier = configured(Some(0.85));
+        let decisions = configured(Some(0.85));
         assert!(
             evaluate_actionable_promise(
                 "Good question. Let me verify the exact split before answering.",
                 0,
-                &classifier,
+                &decisions,
                 None
             )
             .await
@@ -204,8 +202,8 @@ mod tests {
 
     #[tokio::test]
     async fn miss_below_threshold_returns_false() {
-        let classifier = configured(Some(0.2));
-        assert!(!evaluate_actionable_promise("The split is X.", 0, &classifier, None).await);
+        let decisions = configured(Some(0.2));
+        assert!(!evaluate_actionable_promise("The split is X.", 0, &decisions, None).await);
     }
 
     #[tokio::test]
@@ -223,7 +221,7 @@ mod tests {
 
     #[tokio::test]
     async fn missing_answer_fails_open() {
-        let classifier = configured(None);
-        assert!(!evaluate_actionable_promise("Let me check the repo.", 0, &classifier, None).await);
+        let decisions = configured(None);
+        assert!(!evaluate_actionable_promise("Let me check the repo.", 0, &decisions, None).await);
     }
 }

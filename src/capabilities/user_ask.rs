@@ -276,7 +276,7 @@ mod tests {
             let session_id = SessionId::new();
             Ok(CommandTurnContext {
                 session_id,
-                messages: vec![everruns_core::message::Message::user(
+                messages: vec![everruns_core::message::RuntimeMessage::user(
                     "I upgraded the dependency and ran tests",
                 )],
                 system_prompt: "system".into(),

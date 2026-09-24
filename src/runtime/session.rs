@@ -593,9 +593,8 @@ mod tests {
     use everruns_core::{EventContext, ToolCompletedData};
     use everruns_provider::DriverId;
     use everruns_provider::error::Result as EverrunsResult;
-    use everruns_provider::{
-        ChatDriver, DiscoveredModel, LlmCallConfig, LlmMessage, LlmResponseStream,
-    };
+    use everruns_provider::message::Message as LlmMessage;
+    use everruns_provider::{ChatDriver, DiscoveredModel, LlmCallConfig, LlmResponseStream};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]

@@ -1222,7 +1222,7 @@ mod tests {
     use crate::config::WorktreesMode;
     use crate::runtime::session_log::{JsonlEventEmitter, messages_from_events, session_log_path};
     use everruns_core::EventEmitter;
-    use everruns_core::Message;
+    use everruns_core::RuntimeMessage;
     use everruns_core::{EventContext, EventRequest, InputMessageData};
     use tempfile::TempDir;
 
@@ -1282,7 +1282,7 @@ mod tests {
             .emit(EventRequest::new(
                 manager.session_id,
                 EventContext::empty(),
-                InputMessageData::new(Message::user(text)),
+                InputMessageData::new(RuntimeMessage::user(text)),
             ))
             .await
             .expect("emit user");

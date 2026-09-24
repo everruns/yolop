@@ -626,7 +626,7 @@ fn shell_command_result(result: ToolExecutionResult) -> CommandResult {
             error_code: None,
             error_fields: None,
         },
-        ToolExecutionResult::ConnectionRequired { provider } => CommandResult {
+        ToolExecutionResult::ConnectionRequired { provider, .. } => CommandResult {
             success: false,
             message: format!("shell command requires connection: {provider}"),
             error_code: None,

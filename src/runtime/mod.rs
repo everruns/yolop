@@ -84,7 +84,7 @@ use everruns_core::{
     CapabilityRegistry, Controls, InputMessage, ReasoningConfig, ScopedMcpServers,
     SessionFileSystem,
 };
-use everruns_core::{ContentPart, MessageRole};
+use everruns_core::{ContentPart, RuntimeMessageRole};
 use everruns_core::{
     FileInfo, FileStat, GrepMatch, GrepOptions, GrepSearchResult, InitialFile, SessionFile,
 };
@@ -2332,7 +2332,7 @@ impl ProviderChoice {
             _ => true,
         });
         let mut input = InputMessage {
-            role: MessageRole::User,
+            role: RuntimeMessageRole::User,
             content: parts,
             controls: None,
             metadata: None,
@@ -2446,7 +2446,7 @@ where
 /// assistant text is an apology for an error the host went on to repair, so the
 /// answer starts after the last user message: the input the retry re-sent.
 pub(crate) fn agent_output_start(
-    messages: &[everruns_core::Message],
+    messages: &[everruns_core::RuntimeMessage],
     before: usize,
     retried: bool,
 ) -> usize {
@@ -2455,7 +2455,7 @@ pub(crate) fn agent_output_start(
     }
     messages
         .iter()
-        .rposition(|message| message.role == everruns_core::MessageRole::User)
+        .rposition(|message| message.role == everruns_core::RuntimeMessageRole::User)
         .map(|index| index + 1)
         .unwrap_or(before)
 }
@@ -4651,7 +4651,7 @@ pub async fn build_with_options(
         if let Some(model) = classifier_model.as_deref() {
             service = service.model(model);
         }
-        platform_builder = platform_builder.classifier(Arc::new(service));
+        platform_builder = platform_builder.decisions(Arc::new(service));
     } else {
         tracing::info!("typesafe API key absent; actionable-promise guard dormant");
     }
@@ -6219,7 +6219,7 @@ mod tests {
                 .first()
                 .and_then(|call| {
                     call.iter().find(|message| {
-                        message.role == everruns_provider::driver_registry::LlmMessageRole::User
+                        message.role == everruns_provider::driver_registry::MessageRole::User
                             && message.content_as_text().contains("<runtime_context>")
                     })
                 })
@@ -6330,7 +6330,7 @@ mod tests {
             .await
             .expect("read child messages");
         assert!(child_messages.iter().any(|message| {
-            message.role == MessageRole::Agent
+            message.role == RuntimeMessageRole::Agent
                 && message.text() == Some("Orbit subsystem inspected.")
         }));
 
@@ -9100,13 +9100,13 @@ mod tests {
     /// one; the first is an apology for an error the host repaired.
     #[test]
     fn a_retried_turn_reads_its_answer_from_the_re_sent_input() {
-        use everruns_core::Message;
+        use everruns_core::RuntimeMessage;
 
         let messages = vec![
-            Message::user("say pong"),
-            Message::assistant("I encountered an error while processing your request."),
-            Message::user("say pong"),
-            Message::assistant("pong"),
+            RuntimeMessage::user("say pong"),
+            RuntimeMessage::assistant("I encountered an error while processing your request."),
+            RuntimeMessage::user("say pong"),
+            RuntimeMessage::assistant("pong"),
         ];
 
         assert_eq!(agent_output_start(&messages, 0, true), 3);

@@ -5,7 +5,7 @@
 //! (no tools) after each turn, matching the Claude Code pattern.
 
 use anyhow::{Context, Result, bail};
-use everruns_core::Message;
+use everruns_core::RuntimeMessage;
 use everruns_core::SessionCompletionRequest;
 use everruns_core::command::{CommandExecutionContext, ExecuteCommandRequest};
 use everruns_provider::typed_id::SessionId;
@@ -455,7 +455,7 @@ pub(crate) async fn evaluate_active_goal(
         format!("Completion condition:\n{condition}\n\nConversation transcript:\n{transcript}");
     let completion_request = SessionCompletionRequest {
         system_prompts: vec![EVALUATOR_SYSTEM_PROMPT.to_string()],
-        messages: vec![Message::user(user_prompt)],
+        messages: vec![RuntimeMessage::user(user_prompt)],
         controls: None,
         metadata: std::collections::HashMap::from([(
             "command".to_string(),
@@ -486,7 +486,7 @@ fn map_completion_error(
     }
 }
 
-fn format_transcript(messages: &[Message]) -> String {
+fn format_transcript(messages: &[RuntimeMessage]) -> String {
     if messages.is_empty() {
         return "(empty)".into();
     }
@@ -494,10 +494,10 @@ fn format_transcript(messages: &[Message]) -> String {
         .iter()
         .filter_map(|message| {
             let role = match message.role {
-                everruns_core::message::MessageRole::User => "user",
-                everruns_core::message::MessageRole::Agent => "assistant",
-                everruns_core::message::MessageRole::System => "system",
-                everruns_core::message::MessageRole::ToolResult => "tool",
+                everruns_core::message::RuntimeMessageRole::User => "user",
+                everruns_core::message::RuntimeMessageRole::Agent => "assistant",
+                everruns_core::message::RuntimeMessageRole::System => "system",
+                everruns_core::message::RuntimeMessageRole::ToolResult => "tool",
             };
             message
                 .text()

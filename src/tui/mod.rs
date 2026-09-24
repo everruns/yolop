@@ -4187,7 +4187,7 @@ impl App {
                 && result.tool_calls_count == 0
                 && crate::capabilities::is_muse(Some(self.model.model_id().as_str()))
                 && let Some(classifier) =
-                    everruns_host::RuntimeHostAdapter::classifier(self.session.runtime().as_ref())
+                    everruns_host::RuntimeHostAdapter::decisions(self.session.runtime().as_ref())
                 && crate::capabilities::evaluate_actionable_promise(
                     &result.response,
                     result.tool_calls_count,
@@ -4692,7 +4692,7 @@ mod tests {
 
     use super::*;
     use crate::capabilities::model_discovery::DiscoveredProviderModel;
-    use everruns_core::Message;
+    use everruns_core::RuntimeMessage;
     use everruns_core::events::Event as RuntimeEvent;
     use everruns_core::{
         CreateSessionTask, SessionTaskState, TASK_KIND_BACKGROUND_TOOL, TASK_KIND_MONITOR,
@@ -5391,12 +5391,12 @@ mod tests {
         let user_event = RuntimeEvent::new(
             session_id,
             EventContext::empty(),
-            InputMessageData::new(Message::user("What changed?")),
+            InputMessageData::new(RuntimeMessage::user("What changed?")),
         );
         let assistant_event = RuntimeEvent::new(
             session_id,
             EventContext::empty(),
-            OutputMessageCompletedData::new(Message::assistant("I updated the renderer.")),
+            OutputMessageCompletedData::new(RuntimeMessage::assistant("I updated the renderer.")),
         );
         let mut tool_data = ToolCompletedData::success(
             "call_bash".to_string(),
@@ -5482,7 +5482,7 @@ mod tests {
     fn lines_for_event_hides_output_message_reasoning() {
         use everruns_provider::reasoning::{ReasoningContentPart, ReasoningText};
 
-        let mut message = everruns_core::Message::assistant_with_tools(
+        let mut message = everruns_core::RuntimeMessage::assistant_with_tools(
             "",
             vec![ToolCall {
                 id: "call_read".to_string(),
@@ -5846,7 +5846,7 @@ mod tests {
         let completed = RuntimeEvent::new(
             SessionId::new(),
             EventContext::empty(),
-            OutputMessageCompletedData::new(Message::assistant("Hello, world")),
+            OutputMessageCompletedData::new(RuntimeMessage::assistant("Hello, world")),
         );
         handle_live_event(&completed, &mut emitted, &mut router, &tx);
 
@@ -9494,12 +9494,12 @@ flowchart TD
             RuntimeEvent::new(
                 session_id,
                 EventContext::empty(),
-                InputMessageData::new(Message::user("previous question")),
+                InputMessageData::new(RuntimeMessage::user("previous question")),
             ),
             RuntimeEvent::new(
                 session_id,
                 EventContext::empty(),
-                OutputMessageCompletedData::new(Message::assistant("previous answer")),
+                OutputMessageCompletedData::new(RuntimeMessage::assistant("previous answer")),
             ),
         ];
         let jsonl = events

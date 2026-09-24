@@ -11,7 +11,7 @@
 use std::collections::HashSet;
 
 use everruns_core::events::Event as RuntimeEvent;
-use everruns_core::{ContentPart, MessageRole};
+use everruns_core::{ContentPart, RuntimeMessageRole};
 use everruns_core::{EventData, ToolCompletedData};
 use serde_json::Value;
 
@@ -73,7 +73,7 @@ impl Translator {
                 if !self.replay_history {
                     return Vec::new();
                 }
-                if data.message.role != MessageRole::User {
+                if data.message.role != RuntimeMessageRole::User {
                     return Vec::new();
                 }
                 match data.message.text().map(str::trim) {
@@ -100,7 +100,7 @@ impl Translator {
                 if self.current_message_streamed {
                     return Vec::new();
                 }
-                if data.message.role != MessageRole::Agent {
+                if data.message.role != RuntimeMessageRole::Agent {
                     return Vec::new();
                 }
                 let recovery_message = (data.error_code.as_deref()
@@ -355,7 +355,7 @@ fn non_null(value: Value) -> Option<Value> {
 mod tests {
     use super::*;
     use chrono::Utc;
-    use everruns_core::Message;
+    use everruns_core::RuntimeMessage;
     use everruns_core::{
         Event, EventContext, OutputMessageCompletedData, OutputMessageDeltaData, ReasonItemData,
         ReasonThinkingDeltaData, SessionTitleUpdatedData, ToolCompletedData, ToolStartedData,
@@ -413,7 +413,7 @@ mod tests {
         )));
         let completed = t.on_event(&event(EventData::OutputMessageCompleted(
             OutputMessageCompletedData {
-                message: Message::assistant("Hi"),
+                message: RuntimeMessage::assistant("Hi"),
                 metadata: None,
                 usage: None,
                 error_code: None,
@@ -432,7 +432,7 @@ mod tests {
         let mut t = Translator::new();
         let updates = t.on_event(&event(EventData::OutputMessageCompleted(
             OutputMessageCompletedData {
-                message: Message::assistant("full answer"),
+                message: RuntimeMessage::assistant("full answer"),
                 metadata: None,
                 usage: None,
                 error_code: None,
@@ -453,7 +453,7 @@ mod tests {
         let mut t = Translator::new();
         let updates = t.on_event(&event(EventData::OutputMessageCompleted(
             OutputMessageCompletedData {
-                message: Message::assistant(
+                message: RuntimeMessage::assistant(
                     "There is a misconfiguration with the AI provider. Please contact support.",
                 ),
                 metadata: None,
@@ -498,7 +498,7 @@ mod tests {
     #[test]
     fn completed_tool_call_message_keeps_public_commentary() {
         let mut t = Translator::new();
-        let mut message = Message::assistant_with_tools(
+        let mut message = RuntimeMessage::assistant_with_tools(
             "I’ll inspect the event bridge next.",
             vec![ToolCall {
                 id: "call_1".into(),
@@ -778,7 +778,7 @@ mod tests {
     fn replay_mode_emits_user_messages() {
         let mut t = Translator::for_replay();
         let updates = t.on_event(&event(EventData::InputMessage(
-            everruns_core::events::InputMessageData::new(Message::user("prior prompt")),
+            everruns_core::events::InputMessageData::new(RuntimeMessage::user("prior prompt")),
         )));
         assert_eq!(
             updates,
@@ -791,7 +791,7 @@ mod tests {
     #[test]
     fn replay_mode_reconstructs_tool_calls_from_completed_agent_messages() {
         let mut t = Translator::for_replay();
-        let message = Message::assistant_with_tools(
+        let message = RuntimeMessage::assistant_with_tools(
             "",
             vec![ToolCall {
                 id: "call_1".into(),
@@ -832,7 +832,7 @@ mod tests {
         };
         let completed = event(EventData::OutputMessageCompleted(
             OutputMessageCompletedData {
-                message: Message::assistant_with_tools("", vec![call.clone()]),
+                message: RuntimeMessage::assistant_with_tools("", vec![call.clone()]),
                 metadata: None,
                 usage: None,
                 error_code: None,
@@ -887,7 +887,7 @@ mod tests {
     fn live_mode_suppresses_user_messages() {
         let mut t = Translator::new();
         let updates = t.on_event(&event(EventData::InputMessage(
-            everruns_core::events::InputMessageData::new(Message::user("current prompt")),
+            everruns_core::events::InputMessageData::new(RuntimeMessage::user("current prompt")),
         )));
         assert!(updates.is_empty());
     }

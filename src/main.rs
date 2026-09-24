@@ -39,7 +39,7 @@ use crossterm::event::{
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use crossterm::{execute, queue};
 use everruns_core::command::ExecuteCommandRequest;
-use everruns_core::{ContentPart, MessageRole};
+use everruns_core::{ContentPart, RuntimeMessageRole};
 use everruns_provider::typed_id::SessionId;
 use runtime::{
     BuiltRuntime, DEFAULT_LOCAL_MODEL, ProviderChoice, ResolvedProviderChoice, resolve_for_settings,
@@ -2195,7 +2195,7 @@ async fn run_print_mode(
                         && turn.result.tool_calls_count == 0
                         && crate::capabilities::is_muse(Some(model.model_id().as_str()))
                         && let Some(classifier) =
-                            everruns_host::RuntimeHostAdapter::classifier(handles.runtime.as_ref())
+                            everruns_host::RuntimeHostAdapter::decisions(handles.runtime.as_ref())
                         && crate::capabilities::evaluate_actionable_promise(
                             &turn.result.response,
                             turn.result.tool_calls_count,
@@ -2380,7 +2380,7 @@ async fn collect_print_turn(
         .iter()
         .skip(runtime::agent_output_start(&messages, before_msgs, retried))
     {
-        if msg.role == MessageRole::Agent
+        if msg.role == RuntimeMessageRole::Agent
             && !msg.has_tool_calls()
             && let Some(text) = msg.text()
         {
