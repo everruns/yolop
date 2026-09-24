@@ -5,6 +5,7 @@ use eventsource_stream::Eventsource;
 use everruns_provider::ProviderEndpoint;
 use everruns_provider::driver_registry::DriverConfig;
 use everruns_provider::error::Result as EverrunsResult;
+use everruns_provider::reasoning::ReasoningText;
 use everruns_provider::{AgentLoopError, LlmErrorKind};
 use everruns_provider::{
     ChatDriver, LlmCallConfig, LlmCompletionMetadata, LlmContentPart, LlmMessage,
@@ -770,6 +771,7 @@ enum CodexInputItem {
         r#type: String,
         id: String,
         encrypted_content: String,
+        summary: Vec<CodexReasoningSummary>,
     },
     Compaction {
         r#type: String,
@@ -787,6 +789,12 @@ enum CodexInputItem {
 enum CodexContent {
     Text(String),
     Parts(Vec<CodexContentPart>),
+}
+
+#[derive(Debug, Serialize)]
+struct CodexReasoningSummary {
+    r#type: String,
+    text: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -860,13 +868,31 @@ fn build_input(messages: &[LlmMessage]) -> (Option<String>, Vec<CodexInputItem>)
             // Codex keys replay by that id, so send the real one; a part with no
             // encrypted payload has nothing to replay and is skipped.
             for part in &message.reasoning {
+                // Opaque reasoning artifacts are provider-specific. A local
+                // session can switch providers while retaining its transcript.
+                if part.provider != "openai" {
+                    continue;
+                }
                 let (Some(item_id), Some(encrypted)) = (&part.item_id, &part.encrypted) else {
                     continue;
+                };
+                let summary = match &part.text {
+                    Some(ReasoningText::Summary { parts }) => parts
+                        .iter()
+                        .map(|text| CodexReasoningSummary {
+                            r#type: "summary_text".to_string(),
+                            text: text.clone(),
+                        })
+                        .collect(),
+                    _ => Vec::new(),
                 };
                 input.push(CodexInputItem::Reasoning {
                     r#type: "reasoning".to_string(),
                     id: item_id.clone(),
                     encrypted_content: encrypted.clone(),
+                    // The Responses API requires this field even when the
+                    // provider did not expose summary text.
+                    summary,
                 });
             }
         }
@@ -2446,8 +2472,8 @@ mod tests {
     }
 
     #[test]
-    fn build_input_replays_provider_reasoning_ids_in_order() {
-        use everruns_provider::reasoning::ReasoningContentPart;
+    fn build_input_replays_reasoning_with_required_summary() {
+        use everruns_provider::reasoning::{ReasoningContentPart, ReasoningText};
 
         let mut assistant = LlmMessage::text(LlmMessageRole::Assistant, "");
         assistant.reasoning = vec![
@@ -2459,7 +2485,10 @@ mod tests {
             ReasoningContentPart::opaque("openai").with_item_id("rs_summary_only"),
             ReasoningContentPart::opaque("openai")
                 .with_item_id("rs_second")
-                .with_encrypted("blob-2"),
+                .with_encrypted("blob-2")
+                .with_text(ReasoningText::Summary {
+                    parts: vec!["step one".to_string(), "step two".to_string()],
+                }),
         ];
 
         let (_, input) = build_input(&[assistant]);
@@ -2480,6 +2509,53 @@ mod tests {
             vec![("rs_first", "blob-1"), ("rs_second", "blob-2")],
             "reasoning must replay with the provider's own ids, in emission order"
         );
+
+        let wire = serde_json::to_value(input).expect("serialize Codex input");
+        let items = wire.as_array().expect("input array");
+        let reasoning: Vec<&serde_json::Value> = items
+            .iter()
+            .filter(|item| item["type"] == "reasoning")
+            .collect();
+        assert_eq!(reasoning.len(), 2);
+        assert_eq!(reasoning[0]["summary"], json!([]));
+        assert_eq!(
+            reasoning[1]["summary"],
+            json!([
+                {"type": "summary_text", "text": "step one"},
+                {"type": "summary_text", "text": "step two"}
+            ])
+        );
+    }
+
+    #[test]
+    fn build_input_skips_reasoning_from_previous_provider() {
+        use everruns_provider::reasoning::ReasoningContentPart;
+
+        let mut muse = LlmMessage::text(LlmMessageRole::Assistant, "from Muse");
+        muse.reasoning = vec![
+            ReasoningContentPart::opaque("anthropic")
+                .with_item_id("rs_muse")
+                .with_encrypted("muse-blob"),
+        ];
+        let mut codex = LlmMessage::text(LlmMessageRole::Assistant, "from Codex");
+        codex.reasoning = vec![
+            ReasoningContentPart::opaque("openai")
+                .with_item_id("rs_codex")
+                .with_encrypted("codex-blob"),
+        ];
+
+        let (_instructions, input) = build_input(&[muse, codex]);
+        let wire = serde_json::to_value(input).expect("serialize Codex input");
+        let reasoning: Vec<&serde_json::Value> = wire
+            .as_array()
+            .expect("input array")
+            .iter()
+            .filter(|item| item["type"] == "reasoning")
+            .collect();
+
+        assert_eq!(reasoning.len(), 1);
+        assert_eq!(reasoning[0]["id"], "rs_codex");
+        assert_eq!(reasoning[0]["summary"], json!([]));
     }
 
     #[test]
