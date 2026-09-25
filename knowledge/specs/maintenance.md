@@ -47,10 +47,9 @@ changes, update this spec.
 
 ## Constraints
 
-- The release age floor from everruns maintenance still applies: a patch
-  release less than one day old is too fresh for a routine pass, and a minor
-  or major release less than seven days old is too fresh. Critical security
-  fixes are exempt.
+- A patch release less than one day old is too fresh for a routine pass.
+  Minor and major Everruns releases can be adopted immediately after their
+  compatibility review. Critical security fixes are exempt.
 - Keep a single routine feature set per `target/` directory. The schema
   feature (`--features yolop-yep/schema`) resolves to the same crates a
   default build does. `--all-features` also turns on `local-inference` and
@@ -106,8 +105,8 @@ A release readiness verdict covers the release path in
 
 - `main` CI is green, including the wire schema drift guard with
   `--features yolop-yep/schema`.
-- The `everruns-*` family and the `tuika` family are current within the
-  release age floor, with exact pins that still match `Cargo.lock`.
+- The `everruns-*` family and the `tuika` family are current, with exact
+  pins that still match `Cargo.lock`.
 - Versions agree: the root crate, `yolop-yep`, `Cargo.lock`, and the
   first-party extension manifests. The extension manifest pin test proves the
   agreement.
@@ -137,8 +136,8 @@ Do not declare release-ready for surfaces the pass did not actually check.
   `everruns-integrations-duckduckgo`, `everruns-platform`), not only the
   crates named in the root manifest, since a stale transitive member can keep
   a known bug alive.
-- Patch and minor updates within the release age floor go through
-  `cargo update -p <crate>` deliberately. Prefer `cargo update --dry-run` for
+- Patch and minor updates go through `cargo update -p <crate>` deliberately.
+  Prefer `cargo update --dry-run` for
   review, and re-resolve from scratch (`rm Cargo.lock`, fresh `cargo update`,
   rebuild) to prove the manifest pins are sufficient before restoring the
   lockfile if the experiment fails.
@@ -189,7 +188,7 @@ markdown rendering, terminal escapes, and screen modes, belongs in the
 `tuika` repository, not here. What belongs here is how yolop composes it.
 
 - The `tuika`, `tuika-codeformatters`, and `tuika-mermaid` versions stay
-  current within the release age floor, move together where they are
+  current, move together where they are
   companion releases, and keep `Cargo.toml` and `Cargo.lock` in agreement.
   No path or git dependencies: a git dependency would make yolop
   unpublishable.
