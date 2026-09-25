@@ -30,9 +30,10 @@ cargo test --workspace --features yolop-yep/schema
 Heuristics: review the whole `everruns-*` family, not only the crates named
 in the root manifest (`everruns-host`, `everruns-core`,
 `everruns-anthropic`, `everruns-openai`,
-`everruns-integrations-duckduckgo`, `everruns-platform`). Respect the
-release age floor: under one day for patches, under seven days for minor and
-major. Re-resolve from scratch to prove manifest pins are sufficient before
+`everruns-integrations-duckduckgo`, `everruns-platform`). Patch releases
+less than one day old are too fresh, but minor and major Everruns releases can
+be adopted after compatibility review. Re-resolve from scratch to prove
+manifest pins are sufficient before
 restoring the lockfile on failure. End state is `cargo metadata --locked`
 clean, no yanked crates, no audit findings where the tool runs, no duplicate
 versions, no unused dependencies, and `rust-toolchain.toml`, CI, and docs in

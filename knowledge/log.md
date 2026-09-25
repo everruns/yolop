@@ -1,5 +1,11 @@
 # Knowledge Log
 
+## 2026-09-24, Everruns minor releases no longer wait seven days
+
+- [Maintenance](specs/maintenance.md): minor and major Everruns releases may be
+  adopted after compatibility review. Only patch releases less than one day old
+  remain deferred for routine maintenance.
+
 ## 2026-09-22, Muse-only actionable-promise guard
 
 - [Action guard](specs/action-guard.md): new capability plus Jev Classifier
