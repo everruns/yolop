@@ -9504,7 +9504,7 @@ dependencies = [
 
 [[package]]
 name = "yolop"
-version = "0.18.3"
+version = "0.18.4"
 dependencies = [
  "agent-client-protocol",
  "anyhow",
@@ -9597,7 +9597,7 @@ dependencies = [
 
 [[package]]
 name = "yolop-extension-logfire"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "chrono",
  "opentelemetry",
