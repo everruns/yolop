@@ -448,10 +448,14 @@ checks stay in `checks`: "baseline emits no guard warning, candidate emits one"
 is the asymmetry those cases exist to prove. The analyzer gates a budget only
 when both binaries declare one; a candidate-only budget is reported, not gated.
 
-Budgets on `zero-result-search-recovery` and `prior-session-reference` are
-currently set at exactly the call count their prompts mandate, so every trial
-sits on the edge and one extra call fails the sample. Loosening them is a
-deliberate policy choice about how much slack the eval allows, not a bug fix.
+The budget on `zero-result-search-recovery` is currently set at exactly the
+call count its prompt mandates, so every trial sits on the edge and one extra
+call fails the sample. `prior-session-reference` carries a one-call cushion
+above its own minimum instead: the 2026-09-25 nightly showed a cold session
+reliably spending one extra call discovering the exact `sessions search`
+invocation even after #740 restored its CLI-route breadcrumb. Loosening a
+budget is a deliberate policy choice about how much slack the eval allows, not
+a bug fix.
 
 The manual/nightly [Search Efficiency Eval](../../.github/workflows/search-efficiency-eval.yml)
 builds both the triggering revision and the immutable pre-fix commit recorded
