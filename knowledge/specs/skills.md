@@ -101,7 +101,10 @@ operations is intentional.
 8. **Uninstall.** The `yolop skills delete` command removes an installed skill
    from a writable scope (`workspace` or `global`). It validates the name as a
    single path segment (no separators, `.`, or `..`), refuses a directory with no
-   `SKILL.md`, and never touches the read-only system scope. The upstream capability has no removal.
+   regular `SKILL.md`, rejects symlinks in the scope path, and deletes through
+   directory descriptors so concurrent path replacement cannot escape the
+   selected scope. It never touches the read-only system scope. The upstream
+   capability has no removal.
 9. **Absent scopes are silent.** A missing workspace/global directory is simply
    empty until a skill is installed. A failure to materialize system skills
    disables that scope without failing the session.

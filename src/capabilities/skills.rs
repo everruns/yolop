@@ -739,6 +739,112 @@ impl DeleteSkillTool {
     }
 }
 
+#[cfg(unix)]
+fn remove_skill_dir(base: &Path, name: &str) -> Result<(), String> {
+    use rustix::fd::OwnedFd;
+    use rustix::fs::{AtFlags, Dir, FileType, Mode, OFlags, openat, unlinkat};
+
+    fn open_dir_at<Fd: rustix::fd::AsFd, P: rustix::path::Arg>(
+        fd: Fd,
+        name: P,
+    ) -> std::io::Result<OwnedFd> {
+        openat(
+            fd,
+            name,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(Into::into)
+    }
+
+    fn remove_contents(dir_fd: &OwnedFd) -> std::io::Result<()> {
+        let entries = Dir::read_from(dir_fd)?
+            .filter_map(|entry| match entry {
+                Ok(entry)
+                    if entry.file_name().to_bytes() != b"."
+                        && entry.file_name().to_bytes() != b".." =>
+                {
+                    Some(Ok(entry.file_name().to_owned()))
+                }
+                Ok(_) => None,
+                Err(error) => Some(Err(error.into())),
+            })
+            .collect::<std::io::Result<Vec<_>>>()?;
+        for name in entries {
+            match open_dir_at(dir_fd, name.as_c_str()) {
+                Ok(child_fd) => {
+                    remove_contents(&child_fd)?;
+                    unlinkat(dir_fd, name.as_c_str(), AtFlags::REMOVEDIR)?;
+                }
+                Err(error)
+                    if error.raw_os_error() == Some(rustix::io::Errno::NOTDIR.raw_os_error())
+                        || error.raw_os_error() == Some(rustix::io::Errno::LOOP.raw_os_error()) =>
+                {
+                    unlinkat(dir_fd, name.as_c_str(), AtFlags::empty())?;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(())
+    }
+
+    let mut dir_fd = openat(
+        rustix::fs::CWD,
+        if base.is_absolute() {
+            Path::new("/")
+        } else {
+            Path::new(".")
+        },
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|error| format!("failed to open skill scope: {error}"))?;
+    for component in base.components() {
+        use std::path::Component;
+        let segment = match component {
+            Component::RootDir | Component::CurDir => continue,
+            Component::Normal(segment) => segment,
+            Component::ParentDir | Component::Prefix(_) => {
+                return Err("skill scope must not contain parent components".to_string());
+            }
+        };
+        dir_fd = open_dir_at(&dir_fd, segment).map_err(|error| {
+            format!(
+                "skill scope contains a symlink or inaccessible directory at `{}`: {error}",
+                segment.to_string_lossy()
+            )
+        })?;
+    }
+
+    let target_fd = open_dir_at(&dir_fd, std::ffi::OsStr::new(name))
+        .map_err(|_| format!("no `{name}` skill installed in this scope"))?;
+    let marker = openat(
+        &target_fd,
+        "SKILL.md",
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|_| format!("`{name}` is not a skill (no regular SKILL.md); refusing to delete"))?;
+    let marker_type = rustix::fs::FileType::from_raw_mode(
+        rustix::fs::fstat(&marker)
+            .map_err(|e| e.to_string())?
+            .st_mode,
+    );
+    if marker_type != FileType::RegularFile {
+        return Err(format!(
+            "`{name}` is not a skill (no regular SKILL.md); refusing to delete"
+        ));
+    }
+    remove_contents(&target_fd).map_err(|error| format!("failed to delete `{name}`: {error}"))?;
+    unlinkat(&dir_fd, name, AtFlags::REMOVEDIR)
+        .map_err(|error| format!("failed to delete `{name}`: {error}"))
+}
+
+#[cfg(not(unix))]
+fn remove_skill_dir(_base: &Path, _name: &str) -> Result<(), String> {
+    Err("secure skill deletion is not supported on this platform".to_string())
+}
+
 /// A skill name must be a single, plain path component — no separators, no `.`
 /// or `..`. This keeps skill install/uninstall from escaping the scope directory.
 pub(crate) fn validate_skill_name(name: &str) -> Result<(), String> {
@@ -832,23 +938,14 @@ impl Tool for DeleteSkillTool {
         // everything it needs.
         let name_owned = name.to_string();
         let scope_owned = scope.to_string();
-        let target_for_delete = target.clone();
         let outcome = tokio::task::spawn_blocking(move || -> Result<(), String> {
-            if !target_for_delete.is_dir() {
-                return Err(format!(
-                    "no `{name_owned}` skill installed in the {scope_owned} scope"
-                ));
-            }
-            // Guard against deleting an unrelated directory: a real skill always
-            // carries a SKILL.md. Refuse anything that does not look like a skill.
-            if !target_for_delete.join("SKILL.md").is_file() {
-                return Err(format!(
-                    "`{}` is not a skill (no SKILL.md); refusing to delete",
-                    target_for_delete.display()
-                ));
-            }
-            std::fs::remove_dir_all(&target_for_delete)
-                .map_err(|err| format!("failed to delete `{name_owned}`: {err}"))
+            remove_skill_dir(&base, &name_owned).map_err(|error| {
+                if error.contains("in this scope") {
+                    format!("no `{name_owned}` skill installed in the {scope_owned} scope")
+                } else {
+                    error
+                }
+            })
         })
         .await;
         match outcome {
@@ -1259,5 +1356,45 @@ mod tests {
         assert!(result.is_error(), "traversal must be rejected");
         assert!(outside.exists(), "outside directory must survive");
         let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn delete_skill_rejects_symlinked_scope_ancestor() {
+        use std::os::unix::fs::symlink;
+
+        let workspace = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        install_skill(&outside.path().join("skills"), "victim");
+        symlink(outside.path(), workspace.path().join(".agents")).unwrap();
+        let tool = delete_tool_with_dirs(&workspace.path().join(".agents/skills"), None);
+
+        let result = tool.execute(json!({ "name": "victim" })).await;
+
+        assert!(result.is_error(), "symlinked scope must be rejected");
+        assert!(
+            outside.path().join("skills/victim/SKILL.md").is_file(),
+            "external skill must survive"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn delete_skill_rejects_symlinked_target() {
+        use std::os::unix::fs::symlink;
+
+        let scope = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        install_skill(outside.path(), "victim");
+        symlink(outside.path().join("victim"), scope.path().join("victim")).unwrap();
+        let tool = delete_tool_with_dirs(scope.path(), None);
+
+        let result = tool.execute(json!({ "name": "victim" })).await;
+
+        assert!(result.is_error(), "symlinked target must be rejected");
+        assert!(
+            outside.path().join("victim/SKILL.md").is_file(),
+            "external skill must survive"
+        );
     }
 }
