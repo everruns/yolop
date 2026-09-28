@@ -318,6 +318,7 @@ impl HerdrReporter {
     pub(crate) fn start_monitor(
         &self,
         session_id: everruns_provider::typed_id::SessionId,
+        session_title: Option<String>,
         mut events: broadcast::Receiver<Event>,
     ) {
         if self.context.is_none() {
@@ -325,7 +326,7 @@ impl HerdrReporter {
         }
         let reporter = self.clone();
         tokio::spawn(async move {
-            reporter.report_metadata(None).await;
+            reporter.report_metadata(session_title.as_deref()).await;
             reporter.report(HerdrState::Idle).await;
             loop {
                 match events.recv().await {
@@ -569,7 +570,11 @@ mod tests {
         let session_id = everruns_provider::typed_id::SessionId::from_seed(91);
         let turn_id = TurnId::from_seed(92);
         let (events, receiver) = broadcast::channel(8);
-        reporter.start_monitor(session_id, receiver);
+        reporter.start_monitor(
+            session_id,
+            Some("Restore Herdr title".to_string()),
+            receiver,
+        );
         events
             .send(Event::new(
                 session_id,
@@ -631,7 +636,8 @@ mod tests {
         let lines: Vec<&str> = output.lines().collect();
 
         assert!(lines[0].contains("pane report-metadata w1:p2"));
-        assert!(lines[0].contains("--display-agent Yolop · test"));
+        assert!(lines[0].contains("--title Restore Herdr title"));
+        assert!(lines[0].contains("--display-agent Yolop · Restore Herdr title"));
         assert!(lines[1].contains("--state idle"));
         assert!(lines[2].contains("pane report-metadata w1:p2"));
         assert!(lines[2].contains("--title Improve Herdr integration"));
