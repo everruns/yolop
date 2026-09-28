@@ -61,8 +61,9 @@ switches, yolop may also query the provider's models API when credentials
 exist. Before a turn is checkpointed or sent, Yolop validates the selected model
 once per process against that API when it is available. Unavailable models fail
 without persisting the ask, so the user can select an advertised model and
-submit the same turn. Providers without discovery support (including custom
-compatible endpoints) continue without preflight.
+submit the same turn. OpenAI-compatible endpoints with a base URL use their
+`GET /models` fallback when the driver declines discovery. Providers without a
+driver catalog or a compatible models endpoint continue without preflight.
 
 Meta Model API is a first-class `meta` provider backed by `everruns-meta`, not a
 generic compatible endpoint. It reads `MODEL_API_KEY`, defaults to
