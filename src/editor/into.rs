@@ -1,6 +1,8 @@
 use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value, json};
 use std::io::Write;
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug)]
@@ -512,13 +514,14 @@ fn write_file_atomically(path: &Path, content: &[u8], description: &str) -> Resu
     tmp_name.push(format!(".tmp.{}", std::process::id()));
     let tmp_path = parent.join(tmp_name);
 
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let mut file = options
+        .open(&tmp_path)
+        .with_context(|| format!("open temp {description} {}", tmp_path.display()))?;
     let write_result = (|| -> Result<()> {
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&tmp_path)
-            .with_context(|| format!("open temp {description} {}", tmp_path.display()))?;
         file.write_all(content)
             .with_context(|| format!("write temp {description} {}", tmp_path.display()))?;
         file.sync_all()
@@ -542,6 +545,9 @@ fn write_file_atomically(path: &Path, content: &[u8], description: &str) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
 
     fn into_at(path: PathBuf, command: &str, force: bool) -> Result<ZedIntoResult> {
         into_zed(ZedIntoOptions {
@@ -765,6 +771,49 @@ mod tests {
             "keep"
         );
         assert_eq!(parsed["agents"]["providers"]["yolop"]["enabled"], true);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn paseo_into_keeps_secret_bearing_config_owner_only() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("config.json");
+        std::fs::write(
+            &path,
+            r#"{"agents":{"providers":{"yolop":{"extends":"acp","label":"Old Label","command":["old"],"env":{"OPENAI_API_KEY":"keep"}}}}}"#,
+        )
+        .expect("write settings");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+            .expect("set permissions");
+
+        into_paseo_at(path.clone(), "/bin/yolop", false).expect("into");
+
+        let mode = std::fs::metadata(path)
+            .expect("metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+
+    #[test]
+    fn atomic_write_refuses_to_reuse_existing_temp_file() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("config.json");
+        let temp_path = tmp
+            .path()
+            .join(format!(".config.json.tmp.{}", std::process::id()));
+        std::fs::write(&temp_path, "do not overwrite").expect("write temp file");
+
+        let err = write_file_atomically(&path, b"replacement", "test config")
+            .expect_err("existing temp file must be rejected");
+
+        assert!(err.to_string().contains("open temp test config"));
+        assert_eq!(
+            std::fs::read_to_string(temp_path).expect("read temp file"),
+            "do not overwrite"
+        );
+        assert!(!path.exists());
     }
 
     #[test]
