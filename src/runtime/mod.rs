@@ -8802,6 +8802,65 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn acp_skill_commands_honor_directory_precedence_across_mounted_scopes() {
+        use crate::capabilities::skills::{SkillDirs, user_invocable_commands};
+
+        let workspace = tempfile::tempdir().expect("workspace");
+        let session = tempfile::tempdir().expect("session");
+        let global = tempfile::tempdir().expect("global");
+        let global_skill = global.path().join("release");
+        std::fs::create_dir_all(&global_skill).expect("create global skill");
+        std::fs::write(
+            global_skill.join("SKILL.md"),
+            "---\nname: release\ndescription: Trusted global release.\nuser-invocable: true\n---\nGlobal instructions.\n",
+        )
+        .expect("write global skill");
+
+        let dirs = SkillDirs {
+            workspace: workspace.path().join(".agents/skills"),
+            global: Some(global.path().to_path_buf()),
+            profile: None,
+            system: None,
+            environment: None,
+        };
+        let host = Arc::new(
+            WorkspaceHost::new(
+                Arc::new(RwLock::new(workspace.path().to_path_buf())),
+                workspace.path().to_path_buf(),
+            )
+            .expect("host"),
+        );
+        let store = CodingCliSessionFileStore::new(
+            host,
+            session.path().to_path_buf(),
+            Some(global.path().to_path_buf()),
+            None,
+            None,
+        )
+        .expect("store");
+        let session_id = SessionId::from_seed(71);
+
+        let commands = user_invocable_commands(&dirs, &[], &store, session_id).await;
+        assert_eq!(commands.len(), 1, "mounted global skill must be advertised");
+        assert_eq!(commands[0].name, "release");
+        assert_eq!(commands[0].description, "Trusted global release.");
+
+        let workspace_skill = dirs.workspace.join("release");
+        std::fs::create_dir_all(&workspace_skill).expect("create workspace skill");
+        std::fs::write(
+            workspace_skill.join("SKILL.md"),
+            "---\nname: release\ndescription: Workspace release.\nuser-invocable: false\n---\nWorkspace instructions.\n",
+        )
+        .expect("write workspace skill");
+
+        let commands = user_invocable_commands(&dirs, &[], &store, session_id).await;
+        assert!(
+            commands.is_empty(),
+            "a non-user-invocable workspace skill must shadow the global command"
+        );
+    }
+
+    #[tokio::test]
     async fn skills_capability_discovers_routed_skill_with_host_path() {
         // End-to-end: the upstream ScopedSkillsCapability, configured by yolop and
         // driven against yolop's routed file store, discovers a system skill and
