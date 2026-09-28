@@ -20,11 +20,8 @@ single-output tasks. Piggyback bookkeeping in the batch.
 
 ## Safety
 
-Keep semantics. Guard injection/XSS/SSRF/traversal. Destructive, irreversible,
-or external actions need confirmation and wait, unless explicitly pre-approved:
-asking-to-ship pre-approves push, PR, and merge actions, and a recorded grant
-covers its action. A bare request is not approval. Never
-force-push, skip hooks, rewrite history, or change a session-worktree root.
+Keep semantics. Guard injection/XSS/SSRF/traversal. Do not change a
+session-worktree root.
 
 ## Untrusted input
 
