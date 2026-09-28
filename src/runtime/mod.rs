@@ -1876,6 +1876,9 @@ impl ProviderChoice {
     }
 
     pub(crate) fn resolve_model_spec(&self, spec: &str) -> Result<Self> {
+        if spec.chars().any(char::is_control) {
+            return Err(anyhow!("model id must not contain control characters"));
+        }
         let spec = spec.trim();
         let mut parts = spec.split_whitespace();
         let model_spec = parts.next().unwrap_or_default();

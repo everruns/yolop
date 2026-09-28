@@ -489,6 +489,23 @@ mod tests {
     }
 
     #[test]
+    fn pick_catalog_fallback_rejects_model_ids_with_terminal_controls() {
+        let choice = ProviderChoice::default_for_provider_name("openai").unwrap();
+        let malicious_id = "evil\u{1b}]52;c;Y2xpcGJvYXJk\u{7}";
+        let ids = HashSet::from([malicious_id.to_string()]);
+        let models = vec![DiscoveredProviderModel {
+            model_id: malicious_id.to_string(),
+            display_name: None,
+            description: None,
+        }];
+
+        let fallback = pick_catalog_fallback(&choice, &ids, &models);
+
+        assert_eq!(fallback.label(), choice.label());
+        assert!(!fallback.model_id().chars().any(char::is_control));
+    }
+
+    #[test]
     fn enrichment_keeps_unknown_models_with_bare_ids() {
         let enriched = enrich_with_profiles(
             &DriverId::OpenAI,
