@@ -6,6 +6,10 @@
 use super::client::LspClient;
 use crate::exec::workspace_host::WorkspaceHost;
 use anyhow::{Context, Result, anyhow, bail};
+#[cfg(unix)]
+use rustix::fd::OwnedFd;
+#[cfg(unix)]
+use rustix::fs::{AtFlags, Mode, OFlags};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -624,7 +628,61 @@ fn workspace_file(root: &Path, uri: &str) -> Result<PathBuf> {
     Ok(resolved)
 }
 
+/// Open a target's parent one component at a time. Every lookup is relative to
+/// an already-open directory and refuses symlinks, so renaming an ancestor
+/// concurrently cannot redirect the eventual operation outside the workspace.
+#[cfg(unix)]
+fn workspace_parent(
+    root: &Path,
+    file: &Path,
+    create: bool,
+) -> Result<(OwnedFd, std::ffi::OsString)> {
+    use std::os::unix::ffi::OsStrExt;
+
+    let relative = file
+        .strip_prefix(root)
+        .context("workspace target is not beneath root")?;
+    let name = relative
+        .file_name()
+        .context("workspace target has no file name")?
+        .to_owned();
+    let root_fd = rustix::fs::open(
+        root,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .context("open workspace root")?;
+    let mut directory = root_fd;
+    if let Some(parent) = relative.parent() {
+        for component in parent.components() {
+            let part = component.as_os_str();
+            if create {
+                match rustix::fs::mkdirat(&directory, part.as_bytes(), Mode::from_raw_mode(0o777)) {
+                    Ok(()) => {}
+                    Err(err) if err == rustix::io::Errno::EXIST => {}
+                    Err(err) => return Err(err).context("create workspace-edit parent directory"),
+                }
+            }
+            directory = rustix::fs::openat(
+                &directory,
+                part.as_bytes(),
+                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::empty(),
+            )
+            .context("open workspace-edit parent directory")?;
+        }
+    }
+    Ok((directory, name))
+}
+
+#[cfg(not(unix))]
+fn unsupported_secure_edits() -> Result<()> {
+    bail!("applying LSP workspace edits is unsupported on this platform")
+}
+
 fn apply_resource_operation(root: &Path, kind: &str, change: &Value) -> Result<FileEditSummary> {
+    #[cfg(not(unix))]
+    unsupported_secure_edits()?;
     match kind {
         "create" => {
             let uri = change
@@ -632,9 +690,6 @@ fn apply_resource_operation(root: &Path, kind: &str, change: &Value) -> Result<F
                 .and_then(Value::as_str)
                 .context("create without uri")?;
             let file = workspace_file(root, uri)?;
-            if let Some(parent) = file.parent() {
-                std::fs::create_dir_all(parent).context("create parent directories")?;
-            }
             let overwrite = change
                 .pointer("/options/overwrite")
                 .and_then(Value::as_bool)
@@ -643,12 +698,29 @@ fn apply_resource_operation(root: &Path, kind: &str, change: &Value) -> Result<F
                 .pointer("/options/ignoreIfExists")
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
-            if file.exists() && !overwrite {
-                if !ignore_if_exists {
-                    bail!("create target already exists: {}", file.display());
+            #[cfg(unix)]
+            {
+                use std::os::unix::ffi::OsStrExt;
+                let (parent, name) = workspace_parent(root, &file, true)?;
+                let mut flags =
+                    OFlags::WRONLY | OFlags::CREATE | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+                if overwrite {
+                    flags |= OFlags::TRUNC;
+                } else {
+                    flags |= OFlags::EXCL;
                 }
-            } else {
-                std::fs::write(&file, "").context("create file")?;
+                match rustix::fs::openat(
+                    &parent,
+                    name.as_bytes(),
+                    flags,
+                    Mode::from_raw_mode(0o666),
+                ) {
+                    Ok(_) => {}
+                    Err(err) if err == rustix::io::Errno::EXIST && ignore_if_exists => {}
+                    Err(err) => {
+                        return Err(err).with_context(|| format!("create file {}", file.display()));
+                    }
+                }
             }
             Ok(FileEditSummary {
                 path: workspace_relative(root, &file),
@@ -667,10 +739,19 @@ fn apply_resource_operation(root: &Path, kind: &str, change: &Value) -> Result<F
                 .context("rename without newUri")?;
             let old_file = workspace_file(root, old)?;
             let new_file = workspace_file(root, new)?;
-            if let Some(parent) = new_file.parent() {
-                std::fs::create_dir_all(parent).context("create parent directories")?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::ffi::OsStrExt;
+                let (old_parent, old_name) = workspace_parent(root, &old_file, false)?;
+                let (new_parent, new_name) = workspace_parent(root, &new_file, true)?;
+                rustix::fs::renameat(
+                    &old_parent,
+                    old_name.as_bytes(),
+                    &new_parent,
+                    new_name.as_bytes(),
+                )
+                .context("rename file")?;
             }
-            std::fs::rename(&old_file, &new_file).context("rename file")?;
             Ok(FileEditSummary {
                 path: format!(
                     "{} -> {}",
@@ -691,14 +772,28 @@ fn apply_resource_operation(root: &Path, kind: &str, change: &Value) -> Result<F
                 .pointer("/options/recursive")
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
-            if file.is_dir() {
-                if recursive {
-                    std::fs::remove_dir_all(&file).context("delete directory")?;
-                } else {
-                    std::fs::remove_dir(&file).context("delete directory")?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::ffi::OsStrExt;
+                let (parent, name) = workspace_parent(root, &file, false)?;
+                let stat = rustix::fs::statat(&parent, name.as_bytes(), AtFlags::SYMLINK_NOFOLLOW)
+                    .context("inspect delete target")?;
+                let file_type = rustix::fs::FileType::from_raw_mode(stat.st_mode);
+                if file_type.is_symlink() {
+                    bail!("refusing to delete a symlink: {}", file.display());
                 }
-            } else {
-                std::fs::remove_file(&file).context("delete file")?;
+                if file_type.is_dir() {
+                    if recursive {
+                        bail!(
+                            "recursive directory deletion from LSP edits is not supported safely"
+                        );
+                    }
+                    rustix::fs::unlinkat(&parent, name.as_bytes(), AtFlags::REMOVEDIR)
+                        .context("delete directory")?;
+                } else {
+                    rustix::fs::unlinkat(&parent, name.as_bytes(), AtFlags::empty())
+                        .context("delete file")?;
+                }
             }
             Ok(FileEditSummary {
                 path: workspace_relative(root, &file),
@@ -717,11 +812,44 @@ async fn apply_text_edits(
     encoding: PositionEncoding,
     server: &LanguageServer,
 ) -> Result<FileEditSummary> {
+    #[cfg(not(unix))]
+    unsupported_secure_edits()?;
     let file = workspace_file(root, uri)?;
-    let text = std::fs::read_to_string(&file)
-        .with_context(|| format!("read edit target {}", file.display()))?;
+    #[cfg(unix)]
+    let (parent, name) = workspace_parent(root, &file, false)?;
+    #[cfg(unix)]
+    let mut handle = {
+        use std::os::unix::ffi::OsStrExt;
+        let fd = rustix::fs::openat(
+            &parent,
+            name.as_bytes(),
+            OFlags::RDWR | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .with_context(|| format!("open edit target {}", file.display()))?;
+        std::fs::File::from(fd)
+    };
+    #[cfg(unix)]
+    let text = {
+        use std::io::Read;
+        let mut text = String::new();
+        handle
+            .read_to_string(&mut text)
+            .with_context(|| format!("read edit target {}", file.display()))?;
+        text
+    };
     let updated = apply_text_edits_to_string(&text, edits, encoding)?;
-    std::fs::write(&file, &updated).with_context(|| format!("write {}", file.display()))?;
+    #[cfg(unix)]
+    {
+        use std::io::{Seek, Write};
+        handle
+            .seek(std::io::SeekFrom::Start(0))
+            .context("seek edit target")?;
+        handle.set_len(0).context("truncate edit target")?;
+        handle
+            .write_all(updated.as_bytes())
+            .with_context(|| format!("write {}", file.display()))?;
+    }
     // Keep the server's view current if we had the document open.
     let extension = file
         .extension()
@@ -905,6 +1033,24 @@ mod tests {
         // A file merely *named* like a blocklist entry is fine.
         let file = path_to_uri(&root.join("targets.rs"));
         assert!(workspace_file(&root, &file).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn workspace_parent_refuses_symlinked_ancestors() {
+        use std::os::unix::fs::symlink;
+
+        let workspace = tempfile::tempdir().expect("workspace");
+        let outside = tempfile::tempdir().expect("outside");
+        symlink(outside.path(), workspace.path().join("redirect")).expect("create symlink");
+        let target = workspace.path().join("redirect/file.rs");
+
+        let err = workspace_parent(workspace.path(), &target, false).expect_err("reject symlink");
+        assert!(
+            err.to_string()
+                .contains("open workspace-edit parent directory"),
+            "{err:#}"
+        );
     }
 
     #[test]
