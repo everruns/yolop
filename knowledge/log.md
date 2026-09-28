@@ -32,6 +32,13 @@
   provenance and explicit user confirmation of the specific resource and
   action.
 
+## 2026-09-25, Hero demo uses a repository-owned workspace
+
+- [Documentation](specs/documentation.md): the hero recording now creates its
+  Cargo project and session data under the repository's ignored `target/`
+  directory, preventing shared temporary-directory Cargo configuration from
+  affecting demo commands.
+
 ## 2026-09-22, Muse-only actionable-promise guard
 
 - [Action guard](specs/action-guard.md): new capability plus Jev Classifier

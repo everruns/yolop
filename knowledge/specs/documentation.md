@@ -154,8 +154,9 @@ committing a capture; the failure looks like wide letter-spacing, not a crash.
 The README hero is a checked-in VHS workflow, not a one-off screen recording:
 
 - `docs/demo.tape` owns the terminal presentation and interaction;
-- `docs/demo-setup.sh` creates the disposable project under
-  `/tmp/yolop-hero-*`; and
+- `docs/demo-setup.sh` creates the disposable project under the repository's
+  ignored `target/yolop-hero-*` paths, whose ancestor chain is controlled by
+  the invoking user; and
 - `docs/demo.gif` is the generated asset embedded by `README.md`.
 
 Unlike feature-guide captures, the hero intentionally uses an authenticated

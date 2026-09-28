@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-demo_dir=/tmp/yolop-hero-pizza-rocket
-session_dir=/tmp/yolop-hero-sessions
+repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
+demo_dir="$repo_root/target/yolop-hero-pizza-rocket"
+session_dir="$repo_root/target/yolop-hero-sessions"
 
 rm -rf "$demo_dir" "$session_dir"
 mkdir -p "$demo_dir/src" "$session_dir"
@@ -12,6 +13,8 @@ cat >"$demo_dir/Cargo.toml" <<'EOF'
 name = "pizza-rocket"
 version = "0.1.0"
 edition = "2024"
+
+[workspace]
 
 [dependencies]
 clap = { version = "=4.5.20", features = ["derive"] }
