@@ -247,6 +247,22 @@ struct FileReadHistory {
 impl SessionProgress {
     fn observe(&mut self, tool_call: &ToolCall, result: &mut ToolResult) -> Option<String> {
         self.tool_count += 1;
+        let warning = self.observe_counted(tool_call, result);
+        if self.tool_count != SESSION_TOOL_BUDGET_WARN {
+            return warning;
+        }
+
+        self.warning_count += 1;
+        let budget_warning = format!(
+            "progress_guard: session tool budget warning ({SESSION_TOOL_BUDGET_WARN}/{SESSION_TOOL_BUDGET} calls). Summarize for the user and stop exploring; only mutations, decisive validations, and explicit user requests should continue past this point."
+        );
+        Some(match warning {
+            Some(warning) => format!("{warning}\n\n{budget_warning}"),
+            None => budget_warning,
+        })
+    }
+
+    fn observe_counted(&mut self, tool_call: &ToolCall, result: &mut ToolResult) -> Option<String> {
         if tool_call.name == PROGRESS_CHECKPOINT_TOOL {
             self.observe_checkpoint(tool_call, result);
             return None;
@@ -329,12 +345,6 @@ impl SessionProgress {
                 self.exploration_warning()
             }
             ToolClass::Exploration => {
-                if self.tool_count == SESSION_TOOL_BUDGET_WARN {
-                    self.warning_count += 1;
-                    return Some(format!(
-                        "progress_guard: session tool budget warning ({SESSION_TOOL_BUDGET_WARN}/{SESSION_TOOL_BUDGET} calls). Summarize for the user and stop exploring; only mutations, decisive validations, and explicit user requests should continue past this point."
-                    ));
-                }
                 self.exploration_since_progress += 1;
                 let mut file_read_warning = None;
                 if is_semantic_navigation(tool_call) {
@@ -376,12 +386,6 @@ impl SessionProgress {
             ToolClass::Other => {
                 self.observe_waiting_signal(false);
                 self.reset_result_streaks();
-                if self.tool_count == SESSION_TOOL_BUDGET_WARN {
-                    self.warning_count += 1;
-                    return Some(format!(
-                        "progress_guard: session tool budget warning ({SESSION_TOOL_BUDGET_WARN}/{SESSION_TOOL_BUDGET} calls). Summarize for the user and stop; only mutations, decisive validations, and explicit user requests should continue past this point."
-                    ));
-                }
                 None
             }
         }
@@ -4069,6 +4073,55 @@ mod tests {
                 PreToolUseDecision::Block { .. }
             ),
             "exploration should stay gated after a rejected checkpoint"
+        );
+    }
+
+    #[tokio::test]
+    async fn session_tool_budget_warns_when_validation_reaches_boundary() {
+        let state = Arc::new(Mutex::new(ProgressGuardState::default()));
+        let hook = ProgressGuardHook {
+            state: state.clone(),
+        };
+        let context = ToolContext::new(SessionId::new());
+        state
+            .lock()
+            .expect("progress guard state poisoned")
+            .session_mut(&context.session_id.to_string())
+            .tool_count = SESSION_TOOL_BUDGET_WARN - 1;
+
+        let mut validation_result = result();
+        hook.after_exec(
+            &call("bash", json!({ "command": "cargo test" })),
+            &tool_def("bash"),
+            &mut validation_result,
+            &context,
+        )
+        .await;
+        assert!(
+            regression_warning_text(&validation_result).contains("session tool budget warning"),
+            "validation at the boundary should carry the session budget warning"
+        );
+        assert_eq!(
+            state
+                .lock()
+                .expect("progress guard state poisoned")
+                .session_mut(&context.session_id.to_string())
+                .validation_count,
+            1,
+            "emitting the budget warning must not skip validation accounting"
+        );
+
+        let mut next_result = result();
+        hook.after_exec(
+            &call("bash", json!({ "command": "true" })),
+            &tool_def("bash"),
+            &mut next_result,
+            &context,
+        )
+        .await;
+        assert!(
+            !regression_warning_text(&next_result).contains("session tool budget warning"),
+            "session budget warning should fire only at the boundary"
         );
     }
 
