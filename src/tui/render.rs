@@ -30,6 +30,7 @@ impl Author {
             Author::ToolDetail => TEXT_MUTED,
             Author::Stderr | Author::Sandbox => ERROR_RED,
             Author::Diff => ACCENT_BLUE,
+            Author::Help => TEXT_DIM,
             Author::System => TEXT_DIM,
         }
     }
@@ -1785,7 +1786,7 @@ pub(crate) fn append_chat_lines<'a>(
     let header_style = Style::default()
         .fg(presented.author.color())
         .add_modifier(Modifier::BOLD);
-    if matches!(presented.author, Author::Assistant) {
+    if matches!(presented.author, Author::Assistant | Author::Help) {
         append_markdown_lines(
             lines,
             &header_text,

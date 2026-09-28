@@ -195,6 +195,7 @@ impl Author {
             Author::Stderr => "",
             Author::Sandbox => "sandbox",
             Author::Diff => "diff",
+            Author::Help => "system",
             Author::System => "system",
         }
     }

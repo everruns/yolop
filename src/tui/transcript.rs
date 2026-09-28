@@ -31,6 +31,7 @@ pub enum Author {
     Stderr,
     Sandbox,
     Diff,
+    Help,
     System,
 }
 

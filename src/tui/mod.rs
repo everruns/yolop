@@ -166,6 +166,7 @@ fn compact_detail_line(line: &ChatLine) -> ChatLine {
         Author::Stderr => format!("● {}", line.text),
         Author::Sandbox => format!("sandbox  {}", line.text),
         Author::Diff => format!("diff  {}", line.text),
+        Author::Help => format!("system  {}", line.text),
         Author::System => format!("system  {}", line.text),
         Author::User => format!("you  {}", line.text),
         Author::Assistant => format!("agent  {}", line.text),
@@ -3868,7 +3869,10 @@ impl App {
         help.push_str(
             "\n\n## Discover more\n\n- `/tools` lists tools available to the agent.\n- `/mcp` manages MCP servers.\n- `/yolop skill` shows reusable workflows.\n- You can also describe terminal actions naturally.",
         );
-        self.push_system(help);
+        self.lines.push(ChatLine {
+            author: Author::Help,
+            text: help,
+        });
     }
 
     fn set_status_layout(&mut self, raw: Option<&str>) {
@@ -9550,6 +9554,7 @@ flowchart TD
         app.dispatch_command_for_test("help").await;
 
         assert_eq!(app.lines.len(), 1, "help should be one transcript message");
+        assert_eq!(app.lines[0].author, Author::Help);
         let help = app.lines[0].text.as_str();
         assert!(
             help.starts_with("# Yolop help\n"),
@@ -9579,6 +9584,24 @@ flowchart TD
         assert!(
             help.contains("## Discover more\n") && help.contains("/yolop skill"),
             "help should point at further discovery: {help}"
+        );
+
+        let mut rendered = Vec::new();
+        append_chat_lines(&mut rendered, &app.lines[0], 96);
+        let rendered_text = rendered
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        assert!(
+            rendered_text.contains("Yolop help") && rendered_text.contains("Commands"),
+            "rendered help should retain its headings: {rendered_text:?}"
+        );
+        assert!(
+            !rendered_text.contains("# Yolop help")
+                && !rendered_text.contains("## Commands")
+                && !rendered_text.contains("`/help`"),
+            "rendered help should not expose Markdown syntax: {rendered_text:?}"
         );
     }
 
