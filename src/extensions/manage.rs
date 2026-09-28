@@ -727,19 +727,90 @@ impl ManageTool {
                     .collect()
             })
             .unwrap_or_default();
-        // Default target: a sibling `scaffold/<name>` of the extensions dir, so
-        // authored packages sit next to where they install without cluttering
-        // the workspace. An explicit `dir` (a parent) overrides.
-        let dir = match args.get("dir").and_then(Value::as_str) {
-            Some(parent) => PathBuf::from(parent).join(name),
-            None => self
-                .ctx
-                .extensions_dir
-                .parent()
-                .unwrap_or(&self.ctx.extensions_dir)
-                .join("scaffold")
-                .join(name),
+        // Explicit destinations are model-controlled, so keep them inside the
+        // active workspace. The default remains the trusted global scaffold
+        // directory next to the extension store.
+        let parent = match args.get("dir").and_then(Value::as_str) {
+            Some(parent) => {
+                let workspace = match std::fs::canonicalize(&self.ctx.workspace_root) {
+                    Ok(workspace) => workspace,
+                    Err(e) => {
+                        return ToolExecutionResult::ToolError(format!(
+                            "invalid workspace root `{}`: {e}",
+                            self.ctx.workspace_root.display()
+                        ));
+                    }
+                };
+                let requested = PathBuf::from(parent);
+                if requested
+                    .components()
+                    .any(|part| matches!(part, std::path::Component::ParentDir))
+                {
+                    return ToolExecutionResult::ToolError(
+                        "scaffold parent must not contain `..`".to_string(),
+                    );
+                }
+                let requested = if requested.is_absolute() {
+                    requested
+                } else {
+                    workspace.join(requested)
+                };
+                if !requested.starts_with(&workspace) {
+                    return ToolExecutionResult::ToolError(format!(
+                        "scaffold parent `{}` must be inside the workspace `{}`",
+                        requested.display(),
+                        workspace.display()
+                    ));
+                }
+                if let Err(e) = std::fs::create_dir_all(&requested) {
+                    return ToolExecutionResult::ToolError(format!(
+                        "creating scaffold parent {}: {e}",
+                        requested.display()
+                    ));
+                }
+                let parent = match std::fs::canonicalize(&requested) {
+                    Ok(parent) => parent,
+                    Err(e) => {
+                        return ToolExecutionResult::ToolError(format!(
+                            "invalid scaffold parent `{}`: {e}",
+                            requested.display()
+                        ));
+                    }
+                };
+                if !parent.starts_with(&workspace) {
+                    return ToolExecutionResult::ToolError(format!(
+                        "scaffold parent `{}` must be inside the workspace `{}`",
+                        parent.display(),
+                        workspace.display()
+                    ));
+                }
+                parent
+            }
+            None => {
+                let parent = self
+                    .ctx
+                    .extensions_dir
+                    .parent()
+                    .unwrap_or(&self.ctx.extensions_dir)
+                    .join("scaffold");
+                if let Err(e) = std::fs::create_dir_all(&parent) {
+                    return ToolExecutionResult::ToolError(format!(
+                        "creating scaffold directory {}: {e}",
+                        parent.display()
+                    ));
+                }
+                match std::fs::canonicalize(&parent) {
+                    Ok(parent) => parent,
+                    Err(e) => {
+                        return ToolExecutionResult::ToolError(format!(
+                            "resolving scaffold directory {}: {e}",
+                            parent.display()
+                        ));
+                    }
+                }
+            }
         };
+        let dir = parent.join(name);
         let req = ScaffoldRequest {
             name: name.to_string(),
             description: args
@@ -2209,6 +2280,36 @@ mod tests {
             ToolExecutionResult::ToolError(m) => assert!(m.contains("contribute"), "{m}"),
             other => panic!("{other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn scaffold_rejects_a_parent_outside_the_workspace() {
+        let workspace = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let (cap, _s, _e) = capability(workspace.path());
+        let tools = cap.management_tools();
+        let scaffold = tools
+            .iter()
+            .find(|t| t.name() == "scaffold_extension")
+            .unwrap();
+
+        match scaffold
+            .execute(json!({
+                "name": "escape",
+                "tools": [{ "name": "echo" }],
+                "dir": outside.path(),
+            }))
+            .await
+        {
+            ToolExecutionResult::ToolError(message) => {
+                assert!(
+                    message.contains("must be inside the workspace"),
+                    "{message}"
+                );
+            }
+            other => panic!("expected containment error, got {other:?}"),
+        }
+        assert!(!outside.path().join("escape").exists());
     }
 
     #[tokio::test]

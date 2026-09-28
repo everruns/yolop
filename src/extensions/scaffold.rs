@@ -17,6 +17,8 @@
 //!   install — the one difference from the zero-build path.
 
 use serde_json::{Value, json};
+use std::fs::{File, OpenOptions};
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 /// A tool contribution to scaffold: the definition the model will see.
@@ -141,23 +143,18 @@ fn validate(req: &ScaffoldRequest) -> Result<(), String> {
     Ok(())
 }
 
-/// Generate the package on disk. Refuses to clobber a non-empty directory so
-/// in-progress edits are never lost.
+/// Generate the package on disk. Every path is created exclusively, so an
+/// existing package or attacker-planted symlink is never followed or clobbered.
 pub fn scaffold(req: &ScaffoldRequest) -> Result<Scaffolded, String> {
     validate(req)?;
-    if req.dir.is_dir()
-        && std::fs::read_dir(&req.dir)
-            .map(|mut d| d.next().is_some())
-            .unwrap_or(false)
-    {
-        return Err(format!(
-            "{} already exists and is not empty; pick a fresh `dir` or remove it",
+    std::fs::create_dir(&req.dir).map_err(|e| {
+        format!(
+            "creating {}: {e}; pick a fresh `dir` or remove it",
             req.dir.display()
-        ));
-    }
+        )
+    })?;
     let bin_dir = req.dir.join("bin");
-    std::fs::create_dir_all(&bin_dir)
-        .map_err(|e| format!("creating {}: {e}", bin_dir.display()))?;
+    std::fs::create_dir(&bin_dir).map_err(|e| format!("creating {}: {e}", bin_dir.display()))?;
 
     let manifest = manifest_json(req);
     let manifest_path = req.dir.join("plugin.json");
@@ -175,8 +172,7 @@ pub fn scaffold(req: &ScaffoldRequest) -> Result<Scaffolded, String> {
                 Language::Node => node_server(req),
                 Language::Rust => unreachable!(),
             };
-            write(&server_path, &source)?;
-            make_executable(&server_path)?;
+            write_executable(&server_path, &source)?;
             files.push(format!("bin/{server_name}"));
             (server_path, None)
         }
@@ -184,7 +180,7 @@ pub fn scaffold(req: &ScaffoldRequest) -> Result<Scaffolded, String> {
             // Compiled: emit a Cargo project. The binary is produced by a build
             // step and dropped into bin/ before install (see `build`).
             let src_dir = req.dir.join("src");
-            std::fs::create_dir_all(&src_dir)
+            std::fs::create_dir(&src_dir)
                 .map_err(|e| format!("creating {}: {e}", src_dir.display()))?;
             let main_rs = src_dir.join("main.rs");
             write(&req.dir.join("Cargo.toml"), &rust_cargo_toml(req))?;
@@ -212,7 +208,10 @@ pub fn scaffold(req: &ScaffoldRequest) -> Result<Scaffolded, String> {
         // A starter skill under skills/<name>/SKILL.md. The host mounts the
         // whole skills/ dir read-only for an enabled, declaring extension.
         let skill_dir = req.dir.join("skills").join(&req.name);
-        std::fs::create_dir_all(&skill_dir)
+        let skills_dir = req.dir.join("skills");
+        std::fs::create_dir(&skills_dir)
+            .map_err(|e| format!("creating {}: {e}", skills_dir.display()))?;
+        std::fs::create_dir(&skill_dir)
             .map_err(|e| format!("creating {}: {e}", skill_dir.display()))?;
         write(&skill_dir.join("SKILL.md"), &starter_skill(req))?;
         files.push(format!("skills/{}/SKILL.md", req.name));
@@ -887,22 +886,41 @@ fn main() {{
 }
 
 fn write(path: &Path, contents: &str) -> Result<(), String> {
-    std::fs::write(path, contents).map_err(|e| format!("writing {}: {e}", path.display()))
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|e| format!("creating {}: {e}", path.display()))?;
+    file.write_all(contents.as_bytes())
+        .map_err(|e| format!("writing {}: {e}", path.display()))
 }
 
 #[cfg(unix)]
-fn make_executable(path: &Path) -> Result<(), String> {
+fn make_executable(file: &File, path: &Path) -> Result<(), String> {
     use std::os::unix::fs::PermissionsExt;
-    let mut perms = std::fs::metadata(path)
+    let mut perms = file
+        .metadata()
         .map_err(|e| format!("stat {}: {e}", path.display()))?
         .permissions();
     perms.set_mode(0o755);
-    std::fs::set_permissions(path, perms).map_err(|e| format!("chmod {}: {e}", path.display()))
+    file.set_permissions(perms)
+        .map_err(|e| format!("chmod {}: {e}", path.display()))
 }
 
 #[cfg(not(unix))]
-fn make_executable(_path: &Path) -> Result<(), String> {
+fn make_executable(_file: &File, _path: &Path) -> Result<(), String> {
     Ok(())
+}
+
+fn write_executable(path: &Path, contents: &str) -> Result<(), String> {
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|e| format!("creating {}: {e}", path.display()))?;
+    file.write_all(contents.as_bytes())
+        .map_err(|e| format!("writing {}: {e}", path.display()))?;
+    make_executable(&file, path)
 }
 
 #[cfg(test)]
@@ -1105,7 +1123,35 @@ mod tests {
         let dir = tmp.path().join("git-guard");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("keep.txt"), "mine").unwrap();
-        assert!(scaffold(&req(dir)).unwrap_err().contains("not empty"));
+        assert!(
+            scaffold(&req(dir))
+                .unwrap_err()
+                .contains("pick a fresh `dir`")
+        );
+    }
+
+    #[test]
+    fn refuses_an_existing_empty_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("git-guard");
+        std::fs::create_dir(&dir).unwrap();
+
+        assert!(scaffold(&req(dir)).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exclusive_write_does_not_follow_a_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let victim = tmp.path().join("victim");
+        let link = tmp.path().join("server");
+        std::fs::write(&victim, "keep me").unwrap();
+        symlink(&victim, &link).unwrap();
+
+        assert!(write_executable(&link, "replacement").is_err());
+        assert_eq!(std::fs::read_to_string(victim).unwrap(), "keep me");
     }
 
     #[test]
