@@ -7,6 +7,8 @@
 use anyhow::{Context, Result, bail};
 use base64::Engine;
 use everruns_core::{ContentPart, ImageContentPart};
+use std::fs::File;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 /// Conservative per-file cap — large enough for screenshots, small enough
@@ -66,7 +68,19 @@ pub fn image_part_from_base64(
 
 /// Read a single image file and return a base64 `ContentPart::Image`.
 pub fn load_image_part(path: &Path) -> Result<ContentPart> {
-    let bytes = std::fs::read(path).with_context(|| format!("read image {}", path.display()))?;
+    let file = File::open(path).with_context(|| format!("open image {}", path.display()))?;
+    if !file
+        .metadata()
+        .with_context(|| format!("inspect image {}", path.display()))?
+        .is_file()
+    {
+        bail!("image {} is not a regular file", path.display());
+    }
+
+    let mut bytes = Vec::new();
+    file.take((MAX_IMAGE_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .with_context(|| format!("read image {}", path.display()))?;
     let media_type = detect_media_type(path, &bytes)?;
     image_part_from_encoded(&bytes, &media_type)
         .with_context(|| format!("image {}", path.display()))
@@ -164,5 +178,25 @@ mod tests {
     fn inline_image_rejects_empty_and_oversized_data() {
         assert!(image_part_from_base64("", "image/png", 20).is_err());
         assert!(image_part_from_base64("ZmFrZQ==", "image/png", 3).is_err());
+    }
+
+    #[test]
+    fn load_image_part_bounds_oversized_file_reads() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("oversized.png");
+        let file = File::create(&path).expect("create oversized image");
+        file.set_len((MAX_IMAGE_BYTES as u64) + 2)
+            .expect("size oversized image");
+
+        let err = load_image_part(&path).expect_err("oversized image should fail");
+        assert!(format!("{err:#}").contains("max"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn load_image_part_rejects_non_regular_file() {
+        let err = load_image_part(Path::new("/dev/zero"))
+            .expect_err("non-regular image source should fail");
+        assert!(err.to_string().contains("not a regular file"));
     }
 }
