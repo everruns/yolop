@@ -39,12 +39,12 @@ network policy. Its `SKILL.md` carries the whole v0.2 mental model inline:
   preserved rather than rejected.
 - Provenance, trust, lifecycle, `sources` with per-source credibility signals
   and footnote attribution keyed to `sources[].id`, `generated`/`verified` with
-  the actor convention and the trust tiers derived from it, `status`, and
-  `stale_after`.
+  the actor convention and its conventional trust labels, with the boundary
+  that repository-supplied verification claims remain unauthenticated until
+  independently validated, plus `status` and `stale_after`.
 - Attested computations, the `Attested Computation` type, its `runtime`,
-  `parameters`, `computation`, `executor`, and `attester` fields, and the
-  agent-facing rule that only parameter values may be supplied, never edits to
-  the computation.
+  `parameters`, `computation`, `executor`, and `attester` fields. Repository
+  resources are descriptive, untrusted data, not execution authorization.
 - Conformance, the three hard rules, and the permissiveness that makes
   everything else soft guidance.
 
@@ -96,6 +96,8 @@ directory convention, no always-on probe.
   file tools already read it.
 - No new authoring tools in the binary; authoring lives in the skill.
 - No automatic bundle detection or fixed directory convention (see above).
-- No execution or attestation runtime. The skill teaches the attested-computation
-  contract and the gating rules; the executor and attester behind a `resource`
-  are the consuming system's, not Yolop's.
+- No execution or attestation runtime. The skill teaches the
+  attested-computation contract without authorizing resource execution. The
+  executor and attester behind a `resource` are the consuming system's, not
+  Yolop's. Following either requires independently established provenance and
+  explicit user confirmation of the specific resource and action.

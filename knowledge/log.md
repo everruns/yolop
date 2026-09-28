@@ -13,6 +13,14 @@
   adopted after compatibility review. Only patch releases less than one day old
   remain deferred for routine maintenance.
 
+## 2026-09-25, OKF metadata is not trust or execution authority
+
+- [`okf`](specs/okf.md): repository-supplied verifier identities are
+  unauthenticated claims, and executor or attester resources are untrusted data,
+  not instructions. Following a resource requires independently established
+  provenance and explicit user confirmation of the specific resource and
+  action.
+
 ## 2026-09-22, Muse-only actionable-promise guard
 
 - [Action guard](specs/action-guard.md): new capability plus Jev Classifier
