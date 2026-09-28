@@ -13,7 +13,13 @@ use anyhow::{Context, Result, anyhow};
 use everruns_provider::model_profiles::get_model_profile;
 use everruns_provider::{DiscoveredModel, DriverRegistry, ProviderConfig};
 use everruns_provider::{DriverId, ProviderEndpoint};
+use futures::StreamExt;
 use std::collections::HashSet;
+
+const MAX_MODELS_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
+const MAX_DISCOVERED_MODELS: usize = 10_000;
+const MAX_MODEL_METADATA_BYTES: usize = 4 * 1024;
+const MAX_MODEL_CAPABILITIES: usize = 64;
 
 /// One model offered by a provider, ready for display: bare id plus
 /// human-readable metadata merged from the provider's API response and the
@@ -77,9 +83,10 @@ pub(crate) async fn discover_provider_models(
             None => None,
         },
     };
-    let Some(mut models) = models else {
+    let Some(models) = models else {
         return Ok(None);
     };
+    let mut models = limit_discovered_models(models);
 
     for model in models.iter_mut() {
         // Gemini's OpenAI-compatible surface reports ids as `models/<id>`;
@@ -100,6 +107,45 @@ pub(crate) async fn discover_provider_models(
             .then_with(|| a.model_id.cmp(&b.model_id))
     });
     Ok(Some(enrich_with_profiles(&target.provider_type, models)))
+}
+
+/// Bound catalogs returned by both drivers and the direct HTTP fallback before
+/// sorting, enriching, or retaining them. Drivers own their HTTP parsing, but
+/// their results still must not amplify an oversized catalog in yolop's cache.
+fn limit_discovered_models(models: Vec<DiscoveredModel>) -> Vec<DiscoveredModel> {
+    models
+        .into_iter()
+        .filter(|model| {
+            model.model_id.len() <= MAX_MODEL_METADATA_BYTES
+                && model
+                    .display_name
+                    .as_ref()
+                    .is_none_or(|value| value.len() <= MAX_MODEL_METADATA_BYTES)
+                && model
+                    .owned_by
+                    .as_ref()
+                    .is_none_or(|value| value.len() <= MAX_MODEL_METADATA_BYTES)
+                && model.capabilities.len() <= MAX_MODEL_CAPABILITIES
+                && model
+                    .capabilities
+                    .iter()
+                    .all(|value| value.len() <= MAX_MODEL_METADATA_BYTES)
+                && model.discovered_profile.as_ref().is_none_or(|profile| {
+                    profile.name.len() <= MAX_MODEL_METADATA_BYTES
+                        && profile.family.len() <= MAX_MODEL_METADATA_BYTES
+                        && profile
+                            .description
+                            .as_ref()
+                            .is_none_or(|value| value.len() <= MAX_MODEL_METADATA_BYTES)
+                        && profile.supported_parameters.len() <= MAX_MODEL_CAPABILITIES
+                        && profile
+                            .supported_parameters
+                            .iter()
+                            .all(|value| value.len() <= MAX_MODEL_METADATA_BYTES)
+                })
+        })
+        .take(MAX_DISCOVERED_MODELS)
+        .collect()
 }
 
 /// Keep only models yolop can actually chat with.
@@ -266,9 +312,22 @@ async fn list_openai_compatible_models(
             response.status()
         ));
     }
-    let parsed: OpenAiCompatibleModelsResponse = response
-        .json()
-        .await
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_MODELS_RESPONSE_BYTES as u64)
+    {
+        return Err(anyhow!("models API at {url} returned too much data"));
+    }
+    let mut body = Vec::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.with_context(|| format!("read models response from {url}"))?;
+        if body.len().saturating_add(chunk.len()) > MAX_MODELS_RESPONSE_BYTES {
+            return Err(anyhow!("models API at {url} returned too much data"));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    let parsed: OpenAiCompatibleModelsResponse = serde_json::from_slice(&body)
         .with_context(|| format!("parse models response from {url}"))?;
     let models = parsed
         .data
@@ -285,6 +344,7 @@ async fn list_openai_compatible_models(
             capabilities: Vec::new(),
             discovered_profile: None,
         })
+        .take(MAX_DISCOVERED_MODELS)
         .collect();
     Ok(Some(models))
 }
@@ -413,6 +473,28 @@ mod tests {
         let kept = retain_chat_models(vec![discovered_with_capabilities("llama3.3", &[])]);
 
         assert_eq!(kept.len(), 1);
+    }
+
+    #[test]
+    fn discovery_limits_catalog_count_and_metadata() {
+        let mut oversized = bare_discovered(&"x".repeat(MAX_MODEL_METADATA_BYTES + 1));
+        oversized.capabilities.clear();
+        let models = std::iter::once(oversized)
+            .chain((0..=MAX_DISCOVERED_MODELS).map(|index| {
+                let mut model = bare_discovered(&format!("model-{index}"));
+                model.capabilities.clear();
+                model
+            }))
+            .collect();
+
+        let limited = limit_discovered_models(models);
+
+        assert_eq!(limited.len(), MAX_DISCOVERED_MODELS);
+        assert!(
+            limited
+                .iter()
+                .all(|model| model.model_id.len() <= MAX_MODEL_METADATA_BYTES)
+        );
     }
 
     #[tokio::test]
