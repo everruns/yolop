@@ -38,6 +38,12 @@
   provenance and explicit user confirmation of the specific resource and
   action.
 
+## 2026-09-25, Worktree storage is private per user
+
+- [Worktrees](specs/worktrees.md): temporary worktrees now live below a
+  UID-scoped, owner-only directory. Yolop validates ownership, permissions, and
+  symlink safety before creating or resuming a checkout.
+
 ## 2026-09-25, Hero demo uses a repository-owned workspace
 
 - [Documentation](specs/documentation.md): the hero recording now creates its
