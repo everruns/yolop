@@ -82,6 +82,12 @@ description is enough for the model to find it.
   file" tool.
 - `forget(id)`, delete one memory by id (preferred) or exact title.
 
+`remember` and `forget` require hard user approval before changing either
+scope. The approval is isolated from shell approval, so approving memory for a
+session does not authorize sandboxed or full-access commands. Non-interactive
+hosts cannot service the prompt and fail closed. `recall` remains read-only and
+does not prompt.
+
 ### Search ranking
 
 Query tokens are matched case-insensitively. A token in a memory's **title**

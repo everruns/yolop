@@ -256,7 +256,7 @@ Full protocol and SDK guide: [docs/extensions.md](docs/extensions.md).
 ## Skills, memory, and hooks
 
 - **Skills** are reusable workflows you invoke by name. Ship them in `.agents/skills/` (repo) or `~/.agents/skills` (global, shared across agents) and they load on demand. Manage packages with `yolop skills`; newly installed skills work immediately.
-- **Memory** is a structured `MEMORY.md` of durable, cross-session memories, managed in natural language ("remember that I prefer terse answers") with `remember`, `recall`, and `forget`. Only titles load each turn; bodies recall on demand.
+- **Memory** is a structured `MEMORY.md` of durable, cross-session memories, managed in natural language ("remember that I prefer terse answers") with `remember`, `recall`, and `forget`. Only titles load each turn; bodies recall on demand, and mutations require explicit approval.
 - **Hooks** run your commands on agent lifecycle events (before a tool runs, after it finishes, on session stop). They live in `hooks.json` under the config dir: [docs/features/hooks.md](docs/features/hooks.md).
 
 ## Reference

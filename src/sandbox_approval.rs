@@ -10,7 +10,24 @@ use tokio::sync::{mpsc, oneshot};
 pub(crate) struct ApprovalRequest {
     pub command: String,
     pub reason: String,
-    pub full_access: bool,
+    pub scope: ApprovalScope,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ApprovalScope {
+    Sandboxed,
+    FullAccess,
+    Memory,
+}
+
+impl ApprovalScope {
+    fn mask(self) -> u8 {
+        match self {
+            Self::Sandboxed => SANDBOX_SCOPE,
+            Self::FullAccess => FULL_ACCESS_SCOPE,
+            Self::Memory => MEMORY_SCOPE,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,6 +51,7 @@ pub(crate) enum ApprovalGate {
 
 const SANDBOX_SCOPE: u8 = 1 << 0;
 const FULL_ACCESS_SCOPE: u8 = 1 << 1;
+const MEMORY_SCOPE: u8 = 1 << 2;
 
 impl ApprovalGate {
     pub(crate) fn deny() -> Arc<Self> {
@@ -59,11 +77,7 @@ impl ApprovalGate {
         else {
             return false;
         };
-        let scope = if request.full_access {
-            FULL_ACCESS_SCOPE
-        } else {
-            SANDBOX_SCOPE
-        };
+        let scope = request.scope.mask();
         if approved_scopes.load(Ordering::Acquire) & scope != 0 {
             return true;
         }
@@ -98,7 +112,7 @@ mod tests {
                 .approve(ApprovalRequest {
                     command: "curl example.com".into(),
                     reason: "network access".into(),
-                    full_access: true,
+                    scope: ApprovalScope::FullAccess,
                 })
                 .await
         );
@@ -115,7 +129,7 @@ mod tests {
             gate.approve(ApprovalRequest {
                 command: "cargo publish".into(),
                 reason: "network access".into(),
-                full_access: true,
+                scope: ApprovalScope::FullAccess,
             })
             .await
         );
@@ -128,7 +142,7 @@ mod tests {
         let first = gate.approve(ApprovalRequest {
             command: "cargo test".into(),
             reason: "run tests".into(),
-            full_access: true,
+            scope: ApprovalScope::FullAccess,
         });
         let respond = async {
             let (_, reply) = rx.recv().await.unwrap();
@@ -141,7 +155,7 @@ mod tests {
             gate.approve(ApprovalRequest {
                 command: "cargo clippy".into(),
                 reason: "run lint".into(),
-                full_access: true,
+                scope: ApprovalScope::FullAccess,
             })
             .await
         );
@@ -154,7 +168,7 @@ mod tests {
         let sandboxed = gate.approve(ApprovalRequest {
             command: "cargo test".into(),
             reason: "untrusted command".into(),
-            full_access: false,
+            scope: ApprovalScope::Sandboxed,
         });
         let respond = async {
             let (_, reply) = rx.recv().await.unwrap();
@@ -166,14 +180,42 @@ mod tests {
         let full_access = gate.approve(ApprovalRequest {
             command: "cargo publish".into(),
             reason: "publish release".into(),
-            full_access: true,
+            scope: ApprovalScope::FullAccess,
         });
         let deny = async {
             let (request, reply) = rx.recv().await.unwrap();
-            assert!(request.full_access);
+            assert_eq!(request.scope, ApprovalScope::FullAccess);
             reply.send(ApprovalDecision::Deny).unwrap();
         };
         let (approved, ()) = tokio::join!(full_access, deny);
+        assert!(!approved);
+    }
+
+    #[tokio::test]
+    async fn memory_session_approval_does_not_grant_shell_access() {
+        let (gate, mut rx) = ApprovalGate::channel();
+        let memory = gate.approve(ApprovalRequest {
+            command: "remember a preference".into(),
+            reason: "update durable memory".into(),
+            scope: ApprovalScope::Memory,
+        });
+        let respond = async {
+            let (_, reply) = rx.recv().await.unwrap();
+            reply.send(ApprovalDecision::ApproveForSession).unwrap();
+        };
+        let (approved, ()) = tokio::join!(memory, respond);
+        assert!(approved);
+
+        let shell = gate.approve(ApprovalRequest {
+            command: "cargo publish".into(),
+            reason: "publish release".into(),
+            scope: ApprovalScope::FullAccess,
+        });
+        let deny = async {
+            let (_, reply) = rx.recv().await.unwrap();
+            reply.send(ApprovalDecision::Deny).unwrap();
+        };
+        let (approved, ()) = tokio::join!(shell, deny);
         assert!(!approved);
     }
 }

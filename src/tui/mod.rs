@@ -2006,10 +2006,12 @@ impl App {
                 author: Author::Tool,
                 text: request.command,
             });
-            let scope = if request.full_access {
-                "danger-full-access"
-            } else {
-                "this command inside the active sandbox"
+            let scope = match request.scope {
+                crate::sandbox_approval::ApprovalScope::FullAccess => "danger-full-access",
+                crate::sandbox_approval::ApprovalScope::Sandboxed => {
+                    "this command inside the active sandbox"
+                }
+                crate::sandbox_approval::ApprovalScope::Memory => "durable memory changes",
             };
             self.push_system(format!(
                 "press y to approve {scope} once, a to approve {scope} for this session, n or Esc to deny"
