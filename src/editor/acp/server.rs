@@ -23,8 +23,8 @@ use std::time::Duration;
 use agent_client_protocol::{Agent, Client, ConnectionTo, Lines, Responder};
 use anyhow::Result;
 use async_trait::async_trait;
+use everruns_core::ContentPart;
 use everruns_core::command::{CommandDescriptor, CommandSource, ExecuteCommandRequest};
-use everruns_core::{ContentPart, ImageContentPart};
 use everruns_core::{InputMessage, ScopedMcpServers};
 use everruns_core::{McpServerTransportType, ScopedMcpServer};
 use everruns_provider::tool_types::{
@@ -46,6 +46,7 @@ use crate::runtime::background_wake::{
 use crate::runtime::{BuiltRuntime, ModelState, RuntimeHandles};
 use crate::session_state::task_completion::{CompletionBudget, GateDecision};
 use crate::session_state::user_ask::{AskOutcome, UserAskStore};
+use crate::tui::input::image_input::{MAX_IMAGE_BYTES, image_part_from_base64};
 
 use super::bridge::{Translator, tool_kind};
 use super::modes;
@@ -1046,7 +1047,8 @@ async fn handle_prompt<F: RuntimeFactory>(
         .session(&session_id)
         .ok_or_else(|| invalid_params("unknown session id"))?;
     let mut prompt = protocol::prompt_text(&params.prompt);
-    let input = prompt_input(&session.model, &params.prompt);
+    let input = prompt_input(&session.model, &params.prompt)
+        .map_err(|err| invalid_params(format!("invalid prompt image: {err}")))?;
 
     // Serialize with any proactive background wake turn (and any other in-flight
     // prompt) so two turns never run for one session at once. Held for the whole
@@ -1641,23 +1643,39 @@ async fn refresh_available_commands(peer: &Arc<Peer>, session: &Arc<Session>) {
     }
 }
 
-fn prompt_input(model: &ModelState, blocks: &[protocol::ContentBlock]) -> InputMessage {
-    model.input_message_with_images(
+fn prompt_input(model: &ModelState, blocks: &[protocol::ContentBlock]) -> Result<InputMessage> {
+    Ok(model.input_message_with_images(
         protocol::prompt_model_text(blocks),
-        prompt_image_parts(blocks),
-    )
+        prompt_image_parts(blocks)?,
+    ))
 }
 
-fn prompt_image_parts(blocks: &[protocol::ContentBlock]) -> Vec<ContentPart> {
-    blocks
-        .iter()
-        .filter_map(|block| match block {
-            protocol::ContentBlock::Image(image) => Some(ContentPart::Image(
-                ImageContentPart::from_base64(image.data.clone(), image.mime_type.clone()),
-            )),
-            _ => None,
-        })
-        .collect()
+fn prompt_image_parts(blocks: &[protocol::ContentBlock]) -> Result<Vec<ContentPart>> {
+    prompt_image_parts_with_limit(blocks, MAX_IMAGE_BYTES)
+}
+
+fn prompt_image_parts_with_limit(
+    blocks: &[protocol::ContentBlock],
+    max_total_bytes: usize,
+) -> Result<Vec<ContentPart>> {
+    let mut total_bytes = 0usize;
+    let mut parts = Vec::new();
+    for block in blocks {
+        let protocol::ContentBlock::Image(image) = block else {
+            continue;
+        };
+        let remaining = max_total_bytes.saturating_sub(total_bytes);
+        let (part, image_bytes) = image_part_from_base64(
+            &image.data,
+            &image.mime_type,
+            remaining.min(MAX_IMAGE_BYTES),
+        )?;
+        total_bytes = total_bytes
+            .checked_add(image_bytes)
+            .ok_or_else(|| anyhow::anyhow!("prompt image size overflow"))?;
+        parts.push(part);
+    }
+    Ok(parts)
 }
 
 /// Drive one prompt turn: stream the runtime's events to the client as
@@ -2187,7 +2205,7 @@ mod tests {
             protocol::ContentBlock::Image(protocol::ImageContent::new("ZmFrZQ==", "image/png")),
         ];
 
-        let parts = prompt_image_parts(&blocks);
+        let parts = prompt_image_parts(&blocks).expect("valid image");
 
         assert_eq!(parts.len(), 1);
         match &parts[0] {
@@ -2206,7 +2224,22 @@ mod tests {
             "hello",
         ))];
 
-        assert!(prompt_image_parts(&blocks).is_empty());
+        assert!(
+            prompt_image_parts(&blocks)
+                .expect("text-only prompt")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn prompt_image_parts_enforce_aggregate_decoded_limit() {
+        let blocks = vec![
+            protocol::ContentBlock::Image(protocol::ImageContent::new("Zm9v", "image/png")),
+            protocol::ContentBlock::Image(protocol::ImageContent::new("YmFy", "image/jpeg")),
+        ];
+
+        let err = prompt_image_parts_with_limit(&blocks, 5).expect_err("images exceed total limit");
+        assert!(err.to_string().contains("max 2"));
     }
     #[test]
     fn translates_http_and_stdio_mcp_servers() {
