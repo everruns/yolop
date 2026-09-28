@@ -96,9 +96,11 @@ def main():
             send({"id": msg_id, "result": {"echoed": args.get("text", "")}})
         elif method == "hook/fire":
             params = msg.get("params") or {}
-            # Block any tool whose args carry {"forbidden": true}; else allow.
+            # Exercise malformed, blocking, and allowing responses.
             args = params.get("args") or {}
-            if args.get("forbidden") is True:
+            if args.get("malformed_hook") is True:
+                send({"id": msg_id, "result": {"block": "true"}})
+            elif args.get("forbidden") is True:
                 send({"id": msg_id, "result": {"block": True,
                                                "reason": "forbidden by echo fixture"}})
             else:

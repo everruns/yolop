@@ -493,6 +493,10 @@ mod spawn_tests {
 
     /// A hook + dynamic-prompt manifest whose server is the same fixture.
     fn hooks_package(python: &str) -> ExtensionPackage {
+        hooks_package_with_on_error(python, "warn")
+    }
+
+    fn hooks_package_with_on_error(python: &str, on_error: &str) -> ExtensionPackage {
         let server = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures/yep_echo_server.py");
         let manifest = parse_manifest(
@@ -506,7 +510,7 @@ mod spawn_tests {
                     "dynamic_prompt": true,
                     "hooks": [
                         { "event": "pre_tool_use", "tool_name_glob": "*",
-                          "timeout_ms": 5000, "on_error": "warn" }
+                          "timeout_ms": 5000, "on_error": on_error }
                     ]
                 }
             })
@@ -568,6 +572,47 @@ mod spawn_tests {
                 assert!(reason.contains("forbidden"), "{reason}");
             }
             other => panic!("expected block, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn malformed_hook_result_honors_block_on_error() {
+        use everruns_core::tool_hooks::PreToolUseDecision;
+        use everruns_provider::{BuiltinTool, ToolCall, ToolDefinition};
+        let Some(python) = python3() else {
+            eprintln!("skipping: python3 not available");
+            return;
+        };
+        let capability = ExtensionCapability::new(
+            hooks_package_with_on_error(&python, "block"),
+            std::env::temp_dir(),
+        );
+        let hooks = capability.pre_tool_use_hooks_with_config(&json!(null));
+        let tool_def = ToolDefinition::Builtin(BuiltinTool {
+            name: "bash".into(),
+            display_name: None,
+            description: "run".into(),
+            parameters: json!({ "type": "object" }),
+            policy: Default::default(),
+            category: None,
+            deferrable: Default::default(),
+            hints: Default::default(),
+            full_parameters: None,
+        });
+        let ctx = everruns_core::tool_context::ToolContext::new(
+            everruns_provider::typed_id::SessionId::new(),
+        );
+        let call = ToolCall {
+            id: "1".into(),
+            name: "bash".into(),
+            arguments: json!({ "malformed_hook": true }),
+        };
+
+        match hooks[0].before_exec(call, &tool_def, &ctx).await {
+            PreToolUseDecision::Block { reason, .. } => {
+                assert!(reason.contains("malformed hook/fire result"), "{reason}");
+            }
+            other => panic!("expected malformed result to fail closed, got {other:?}"),
         }
     }
 
