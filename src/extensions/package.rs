@@ -151,6 +151,24 @@ pub struct ServerSpec {
     pub binaries: Option<String>,
 }
 
+/// Resolve path-shaped server commands from the installed package, never from
+/// the active workspace. Bare commands retain normal `PATH` lookup semantics.
+pub(super) fn resolve_server_command(
+    package_dir: &Path,
+    command: &str,
+) -> std::io::Result<PathBuf> {
+    let path = Path::new(command);
+    if !path.is_absolute() && !command.contains('/') && !command.contains('\\') {
+        return Ok(path.to_path_buf());
+    }
+    let candidate = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        package_dir.join(path)
+    };
+    candidate.canonicalize()
+}
+
 /// A manifest-declared MCP server contribution. Manifest-declared (not
 /// handshake-negotiated) so it is inspectable at install without executing
 /// the binary, and clamped by construction — the approved transport shape
@@ -560,6 +578,26 @@ mod tests {
         assert!(manifest.tools[0].never_defer);
         assert!(manifest.prompt);
         assert_eq!(extension_capability_id(&manifest.name), "ext:echo");
+    }
+
+    #[test]
+    fn relative_server_commands_resolve_from_the_package() {
+        let tmp = tempfile::tempdir().unwrap();
+        let package = tmp.path().join("echo");
+        std::fs::create_dir_all(package.join("bin")).unwrap();
+        std::fs::write(package.join("bin/server"), "fixture").unwrap();
+        assert_eq!(
+            resolve_server_command(&package, "./bin/server").unwrap(),
+            package.join("bin/server")
+        );
+        assert_eq!(
+            resolve_server_command(&package, "yolop-extension-echo").unwrap(),
+            PathBuf::from("yolop-extension-echo")
+        );
+        assert_eq!(
+            resolve_server_command(&package, package.join("bin/server").to_str().unwrap()).unwrap(),
+            package.join("bin/server")
+        );
     }
 
     #[test]

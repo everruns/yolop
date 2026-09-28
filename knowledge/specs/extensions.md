@@ -64,7 +64,10 @@ a self-contained capability server whose only author-editable boundaries are the
 is written, so authoring collapses to filling in handlers. The server is a
 single executable under the package `bin/` (resolved via the `bin/`-on-PATH
 rule the runtime already uses; the exec bit survives the install copy), so no
-absolute paths leak into the manifest. The `python` and `typescript`
+absolute paths leak into the manifest. A path-shaped command is always resolved
+from the installed package directory, while only a bare command uses `PATH`.
+The active workspace is the server's working directory, never an executable
+resolution root. The `python` and `typescript`
 (dependency-free Node.js) templates are single-file and toolchain-free, the
 fastest, most reliable path for yolop to author an extension for itself. The
 `rust` template emits a `serde_json`-only crate (the compiled twin of the same

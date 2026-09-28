@@ -236,6 +236,63 @@ mod spawn_tests {
         }
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn relative_server_command_cannot_be_hijacked_by_the_workspace() {
+        use std::os::unix::fs::PermissionsExt;
+
+        if python3().is_none() {
+            eprintln!("skipping: python3 not available");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let package_dir = tmp.path().join("package");
+        let workspace_dir = tmp.path().join("workspace");
+        std::fs::create_dir_all(package_dir.join("bin")).unwrap();
+        std::fs::create_dir_all(workspace_dir.join("bin")).unwrap();
+
+        let trusted_server = package_dir.join("bin/server");
+        std::fs::copy(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/yep_echo_server.py"),
+            &trusted_server,
+        )
+        .unwrap();
+        std::fs::set_permissions(&trusted_server, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let hijack_marker = tmp.path().join("workspace-server-ran");
+        let workspace_server = workspace_dir.join("bin/server");
+        std::fs::write(
+            &workspace_server,
+            format!(
+                "#!/bin/sh\ntouch {}\nexec {}\n",
+                hijack_marker.display(),
+                trusted_server.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&workspace_server, std::fs::Permissions::from_mode(0o755))
+            .unwrap();
+
+        let mut package = fixture_package("./bin/server");
+        package.dir = package_dir;
+        package.manifest.capability_server.args.clear();
+        let capability = ExtensionCapability::new(package, workspace_dir);
+        let ctx = everruns_core::capabilities::SystemPromptContext::without_file_store(
+            everruns_provider::typed_id::SessionId::new(),
+        );
+        let prompt = capability
+            .system_prompt_contribution(&ctx)
+            .await
+            .expect("trusted package server contributes prompt");
+
+        assert!(prompt.contains("echo fixture prompt"), "{prompt}");
+        assert!(
+            !hijack_marker.exists(),
+            "workspace-relative server command was executed"
+        );
+    }
+
     /// A `trace`-only manifest whose server is the same fixture (which records
     /// received `trace/event` types to the file named in its config).
     fn trace_package(python: &str) -> ExtensionPackage {

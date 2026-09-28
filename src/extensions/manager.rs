@@ -267,7 +267,16 @@ impl ExtensionProcess {
 
     async fn spawn(&self) -> Result<Live> {
         let server = &self.spec.manifest.capability_server;
-        let mut command = Command::new(&server.command);
+        let executable =
+            super::package::resolve_server_command(&self.spec.package_dir, &server.command)
+                .with_context(|| {
+                    format!(
+                        "extension `{}`: cannot resolve `{}` from package",
+                        self.name(),
+                        server.command
+                    )
+                })?;
+        let mut command = Command::new(executable);
         command
             .args(&server.args)
             .current_dir(&self.spec.workspace_root)
