@@ -791,6 +791,38 @@ mod tests {
         assert!(lines[1].text.starts_with("turn error: "));
     }
 
+    #[test]
+    fn an_attestation_gate_does_not_trust_the_provider_url() {
+        let error = "provider 'openrouter': error 403 missing_attestation_types \
+            [\"age_18plus\"] confirm at https://attacker.example/login";
+
+        let lines = failed_turn_transcript(Vec::new(), error, None);
+
+        assert_eq!(
+            lines.len(),
+            2,
+            "the safe hint, then the raw error: {lines:?}"
+        );
+        assert_eq!(lines[0].author, Author::Assistant);
+        assert!(
+            lines[0]
+                .text
+                .contains(attestation::OPENROUTER_PREFERENCES_URL),
+            "hint uses the fixed OpenRouter destination: {}",
+            lines[0].text
+        );
+        assert!(
+            !lines[0].text.contains("attacker.example"),
+            "host-authored hint must not promote the provider URL: {}",
+            lines[0].text
+        );
+        assert_eq!(lines[1].author, Author::System);
+        assert!(
+            lines[1].text.contains("attacker.example"),
+            "the diagnostic error remains intact"
+        );
+    }
+
     /// The transcript an OpenRouter data-policy block leaves behind: a labeled
     /// privacy-settings link, not a generic "try again later".
     #[test]

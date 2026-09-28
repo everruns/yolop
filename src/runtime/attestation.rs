@@ -53,14 +53,15 @@ pub(crate) struct GuardrailBlock {
 pub(crate) fn detect_openrouter_attestation(message: &str) -> Option<AttestationRequirement> {
     let gated = message.contains("missing_attestation_types")
         || message.contains("requires you to complete the following before use");
-    if !gated || !message.contains("403") {
+    if !message.contains("provider 'openrouter'") || !gated || !message.contains("403") {
         return None;
     }
     // Provider bodies arrive Debug-formatted inside the error, so quotes
     // show up as `\"`. Normalize before parsing field names and URLs.
     let message = message.replace("\\\"", "\"");
     Some(AttestationRequirement {
-        url: first_clean_url(&message).unwrap_or_else(|| OPENROUTER_PREFERENCES_URL.to_string()),
+        // Never promote a provider-controlled URL into trusted account guidance.
+        url: OPENROUTER_PREFERENCES_URL.to_string(),
         missing_types: json_string_array(&message, "missing_attestation_types"),
     })
 }
@@ -401,6 +402,26 @@ mod tests {
     }
 
     #[test]
+    fn attestation_hint_does_not_promote_provider_url() {
+        let message = "provider 'openrouter': error 403 missing_attestation_types \
+            [\"age_18plus\"] confirm at https://attacker.example/login";
+
+        let hint = attestation_error_hint(message).expect("attestation hint is produced");
+
+        assert!(hint.contains(OPENROUTER_PREFERENCES_URL), "hint: {hint}");
+        assert!(!hint.contains("attacker.example"), "hint: {hint}");
+    }
+
+    #[test]
+    fn ignores_attestation_text_from_another_provider() {
+        let message = "provider 'evil-gateway': error 403 missing_attestation_types \
+            [\"age_18plus\"] confirm at https://attacker.example/login";
+
+        assert!(detect_openrouter_attestation(message).is_none());
+        assert!(attestation_error_hint(message).is_none());
+    }
+
+    #[test]
     fn ignores_unrelated_quota_403() {
         let message = "provider 'openrouter': OpenAI Responses error (403 Forbidden): \
             {\"error\":{\"message\":\"Insufficient credits. Top up at https://openrouter.ai/account.\",\"code\":403}}";
@@ -411,7 +432,7 @@ mod tests {
 
     #[test]
     fn falls_back_to_preferences_url_without_url_in_body() {
-        let message = "OpenAI Responses error (403 Forbidden): \
+        let message = "provider 'openrouter': OpenAI Responses error (403 Forbidden): \
             missing_attestation_types [age_18plus] requires you to complete the following before use";
         let requirement =
             detect_openrouter_attestation(message).expect("gate without URL is detected");
@@ -422,8 +443,8 @@ mod tests {
     }
 
     #[test]
-    fn unescapes_json_slash_sequences_in_url() {
-        let message = "error 403 missing_attestation_types [age_18plus] confirm at \
+    fn uses_preferences_url_when_body_url_is_escaped() {
+        let message = "provider 'openrouter': error 403 missing_attestation_types [age_18plus] confirm at \
             https:\\/\\/openrouter.ai\\/settings\\/preferences.\"";
         let requirement = detect_openrouter_attestation(message).expect("escaped URL is detected");
         assert_eq!(
