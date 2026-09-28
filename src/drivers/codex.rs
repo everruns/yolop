@@ -236,9 +236,10 @@ fn register_driver_with_url(
     let compaction_policy =
         CompactionCapabilityPolicy::new(NATIVE_COMPACTION_REPROBE_AFTER, Arc::new(Instant::now));
     registry.register_external(CODEX_DRIVER_ID, move |config| {
+        let config_auth_store = settings_backed_auth(&config.metadata).then(|| auth_store.clone());
         Box::new(CodexChatDriver::from_config_with_refresh_gate(
             config,
-            Some(auth_store.clone()),
+            config_auth_store,
             refresh_gate.clone(),
             compaction_policy.clone(),
             responses_url.clone(),
@@ -1524,6 +1525,10 @@ fn metadata_extra_i64(metadata: &ProviderMetadata, key: &str) -> Option<i64> {
         .and_then(Value::as_i64)
 }
 
+fn settings_backed_auth(metadata: &ProviderMetadata) -> bool {
+    metadata_extra_string(metadata, "auth_source").as_deref() == Some("settings")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1601,6 +1606,22 @@ mod tests {
             account_id: Some("acc".to_string()),
             email: Some("user@example.com".to_string()),
         }
+    }
+
+    #[test]
+    fn auth_store_is_only_used_for_settings_credentials() {
+        let settings_metadata = ProviderMetadata {
+            extra: Some(serde_json::json!({ "auth_source": "settings" })),
+            ..ProviderMetadata::default()
+        };
+        let environment_metadata = ProviderMetadata {
+            extra: Some(serde_json::json!({ "auth_source": "environment" })),
+            ..ProviderMetadata::default()
+        };
+
+        assert!(settings_backed_auth(&settings_metadata));
+        assert!(!settings_backed_auth(&environment_metadata));
+        assert!(!settings_backed_auth(&ProviderMetadata::default()));
     }
 
     fn test_driver(responses_url: String) -> CodexChatDriver {
