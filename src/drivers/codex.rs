@@ -817,6 +817,7 @@ enum CodexContentPart {
     },
     InputFile {
         r#type: String,
+        #[serde(flatten)]
         input_file: CodexInputFile,
     },
 }
@@ -2449,9 +2450,11 @@ mod tests {
         let value = serde_json::to_value(&item).unwrap();
         assert_eq!(value["content"][0]["type"], "input_file");
         assert_eq!(
-            value["content"][0]["input_file"]["file_data"],
+            value["content"][0]["file_data"],
             "data:application/pdf;base64,QUJD"
         );
+        assert_eq!(value["content"][0]["filename"], "notes.pdf");
+        assert!(value["content"][0].get("input_file").is_none());
 
         let compact = compact_output_item(&CompactOutputItem::Message {
             role: "user".to_string(),
@@ -2471,6 +2474,13 @@ mod tests {
             parts.first(),
             Some(CodexContentPart::InputFile { .. })
         ));
+        let value = serde_json::to_value(&compact).unwrap();
+        assert_eq!(
+            value["content"][0]["file_data"],
+            "data:application/pdf;base64,QUJD"
+        );
+        assert_eq!(value["content"][0]["filename"], "notes.pdf");
+        assert!(value["content"][0].get("input_file").is_none());
     }
 
     #[test]
