@@ -42,13 +42,6 @@ impl EnvironmentContextRegistry {
             .insert(key.into(), value.into());
     }
 
-    pub(crate) fn remove(&self, key: &str) {
-        self.entries
-            .write()
-            .expect("environment context registry poisoned")
-            .remove(key);
-    }
-
     pub(crate) fn snapshot(&self) -> BTreeMap<String, String> {
         self.entries
             .read()
