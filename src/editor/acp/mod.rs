@@ -72,6 +72,7 @@ pub(crate) fn advertised_auth_methods(setup_page: bool) -> Vec<AuthMethod> {
 /// across every session the client opens.
 struct ConfigRuntimeFactory {
     provider: ProviderChoice,
+    provider_was_explicit: bool,
     settings: Arc<SettingsStore>,
     sessions_dir: PathBuf,
     sandbox_mode_override: Option<SandboxMode>,
@@ -169,6 +170,7 @@ impl RuntimeFactory for ConfigRuntimeFactory {
             self.settings.clone(),
             BuildOptions {
                 client_ui: ClientUiContext::Acp,
+                acp_allow_hosted_provider_fallback: !self.provider_was_explicit,
                 client_mcp_servers,
                 tool_approver,
                 sandbox_mode_override: self.sandbox_mode_override,
@@ -193,6 +195,7 @@ impl RuntimeFactory for ConfigRuntimeFactory {
 /// protocol.
 pub async fn run_stdio(
     provider: ProviderChoice,
+    provider_was_explicit: bool,
     settings: Arc<SettingsStore>,
     sessions_dir: PathBuf,
     sandbox_mode_override: Option<SandboxMode>,
@@ -201,6 +204,7 @@ pub async fn run_stdio(
 ) -> Result<()> {
     let factory = Arc::new(ConfigRuntimeFactory {
         provider,
+        provider_was_explicit,
         setup_page: setup_page.then(|| setup_page::SetupPageService::new(settings.clone())),
         settings,
         sessions_dir,

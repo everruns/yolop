@@ -851,6 +851,7 @@ async fn async_main(crash_reporter: &crash_report::CrashReporter) -> Result<()> 
     let sandbox_mode_override = cli.sandbox.then_some(config::SandboxMode::WorkspaceWrite);
     let effective_sandbox_mode =
         sandbox_mode_override.unwrap_or_else(|| settings.snapshot().sandbox_mode());
+    let provider_was_explicit = cli.provider.is_some();
     let (mut provider, mut notes) = pick_provider(&cli, &settings);
     ensure_provider_is_built_in(&provider)?;
     let snapshot = settings.snapshot();
@@ -894,6 +895,7 @@ async fn async_main(crash_reporter: &crash_report::CrashReporter) -> Result<()> 
         let setup_page = cli.acp_setup_page || settings.snapshot().acp_setup_page_enabled();
         return editor::acp::run_stdio(
             provider,
+            provider_was_explicit,
             settings,
             sessions_dir,
             sandbox_mode_override,

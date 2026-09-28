@@ -1,5 +1,12 @@
 # Knowledge Log
 
+## 2026-09-25, ACP preserves explicit provider trust boundaries
+
+- [ACP](specs/acp.md): an unavailable provider selected with CLI `--provider`
+  falls back only to local `llmsim`. Other connected hosted providers remain
+  available for explicit client selection, but never receive prompts through
+  automatic startup fallback.
+
 ## 2026-09-24, Everruns minor releases no longer wait seven days
 
 - [Maintenance](specs/maintenance.md): minor and major Everruns releases may be

@@ -3492,6 +3492,10 @@ pub struct BuildOptions {
     /// that exercise it). ACP and `--print` leave it `false`.
     pub client_commands: bool,
     pub client_ui: ClientUiContext,
+    /// Whether ACP may replace an unavailable provider with another hosted
+    /// provider. Explicit CLI selections disable this so their trust boundary
+    /// is preserved; local llmsim remains available for session startup.
+    pub acp_allow_hosted_provider_fallback: bool,
     /// MCP servers supplied by the client for this session (ACP `session/new`
     /// `mcpServers`). Merged over the file-based `.mcp.json`/global config, so a
     /// client-configured server wins on a name collision. Empty for hosts that
@@ -3538,6 +3542,7 @@ impl Default for BuildOptions {
             extensions_dir_override: None,
             client_commands: false,
             client_ui: ClientUiContext::None,
+            acp_allow_hosted_provider_fallback: true,
             client_mcp_servers: ScopedMcpServers::new(),
             tool_approver: None,
             provider_stall_timeout: None,
@@ -4554,26 +4559,34 @@ pub async fn build_with_options(
                 Err(err) if matches!(options.client_ui, ClientUiContext::Acp) => {
                     // ACP must return a session before the client can present its
                     // model picker. Never install a disconnected provider as the
-                    // live runtime model: choose another usable provider, with the
-                    // always-local simulator as the final fallback.
-                    let fallback = SUPPORTED_PROVIDERS
-                        .iter()
-                        .filter(|name| **name != active_provider.provider_name())
-                        .filter(|name| {
-                            crate::capabilities::model_discovery::provider_is_usable(
-                                &settings_snapshot,
-                                name,
-                            )
+                    // live runtime model. Saved preferences may choose another
+                    // connected provider, while explicit CLI choices fall back
+                    // only to the always-local simulator.
+                    let fallback = options
+                        .acp_allow_hosted_provider_fallback
+                        .then(|| {
+                            SUPPORTED_PROVIDERS
+                                .iter()
+                                .filter(|name| **name != active_provider.provider_name())
+                                .filter(|name| {
+                                    crate::capabilities::model_discovery::provider_is_usable(
+                                        &settings_snapshot,
+                                        name,
+                                    )
+                                })
+                                .filter_map(|name| {
+                                    resolve_for_settings(name, &settings_snapshot).ok()
+                                })
+                                .filter(|resolved| !resolved.choice.model_id().trim().is_empty())
+                                .find_map(|resolved| {
+                                    resolved
+                                        .choice
+                                        .model_with_provider(&settings_snapshot)
+                                        .ok()
+                                        .map(|model| (resolved.choice, model))
+                                })
                         })
-                        .filter_map(|name| resolve_for_settings(name, &settings_snapshot).ok())
-                        .filter(|resolved| !resolved.choice.model_id().trim().is_empty())
-                        .find_map(|resolved| {
-                            resolved
-                                .choice
-                                .model_with_provider(&settings_snapshot)
-                                .ok()
-                                .map(|model| (resolved.choice, model))
-                        })
+                        .flatten()
                         .unwrap_or_else(|| {
                             let choice = ProviderChoice::Sim;
                             let model = choice
@@ -5285,6 +5298,54 @@ mod tests {
         assert!(
             !options.iter().any(|(_, _, provider)| provider == "codex"),
             "disconnected providers must not be exposed to ACP"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[allow(clippy::await_holding_lock)]
+    async fn acp_explicit_provider_never_falls_back_to_another_hosted_provider() {
+        let _guard = crate::testing::test_env::lock();
+        unsafe {
+            std::env::remove_var("CODEX_ACCESS_TOKEN");
+            std::env::remove_var("OPENAI_API_KEY");
+            std::env::remove_var("ANTHROPIC_API_KEY");
+        }
+
+        let workspace = tempfile::tempdir().expect("workspace");
+        let sessions = tempfile::tempdir().expect("sessions");
+        let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
+        settings
+            .set_token("openai".to_string(), "sk-test".to_string())
+            .expect("store OpenAI token");
+
+        let built = build_with_options(
+            workspace.path().to_path_buf(),
+            ProviderChoice::Codex {
+                model: "gpt-5.5".to_string(),
+                reasoning_effort: None,
+            },
+            None,
+            sessions.path().to_path_buf(),
+            settings,
+            BuildOptions {
+                client_ui: ClientUiContext::Acp,
+                acp_allow_hosted_provider_fallback: false,
+                ..BuildOptions::default()
+            },
+        )
+        .await
+        .expect("ACP must start locally when the explicit provider is unavailable");
+
+        assert!(built.startup.setup_recommended);
+        assert_eq!(built.model.provider_name(), "llmsim");
+        assert!(
+            built
+                .model
+                .model_options()
+                .await
+                .iter()
+                .any(|(id, _, _)| id.starts_with("openai:")),
+            "the connected hosted provider may be offered but must not be selected"
         );
     }
 

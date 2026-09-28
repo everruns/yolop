@@ -64,8 +64,12 @@ Entries whose provider is not currently usable are filtered out, so a stale
 preference is never presented as a connected model, and an option value is
 `provider:model` so selecting one switches both. If the preferred provider is unusable,
 ACP starts with another usable provider and falls back to local `llmsim` when
-none is connected. Session creation therefore never fails only because a saved
-provider lost its credentials, while one-shot print mode remains fail-fast.
+none is connected. An explicit CLI `--provider` is a trust boundary: if that
+provider is unavailable, ACP starts on local `llmsim` rather than silently
+sending prompts to a different hosted provider. The client may still offer
+other connected providers for explicit selection. Session creation therefore
+never fails only because a provider lost its credentials, while one-shot print
+mode remains fail-fast.
 
 Clients change either option with `session/set_config_option`. Yolop validates the selected provider, model, and reasoning effort, applies the change only to that live ACP session, and returns the complete refreshed `configOptions` list. After authentication, a `/setup` command, or a conversational model tool changes provider connectivity or selection, Yolop also pushes ACP's standard `config_option_update` to every affected open session. Invalid option IDs and unsupported values return ACP `InvalidParams`.
 When the process was launched with `--profile`, that profile supplies the
