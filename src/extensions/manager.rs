@@ -222,8 +222,8 @@ impl ExtensionProcess {
     }
 
     /// Fire one subscribed lifecycle hook (`hook/fire`) and return the
-    /// server's decision. `Err` is a transport/server failure the caller
-    /// resolves per the subscription's `on_error` policy.
+    /// server's decision. `Err` is a transport, server, or protocol failure
+    /// the caller resolves per the subscription's `on_error` policy.
     pub async fn fire_hook(
         &self,
         event: &str,
@@ -241,7 +241,7 @@ impl ExtensionProcess {
             args: args.clone(),
         })?;
         let value = connection.request("hook/fire", params).await?;
-        Ok(serde_json::from_value(value).unwrap_or_default())
+        serde_json::from_value(value).context("malformed hook/fire result")
     }
 
     /// Drop the running server (if any) so the next call respawns it from
