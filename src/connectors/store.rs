@@ -108,13 +108,22 @@ pub fn default_connections_path() -> Option<PathBuf> {
 }
 
 fn load_from(path: &Path) -> ConnectionsFile {
-    let Ok(text) = std::fs::read_to_string(path) else {
-        return ConnectionsFile::default();
+    try_load_from(path).unwrap_or_default()
+}
+
+fn try_load_from(path: &Path) -> Result<ConnectionsFile> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(ConnectionsFile::default());
+        }
+        Err(error) => return Err(error).with_context(|| format!("read {}", path.display())),
     };
-    let table: Table = toml::from_str(&text).unwrap_or_default();
+    let table: Table =
+        toml::from_str(&text).with_context(|| format!("parse connections {}", path.display()))?;
     let mut file = ConnectionsFile::from_table(&table);
     file.fingerprint = file_fingerprint(path);
-    file
+    Ok(file)
 }
 
 fn save_to(path: &Path, file: &ConnectionsFile) -> Result<()> {
@@ -180,22 +189,29 @@ impl ConnectionStore {
     /// Must be called with the lock held, before every read and every
     /// read-modify-write, so writers never clobber an external change they
     /// did not see.
-    fn refresh_locked(&self, guard: &mut MutexGuard<ConnectionsFile>) {
+    fn refresh_locked(&self, guard: &mut MutexGuard<ConnectionsFile>) -> Result<()> {
         let fingerprint = file_fingerprint(&self.path);
         if fingerprint == guard.fingerprint {
-            return;
+            return Ok(());
         }
-        let fresh = load_from(&self.path);
+        let fresh = try_load_from(&self.path)?;
         guard.connections = fresh.connections;
         guard.fingerprint = file_fingerprint(&self.path);
+        Ok(())
     }
 
-    /// Lock the state and refresh it from disk first: the single entry point
-    /// for reads (hot reload) and for mutations (read before write).
+    /// Lock the state and refresh it from disk for a read. A failed refresh
+    /// leaves the last known-good state available.
     fn lock_fresh(&self) -> MutexGuard<'_, ConnectionsFile> {
         let mut guard = self.inner.lock().expect("connections lock poisoned");
-        self.refresh_locked(&mut guard);
+        let _ = self.refresh_locked(&mut guard);
         guard
+    }
+
+    fn lock_fresh_for_update(&self) -> Result<MutexGuard<'_, ConnectionsFile>> {
+        let mut guard = self.inner.lock().expect("connections lock poisoned");
+        self.refresh_locked(&mut guard)?;
+        Ok(guard)
     }
 
     /// Persist the map and record the new fingerprint so our own write does
@@ -229,13 +245,13 @@ impl ConnectionStore {
     }
 
     pub fn save(&self, provider: &str, connection: StoredConnection) -> Result<()> {
-        let mut guard = self.lock_fresh();
+        let mut guard = self.lock_fresh_for_update()?;
         guard.connections.insert(provider.to_string(), connection);
         self.persist_locked(&mut guard)
     }
 
     pub fn clear(&self, provider: &str) -> Result<bool> {
-        let mut guard = self.lock_fresh();
+        let mut guard = self.lock_fresh_for_update()?;
         let existed = guard.connections.remove(provider).is_some();
         self.persist_locked(&mut guard)?;
         Ok(existed)
@@ -306,6 +322,28 @@ mod tests {
         assert_eq!(
             first.get("openai").map(|c| c.fields["key"].clone()),
             Some("second".to_string())
+        );
+    }
+
+    #[test]
+    fn malformed_hot_reload_retains_connections_and_blocks_writes() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let path = tmp.path().join("connections.toml");
+        let store = ConnectionStore::open(path.clone());
+        store.save("openai", entry("first")).expect("seed");
+
+        std::fs::write(&path, "this = is = not = toml").expect("write malformed connections");
+
+        assert_eq!(
+            store
+                .get("openai")
+                .map(|connection| connection.fields["key"].clone()),
+            Some("first".to_string())
+        );
+        assert!(store.save("github", entry("second")).is_err());
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read malformed connections"),
+            "this = is = not = toml"
         );
     }
 
