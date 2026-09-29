@@ -4435,6 +4435,7 @@ pub async fn build_with_options(
                 .join(".yolop/memories.json"),
         )),
         reveals: tool_reveals.clone(),
+        approval_gate: sandbox_approval_gate.clone(),
     });
     // `yolop` is registered at session setup with the routes actually present,
     // so there is exactly one prompt block (framing plus administration).

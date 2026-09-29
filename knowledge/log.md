@@ -6,6 +6,11 @@
   falls back only to local `llmsim`. Other connected hosted providers remain
   available for explicit client selection, but never receive prompts through
   automatic startup fallback.
+## 2026-09-25, Durable memory writes require hard approval
+
+- [Memory](specs/memory.md): `remember` and `forget` now require a dedicated
+  hard-approval scope. Headless hosts fail closed, and session approval for
+  memory does not authorize shell execution.
 
 ## 2026-09-24, Everruns minor releases no longer wait seven days
 

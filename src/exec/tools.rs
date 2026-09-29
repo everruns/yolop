@@ -11,7 +11,7 @@ use crate::config::{ApprovalPolicy, SandboxMode};
 use crate::exec::sandbox::SandboxProvider;
 use crate::exec::shell_policy::command_can_signal_yolop;
 use crate::exec::workspace_host::WorkspaceHost;
-use crate::sandbox_approval::{ApprovalGate, ApprovalRequest};
+use crate::sandbox_approval::{ApprovalGate, ApprovalRequest, ApprovalScope};
 use async_trait::async_trait;
 use everruns_core::exec_tool_result::ExecToolResultPayload;
 use everruns_core::tool_narration::ToolNarrationPhase;
@@ -287,7 +287,11 @@ impl BashTool {
         let request = ApprovalRequest {
             command: command.to_string(),
             reason,
-            full_access,
+            scope: if full_access {
+                ApprovalScope::FullAccess
+            } else {
+                ApprovalScope::Sandboxed
+            },
         };
         if self.approval_gate.approve(request).await {
             Ok(())
@@ -819,7 +823,7 @@ mod tests {
         }));
         let approve = async move {
             let (request, reply) = approvals.recv().await.unwrap();
-            assert!(request.full_access);
+            assert_eq!(request.scope, ApprovalScope::FullAccess);
             assert_eq!(request.reason, "write the requested result");
             reply
                 .send(crate::sandbox_approval::ApprovalDecision::ApproveOnce)

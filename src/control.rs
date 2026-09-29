@@ -672,7 +672,7 @@ async fn invoke_attached_inner(
                 reason:
                     "Yolop administration writes or executes outside the arbitrary-shell sandbox"
                         .to_string(),
-                full_access: false,
+                scope: crate::sandbox_approval::ApprovalScope::Sandboxed,
             })
             .await
         {

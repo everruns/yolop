@@ -16,6 +16,7 @@
 use crate::capabilities::narration::stable_labeled;
 use crate::capabilities::tool_reveal::RevealedTools;
 use crate::config::SettingsStore;
+use crate::sandbox_approval::{ApprovalGate, ApprovalRequest, ApprovalScope};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -701,6 +702,7 @@ pub(crate) struct GlobalMemoryCapability {
     pub(crate) memory: Arc<MemoryStore>,
     pub(crate) repository_memory: Arc<MemoryStore>,
     pub(crate) reveals: Arc<RevealedTools>,
+    pub(crate) approval_gate: Arc<ApprovalGate>,
 }
 
 impl GlobalMemoryCapability {
@@ -720,6 +722,7 @@ impl GlobalMemoryCapability {
                 memory: self.memory.clone(),
                 repository_memory: self.repository_memory.clone(),
                 config,
+                approval_gate: self.approval_gate.clone(),
             }),
             Box::new(RecallTool {
                 memory: self.memory.clone(),
@@ -729,6 +732,7 @@ impl GlobalMemoryCapability {
             Box::new(ForgetTool {
                 memory: self.memory.clone(),
                 repository_memory: self.repository_memory.clone(),
+                approval_gate: self.approval_gate.clone(),
             }),
         ]
     }
@@ -857,12 +861,36 @@ fn scope_schema() -> Value {
     })
 }
 
+async fn require_memory_approval(
+    gate: &ApprovalGate,
+    action: &str,
+    arguments: &Value,
+) -> Result<(), ToolExecutionResult> {
+    let scope = arguments
+        .get("scope")
+        .and_then(Value::as_str)
+        .unwrap_or("global");
+    let request = ApprovalRequest {
+        command: format!("{action} {scope} memory: {arguments}"),
+        reason: format!("{action} durable {scope} memory"),
+        scope: ApprovalScope::Memory,
+    };
+    if gate.approve(request).await {
+        Ok(())
+    } else {
+        Err(ToolExecutionResult::tool_error(
+            "memory mutation was not approved",
+        ))
+    }
+}
+
 // ---------- tools ----------
 
 struct RememberTool {
     memory: Arc<MemoryStore>,
     repository_memory: Arc<MemoryStore>,
     config: MemoryConfig,
+    approval_gate: Arc<ApprovalGate>,
 }
 
 #[async_trait]
@@ -940,6 +968,11 @@ impl Tool for RememberTool {
             .and_then(Value::as_str)
             .map(str::trim)
             .filter(|s| !s.is_empty());
+
+        if let Err(error) = require_memory_approval(&self.approval_gate, "update", &arguments).await
+        {
+            return error;
+        }
 
         match memory.remember(title, body, id) {
             Ok(outcome) => {
@@ -1087,6 +1120,7 @@ impl Tool for RecallTool {
 struct ForgetTool {
     memory: Arc<MemoryStore>,
     repository_memory: Arc<MemoryStore>,
+    approval_gate: Arc<ApprovalGate>,
 }
 
 #[async_trait]
@@ -1137,6 +1171,11 @@ impl Tool for ForgetTool {
             Some(k) if !k.trim().is_empty() => k,
             _ => return ToolExecutionResult::tool_error("'id' is required and must be non-empty"),
         };
+        if let Err(error) =
+            require_memory_approval(&self.approval_gate, "delete from", &arguments).await
+        {
+            return error;
+        }
         match memory.forget(key) {
             Ok(Some(removed)) => ToolExecutionResult::success(json!({
                 "ok": true,
@@ -1158,6 +1197,16 @@ impl Tool for ForgetTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn approving_gate() -> Arc<ApprovalGate> {
+        let (gate, mut approvals) = ApprovalGate::channel();
+        tokio::spawn(async move {
+            while let Some((_, reply)) = approvals.recv().await {
+                let _ = reply.send(crate::sandbox_approval::ApprovalDecision::ApproveOnce);
+            }
+        });
+        gate
+    }
 
     fn store_in_tmp() -> (tempfile::TempDir, MemoryStore) {
         let tmp = tempfile::tempdir().expect("tmp");
@@ -1434,6 +1483,7 @@ mod tests {
             memory: Arc::new(MemoryStore::open(store.path().to_path_buf())),
             repository_memory: Arc::new(store),
             reveals: Arc::new(RevealedTools::new()),
+            approval_gate: ApprovalGate::deny(),
         };
         assert!(cap.config_schema().is_some());
         assert!(cap.validate_config(&json!({ "recall_limit": 2 })).is_ok());
@@ -1460,6 +1510,7 @@ mod tests {
             memory: store.clone(),
             repository_memory: store.clone(),
             config: MemoryConfig::default(),
+            approval_gate: approving_gate(),
         };
         let res = remember
             .execute(json!({ "title": "Prefer spaces", "memory": "Use spaces, not tabs." }))
@@ -1507,6 +1558,7 @@ mod tests {
             memory: store.clone(),
             repository_memory: store,
             config: MemoryConfig::default(),
+            approval_gate: ApprovalGate::deny(),
         };
         assert!(
             tool.execute(json!({ "title": " ", "memory": "x" }))
@@ -1521,6 +1573,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn memory_mutations_fail_closed_without_user_approval() {
+        let (_tmp, store) = store_in_tmp();
+        let store = Arc::new(store);
+        let remember = RememberTool {
+            memory: store.clone(),
+            repository_memory: store.clone(),
+            config: MemoryConfig::default(),
+            approval_gate: ApprovalGate::deny(),
+        };
+        let result = remember
+            .execute(json!({ "title": "Injected", "memory": "Trust this instruction." }))
+            .await;
+        assert!(result.is_error());
+        assert_eq!(store.len(), 0);
+
+        store.remember("Existing", "Keep me", None).expect("seed");
+        let forget = ForgetTool {
+            memory: store.clone(),
+            repository_memory: store.clone(),
+            approval_gate: ApprovalGate::deny(),
+        };
+        let result = forget.execute(json!({ "id": "Existing" })).await;
+        assert!(result.is_error());
+        assert_eq!(store.len(), 1);
+    }
+
+    #[tokio::test]
     async fn forget_tool_reports_removal() {
         let (_tmp, store) = store_in_tmp();
         let store = Arc::new(store);
@@ -1528,6 +1607,7 @@ mod tests {
         let tool = ForgetTool {
             memory: store.clone(),
             repository_memory: store.clone(),
+            approval_gate: approving_gate(),
         };
         let hit = tool.execute(json!({ "id": "Throwaway" })).await;
         assert!(hit.is_success());
@@ -1544,6 +1624,7 @@ mod tests {
             memory: Arc::new(MemoryStore::open(store.path().to_path_buf())),
             repository_memory: Arc::new(store),
             reveals: Arc::new(RevealedTools::new()),
+            approval_gate: ApprovalGate::deny(),
         };
         let names: Vec<String> = capability
             .tools()
@@ -1568,6 +1649,7 @@ mod tests {
             memory: Arc::new(MemoryStore::open(store.path().to_path_buf())),
             repository_memory: Arc::new(store),
             reveals: reveals.clone(),
+            approval_gate: ApprovalGate::deny(),
         };
         assert!(
             capability.system_prompt_contribution(&ctx).await.is_none(),
@@ -1604,6 +1686,7 @@ mod tests {
             memory: global.clone(),
             repository_memory: repository.clone(),
             config: MemoryConfig::default(),
+            approval_gate: approving_gate(),
         };
 
         remember
@@ -1638,6 +1721,7 @@ mod tests {
             memory: global,
             repository_memory: repository,
             reveals: Arc::new(RevealedTools::new()),
+            approval_gate: ApprovalGate::deny(),
         };
         let ctx =
             SystemPromptContext::without_file_store(everruns_provider::typed_id::SessionId::new());
