@@ -39,6 +39,8 @@ use crate::runtime::SUPPORTED_PROVIDERS;
 const PAGE_PATH: &str = "/setup";
 /// How long an unused page stays open before the listener is dropped.
 const PAGE_LIFETIME: Duration = Duration::from_secs(10 * 60);
+/// Keep one idle peer from monopolizing the serial loopback request handler.
+const CONNECTION_TIMEOUT: Duration = Duration::from_secs(2);
 /// Cap on a single request. The form is a handful of short fields; anything
 /// larger is a client bug or an attempt to grow the process, not a submission.
 const MAX_REQUEST_BYTES: usize = 32 * 1024;
@@ -154,12 +156,21 @@ async fn serve_until_saved(
             .accept()
             .await
             .context("accept a yolop setup page request")?;
-        match handle_connection(&mut socket, &token, &settings).await {
-            Ok(Some(summary)) => return Ok(summary),
+        match tokio::time::timeout(
+            CONNECTION_TIMEOUT,
+            handle_connection(&mut socket, &token, &settings),
+        )
+        .await
+        {
+            Ok(Ok(Some(summary))) => return Ok(summary),
             // A rejected or re-rendered request leaves the page open.
-            Ok(None) => continue,
-            Err(err) => {
+            Ok(Ok(None)) => continue,
+            Ok(Err(err)) => {
                 tracing::debug!(%err, "acp: setup page request failed");
+                continue;
+            }
+            Err(_) => {
+                tracing::debug!("acp: setup page request timed out");
                 continue;
             }
         }
@@ -677,5 +688,35 @@ mod tests {
             "setup: provider=openai"
         );
         assert_eq!(store.snapshot().token_for("openai"), Some("sk-page-test"));
+    }
+
+    #[tokio::test]
+    async fn idle_peer_does_not_block_a_valid_setup_request() {
+        let (_dir, store) = store();
+        let service = SetupPageService::new(store);
+        let url = service.url().await.expect("start the page");
+        let address = url
+            .strip_prefix("http://")
+            .and_then(|rest| rest.split('/').next())
+            .expect("listener address");
+
+        let mut idle = TcpStream::connect(address)
+            .await
+            .expect("connect idle peer");
+        idle.write_all(b"G").await.expect("start partial request");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .expect("http client");
+        let response = tokio::time::timeout(
+            CONNECTION_TIMEOUT + Duration::from_secs(1),
+            client.get(url).send(),
+        )
+        .await
+        .expect("valid request was blocked by idle peer")
+        .expect("send valid request");
+
+        assert_eq!(response.status(), 200);
     }
 }
