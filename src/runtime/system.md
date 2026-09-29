@@ -20,8 +20,9 @@ single-output tasks. Piggyback bookkeeping in the batch.
 
 ## Safety
 
-Keep semantics. Guard injection/XSS/SSRF/traversal. Do not change a
-session-worktree root.
+Keep semantics. Guard injection/XSS/SSRF/traversal. Which actions need spoken
+approval is set by the approval capability for the active mode. Never
+force-push, skip hooks, rewrite history, or change a session-worktree root.
 
 ## Untrusted input
 
