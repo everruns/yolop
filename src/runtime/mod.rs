@@ -4659,8 +4659,10 @@ pub async fn build_with_options(
 
     // Seed harness/agent/session explicitly so Yolop can attach harness
     // metadata that Everruns forwards to LLM calls and observability.
-    let session_title = read_session_workspace_metadata(&session_dir)?
-        .and_then(|metadata| metadata.title)
+    let session_title =
+        read_session_workspace_metadata(&session_dir)?.and_then(|metadata| metadata.title);
+    let runtime_session_title = session_title
+        .clone()
         .unwrap_or_else(|| format!("yolop @ {}", effective_root.display()));
     // Enabled extensions live at the session layer, not the harness layer.
     // That makes the runtime's activate/deactivate overlay genuinely
@@ -4715,7 +4717,7 @@ pub async fn build_with_options(
     let session_builder = SessionBuilder::new(harness_id)
         .agent(agent_id)
         .id(session_id)
-        .title(session_title)
+        .title(runtime_session_title)
         .capabilities(session_extension_capabilities)
         .mcp_servers(session_mcp_servers)
         .tag("example")
@@ -4784,7 +4786,7 @@ pub async fn build_with_options(
     )
     .await;
 
-    herdr.start_monitor(session_id, event_bus_typed.subscribe());
+    herdr.start_monitor(session_id, session_title, event_bus_typed.subscribe());
 
     // Start agentic-trace forwarding for each enabled `trace` extension: one
     // task per extension consuming its own subscription, filtered to this
