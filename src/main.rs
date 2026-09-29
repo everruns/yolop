@@ -1584,6 +1584,10 @@ fn detached_cli_registry() -> Result<control::CliRegistry> {
         settings: settings.clone(),
         catalog: Arc::new(catalog),
         model_list: model_list.clone(),
+        hooks_store: Arc::new(config::hooks::HooksStore::beside_settings(
+            &settings,
+            workspace.clone(),
+        )),
     }))?;
     registry.register(Arc::new(capabilities::ProfilesCapability::new(
         settings.clone(),

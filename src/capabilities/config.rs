@@ -15,7 +15,7 @@ use crate::config::capability_settings::{
 use crate::config::hooks::{HookScope, HooksStore};
 use crate::config::schema::{KeyTarget, ValueKind, known_keys, parse_key, schema};
 use crate::config::service::{ConfigService, current_value, scoped_current};
-use crate::config::{ApprovalMode, Settings, SettingsStore, default_settings_path};
+use crate::config::{ApprovalMode, Settings, SettingsStore};
 use crate::control::{
     CliCapability, ControlCapability, ControlRequest, ControlResponse, ControlRoute,
 };
@@ -213,6 +213,7 @@ pub(crate) struct ConfigCapability {
     pub(crate) settings: Arc<SettingsStore>,
     pub(crate) catalog: Arc<CapabilityCatalog>,
     pub(crate) model_list: Arc<ModelListCapability>,
+    pub(crate) hooks_store: Arc<HooksStore>,
 }
 
 #[async_trait]
@@ -224,9 +225,11 @@ impl ControlCapability for ConfigCapability {
     async fn execute_control(&self, action: &Value) -> ToolExecutionResult {
         if let Some(value) = action.get("hooks") {
             return match serde_json::from_value::<HooksCommand>(value.clone()) {
-                Ok(command) => execute_hooks_cli(command).unwrap_or_else(|error| {
-                    ToolExecutionResult::tool_error(format!("manage hooks: {error:#}"))
-                }),
+                Ok(command) => {
+                    execute_hooks_cli(&self.hooks_store, command).unwrap_or_else(|error| {
+                        ToolExecutionResult::tool_error(format!("manage hooks: {error:#}"))
+                    })
+                }
                 Err(error) => {
                     ToolExecutionResult::tool_error(format!("invalid hooks action: {error}"))
                 }
@@ -268,7 +271,7 @@ impl CliCapability for ConfigCapability {
     async fn execute_cli(&self, request: &ControlRequest) -> anyhow::Result<()> {
         if let Some(value) = request.action.get("hooks") {
             let command: HooksCommand = serde_json::from_value(value.clone())?;
-            let result = execute_hooks_cli(command)?;
+            let result = execute_hooks_cli(&self.hooks_store, command)?;
             println!("{}", tool_result_json(result));
             return Ok(());
         }
@@ -1042,11 +1045,10 @@ fn tool_result_json(result: ToolExecutionResult) -> String {
     }
 }
 
-fn execute_hooks_cli(command: HooksCommand) -> anyhow::Result<ToolExecutionResult> {
-    let settings_path =
-        default_settings_path().unwrap_or_else(|| std::path::PathBuf::from("settings.toml"));
-    let workspace_root = std::env::current_dir()?;
-    let store = HooksStore::new(settings_path.with_file_name("hooks.json"), workspace_root);
+fn execute_hooks_cli(
+    store: &HooksStore,
+    command: HooksCommand,
+) -> anyhow::Result<ToolExecutionResult> {
     let value = match command {
         HooksCommand::List => serde_json::json!({ "hooks": store.effective().summaries() }),
         HooksCommand::Get { id, scope } => {
@@ -1202,24 +1204,31 @@ mod tests {
     #[tokio::test]
     async fn attached_hooks_action_executes_on_the_config_host() {
         let (_tmp, settings) = store();
+        let workspace = _tmp.path().join("active-workspace");
         let model_list = Arc::new(ModelListCapability::new(settings.clone(), None));
         let capability = ConfigCapability {
+            hooks_store: Arc::new(HooksStore::beside_settings(&settings, workspace.clone())),
             settings,
             catalog: catalog(),
             model_list,
         };
 
-        let request = cli_request(&["config", "hooks", "list"]);
+        let request = cli_request(&[
+            "config",
+            "hooks",
+            "set",
+            "sample",
+            "pre_tool_use",
+            "--command",
+            "true",
+            "--scope",
+            "workspace",
+        ]);
         let response =
             ControlResponse::from_tool_result(capability.execute_control(&request.action).await);
 
         assert!(response.ok, "attached hooks action: {response:?}");
-        assert!(
-            response
-                .value
-                .and_then(|value| value.get("hooks").cloned())
-                .is_some()
-        );
+        assert!(workspace.join(".agents/hooks.json").is_file());
     }
 
     #[test]
@@ -1274,6 +1283,7 @@ mod tests {
         let (_tmp, settings) = store();
         let capability = ConfigCapability {
             model_list: Arc::new(ModelListCapability::new(settings.clone(), None)),
+            hooks_store: Arc::new(HooksStore::beside_settings(&settings, _tmp.path().into())),
             settings,
             catalog: catalog(),
         };

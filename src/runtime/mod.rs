@@ -4526,6 +4526,7 @@ pub async fn build_with_options(
         settings: settings.clone(),
         catalog: Arc::new(catalog),
         model_list: model_list.clone(),
+        hooks_store,
     });
     session_control_registry.replace(config_capability.clone())?;
     capabilities.register_arc(config_capability);
