@@ -27,7 +27,7 @@ main checkout stays untouched.
 
 ### Layout
 
-- Worktrees live **outside** the repository: `$TMPDIR/yolop/worktrees/<repo-id>/<session-id>/`, falling back to `~/.yolop/worktrees/...` when tmp is unavailable.
+- Worktrees live **outside** the repository: `$TMPDIR/yolop-<uid>/worktrees/<repo-id>/<session-id>/` on Unix, falling back to `~/.yolop/worktrees/...` when tmp is unavailable. Yolop creates and verifies the managed hierarchy as owner-only storage before placing a checkout in it.
 - Branches are named `<slug>-<id>` (e.g. `fix-auth-a1b2c3d4`), branched from `origin/main` when available.
 - Session metadata in `workspace.json` records `repo_root`, `active_root`, and worktree fields for resume.
 

@@ -206,9 +206,10 @@ impl WorktreeManager {
             .or(self.repo_root.as_ref())
             .context("resume worktree metadata missing repo_root")?;
 
-        let info = if worktree.path.exists() && worktree_contains_path(repo_root, &worktree.path) {
+        let safe_path = safe_saved_worktree_path(repo_root, &worktree.path)?;
+        let info = if safe_path.exists() && worktree_contains_path(repo_root, &safe_path) {
             WorktreeInfo {
-                path: worktree.path.clone(),
+                path: safe_path,
                 branch: worktree.branch.clone(),
                 base_ref: worktree.base_ref.clone(),
                 slug: worktree.slug.clone(),
@@ -346,27 +347,125 @@ pub fn repo_id(repo_root: &Path) -> String {
     format!("{:08x}", hasher.finish())
 }
 
-pub fn worktree_parent_dir(repo_id: &str) -> PathBuf {
+pub fn worktree_parent_dir(repo_id: &str) -> Result<PathBuf> {
     let tmp_base = std::env::var_os("TMPDIR")
         .map(PathBuf::from)
-        .or_else(|| Some(PathBuf::from("/tmp")))
-        .unwrap();
-    let tmp_candidate = tmp_base.join("yolop").join("worktrees").join(repo_id);
-    if std::fs::create_dir_all(&tmp_candidate).is_ok() {
-        return tmp_candidate;
+        .unwrap_or_else(|| PathBuf::from("/tmp"));
+    let tmp_private_root = tmp_base.join(private_tmp_dir_name());
+    let tmp_candidate = tmp_private_root.join("worktrees");
+    if ensure_private_dir(&tmp_private_root).is_ok() && ensure_private_dir(&tmp_candidate).is_ok() {
+        let repo_dir = tmp_candidate.join(repo_id);
+        ensure_private_dir(&repo_dir)?;
+        return Ok(repo_dir);
     }
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".yolop")
-        .join("worktrees")
-        .join(repo_id)
+
+    let home = dirs::home_dir().context("no safe worktree storage directory is available")?;
+    let yolop_dir = home.join(".yolop");
+    ensure_private_dir(&yolop_dir)?;
+    let worktrees_dir = yolop_dir.join("worktrees");
+    ensure_private_dir(&worktrees_dir)?;
+    let fallback = worktrees_dir.join(repo_id);
+    ensure_private_dir(&fallback)?;
+    Ok(fallback)
 }
 
 pub fn worktree_path(repo_root: &Path, session_id: &str) -> Result<PathBuf> {
-    let parent = worktree_parent_dir(&repo_id(repo_root));
-    std::fs::create_dir_all(&parent)
-        .with_context(|| format!("create worktree parent {}", parent.display()))?;
+    let parent = worktree_parent_dir(&repo_id(repo_root))?;
     Ok(parent.join(session_id))
+}
+
+#[cfg(unix)]
+fn private_tmp_dir_name() -> String {
+    // SAFETY: geteuid has no preconditions and cannot modify process state.
+    format!("yolop-{}", unsafe { libc::geteuid() })
+}
+
+#[cfg(not(unix))]
+fn private_tmp_dir_name() -> String {
+    "yolop".to_string()
+}
+
+/// Create a directory hierarchy that only the current OS user can traverse.
+///
+/// Existing ancestors are rejected when they are symlinks, unexpectedly owned,
+/// or writable by another user. The one exception is a root-owned sticky
+/// directory such as `/tmp`, where Unix prevents replacing another user's
+/// newly-created entry. Once the per-user root exists with mode 0700, only its
+/// owner can race descendant creation or replacement.
+#[cfg(unix)]
+fn ensure_private_dir(path: &Path) -> Result<()> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    // SAFETY: geteuid has no preconditions and cannot modify process state.
+    let uid = unsafe { libc::geteuid() };
+    let mut current = PathBuf::new();
+    for component in absolute.components() {
+        current.push(component.as_os_str());
+        if current == Path::new("/") {
+            continue;
+        }
+        match std::fs::symlink_metadata(&current) {
+            Ok(metadata) => {
+                bail_if_unsafe_ancestor(&current, &metadata, uid)?;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                std::fs::DirBuilder::new()
+                    .mode(0o700)
+                    .create(&current)
+                    .with_context(|| format!("create private directory {}", current.display()))?;
+                let metadata = std::fs::symlink_metadata(&current)?;
+                if metadata.file_type().is_symlink() || !metadata.is_dir() || metadata.uid() != uid
+                {
+                    bail!("unsafe worktree directory {}", current.display());
+                }
+            }
+            Err(error) => {
+                return Err(error).with_context(|| format!("inspect {}", current.display()));
+            }
+        }
+    }
+    std::fs::set_permissions(&absolute, std::fs::Permissions::from_mode(0o700))
+        .with_context(|| format!("secure worktree directory {}", absolute.display()))?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn bail_if_unsafe_ancestor(path: &Path, metadata: &std::fs::Metadata, uid: u32) -> Result<()> {
+    use std::os::unix::fs::MetadataExt;
+
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        bail!(
+            "worktree storage ancestor {} is not a real directory",
+            path.display()
+        );
+    }
+    let mode = metadata.mode();
+    let owned = metadata.uid() == uid;
+    let safe_system_dir = metadata.uid() == 0 && (mode & 0o022 == 0 || mode & 0o1000 != 0);
+    if !owned && !safe_system_dir {
+        bail!(
+            "worktree storage ancestor {} is not safely owned",
+            path.display()
+        );
+    }
+    if mode & 0o022 != 0 && !(metadata.uid() == 0 && mode & 0o1000 != 0) {
+        bail!(
+            "worktree storage ancestor {} is writable by another user",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn ensure_private_dir(path: &Path) -> Result<()> {
+    std::fs::create_dir_all(path)
+        .with_context(|| format!("create worktree directory {}", path.display()))
 }
 
 fn resolve_base_ref(repo_root: &Path) -> String {
@@ -526,10 +625,26 @@ fn copy_worktree_includes(repo_root: &Path, worktree_path: &Path) {
 }
 
 fn recreate_worktree(repo_root: &Path, saved: &WorktreeMetadata) -> Result<WorktreeInfo> {
-    let path = saved.path.clone();
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("create worktree parent {}", parent.display()))?;
+    let path = safe_saved_worktree_path(repo_root, &saved.path)?;
+    if saved.path != path && saved.path.exists() && worktree_contains_path(repo_root, &saved.path) {
+        let old_path = saved.path.display().to_string();
+        let new_path = path.display().to_string();
+        let output = git_run(repo_root, &["worktree", "move", &old_path, &new_path])
+            .with_context(|| format!("move worktree into private storage at {}", path.display()))?;
+        if !output.status.success() {
+            bail!(
+                "git worktree move {} {} failed: {}",
+                saved.path.display(),
+                path.display(),
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        return Ok(WorktreeInfo {
+            path,
+            branch: saved.branch.clone(),
+            base_ref: saved.base_ref.clone(),
+            slug: saved.slug.clone(),
+        });
     }
     if path.exists() {
         let _ = std::fs::remove_dir_all(&path);
@@ -556,6 +671,15 @@ fn recreate_worktree(repo_root: &Path, saved: &WorktreeMetadata) -> Result<Workt
         base_ref: saved.base_ref.clone(),
         slug: saved.slug.clone(),
     })
+}
+
+fn safe_saved_worktree_path(repo_root: &Path, saved_path: &Path) -> Result<PathBuf> {
+    let session_id = saved_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty() && *name != "." && *name != "..")
+        .context("saved worktree path has no valid session identifier")?;
+    worktree_path(repo_root, session_id)
 }
 
 fn branch_exists(repo_root: &Path, branch: &str) -> bool {
@@ -620,9 +744,10 @@ fn git_run(repo_root: &Path, args: &[&str]) -> std::io::Result<std::process::Out
 pub fn restore_worktree_from_metadata(metadata: &SessionWorkspaceMetadata) -> Option<WorktreeInfo> {
     let worktree = metadata.worktree.as_ref()?;
     let repo_root = metadata.repo_root.as_ref()?;
-    if worktree.path.exists() && worktree_contains_path(repo_root, &worktree.path) {
+    let safe_path = safe_saved_worktree_path(repo_root, &worktree.path).ok()?;
+    if safe_path.exists() && worktree_contains_path(repo_root, &safe_path) {
         return Some(WorktreeInfo {
-            path: worktree.path.clone(),
+            path: safe_path,
             branch: worktree.branch.clone(),
             base_ref: worktree.base_ref.clone(),
             slug: worktree.slug.clone(),
@@ -646,7 +771,7 @@ pub fn worktree_storage_roots() -> Vec<PathBuf> {
         .map(PathBuf::from)
         .or_else(|| Some(PathBuf::from("/tmp")))
         .unwrap();
-    roots.push(tmp_base.join("yolop").join("worktrees"));
+    roots.push(tmp_base.join(private_tmp_dir_name()).join("worktrees"));
     roots.push(
         dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
@@ -928,6 +1053,64 @@ mod tests {
         assert!(branch.len() > "fix-auth-".len());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn worktree_storage_is_owner_only() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+        let _guard = crate::testing::test_env::lock();
+        let storage = tempfile::tempdir().expect("storage");
+        // Canonicalize so ancestor validation sees real directories: on macOS
+        // TMPDIR lives below /var (a symlink to /private/var), which the
+        // symlink guard would otherwise reject and send this test down the
+        // home-directory fallback. No-op on Linux CI.
+        let storage_root = std::fs::canonicalize(storage.path()).expect("canonical tmp");
+        let previous_tmpdir = std::env::var_os("TMPDIR");
+        // SAFETY: test-only TMPDIR override; restored below before asserting.
+        unsafe {
+            std::env::set_var("TMPDIR", &storage_root);
+        }
+
+        let parent = worktree_parent_dir("private-repo").expect("private worktree parent");
+
+        // SAFETY: restore prior TMPDIR before asserting, so a failure below
+        // cannot leak a deleted temp root into later tests in this process.
+        unsafe {
+            match previous_tmpdir {
+                Some(value) => std::env::set_var("TMPDIR", value),
+                None => std::env::remove_var("TMPDIR"),
+            }
+        }
+
+        // SAFETY: geteuid has no preconditions and cannot modify process state.
+        let uid = unsafe { libc::geteuid() };
+        for path in [
+            storage_root.join(private_tmp_dir_name()),
+            storage_root.join(private_tmp_dir_name()).join("worktrees"),
+            parent,
+        ] {
+            let metadata = std::fs::symlink_metadata(&path).expect("directory metadata");
+            assert!(metadata.is_dir());
+            assert_eq!(metadata.uid(), uid);
+            assert_eq!(metadata.permissions().mode() & 0o777, 0o700);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_worktree_storage_rejects_symlink_ancestors() {
+        use std::os::unix::fs::symlink;
+
+        let storage = tempfile::tempdir().expect("storage");
+        let target = tempfile::tempdir().expect("target");
+        let link = storage.path().join("managed");
+        symlink(target.path(), &link).expect("symlink");
+
+        let error = ensure_private_dir(&link.join("worktrees")).expect_err("reject symlink");
+        assert!(error.to_string().contains("not a real directory"));
+        assert!(!target.path().join("worktrees").exists());
+    }
+
     #[test]
     fn truncate_status_path_keeps_tail() {
         let path = "/var/folders/rs/tcmw11q17s961ch7pb76czc0000gn/T/yolop/worktrees/b85662b381593c9f/session_019ee6c2";
@@ -1025,6 +1208,9 @@ mod tests {
 
     #[test]
     fn copies_ignored_includes_into_worktree() {
+        // Serialize against tests that override HOME: the commits below read
+        // author identity from the real home directory.
+        let _guard = crate::testing::test_env::lock();
         let repo = tempfile::tempdir().expect("repo");
         let run = |args: &[&str]| {
             let status = std::process::Command::new("git")
@@ -1117,15 +1303,18 @@ mod tests {
         let _guard = crate::testing::test_env::lock();
         let sessions = tempfile::tempdir().expect("sessions");
         let storage = tempfile::tempdir().expect("storage");
-        let storage_path = storage.path().to_path_buf();
+        // Canonicalize so ancestor validation sees real directories (see
+        // worktree_storage_is_owner_only): otherwise macOS falls back to the
+        // shared home directory and orphan counts stop being hermetic.
+        let storage_path = std::fs::canonicalize(storage.path()).expect("canonical tmp");
         let previous_tmpdir = std::env::var_os("TMPDIR");
-        // SAFETY: test-only TMPDIR override; restored before this test returns.
+        // SAFETY: test-only TMPDIR override; restored below before asserting.
         unsafe {
             std::env::set_var("TMPDIR", &storage_path);
         }
 
         let orphan = storage_path
-            .join("yolop")
+            .join(private_tmp_dir_name())
             .join("worktrees")
             .join("abc12345")
             .join("orphan-session");
@@ -1170,19 +1359,34 @@ mod tests {
         let checkpoint_ref = "refs/yolop/checkpoints/orphan-session/cp_1";
         run(&["update-ref", checkpoint_ref, "HEAD"]);
 
-        let report = prune_orphan_worktrees(sessions.path(), false).expect("prune");
-        assert_eq!(report.kept, 0);
-        assert_eq!(report.removed.len(), 1);
-        assert_eq!(report.checkpoint_refs, vec![checkpoint_ref]);
-        assert!(!orphan.exists());
-        assert!(git_output(repo.path(), &["show-ref", checkpoint_ref]).is_none());
+        // Point HOME at an empty directory: orphan scans cover the home
+        // storage root as well, and the real one may hold unrelated checkouts.
+        let fake_home = tempfile::tempdir().expect("fake home");
+        let previous_home = std::env::var_os("HOME");
+        // SAFETY: test-only HOME override; restored below before asserting.
+        unsafe {
+            std::env::set_var("HOME", fake_home.path());
+        }
 
-        // SAFETY: restore prior TMPDIR so later tests see a valid temp root.
+        let report = prune_orphan_worktrees(sessions.path(), false).expect("prune");
+
+        // SAFETY: restore prior TMPDIR/HOME before asserting, so a failure
+        // here cannot leak deleted temp roots into later tests in this process.
         unsafe {
             match &previous_tmpdir {
                 Some(value) => std::env::set_var("TMPDIR", value),
                 None => std::env::remove_var("TMPDIR"),
             }
+            match &previous_home {
+                Some(value) => std::env::set_var("HOME", value),
+                None => std::env::remove_var("HOME"),
+            }
         }
+
+        assert_eq!(report.kept, 0);
+        assert_eq!(report.removed.len(), 1);
+        assert_eq!(report.checkpoint_refs, vec![checkpoint_ref]);
+        assert!(!orphan.exists());
+        assert!(git_output(repo.path(), &["show-ref", checkpoint_ref]).is_none());
     }
 }
