@@ -9,7 +9,6 @@ use super::manager::{
     DEFAULT_REQUEST_TIMEOUT_MS, ExtensionProcess, ExtensionProcessSpec, LiveProcessRegistry,
 };
 use super::package::{ExtensionPackage, ToolDefinition, extension_capability_id};
-use crate::capabilities::EnvironmentContextRegistry;
 use crate::capabilities::narration::stable_labeled;
 use async_trait::async_trait;
 use everruns_core::command::{
@@ -45,7 +44,6 @@ pub struct ExtensionCapability {
     /// Per-extension secret store; supplies the injected env for `secret`
     /// config fields. `None` outside the runtime (tests without secrets).
     secrets: Option<super::secrets::ExtensionSecrets>,
-    environment_context: Option<EnvironmentContextRegistry>,
     /// Process shared by all tool instances so the server persists across
     /// turns; rebuilt (killing the old server) when the config changes —
     /// the same cache-by-config pattern as `LspCapability::manager_for`.
@@ -62,7 +60,6 @@ impl ExtensionCapability {
             ask_sink: None,
             live_processes: None,
             secrets: None,
-            environment_context: None,
             process: Mutex::new(None),
         }
     }
@@ -78,11 +75,6 @@ impl ExtensionCapability {
     /// reloaded mid-session via `reload_extension`.
     pub fn with_process_registry(mut self, registry: LiveProcessRegistry) -> Self {
         self.live_processes = Some(registry);
-        self
-    }
-
-    pub(crate) fn with_environment_context(mut self, registry: EnvironmentContextRegistry) -> Self {
-        self.environment_context = Some(registry);
         self
     }
 
@@ -286,17 +278,10 @@ impl Capability for ExtensionCapability {
         } else {
             process.prompt_contribution().await
         };
-        if let Some(registry) = &self.environment_context {
-            let key = format!("extension_{}", manifest.name);
-            if let Some(text) = text {
-                registry.set(key, text);
-            } else {
-                registry.remove(&key);
-            }
-            None
-        } else {
-            text.map(|text| format!("<capability id=\"{}\">\n{}\n</capability>", self.id, text))
-        }
+        // Keep prompt text owned by the capability lifecycle. Caching it in a
+        // shared registry would let a deactivated extension leave instructions
+        // behind because its callback no longer runs to clear that state.
+        text.map(|text| format!("<capability id=\"{}\">\n{}\n</capability>", self.id, text))
     }
 
     fn pre_tool_use_hooks_with_config(

@@ -4229,8 +4229,7 @@ pub async fn build_with_options(
                     .with_status_sink(status_sink.clone())
                     .with_ask_sink(ask_sink.clone())
                     .with_process_registry(live_processes.clone())
-                    .with_secrets(extension_secrets.clone())
-                    .with_environment_context(environment_context.clone());
+                    .with_secrets(extension_secrets.clone());
             if enabled {
                 extension_mcp_server_names
                     .extend(capability.contributed_mcp_servers().keys().cloned());
@@ -4255,7 +4254,6 @@ pub async fn build_with_options(
         let factory_ask = ask_sink.clone();
         let factory_processes = live_processes.clone();
         let factory_secrets = extension_secrets.clone();
-        let factory_environment = environment_context.clone();
         let factory_dir = ext_dir.clone();
         extension_factory = Some(Arc::new(move |name: &str| {
             let package = crate::extensions::discover_extensions(&factory_dir)
@@ -4267,8 +4265,7 @@ pub async fn build_with_options(
                     .with_status_sink(factory_status.clone())
                     .with_ask_sink(factory_ask.clone())
                     .with_process_registry(factory_processes.clone())
-                    .with_secrets(factory_secrets.clone())
-                    .with_environment_context(factory_environment.clone()),
+                    .with_secrets(factory_secrets.clone()),
             ) as Arc<dyn everruns_core::Capability>)
         }) as ExtensionFactory);
 
