@@ -10,6 +10,36 @@ mechanical `### What's Changed` list of merged PRs.
 Releases are cut via [`/release`](./.agents/skills/release/SKILL.md), which
 tags the version and publishes to crates.io and the Homebrew tap.
 
+## [0.18.4] - 2026-09-25
+
+### Highlights
+
+- ACP now advertises user-invocable skills to clients, and announces finished background work even when the wake turn stays silent.
+- Action-guard gains a Muse-only idle-promise guard on the Jev classifier.
+- MCP hardens workspace execution by blocking stdio process spawning and requiring explicit environment credential bindings.
+- Observability and provider handling improve: Logfire forwards full LLM cost metadata and span duration, and Codex handles cross-provider reasoning.
+
+### What's Changed
+
+* chore(deps): bump everruns to 0.31.0 ([#752](https://github.com/everruns/yolop/pull/752)) by @chaliy
+* fix(codex): handle cross-provider reasoning ([#751](https://github.com/everruns/yolop/pull/751)) by @chaliy
+* chore(deps): bump opentelemetry, opentelemetry_sdk, and opentelemetry-otlp to 0.33.0 ([#750](https://github.com/everruns/yolop/pull/750)) by @chaliy
+* fix(local): follow the everruns_provider 0.30 message rename ([#749](https://github.com/everruns/yolop/pull/749)) by @chaliy
+* chore(deps): bump everruns to 0.30.0 ([#747](https://github.com/everruns/yolop/pull/747)) by @chaliy
+* fix(acp): announce finished background work even when the wake turn stays silent ([#746](https://github.com/everruns/yolop/pull/746)) by @chaliy
+* chore(deps): bump the cargo-minor-and-patch group with 3 updates ([#742](https://github.com/everruns/yolop/pull/742)) by @dependabot
+* feat(action-guard): Muse-only idle-promise guard on Jev classifier ([#741](https://github.com/everruns/yolop/pull/741)) by @chaliy
+* fix(runtime): control-register the sessions capability so its CLI route is advertised ([#740](https://github.com/everruns/yolop/pull/740)) by @chaliy
+* fix(mcp): require explicit environment credential bindings ([#739](https://github.com/everruns/yolop/pull/739)) by @chaliy
+* fix(mcp): block workspace stdio process execution ([#738](https://github.com/everruns/yolop/pull/738)) by @chaliy
+* fix(runtime): match grep_files path_pattern against the root-relative path ([#737](https://github.com/everruns/yolop/pull/737)) by @chaliy
+* fix(logfire): forward full LLM cost metadata and span duration ([#736](https://github.com/everruns/yolop/pull/736)) by @chaliy
+* feat(commands): improve argument descriptions ([#735](https://github.com/everruns/yolop/pull/735)) by @chaliy
+* chore(deps): bump everruns to 0.29.0 ([#734](https://github.com/everruns/yolop/pull/734)) by @chaliy
+* feat(acp): advertise user-invocable skills ([#733](https://github.com/everruns/yolop/pull/733)) by @chaliy
+
+**Full Changelog**: https://github.com/everruns/yolop/compare/v0.18.3...v0.18.4
+
 ## [0.18.3] - 2026-09-18
 
 ### Highlights

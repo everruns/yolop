@@ -382,9 +382,28 @@ fn extract_named_entry(archive: &[u8], wanted: &str) -> Result<Vec<u8>> {
 /// Write the binary into the package's `bin/`, executable.
 fn write_package_binary(package_dir: &Path, command: &str, bytes: &[u8]) -> Result<()> {
     let bin_dir = package_dir.join("bin");
-    std::fs::create_dir_all(&bin_dir).with_context(|| format!("creating {}", bin_dir.display()))?;
+    match std::fs::symlink_metadata(&bin_dir) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            bail!("refusing symlinked binary directory {}", bin_dir.display());
+        }
+        Ok(metadata) if !metadata.is_dir() => {
+            bail!("binary directory is not a directory: {}", bin_dir.display());
+        }
+        Ok(_) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::create_dir(&bin_dir)
+                .with_context(|| format!("creating {}", bin_dir.display()))?;
+        }
+        Err(err) => return Err(err).with_context(|| format!("inspecting {}", bin_dir.display())),
+    }
     let path = bin_dir.join(command);
-    std::fs::write(&path, bytes).with_context(|| format!("writing {}", path.display()))?;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .with_context(|| format!("creating {}", path.display()))?;
+    std::io::Write::write_all(&mut file, bytes)
+        .with_context(|| format!("writing {}", path.display()))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -955,6 +974,44 @@ mod tests {
             )
         );
         assert!(seen[1].ends_with(".sha256"), "urls were: {seen:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prebuilt_binary_cannot_escape_through_a_symlinked_bin_directory() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let package = tmp.path().join("package");
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir_all(&package).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        symlink(&outside, package.join("bin")).unwrap();
+
+        let err = write_package_binary(&package, "authorized_keys", b"attacker key")
+            .expect_err("a package-controlled bin symlink must be rejected");
+
+        assert!(err.to_string().contains("symlinked binary directory"));
+        assert!(!outside.join("authorized_keys").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prebuilt_binary_does_not_follow_a_symlinked_destination() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let package = tmp.path().join("package");
+        let bin = package.join("bin");
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(&outside, b"original").unwrap();
+        symlink(&outside, bin.join("server")).unwrap();
+
+        write_package_binary(&package, "server", b"replacement")
+            .expect_err("an existing symlink destination must be rejected");
+
+        assert_eq!(std::fs::read(&outside).unwrap(), b"original");
     }
 
     /// Install downloads an executable that yolop will later spawn, so an
