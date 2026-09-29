@@ -2849,17 +2849,17 @@ fn coding_harness_capabilities(
     hook_config: Option<serde_json::Value>,
     settings: &Settings,
 ) -> Vec<CapabilityRef> {
-    let mut caps = apply_capability_settings(
-        default_coding_harness_capabilities(client_commands),
-        &settings.capabilities,
-    );
-    ensure_harness_capability_dependencies(&mut caps);
+    let mut caps = default_coding_harness_capabilities(client_commands);
     if let Some(config) = hook_config {
         push_before_trailing_context(
             &mut caps,
             CapabilityRef::with_config(USER_HOOKS_CAPABILITY_ID, config),
         );
     }
+    // Overrides apply after the dynamic append so disabling user_hooks in
+    // settings cannot be undone by the workspace hook configuration.
+    caps = apply_capability_settings(caps, &settings.capabilities);
+    ensure_harness_capability_dependencies(&mut caps);
     caps
 }
 
@@ -6625,6 +6625,26 @@ mod tests {
         assert!(
             ids.iter()
                 .any(|cap| cap.capability_id() == SESSION_STORAGE_CAPABILITY_ID)
+        );
+    }
+
+    #[test]
+    fn harness_user_hooks_disable_survives_dynamic_hooks() {
+        use crate::config::capability_settings::CapabilityOverride;
+
+        let mut settings = Settings::default();
+        settings.capabilities.push(CapabilityOverride {
+            capability_ref: super::USER_HOOKS_CAPABILITY_ID.to_string(),
+            enabled: Some(false),
+            append: false,
+            config: serde_json::json!({}),
+        });
+        let hook_config = serde_json::json!({"CLIs": {}});
+        let ids = coding_harness_capabilities(false, Some(hook_config), &settings);
+        assert!(
+            !ids.iter()
+                .any(|cap| cap.capability_id() == super::USER_HOOKS_CAPABILITY_ID),
+            "a disabled user_hooks entry must not return through dynamic hooks"
         );
     }
 
