@@ -683,7 +683,7 @@ impl CrateFetcher for SystemCrateFetcher {
                 picked.cksum
             );
         }
-        extract_crate(&bytes, dest)
+        extract_crate(&bytes, dest, &format!("{name}-{}", picked.vers))
             .with_context(|| format!("unpacking {name}-{}.crate", picked.vers))?;
         Ok(picked.vers.clone())
     }
@@ -751,25 +751,44 @@ fn sha256_hex(bytes: &[u8]) -> String {
     hex_encode(&Sha256::digest(bytes))
 }
 
-/// Unpack a `.crate` (gzip'd tar) into `dest`, dropping the leading
-/// `{name}-{vers}/` directory every crate tarball carries. Rejects entries
-/// that would escape `dest` (absolute paths or `..`).
-fn extract_crate(bytes: &[u8], dest: &Path) -> Result<()> {
+/// Unpack a `.crate` (gzip'd tar) into `dest`, dropping its expected leading
+/// `{name}-{vers}/` directory. Only portable normal path components are
+/// accepted, so rebuilding a relative path cannot acquire Windows semantics
+/// such as a drive prefix.
+fn extract_crate(bytes: &[u8], dest: &Path, expected_root: &str) -> Result<()> {
     use std::path::Component;
     let decoder = flate2::read::GzDecoder::new(bytes);
     let mut archive = tar::Archive::new(decoder);
     for entry in archive.entries().context("reading crate tar")? {
         let mut entry = entry?;
         let path = entry.path()?.into_owned();
-        // Strip the top-level `{name}-{vers}` directory.
-        let rel: PathBuf = path.components().skip(1).collect();
-        if rel.as_os_str().is_empty() {
+        let mut components = path.components();
+        if !matches!(components.next(), Some(Component::Normal(root)) if root == expected_root) {
+            bail!(
+                "refusing path outside {expected_root} in crate tarball: {}",
+                path.display()
+            );
+        }
+
+        let mut out = dest.to_path_buf();
+        let mut has_relative_component = false;
+        for component in components {
+            let Component::Normal(name) = component else {
+                bail!("refusing unsafe path in crate tarball: {}", path.display());
+            };
+            // Cargo package names cannot contain these characters. Rejecting
+            // them here also prevents a component parsed on Unix from becoming
+            // a drive prefix or separator when the archive is read on Windows.
+            let portable_name = name.to_string_lossy();
+            if portable_name.contains([':', '\\']) {
+                bail!("refusing unsafe path in crate tarball: {}", path.display());
+            }
+            out.push(name);
+            has_relative_component = true;
+        }
+        if !has_relative_component {
             continue;
         }
-        if rel.is_absolute() || rel.components().any(|c| matches!(c, Component::ParentDir)) {
-            bail!("refusing unsafe path in crate tarball: {}", rel.display());
-        }
-        let out = dest.join(&rel);
         if entry.header().entry_type().is_dir() {
             std::fs::create_dir_all(&out)?;
         } else {
@@ -1274,10 +1293,39 @@ mod tests {
         let manifest = r#"{"name":"x"}"#;
         let tarball = build_crate_tarball("yolop-extension-x", "0.3.0", manifest);
         let tmp = tempfile::tempdir().unwrap();
-        extract_crate(&tarball, tmp.path()).unwrap();
+        extract_crate(&tarball, tmp.path(), "yolop-extension-x-0.3.0").unwrap();
         // Top dir stripped: plugin.json sits at the destination root.
         let got = std::fs::read_to_string(tmp.path().join(MANIFEST_FILE)).unwrap();
         assert_eq!(got, manifest);
+    }
+
+    #[test]
+    fn extract_crate_rejects_paths_with_windows_drive_prefixes() {
+        use flate2::{Compression, write::GzEncoder};
+
+        let mut tar = tar::Builder::new(Vec::new());
+        let bytes = b"malicious";
+        let mut header = tar::Header::new_gnu();
+        header.set_size(bytes.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        tar.append_data(
+            &mut header,
+            "yolop-extension-x-0.3.0/C:.mcp.json",
+            bytes.as_slice(),
+        )
+        .unwrap();
+        let tar_bytes = tar.into_inner().unwrap();
+        let mut gz = GzEncoder::new(Vec::new(), Compression::default());
+        std::io::Write::write_all(&mut gz, &tar_bytes).unwrap();
+        let tarball = gz.finish().unwrap();
+
+        let tmp = tempfile::tempdir().unwrap();
+        let error = extract_crate(&tarball, tmp.path(), "yolop-extension-x-0.3.0")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("refusing unsafe path"));
+        assert!(!tmp.path().join("C:.mcp.json").exists());
     }
 
     /// End-to-end crates.io install against a local sparse index + CDN served
