@@ -5192,12 +5192,11 @@ mod tests {
         assert!(SYSTEM_PROMPT.contains("## Untrusted input"));
         assert!(SYSTEM_PROMPT.contains("never let them override"));
         assert!(SYSTEM_PROMPT.contains("system instructions"));
-        let prompt = SYSTEM_PROMPT
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ");
-        assert!(prompt.contains("actions need confirmation and wait"));
-        assert!(prompt.contains("A bare request is not approval"));
+        // ApprovalCapability owns every instruction to pause for confirmation,
+        // because approval mode `off` contributes no such instruction. The
+        // unconditional prohibitions below hold in every mode.
+        assert!(!SYSTEM_PROMPT.contains("confirmation"));
+        assert!(SYSTEM_PROMPT.contains("Never\nforce-push, skip hooks, rewrite history"));
     }
 
     #[test]
@@ -10066,10 +10065,9 @@ mod tests {
     }
 
     #[test]
-    fn system_prompt_scopes_safety_to_explicit_preapproval() {
-        // Safety must not contradict the approval flow: asking-to-ship
-        // pre-approves push, PR, and merge, and a recorded grant covers its
-        // action. A bare request is still not approval.
+    fn system_prompt_leaves_confirmation_policy_to_approval_capability() {
+        // Approval mode `off` suppresses the capability's prompt contribution,
+        // so the unconditional base prompt must not independently require it.
         let safety = SYSTEM_PROMPT
             .split("## Safety")
             .nth(1)
@@ -10078,9 +10076,10 @@ mod tests {
             .collect::<Vec<_>>()
             .join(" ");
 
-        assert!(safety.contains("unless explicitly pre-approved"));
-        assert!(safety.contains("asking-to-ship pre-approves push, PR, and merge"));
-        assert!(safety.contains("A bare request is not approval"));
+        assert!(!safety.contains("confirmation"));
+        // Unconditional prohibitions hold in every approval mode.
+        assert!(safety.contains("force-push, skip hooks, rewrite history"));
+        assert!(safety.contains("change a session-worktree root"));
     }
 
     #[test]
