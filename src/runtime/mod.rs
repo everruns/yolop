@@ -2117,8 +2117,12 @@ impl ProviderChoice {
                 })
             }
             ProviderChoice::Codex { model, .. } => {
-                let auth_from_settings = settings.codex_auth();
-                let access_token = env_non_empty("CODEX_ACCESS_TOKEN")
+                let env_access_token = env_non_empty("CODEX_ACCESS_TOKEN");
+                let auth_from_settings = env_access_token
+                    .is_none()
+                    .then(|| settings.codex_auth())
+                    .flatten();
+                let access_token = env_access_token
                     .or_else(|| auth_from_settings.map(|auth| auth.access_token.clone()))
                     .ok_or_else(|| {
                         anyhow!("CODEX_ACCESS_TOKEN not set and no Codex login stored")
@@ -2136,6 +2140,11 @@ impl ProviderChoice {
                         account_id,
                         extra: Some(serde_json::json!({
                             "expires_at": expires_at,
+                            "auth_source": if auth_from_settings.is_some() {
+                                "settings"
+                            } else {
+                                "environment"
+                            },
                         })),
                     }),
                     api_key: Some(access_token),
@@ -8170,9 +8179,64 @@ mod tests {
             metadata
                 .extra
                 .as_ref()
+                .and_then(|extra| extra.get("auth_source"))
+                .and_then(serde_json::Value::as_str),
+            Some("settings")
+        );
+        assert_eq!(
+            metadata
+                .extra
+                .as_ref()
                 .and_then(|extra| extra.get("expires_at"))
                 .and_then(serde_json::Value::as_i64),
             Some(1_771_000_000_000)
+        );
+    }
+
+    #[test]
+    fn codex_environment_override_excludes_saved_oauth_metadata() {
+        let _guard = crate::testing::test_env::lock();
+        unsafe {
+            std::env::set_var("CODEX_ACCESS_TOKEN", "environment-access-token");
+        }
+        let settings = Settings {
+            codex_auth: Some(crate::config::CodexAuth {
+                access_token: "saved-access-token".to_string(),
+                refresh_token: Some("saved-refresh-token".to_string()),
+                expires_at: Some(1_771_000_000_000),
+                account_id: Some("saved-account".to_string()),
+                email: None,
+            }),
+            ..Default::default()
+        };
+        let provider = ProviderChoice::Codex {
+            model: "gpt-5.5".to_string(),
+            reasoning_effort: Some("high".to_string()),
+        };
+
+        let model = provider.model_with_provider(&settings).unwrap();
+
+        unsafe {
+            std::env::remove_var("CODEX_ACCESS_TOKEN");
+        }
+        assert_eq!(model.api_key.as_deref(), Some("environment-access-token"));
+        let metadata = model.provider_metadata.expect("metadata");
+        assert_eq!(metadata.refresh_token, None);
+        assert_eq!(metadata.account_id, None);
+        assert_eq!(
+            metadata
+                .extra
+                .as_ref()
+                .and_then(|extra| extra.get("expires_at")),
+            Some(&serde_json::Value::Null)
+        );
+        assert_eq!(
+            metadata
+                .extra
+                .as_ref()
+                .and_then(|extra| extra.get("auth_source"))
+                .and_then(serde_json::Value::as_str),
+            Some("environment")
         );
     }
 
