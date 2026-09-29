@@ -690,10 +690,12 @@ fn apply_resource_operation(root: &Path, kind: &str, change: &Value) -> Result<F
                 .and_then(Value::as_str)
                 .context("create without uri")?;
             let file = workspace_file(root, uri)?;
+            #[cfg(unix)]
             let overwrite = change
                 .pointer("/options/overwrite")
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
+            #[cfg(unix)]
             let ignore_if_exists = change
                 .pointer("/options/ignoreIfExists")
                 .and_then(Value::as_bool)
@@ -768,6 +770,7 @@ fn apply_resource_operation(root: &Path, kind: &str, change: &Value) -> Result<F
                 .and_then(Value::as_str)
                 .context("delete without uri")?;
             let file = workspace_file(root, uri)?;
+            #[cfg(unix)]
             let recursive = change
                 .pointer("/options/recursive")
                 .and_then(Value::as_bool)
@@ -829,6 +832,11 @@ async fn apply_text_edits(
         .with_context(|| format!("open edit target {}", file.display()))?;
         std::fs::File::from(fd)
     };
+    // Non-Unix platforms bail at the top of this function, so this
+    // binding is unreachable there; it only satisfies the
+    // unconditional use below.
+    #[cfg(not(unix))]
+    let text = String::new();
     #[cfg(unix)]
     let text = {
         use std::io::Read;
