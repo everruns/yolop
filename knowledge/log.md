@@ -1,5 +1,11 @@
 # Knowledge Log
 
+## 2026-09-25, Compatible model catalogs gate turn persistence
+
+- Turn preflight now uses the same direct `GET /models` fallback and Gemini id
+  normalization as provider discovery, so an unavailable compatible model is
+  rejected before its ask and checkpoint are persisted.
+
 ## 2026-09-25, ACP preserves explicit provider trust boundaries
 
 - [ACP](specs/acp.md): an unavailable provider selected with CLI `--provider`
@@ -1480,9 +1486,3 @@ wording, formatting, and link fixes do not need entries.
 - Evals: new `management-coordination-spawn-workers` (launch-plan flow) and
   `management-coordination-backcall` (worker complete back-call) harness
   samples.
-
-## 2026-09-25, Compatible model catalogs gate turn persistence
-
-- Turn preflight now uses the same direct `GET /models` fallback and Gemini id
-  normalization as provider discovery, so an unavailable compatible model is
-  rejected before its ask and checkpoint are persisted.

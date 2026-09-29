@@ -79,7 +79,7 @@ pub(crate) async fn discover_provider_models(
     let Some(models) = models else {
         return Ok(None);
     };
-    let mut models = limit_discovered_models(models);
+    let models = limit_discovered_models(models);
 
     // Whatever the provider said about these models is metadata the effort
     // selector and per-turn defaults cannot ask for themselves (they are
