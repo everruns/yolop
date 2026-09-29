@@ -13,6 +13,8 @@ use std::path::{Path, PathBuf};
 /// to avoid accidentally loading multi-hundred-MB assets into context.
 pub const MAX_IMAGE_BYTES: usize = 20 * 1024 * 1024;
 
+const SUPPORTED_MEDIA_TYPES: &[&str] = &["image/png", "image/jpeg", "image/gif", "image/webp"];
+
 /// Load one or more local image paths into content parts (images only).
 pub fn load_image_parts(paths: &[PathBuf]) -> Result<Vec<ContentPart>> {
     paths
@@ -33,6 +35,33 @@ pub fn image_part_from_encoded(bytes: &[u8], media_type: &str) -> Result<Content
     Ok(ContentPart::Image(ImageContentPart::from_base64(
         base64, media_type,
     )))
+}
+
+/// Decode and validate an inline base64 image before constructing a content part.
+pub fn image_part_from_base64(
+    data: &str,
+    media_type: &str,
+    max_bytes: usize,
+) -> Result<(ContentPart, usize)> {
+    if !SUPPORTED_MEDIA_TYPES.contains(&media_type) {
+        bail!("unsupported image media type `{media_type}`");
+    }
+
+    // Reject oversized encoded input before the decoder reserves memory. The
+    // decoded length is checked again because padding can make this estimate
+    // imprecise by up to two bytes.
+    let max_encoded_len = max_bytes.div_ceil(3).saturating_mul(4);
+    if data.len() > max_encoded_len {
+        bail!("encoded image exceeds the {max_bytes}-byte limit");
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data)
+        .context("invalid base64 image data")?;
+    if bytes.len() > max_bytes {
+        bail!("image is {} bytes (max {})", bytes.len(), max_bytes);
+    }
+    let len = bytes.len();
+    Ok((image_part_from_encoded(&bytes, media_type)?, len))
 }
 
 /// Read a single image file and return a base64 `ContentPart::Image`.
@@ -123,5 +152,17 @@ mod tests {
         std::fs::write(&path, b"").expect("write empty");
         let err = load_image_part(&path).expect_err("empty image should fail");
         assert!(err.to_string().contains("empty"));
+    }
+
+    #[test]
+    fn inline_image_rejects_invalid_base64_and_unsupported_media() {
+        assert!(image_part_from_base64("not base64", "image/png", 20).is_err());
+        assert!(image_part_from_base64("ZmFrZQ==", "image/svg+xml", 20).is_err());
+    }
+
+    #[test]
+    fn inline_image_rejects_empty_and_oversized_data() {
+        assert!(image_part_from_base64("", "image/png", 20).is_err());
+        assert!(image_part_from_base64("ZmFrZQ==", "image/png", 3).is_err());
     }
 }
