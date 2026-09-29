@@ -3287,10 +3287,17 @@ impl ModelState {
             config = config.with_base_url(base_url);
         }
         let driver = self.driver_registry.create_chat_driver(&config)?;
-        let discovered = tokio::time::timeout(
-            std::time::Duration::from_secs(10),
-            driver.list_models(&everruns_provider::runtime_provider::ProviderEndpoint::default()),
-        )
+        let discovered = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            let models = driver
+                .list_models(&everruns_provider::runtime_provider::ProviderEndpoint::default())
+                .await?;
+            crate::capabilities::model_discovery::complete_provider_model_discovery(
+                models,
+                resolved.base_url.as_deref(),
+                resolved.api_key.as_deref(),
+            )
+            .await
+        })
             .await
             .map_err(|_| anyhow!("{provider_name} model availability check timed out; the turn was not started and is safe to resume"))??;
 

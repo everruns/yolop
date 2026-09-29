@@ -70,31 +70,17 @@ pub(crate) async fn discover_provider_models(
     // endpoint (the factory wraps them via `Provider::into_boxed_driver`), so
     // the argument here is ignored by the bound wrapper — same as upstream's
     // own `discover_provider_models`.
-    let models = match driver.list_models(&ProviderEndpoint::default()).await? {
-        Some(models) => Some(models),
-        // The everruns drivers decline discovery for unrecognized custom
-        // endpoints (Ollama, Gemini's OpenAI-compatible surface, custom
-        // OpenRouter proxies). Those endpoints still expose the
-        // OpenAI-compatible `GET <base>/models`, so query it directly.
-        None => match &target.base_url {
-            Some(base_url) => {
-                list_openai_compatible_models(base_url, target.api_key.as_deref()).await?
-            }
-            None => None,
-        },
-    };
+    let models = complete_provider_model_discovery(
+        driver.list_models(&ProviderEndpoint::default()).await?,
+        target.base_url.as_deref(),
+        target.api_key.as_deref(),
+    )
+    .await?;
     let Some(models) = models else {
         return Ok(None);
     };
-    let mut models = limit_discovered_models(models);
+    let models = limit_discovered_models(models);
 
-    for model in models.iter_mut() {
-        // Gemini's OpenAI-compatible surface reports ids as `models/<id>`;
-        // the bare id is what chat calls (and profile lookups) expect.
-        if let Some(bare) = model.model_id.strip_prefix("models/") {
-            model.model_id = bare.to_string();
-        }
-    }
     // Whatever the provider said about these models is metadata the effort
     // selector and per-turn defaults cannot ask for themselves (they are
     // synchronous); cache it while we have it. Kept before the chat filter so
@@ -146,6 +132,39 @@ fn limit_discovered_models(models: Vec<DiscoveredModel>) -> Vec<DiscoveredModel>
         })
         .take(MAX_DISCOVERED_MODELS)
         .collect()
+}
+
+/// Complete driver discovery for compatible endpoints and normalize ids into
+/// the same form chat requests use. Turn preflight shares this path so a
+/// driver's `None` cannot bypass a catalog that the endpoint does expose.
+pub(crate) async fn complete_provider_model_discovery(
+    models: Option<Vec<DiscoveredModel>>,
+    base_url: Option<&str>,
+    api_key: Option<&str>,
+) -> Result<Option<Vec<DiscoveredModel>>> {
+    let models = match models {
+        Some(models) => Some(models),
+        // The everruns drivers decline discovery for unrecognized custom
+        // endpoints (Ollama, Gemini's OpenAI-compatible surface, custom
+        // OpenRouter proxies). Those endpoints still expose the
+        // OpenAI-compatible `GET <base>/models`, so query it directly.
+        None => match base_url {
+            Some(base_url) => list_openai_compatible_models(base_url, api_key).await?,
+            None => None,
+        },
+    };
+    let Some(mut models) = models else {
+        return Ok(None);
+    };
+
+    for model in &mut models {
+        // Gemini's OpenAI-compatible surface reports ids as `models/<id>`;
+        // the bare id is what chat calls (and profile lookups) expect.
+        if let Some(bare) = model.model_id.strip_prefix("models/") {
+            model.model_id = bare.to_string();
+        }
+    }
+    Ok(Some(models))
 }
 
 /// Keep only models yolop can actually chat with.
