@@ -12,6 +12,12 @@
 - [Maintenance](specs/maintenance.md): minor and major Everruns releases may be
   adopted after compatibility review. Only patch releases less than one day old
   remain deferred for routine maintenance.
+## 2026-09-25, Extension commands resolve outside the workspace
+
+- [Extensions](specs/extensions.md): path-shaped capability-server commands
+  resolve from the globally installed package, while bare commands retain
+  package `bin/` then system `PATH` lookup. The active workspace remains only
+  the child working directory and cannot replace the extension executable.
 
 ## 2026-09-22, Muse-only actionable-promise guard
 

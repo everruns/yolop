@@ -9,7 +9,7 @@
 //! and the runtime dual of the CI schema/drift guards.
 
 use super::client::YepConnection;
-use super::package::ExtensionManifest;
+use super::package::{ExtensionManifest, resolve_server_command};
 use super::protocol::{InitializeParams, InitializeResult, PROTOCOL_VERSION, version_compatible};
 use serde::Serialize;
 use std::collections::HashSet;
@@ -82,7 +82,16 @@ pub async fn doctor(
     timeout: Duration,
 ) -> Report {
     let server = &manifest.capability_server;
-    let mut command = Command::new(&server.command);
+    let executable = match resolve_server_command(package_dir, &server.command) {
+        Ok(path) => path,
+        Err(err) => {
+            return Report::fatal(
+                "spawn",
+                format!("cannot resolve `{}` from package: {err}", server.command),
+            );
+        }
+    };
+    let mut command = Command::new(executable);
     command
         .args(&server.args)
         .current_dir(workspace_root)
