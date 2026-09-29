@@ -2,6 +2,9 @@ use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value, json};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug)]
 pub struct ZedIntoOptions {
@@ -507,16 +510,21 @@ fn write_file_atomically(path: &Path, content: &[u8], description: &str) -> Resu
     let file_name = path
         .file_name()
         .with_context(|| format!("{description} path has no file name: {}", path.display()))?;
+    let sequence = TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let mut tmp_name = std::ffi::OsString::from(".");
     tmp_name.push(file_name);
-    tmp_name.push(format!(".tmp.{}", std::process::id()));
+    tmp_name.push(format!(".tmp.{}.{}", std::process::id(), sequence));
     let tmp_path = parent.join(tmp_name);
 
     let write_result = (|| -> Result<()> {
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options
             .open(&tmp_path)
             .with_context(|| format!("open temp {description} {}", tmp_path.display()))?;
         file.write_all(content)
@@ -578,7 +586,7 @@ mod tests {
         let result = into_buzz_at(path.clone(), "/bin/yolop", false).expect("into");
 
         assert_eq!(result.status, IntoStatus::Created);
-        let value: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let value: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(
             value,
             json!({
@@ -591,6 +599,14 @@ mod tests {
                 "installHint": "brew install everruns/tap/yolop"
             })
         );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
     }
 
     #[test]
@@ -598,15 +614,28 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let path = tmp.path().join("yolop.json");
         std::fs::write(&path, r#"{"id":"old","label":"Old","command":"old","args":["old"],"env":{"API_KEY":"keep"},"icon":"keep","installInstructionsUrl":"old","installHint":"old"}"#).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        }
 
         let result = into_buzz_at(path.clone(), "/bin/yolop", false).expect("into");
 
         assert_eq!(result.status, IntoStatus::Updated);
-        let value: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let value: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(value["command"], "/bin/yolop");
         assert_eq!(value["args"], json!(["--acp"]));
         assert_eq!(value["env"]["API_KEY"], "keep");
         assert_eq!(value["icon"], "keep");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
     }
 
     #[test]
