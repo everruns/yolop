@@ -236,6 +236,9 @@ seccompiler = "0.5.0"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+# Descriptor-relative skill deletion uses rustix so repository-controlled
+# symlinks cannot redirect recursive removal outside the selected scope.
+rustix = { version = "1", features = ["fs"] }
 
 [dev-dependencies]
 inventory = "0.3"
