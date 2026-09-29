@@ -130,7 +130,21 @@ pub async fn user_invocable_commands(
             continue;
         };
         for entry in entries.into_iter().filter(|entry| entry.is_directory) {
-            let skill_md = format!("{}/SKILL.md", entry.path.trim_end_matches('/'));
+            // Activation keys precedence by directory name, including invalid
+            // and non-user-invocable skills. Claim the name before inspecting
+            // SKILL.md so an entry in a later scope cannot be advertised when
+            // activation would resolve to this one instead.
+            if !seen.insert(entry.name.clone()) {
+                continue;
+            }
+            // Mounted stores return paths relative to their own root. Rebuild
+            // the VFS path from the scope root so reads route to the same scope
+            // that produced the directory entry.
+            let skill_md = format!(
+                "{}/{}/SKILL.md",
+                scope.vfs_root.trim_end_matches('/'),
+                entry.name
+            );
             let Ok(Some(file)) = fs.read_file(session_id, &skill_md).await else {
                 continue;
             };
@@ -140,7 +154,7 @@ pub async fn user_invocable_commands(
             let Ok(skill) = everruns_core::skill::parse_skill_md(&contents) else {
                 continue;
             };
-            if !skill.user_invocable || !seen.insert(skill.name.clone()) {
+            if !skill.user_invocable || skill.name != entry.name {
                 continue;
             }
             commands.push(CommandDescriptor {
