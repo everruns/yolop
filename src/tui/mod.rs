@@ -2433,6 +2433,7 @@ impl App {
 
     /// Keyboard handling for the y/a/n sandbox approval prompt.
     fn handle_sandbox_approval_key(&mut self, key: KeyEvent) {
+        let is_plain_character = matches!(key.modifiers, KeyModifiers::NONE | KeyModifiers::SHIFT);
         match key.code {
             KeyCode::Char('y') | KeyCode::Char('Y') => {
                 if let Some(pending) = self.pending_sandbox_approval.take() {
@@ -2442,7 +2443,7 @@ impl App {
                     self.push_system("approved".into());
                 }
             }
-            KeyCode::Char('a') | KeyCode::Char('A') => {
+            KeyCode::Char('a') | KeyCode::Char('A') if is_plain_character => {
                 if let Some(pending) = self.pending_sandbox_approval.take() {
                     let _ = pending
                         .reply
@@ -7636,6 +7637,27 @@ flowchart TD
         assert!(test.app.lines.iter().any(|line| {
             line.author == Author::System && line.text == "approved for this session"
         }));
+    }
+
+    #[tokio::test]
+    async fn modified_a_does_not_grant_sandbox_approval_for_the_session() {
+        let mut test = app_with_llmsim().await;
+
+        for modifiers in [KeyModifiers::CONTROL, KeyModifiers::ALT] {
+            let (reply, mut answer) = oneshot::channel();
+            test.app.pending_sandbox_approval = Some(PendingSandboxApproval { reply });
+
+            test.app
+                .handle_key(KeyEvent::new(KeyCode::Char('a'), modifiers))
+                .await;
+
+            assert!(test.app.pending_sandbox_approval.is_some());
+            assert!(matches!(
+                answer.try_recv(),
+                Err(oneshot::error::TryRecvError::Empty)
+            ));
+            test.app.pending_sandbox_approval = None;
+        }
     }
 
     /// Seed a synthetic everruns completion signal onto the app's wake channel,
