@@ -171,7 +171,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # transports, the driver registry). Adopting it today would collapse two of nine
 # dependencies and route the rest through escape hatches. Revisit when the
 # facade promotes provider registration, MCP, and capability wiring.
-everruns-anthropic = "=0.31.0"
+everruns-anthropic = "=0.32.0"
 everruns-core = "=0.31.0"
 # The identity/platform family (PlatformStore and friends) moved out of
 # everruns-core into its own crate in 0.17.24; yolop implements PlatformStore
