@@ -37,13 +37,13 @@ class ClaudeCodeMetricsTest(unittest.TestCase):
     def test_parses_assistant_tools_and_result(self):
         events = [
             {"type": "system", "subtype": "init"},
-            {"type": "assistant", "message": {"model": "claude-sonnet-4-5",
+            {"type": "assistant", "message": {"model": "claude-sonnet-5-5",
                 "content": [{"type": "text", "text": "looking"},
                             {"type": "tool_use", "name": "Bash"}],
                 "usage": {"input_tokens": 10, "output_tokens": 5}}},
             {"type": "user", "message": {"content": [
                 {"type": "tool_result", "is_error": True}]}},
-            {"type": "assistant", "message": {"model": "claude-sonnet-4-5",
+            {"type": "assistant", "message": {"model": "claude-sonnet-5-5",
                 "content": [{"type": "tool_use", "name": "Edit"}],
                 "usage": {"input_tokens": 8, "output_tokens": 3}}},
             {"type": "result", "subtype": "success", "num_turns": 3,

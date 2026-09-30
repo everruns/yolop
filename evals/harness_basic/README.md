@@ -23,7 +23,7 @@ structural-rewrite tasks:
 | Axis | Values | Where |
 |------|--------|-------|
 | **binary** | `candidate` · `baseline` · `parallel-only` · `policy-only` · `dependency-baseline` | `BINARIES`; configured by the matching `HARNESS_BASIC_*_BIN` variable |
-| **target** (model) | Anthropic Sonnet 4.5, Opus 4.8, Sonnet 5; OpenAI GPT-5.5 and GPT-5.6 Terra; OpenRouter GLM 5.2 and Muse 1.3 Contributor; optional local model | `targets()` in `src/main.rs` |
+| **target** (model) | Anthropic Sonnet 5.5, Opus 4.8, Sonnet 5; OpenAI GPT-5.5 and GPT-5.6 Terra; OpenRouter GLM 5.2 and Muse 1.3 Contributor; optional local model | `targets()` in `src/main.rs` |
 | **effort** | `default` (yolop's per-model default; no flag) · `low` · `high` | `EFFORTS` |
 | **harness** | `default` (out-of-the-box yolop) · `with-ast-edit` (opt-in `ast_edit` capability) · `no-progress-guard` · `no-ast-grep` · `no-tool-reveal` | `HARNESS_VARIANTS` |
 
@@ -379,14 +379,14 @@ doppler run -- mira run --targets 'anthropic/*' --axis harness=no-ast-grep --sam
 
 | Preset | Purpose | Samples | Targets | Axes |
 |--------|---------|---------|---------|------|
-| `smoke` | cheap candidate sanity check | tag `smoke` | claude-sonnet-4-5 | candidate, effort=default, all harness |
-| `harness-compare` | **A/B yolop configurations** | all | claude-sonnet-4-5 | candidate, effort=default, all harness |
-| `progress-guard` | focused warning-behavior check | tag `progress-guard` | claude-sonnet-4-5 | candidate, effort=default, default vs no-progress-guard |
+| `smoke` | cheap candidate sanity check | tag `smoke` | claude-sonnet-5-5 | candidate, effort=default, all harness |
+| `harness-compare` | **A/B yolop configurations** | all | claude-sonnet-5-5 | candidate, effort=default, all harness |
+| `progress-guard` | focused warning-behavior check | tag `progress-guard` | claude-sonnet-5-5 | candidate, effort=default, default vs no-progress-guard |
 | `search-efficiency` | baseline/candidate session/search proof, 3 trials | 8 focused cases | gpt-5.5 | baseline + candidate, harness=default, effort=default |
 | `search-controls` | ordinary and semantic-failure controls, 5 trials | 4 controls | gpt-5.5 | baseline + candidate, harness=default, effort=default |
 | `repo-map-profile` | eager-schema adoption and recovery decision, 5 trials | scoped + bounded repo maps | gpt-5.5 | deferred baseline + map-only + map-and-symbols |
 | `repo-map-controls` | ordinary controls for the eager-schema decision, 5 trials | `add-fn`, `find-constant` | gpt-5.5 | deferred baseline + map-only + map-and-symbols |
-| `capability-disclosure` | first-request token and reveal-path proof, 5 trials | exact reply, read-only search, simple edit, complex coding, release/control, deferred history | gpt-5.5 + claude-sonnet-4-5 | baseline + candidate, harness=default, effort=default |
+| `capability-disclosure` | first-request token and reveal-path proof, 5 trials | exact reply, read-only search, simple edit, complex coding, release/control, deferred history | gpt-5.5 + claude-sonnet-5-5 | baseline + candidate, harness=default, effort=default |
 | `progress-efficiency` | baseline/candidate state-progress proof, 3 trials | checkpoint transition, state cycle, redundant validation, equivalent failure | gpt-5.5 | baseline + candidate, harness=default, effort=default |
 | `progress-controls` | ordinary and semantic-failure controls, 5 trials | 4 controls | gpt-5.5 | baseline + candidate, harness=default, effort=default |
 | `failure-repair` | equivalent-failure recovery proof, 3 trials | `equivalent-failure-recovery` | gpt-5.5 | baseline + candidate, harness=default, effort=default |
@@ -399,7 +399,7 @@ doppler run -- mira run --targets 'anthropic/*' --axis harness=no-ast-grep --sam
 | `output-persistence` | dependency-isolated output proof, 3 trials | head preservation + complete-output no-reread | gpt-5.5 | dependency baseline + candidate |
 | `persisted-output-reading` | bounded limited-output recovery proof, 3 trials | small read + large contextual search | gpt-5.5 | dependency baseline + candidate |
 | `output-persistence-controls` | ordinary dependency-isolated controls, 3 trials | `add-fn`, `find-constant` | gpt-5.5 | dependency baseline + candidate |
-| `ast-edit-compare` | **A/B ast_edit capability** | tag `ast-edit` | claude-sonnet-4-5 | candidate, effort=default, default vs with-ast-edit |
+| `ast-edit-compare` | **A/B ast_edit capability** | tag `ast-edit` | claude-sonnet-5-5 | candidate, effort=default, default vs with-ast-edit |
 | `effort-compare` | effort sweep | all | gpt-5.5 | candidate, harness=default, all efforts |
 | `models` | model sweep, out-of-the-box yolop | all | all | candidate, harness=default, effort=default |
 

@@ -22,18 +22,18 @@ benchmark = "lsp_integration"
 #   doppler run -- mira run --preset smoke --group-by harness
 [presets.smoke]
 tag = "smoke"
-targets = ["anthropic/claude-sonnet-4-5"]
+targets = ["anthropic/claude-sonnet-5-5"]
 
 # COMPARE — the study's core purpose: every sample on one model, LSP off vs on.
 #   doppler run -- mira run --preset compare --group-by harness
 [presets.compare]
-targets = ["anthropic/claude-sonnet-4-5"]
+targets = ["anthropic/claude-sonnet-5-5"]
 
 # RUST — just the rust-analyzer case (pull-diagnostics path), both variants.
 #   doppler run -- mira run --preset rust --group-by harness
 [presets.rust]
 tag = "rust"
-targets = ["anthropic/claude-sonnet-4-5"]
+targets = ["anthropic/claude-sonnet-5-5"]
 
 # MODELS — the whole model matrix, LSP on only (cross-model adoption check).
 #   doppler run -- mira run --preset models --group-by target

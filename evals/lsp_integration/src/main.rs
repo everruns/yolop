@@ -71,7 +71,7 @@ fn settings_for_variant(name: &str) -> Option<String> {
 /// no-op rather than a wall of failures.
 fn targets() -> Vec<Target> {
     vec![
-        Target::anthropic("claude-sonnet-4-5"),
+        Target::anthropic("claude-sonnet-5-5"),
         Target::anthropic("claude-opus-4-8"),
         Target::openai("gpt-5.5"),
         Target::cloud("openrouter", "z-ai/glm-5.2", "OPENROUTER_API_KEY"),

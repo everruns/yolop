@@ -143,7 +143,6 @@ MATRIX: dict[str, dict[str, Any]] = {
     # yolop x Anthropic (secondary provider)
     "anthropic-claude-sonnet-5": {"agent": "yolop", "model": "anthropic/claude-sonnet-5"},
     "anthropic-claude-opus-4.8": {"agent": "yolop", "model": "anthropic/claude-opus-4-8"},
-    "anthropic-claude-sonnet-4.5": {"agent": "yolop", "model": "anthropic/claude-sonnet-4-5"},
     # Offline plumbing check: exercises upload/run/verify with no API key. It
     # will not solve anything, so a 0.0 reward here is the expected result.
     "llmsim": {"agent": "yolop", "model": "llmsim/llmsim-yolop"},
