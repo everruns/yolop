@@ -7456,6 +7456,73 @@ flowchart TD
         _sessions: tempfile::TempDir,
     }
 
+    /// The pause has to survive the trip from the tool to the screen. Upstream's
+    /// `request_approval` writes it into a session-keyed store and the TUI reads
+    /// that store with its own session id, so a mismatch between the two would
+    /// leave the user staring at a turn that merely looks finished. The test
+    /// below sets the store directly and so cannot catch that; this one drives a
+    /// real `request_approval` tool call through the runtime instead.
+    #[tokio::test]
+    async fn a_request_approval_tool_call_surfaces_as_a_pause() {
+        use everruns_llmsim::{SimToolCall, SimTurn};
+
+        let workspace = tempfile::tempdir().expect("workspace tempdir");
+        let sessions = tempfile::tempdir().expect("sessions tempdir");
+        let settings = std::sync::Arc::new(crate::config::SettingsStore::open(
+            sessions.path().join("settings.toml"),
+        ));
+        let runtime = crate::runtime::build_with_options(
+            workspace.path().to_path_buf(),
+            crate::runtime::ProviderChoice::Sim,
+            None,
+            sessions.path().to_path_buf(),
+            settings,
+            crate::runtime::BuildOptions {
+                client_commands: true,
+                llmsim_override: Some(everruns_llmsim::LlmSimConfig::scripted(vec![
+                    SimTurn::ToolCalls(vec![SimToolCall {
+                        name: "request_approval".to_string(),
+                        arguments: serde_json::json!({
+                            "action": "delete the staging database",
+                            "question": "This drops 12k rows. Go ahead?"
+                        }),
+                        id: None,
+                    }]),
+                    SimTurn::Assistant("Waiting on your answer.".to_string()),
+                ])),
+                ..crate::runtime::BuildOptions::default()
+            },
+        )
+        .await
+        .expect("build llmsim runtime");
+        let mut app = App::new(runtime, vec![]);
+        app.model_discovery_enabled = false;
+        app.setup = None;
+        app.lines.clear();
+
+        for ch in "drop the staging database".chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::empty()))
+                .await;
+        }
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()))
+            .await;
+        app.pump_turn_until_idle_for_test().await;
+
+        app.announce_pending_approval();
+        let waiting: Vec<String> = system_lines(&app)
+            .into_iter()
+            .filter(|line| line.contains("waiting for your approval"))
+            .collect();
+        assert_eq!(
+            waiting.len(),
+            1,
+            "the tool call should have left exactly one visible pause: {:?}",
+            app.lines
+        );
+        assert!(waiting[0].contains("delete the staging database"));
+        assert!(waiting[0].contains("This drops 12k rows. Go ahead?"));
+    }
+
     /// A soft-approval pause is invisible unless the host says so: the
     /// model's own last words read the same whether it finished or is waiting
     /// on a yes. Announce it once, and stop announcing once the user answers.
