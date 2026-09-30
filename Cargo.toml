@@ -221,7 +221,7 @@ everruns-integrations-filesystem = "=0.31.0"
 everruns-integrations-web-fetch = "=0.31.0"
 everruns-integrations-duckduckgo = "=0.31.0"
 everruns-integrations-parallel = "=0.31.0"
-everruns-integrations-daytona = "=0.31.0"
+everruns-integrations-daytona = "=0.32.0"
 arboard = { version = "3", features = ["wayland-data-control"] }
 futures = "0.3"
 html-escape = "0.2"
