@@ -208,7 +208,7 @@ everruns-host = { version = "=0.31.0", features = ["mcp-stdio"] }
 # and the built-in capabilities left everruns-core for their own crates.
 everruns-provider = "=0.31.0"
 everruns-builtins = "=0.31.0"
-everruns-capability = "=0.31.0"
+everruns-capability = "=0.32.0"
 # Yolop ships `--provider llmsim` as a user-facing offline mode, not just a test
 # fixture, so the simulator is a production dependency. 0.18 split it into the
 # production-safe `everruns-llmsim`; `everruns-test-support` documents itself as

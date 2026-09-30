@@ -2098,7 +2098,7 @@ dependencies = [
  "chrono",
  "chrono-tz",
  "cron",
- "everruns-capability",
+ "everruns-capability 0.31.0",
  "everruns-core",
  "everruns-host",
  "everruns-integrations-typesafe",
@@ -2145,7 +2145,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "chrono-tz",
- "everruns-capability",
+ "everruns-capability 0.31.0",
  "everruns-core",
  "everruns-provider",
  "serde",
@@ -2169,6 +2169,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "everruns-capability"
+version = "0.32.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "69113852d0d690f89837f4408501f585b24d9e552c4f3a87b64949cb40d10ae7"
+dependencies = [
+ "async-trait",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "everruns-core"
 version = "0.31.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2179,7 +2191,7 @@ dependencies = [
  "base64 0.23.1",
  "chrono",
  "cron",
- "everruns-capability",
+ "everruns-capability 0.31.0",
  "everruns-provider",
  "futures",
  "globset",
@@ -2208,7 +2220,7 @@ checksum = "08e3c9cae6c2f7f09d358d176f3d42431b7932fd311bd37b3ad3221ba313ba6c"
 dependencies = [
  "async-trait",
  "chrono",
- "everruns-capability",
+ "everruns-capability 0.31.0",
  "everruns-core",
  "everruns-provider",
  "futures",
@@ -2229,7 +2241,7 @@ checksum = "29f01b9e64ae488b629f65cf4018f2de29f165f8768fa45eccd150a39bb91965"
 dependencies = [
  "async-trait",
  "chrono",
- "everruns-capability",
+ "everruns-capability 0.31.0",
  "everruns-core",
  "everruns-engine",
  "everruns-mcp",
@@ -2275,7 +2287,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d236f3d3acc9bcb7c7ff16eca4a4034b3737f5906357ee8111c7a9474d962244"
 dependencies = [
  "async-trait",
- "everruns-capability",
+ "everruns-capability 0.31.0",
  "everruns-core",
  "everruns-provider",
  "reqwest 0.13.5",
@@ -2294,7 +2306,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "base64 0.23.1",
- "everruns-capability",
+ "everruns-capability 0.31.0",
  "everruns-core",
  "everruns-provider",
  "hex",
@@ -2325,7 +2337,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "61764c3d183f66ea1ffb02ed9c8f5f0d0ec70920520e8ee685e8afb4264b6139"
 dependencies = [
  "async-trait",
- "everruns-capability",
+ "everruns-capability 0.31.0",
  "everruns-core",
  "everruns-provider",
  "reqwest 0.13.5",
@@ -2346,7 +2358,7 @@ dependencies = [
  "base64 0.23.1",
  "bytes",
  "ed25519-dalek 3.0.0",
- "everruns-capability",
+ "everruns-capability 0.31.0",
  "everruns-core",
  "everruns-provider",
  "fetchkit",
@@ -2382,7 +2394,7 @@ dependencies = [
  "async-trait",
  "base64 0.23.1",
  "chrono",
- "everruns-capability",
+ "everruns-capability 0.31.0",
  "everruns-core",
  "everruns-provider",
  "rand 0.10.3",
@@ -2459,7 +2471,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "everruns-builtins",
- "everruns-capability",
+ "everruns-capability 0.31.0",
  "everruns-core",
  "everruns-host",
  "everruns-provider",
@@ -9521,7 +9533,7 @@ dependencies = [
  "everruns",
  "everruns-anthropic",
  "everruns-builtins",
- "everruns-capability",
+ "everruns-capability 0.32.0",
  "everruns-core",
  "everruns-host",
  "everruns-integrations-daytona",
