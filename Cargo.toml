@@ -214,7 +214,7 @@ everruns-capability = "=0.31.0"
 # production-safe `everruns-llmsim`; `everruns-test-support` documents itself as
 # test-only and must not be used from production code. The `host` feature carries
 # the runtime-builder extension trait.
-everruns-llmsim = { version = "=0.31.0", features = ["host"] }
+everruns-llmsim = { version = "=0.32.0", features = ["host"] }
 # Filesystem and web-fetch capability implementations moved out of
 # everruns-core into their own integration crates (#3119).
 everruns-integrations-filesystem = "=0.31.0"
