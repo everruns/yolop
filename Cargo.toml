@@ -218,7 +218,7 @@ everruns-llmsim = { version = "=0.31.0", features = ["host"] }
 # Filesystem and web-fetch capability implementations moved out of
 # everruns-core into their own integration crates (#3119).
 everruns-integrations-filesystem = "=0.31.0"
-everruns-integrations-web-fetch = "=0.31.0"
+everruns-integrations-web-fetch = "=0.32.0"
 everruns-integrations-duckduckgo = "=0.31.0"
 everruns-integrations-parallel = "=0.31.0"
 everruns-integrations-daytona = "=0.31.0"
