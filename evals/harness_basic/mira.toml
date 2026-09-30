@@ -25,7 +25,7 @@ benchmark = "harness_basic"
 #   doppler run -- mira run --preset smoke
 [presets.smoke]
 tag = "smoke"
-targets = ["anthropic/claude-sonnet-4-5"]
+targets = ["anthropic/claude-sonnet-5-5"]
 axes = { binary = ["candidate"], effort = ["default"] }
 
 # HARNESS-COMPARE — the study's core purpose: the same samples and model across
@@ -33,7 +33,7 @@ axes = { binary = ["candidate"], effort = ["default"] }
 # src/main.rs and it shows up here automatically.
 #   doppler run -- mira run --preset harness-compare --group-by harness
 [presets.harness-compare]
-targets = ["anthropic/claude-sonnet-4-5"]
+targets = ["anthropic/claude-sonnet-5-5"]
 axes = { binary = ["candidate"], effort = ["default"] }
 
 # PROGRESS-GUARD — focused guardrail proof: the long sequential-read sample
@@ -42,7 +42,7 @@ axes = { binary = ["candidate"], effort = ["default"] }
 #   doppler run -- mira run --preset progress-guard --group-by harness
 [presets.progress-guard]
 tag = "progress-guard"
-targets = ["anthropic/claude-sonnet-4-5"]
+targets = ["anthropic/claude-sonnet-5-5"]
 axes = { binary = ["candidate"], effort = ["default"], harness = ["default", "no-progress-guard"] }
 
 # SEARCH-EFFICIENCY — regressions from a real failed session: prior-session
@@ -97,7 +97,7 @@ axes = { binary = ["baseline", "repo-map-only", "repo-map-symbols"], effort = ["
 #   doppler run -- mira run --preset capability-disclosure --trials 5 --group-by binary,target
 [presets.capability-disclosure]
 tag = "capability-disclosure"
-targets = ["openai/gpt-5.5", "anthropic/claude-sonnet-4-5"]
+targets = ["openai/gpt-5.5", "anthropic/claude-sonnet-5-5"]
 axes = { binary = ["baseline", "candidate"], effort = ["default"], harness = ["default"] }
 
 # PROGRESS-EFFICIENCY: recurring workspace states, repeated validation, and
@@ -220,7 +220,7 @@ axes = { binary = ["dependency-baseline", "candidate"], effort = ["default"], ha
 #   doppler run -- mira run --preset ast-edit-compare --group-by harness
 [presets.ast-edit-compare]
 tag = "ast-edit"
-targets = ["anthropic/claude-sonnet-4-5"]
+targets = ["anthropic/claude-sonnet-5-5"]
 axes = { binary = ["candidate"], effort = ["default"], harness = ["default", "with-ast-edit"] }
 
 # EFFORT-COMPARE — one model, out-of-the-box harness, across reasoning efforts.
@@ -240,5 +240,5 @@ axes = { binary = ["candidate"], harness = ["default"], effort = ["default"] }
 #   doppler run -- mira run --preset self-writing
 [presets.self-writing]
 tag = "self-writing"
-targets = ["anthropic/claude-sonnet-4-5"]
+targets = ["anthropic/claude-sonnet-5-5"]
 axes = { binary = ["candidate"], effort = ["default"], harness = ["default"] }

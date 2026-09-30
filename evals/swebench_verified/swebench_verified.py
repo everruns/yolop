@@ -14,7 +14,7 @@ builds an ephemeral env and runs it with no project scaffolding:
 
     cd evals/swebench_verified
     mira list                  # mira.toml's default_launcher drives this study
-    mira run --samples astropy__astropy-12907 --targets anthropic-claude-sonnet-4.5
+    mira run --samples astropy__astropy-12907 --targets anthropic-claude-sonnet-5.5
 
 (`mira --uv swebench_verified.py …` is the explicit equivalent; `--cmd "uv run
 swebench_verified.py"` still works for arbitrary command lines.)
@@ -174,7 +174,7 @@ MATRIX: dict[str, dict[str, Any]] = {
     "openai-gpt-5.5-low": {"agent": "yolop", "provider": "openai", "model": "gpt-5.5",
                     "reasoning_effort": "low"},
     # yolop x Anthropic (secondary provider)
-    "anthropic-claude-sonnet-4.5": {"agent": "yolop", "provider": "anthropic", "model": "claude-sonnet-4-5"},
+    "anthropic-claude-sonnet-5.5": {"agent": "yolop", "provider": "anthropic", "model": "claude-sonnet-5-5"},
     "anthropic-claude-opus-4.8": {"agent": "yolop", "provider": "anthropic", "model": "claude-opus-4-8"},
     # yolop x OpenRouter (needs OPENROUTER_API_KEY). `container: True` runs the
     # agent inside the instance's SWE-bench image, where the project is already
@@ -196,7 +196,7 @@ MATRIX: dict[str, dict[str, Any]] = {
     # Offline plumbing check (no key; won't solve tasks)
     "llmsim": {"agent": "yolop", "provider": "llmsim"},
     # Other coding agents (need their CLI on PATH + provider keys)
-    "claude-code-sonnet-4.5": {"agent": "claude-code", "model": "claude-sonnet-4-5"},
+    "claude-code-sonnet-5.5": {"agent": "claude-code", "model": "claude-sonnet-5-5"},
     "claude-code-opus-4.8": {"agent": "claude-code", "model": "claude-opus-4-8"},
     # codex reports tokens but no cost; `price` (USD per 1M) lets us estimate +
     # cap. sandbox: bypass — its Landlock sandbox can't init as root; the

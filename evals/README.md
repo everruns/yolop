@@ -37,7 +37,7 @@ SWEBENCH_NO_EVAL=1 mira run --samples astropy__astropy-12907 --targets llmsim --
 
 # Real run: solve + Docker-score one instance, archived under ./results.
 doppler run -- mira run --samples astropy__astropy-12907 \
-    --targets anthropic-claude-sonnet-4.5
+    --targets anthropic-claude-sonnet-5.5
 ```
 
 `mira run` selects like `cargo test`, by `--samples <glob>`

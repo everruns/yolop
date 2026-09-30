@@ -1842,7 +1842,6 @@ impl ProviderChoice {
                 "gpt-5.3-codex-spark",
             ],
             "anthropic" => &[
-                "claude-sonnet-4-5",
                 "claude-opus-4-5",
                 "claude-haiku-4-5",
                 "claude-sonnet-4-6",
@@ -7588,10 +7587,10 @@ mod tests {
             reasoning_effort: Some("medium".to_string()),
         };
         let next = provider
-            .resolve_model_spec("anthropic/claude-sonnet-4-5")
+            .resolve_model_spec("anthropic/claude-sonnet-5")
             .unwrap();
 
-        assert_eq!(next.label(), "openai/anthropic/claude-sonnet-4-5");
+        assert_eq!(next.label(), "openai/anthropic/claude-sonnet-5");
     }
 
     #[test]
@@ -7603,7 +7602,7 @@ mod tests {
         );
 
         let provider = ProviderChoice::Anthropic {
-            model: "claude-sonnet-4-5".to_string(),
+            model: "claude-sonnet-5".to_string(),
             reasoning_effort: None,
         };
         let next = provider.resolve_model_spec("claude-fable-5").unwrap();
@@ -7661,7 +7660,7 @@ mod tests {
         assert!(suggestions.contains(&"claude-opus-4-8[1m]"));
 
         let provider = ProviderChoice::Anthropic {
-            model: "claude-sonnet-4-5".to_string(),
+            model: "claude-sonnet-5".to_string(),
             reasoning_effort: None,
         };
         let next = provider.resolve_model_spec("claude-fable-5[1m]").unwrap();
@@ -8180,7 +8179,7 @@ mod tests {
             .insert("anthropic".to_string(), "stored-anth-key".to_string());
 
         let provider = ProviderChoice::Anthropic {
-            model: "claude-sonnet-4-5".to_string(),
+            model: "claude-sonnet-5".to_string(),
             reasoning_effort: None,
         };
         let model = provider.model_with_provider(&settings).unwrap();

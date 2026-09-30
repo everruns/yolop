@@ -20,7 +20,7 @@ Samples × two axes:
 
 | Axis | Values | Where |
 |------|--------|-------|
-| **target** (model) | `anthropic/claude-sonnet-4-5` · `anthropic/claude-opus-4-8` · `openai/gpt-5.5` · `openrouter/z-ai/glm-5.2` | `targets()` in `src/main.rs` |
+| **target** (model) | `anthropic/claude-sonnet-5-5` · `anthropic/claude-opus-4-8` · `openai/gpt-5.5` · `openrouter/z-ai/glm-5.2` | `targets()` in `src/main.rs` |
 | **harness** | `default` (LSP off, baseline) · `lsp` (capability enabled) | `HARNESS_VARIANTS` |
 
 Targets gate on provider key env vars and are skipped when the key is missing.
