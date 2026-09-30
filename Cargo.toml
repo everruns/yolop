@@ -177,7 +177,7 @@ everruns-core = "=0.31.0"
 # everruns-core into its own crate in 0.17.24; yolop implements PlatformStore
 # to route background-task wakes (src/runtime/background_wake.rs).
 everruns-platform = "=0.31.0"
-everruns-openai = "=0.31.0"
+everruns-openai = "=0.32.0"
 everruns-meta = "=0.31.0"
 # OpenRouter's first-class driver was split out of everruns-openai into its own
 # crate in 0.13.0; register it alongside openai to keep DriverId::OpenRouter.
