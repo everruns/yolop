@@ -122,39 +122,40 @@ The paranoia level can be changed three ways, all writing the same setting:
   careful", "stop asking me", "yolo mode"), the `set_approval_mode` tool lets
   the model switch the level in response.
 
-## Upstream migration
+## Upstream ownership
 
-Everruns generalized this layer into a portable capability, `soft_approval` in
-`everruns-builtins`, with the same three levels, the same `<soft_approval>`
-block, and the same three tools. It is on by default there for the Generic and
-Platform Chat harnesses. Yolop's copy is the origin of that design, not a fork
-of it, so the two should not diverge: yolop drops
-`src/capabilities/approval.rs` and registers the upstream one.
+This layer started here and was generalized into `soft_approval` in
+`everruns-builtins`, which now owns the three levels, the `<soft_approval>`
+block, the three tools, and the pause store. Yolop registers that capability
+rather than keeping a copy, so there is one implementation of the design
+instead of two drifting ones. `src/capabilities/approval.rs` is what remains
+on this side: the adapter that makes a server-shaped capability fit a
+single-user terminal host.
 
-That move is unblocked. `everruns-builtins` 0.29.0 carries the capability, and
-this tree already pins the whole `everruns-*` set at `=0.29.0`, so the upstream
-`soft_approval` is on the dependency graph while `approval.rs` is still the
-copy in use. Until the swap lands, the two are duplicate implementations of one
-design, which is the divergence risk this section exists to prevent.
+Three seams carry the difference:
 
-Two seams exist for exactly that move:
-
-- **The level.** Upstream resolves it as host or session override, then
+- **The level.** Upstream resolves it as a host or session override, then
   capability config, then `normal`. Yolop's level is central configuration in
-  `settings.toml`, not per-agent config, so it supplies an `ApprovalModeStore`
-  backed by `ConfigService` / `SettingsStore`. `set_approval_mode` then writes
-  through to `settings.toml` as it does today, `/setup approval` keeps working
-  unchanged, and the level stays cross-session.
+  `settings.toml`, not per-agent config, so `SettingsApprovalModes` implements
+  the upstream `ApprovalModeStore` over `ConfigService` and `SettingsStore`:
+  reads go through the config service on every call, so `/setup approval`,
+  `set_approval_mode`, and `set_config approval_mode` all take effect on the
+  next turn, and writes land in settings.toml so the level outlives the
+  session. Because the answer is central, the store always answers `Some` and
+  capability config never gets a say.
 - **The pause.** Upstream's `PendingApprovalStore` is keyed by session, since a
-  server holds many at once. Yolop's TUI holds one session, so it reads the
-  store with that session's id where it reads the local store today. The shape
-  of what it renders, action plus question, is unchanged.
-
+  server holds many at once. The TUI holds one, so it reads and resolves the
+  store with its own session's id. What it renders, action plus question, is
+  unchanged.
 - **The audit trail.** Upstream's tools stamp the turn and input message a
   consent was spoken in, and leave naming the approver to the host, which is
   the only party holding an authenticated record of who spoke. Yolop is
   single-user and local, so the owner of the `events.jsonl` line is the
   approver and nothing further is needed; the extra fields ride along harmless.
+
+The prompt text is now upstream's, which is the generalized wording rather
+than yolop's git-flavored original: the thresholds and the operating rules are
+the same, the examples are no longer shell and git specific.
 
 What yolop keeps on its own side either way: the status-bar level, the
 `/setup approval` command, and the `/ship` pre-authorization, which are host

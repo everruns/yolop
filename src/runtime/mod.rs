@@ -22,12 +22,12 @@ use crate::capabilities::tool_reveal::{
 };
 use crate::capabilities::yolop::{YOLOP_CAPABILITY_ID, YolopCapability};
 use crate::capabilities::{
-    AGENT_COMMANDS_CAPABILITY_ID, APPROVAL_CAPABILITY_ID, AST_GREP_CAPABILITY_ID,
-    ATTRIBUTION_CAPABILITY_ID, ActionGuardCapability, AgentCommandsCapability, ApprovalCapability,
-    AstEditCapability, AstGrepCapability, AttributionCapability, BACKGROUND_CAPABILITY_ID,
-    BackgroundCapability, CHECKPOINT_CAPABILITY_ID, CLIENT_COMMANDS_CAPABILITY_ID,
-    CODING_BASH_CAPABILITY_ID, CONFIG_CAPABILITY_ID, CONTEXT_COST_CONTROL_CAPABILITY_ID,
-    CheckpointCapability, ClientCommandsCapability, ClientUiContext, CodingBashCapability,
+    AGENT_COMMANDS_CAPABILITY_ID, AST_GREP_CAPABILITY_ID, ATTRIBUTION_CAPABILITY_ID,
+    ActionGuardCapability, AgentCommandsCapability, AstEditCapability, AstGrepCapability,
+    AttributionCapability, BACKGROUND_CAPABILITY_ID, BackgroundCapability,
+    CHECKPOINT_CAPABILITY_ID, CLIENT_COMMANDS_CAPABILITY_ID, CODING_BASH_CAPABILITY_ID,
+    CONFIG_CAPABILITY_ID, CONTEXT_COST_CONTROL_CAPABILITY_ID, CheckpointCapability,
+    ClientCommandsCapability, ClientUiContext, CodingBashCapability,
     CodingCliEnvironmentCapability, CommandDispatch, ConfigCapability,
     ContextCostControlCapability, CoordinationConfig, CoordinationHost, CoordinationStore,
     ENVIRONMENT_CONTEXT_CAPABILITY_ID, EnvironmentContextRegistry, GOAL_CAPABILITY_ID,
@@ -35,10 +35,10 @@ use crate::capabilities::{
     LspCapability, MODEL_RUNTIME_CONTEXT_CAPABILITY_ID, MODELS_CAPABILITY_ID, ModelCliCapability,
     ModelRuntimeContextCapability, ModelsCapability, PROGRESS_GUARD_CAPABILITY_ID,
     ProgressGuardCapability, REPO_MAP_CAPABILITY_ID, RepoMapCapability,
-    SESSION_COORDINATION_CAPABILITY_ID, SESSIONS_CAPABILITY_ID, SessionCoordinationCapability,
-    SessionsCapability, SetupCliCapability, TOOL_ARGUMENT_VALIDATION_CAPABILITY_ID,
-    ToolArgumentValidationCapability, USER_ASK_CAPABILITY_ID, UserAskCapability,
-    WorktreeCapability, coordination_project_id,
+    SESSION_COORDINATION_CAPABILITY_ID, SESSIONS_CAPABILITY_ID, SOFT_APPROVAL_CAPABILITY_ID,
+    SessionCoordinationCapability, SessionsCapability, SetupCliCapability,
+    TOOL_ARGUMENT_VALIDATION_CAPABILITY_ID, ToolArgumentValidationCapability,
+    USER_ASK_CAPABILITY_ID, UserAskCapability, WorktreeCapability, coordination_project_id,
 };
 use crate::config::capability_settings::{CapabilityCatalog, apply_capability_settings};
 use crate::config::mcp::McpConfigStore;
@@ -2740,7 +2740,7 @@ fn default_coding_harness_capabilities(client_commands: bool) -> Vec<CapabilityR
         CapabilityRef::new(GOAL_CAPABILITY_ID),
         // Soft approval: injects spoken-consent guidance for critical actions,
         // tuned by the central `approval_mode` setting (off contributes nothing).
-        CapabilityRef::new(APPROVAL_CAPABILITY_ID),
+        CapabilityRef::new(SOFT_APPROVAL_CAPABILITY_ID),
         CapabilityRef::new(CODING_BASH_CAPABILITY_ID),
         CapabilityRef::new(BACKGROUND_CAPABILITY_ID),
         // Project policy changes more often than tool-use guidance, so keep it
@@ -4461,12 +4461,9 @@ pub async fn build_with_options(
     capabilities.register(ActionGuardCapability::new());
     // Soft approval — spoken-consent guidance + audit tool, gated by the
     // central `approval_mode` setting (read live each turn).
-    let pending_approval = crate::capabilities::approval::PendingApprovalStore::default();
-    capabilities.register(ApprovalCapability {
-        config: settings.clone(),
-        settings: settings.clone(),
-        pending: pending_approval.clone(),
-    });
+    let (soft_approval, pending_approval) =
+        crate::capabilities::soft_approval_capability(settings.clone(), settings.clone());
+    capabilities.register(soft_approval);
     // Hard approval gate — the enforcement half of the same `approval_mode`.
     // Only registered when the host can service an interactive prompt (ACP);
     // it blocks risky tools behind that approval instead of trusting the model
@@ -10918,7 +10915,7 @@ mod tests {
                 < position(AGENT_INSTRUCTIONS_CAPABILITY_ID)
         );
         assert!(position(SKILLS_CAPABILITY_ID) < position(AGENT_INSTRUCTIONS_CAPABILITY_ID));
-        assert!(position(APPROVAL_CAPABILITY_ID) < position(AGENT_INSTRUCTIONS_CAPABILITY_ID));
+        assert!(position(SOFT_APPROVAL_CAPABILITY_ID) < position(AGENT_INSTRUCTIONS_CAPABILITY_ID));
         assert!(
             position(AGENT_INSTRUCTIONS_CAPABILITY_ID)
                 < position(ENVIRONMENT_CONTEXT_CAPABILITY_ID)

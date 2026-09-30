@@ -1,5 +1,18 @@
 # Knowledge Log
 
+## 2026-09-30, Soft approval now comes from everruns-builtins
+
+Yolop registers the upstream `soft_approval` capability instead of its own
+copy. `everruns-builtins` owns the levels, the prompt block, the three tools,
+and the pause store; `src/capabilities/approval.rs` is now just the adapter
+that fits a server-shaped capability to a single-user host. The level stays
+central configuration through a `SettingsApprovalModes` implementation of the
+upstream `ApprovalModeStore`, so `/setup approval`, `set_approval_mode`, and
+the status bar are unchanged and the setting still outlives the session. The
+TUI reads the session-keyed pause store with its own session id. The prompt is
+upstream's generalized wording now, same thresholds and rules, without the
+shell and git specific examples. See [Approval](specs/approval.md).
+
 ## 2026-09-25, Compatible model catalogs gate turn persistence
 
 - Turn preflight now uses the same direct `GET /models` fallback and Gemini id

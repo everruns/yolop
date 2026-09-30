@@ -1426,7 +1426,9 @@ impl App {
     /// two, so surface it, and only once per pause — the answer arrives in the
     /// user's next message, not at the end of this turn.
     fn announce_pending_approval(&mut self) {
-        let Some(pending) = self.pending_approval.peek() else {
+        // Upstream keys pauses by session because a server holds many; this
+        // host holds one, so it reads the store with its own session's id.
+        let Some(pending) = self.pending_approval.peek(&self.session_id()) else {
             return;
         };
         if self.awaiting_approval.as_ref() == Some(&pending) {
@@ -3046,7 +3048,7 @@ impl App {
         // The user has spoken, so whatever soft approval was waiting on is
         // answered now — approved, refused, or overtaken by a new ask. Either
         // way the session is no longer blocked on them.
-        self.pending_approval.resolve();
+        self.pending_approval.resolve(&self.session_id());
         self.awaiting_approval = None;
         self.push_user(display.clone());
         let images = std::mem::take(&mut self.pending_images);
@@ -7461,7 +7463,8 @@ flowchart TD
     async fn a_soft_approval_pause_is_announced_once_and_cleared_by_the_reply() {
         let mut test = app_with_llmsim().await;
         let pending = test.app.pending_approval.clone();
-        assert!(pending.peek().is_none());
+        let session = test.app.session_id();
+        assert!(pending.peek(&session).is_none());
 
         test.app.announce_pending_approval();
         assert!(
@@ -7470,10 +7473,13 @@ flowchart TD
         );
 
         // What `request_approval` leaves behind when the model pauses.
-        pending.set(crate::capabilities::approval::PendingApproval {
-            action: "squash-merge PR #677".into(),
-            question: "CI is green. Merge it?".into(),
-        });
+        pending.set(
+            session,
+            crate::capabilities::approval::PendingApproval {
+                action: "squash-merge PR #677".into(),
+                question: "CI is green. Merge it?".into(),
+            },
+        );
 
         test.app.announce_pending_approval();
         test.app.announce_pending_approval();
@@ -7488,7 +7494,7 @@ flowchart TD
         // The user answering ends the pause, whichever way they answered.
         test.app.set_input_text("no, hold off".into());
         test.app.submit_input().await;
-        assert!(test.app.pending_approval.peek().is_none());
+        assert!(test.app.pending_approval.peek(&session).is_none());
         assert!(test.app.awaiting_approval.is_none());
     }
 
