@@ -347,10 +347,22 @@ pub fn repo_id(repo_root: &Path) -> String {
     format!("{:08x}", hasher.finish())
 }
 
-pub fn worktree_parent_dir(repo_id: &str) -> Result<PathBuf> {
-    let tmp_base = std::env::var_os("TMPDIR")
+/// Base directory for per-user temporary worktree storage.
+fn tmp_base() -> PathBuf {
+    std::env::var_os("TMPDIR")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/tmp"));
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+}
+
+pub fn worktree_parent_dir(repo_id: &str) -> Result<PathBuf> {
+    worktree_parent_dir_in(&tmp_base(), repo_id)
+}
+
+// The `_in` variants take the storage base explicitly so tests need not
+// override `TMPDIR`: that is process-wide, and any concurrent test calling
+// `tempfile::tempdir()` while it points at a temp root that is about to be
+// deleted would lose its own directory with it.
+fn worktree_parent_dir_in(tmp_base: &Path, repo_id: &str) -> Result<PathBuf> {
     let tmp_private_root = tmp_base.join(private_tmp_dir_name());
     let tmp_candidate = tmp_private_root.join("worktrees");
     if ensure_private_dir(&tmp_private_root).is_ok() && ensure_private_dir(&tmp_candidate).is_ok() {
@@ -766,19 +778,17 @@ pub struct PruneReport {
 
 /// Roots that may contain session worktrees (tmp + persistent fallback).
 pub fn worktree_storage_roots() -> Vec<PathBuf> {
-    let mut roots = Vec::new();
-    let tmp_base = std::env::var_os("TMPDIR")
-        .map(PathBuf::from)
-        .or_else(|| Some(PathBuf::from("/tmp")))
-        .unwrap();
-    roots.push(tmp_base.join(private_tmp_dir_name()).join("worktrees"));
-    roots.push(
-        dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".yolop")
-            .join("worktrees"),
-    );
-    roots
+    worktree_storage_roots_in(
+        &tmp_base(),
+        &dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")),
+    )
+}
+
+fn worktree_storage_roots_in(tmp_base: &Path, home: &Path) -> Vec<PathBuf> {
+    vec![
+        tmp_base.join(private_tmp_dir_name()).join("worktrees"),
+        home.join(".yolop").join("worktrees"),
+    ]
 }
 
 pub fn referenced_worktree_paths(
@@ -818,12 +828,16 @@ pub fn referenced_worktree_paths(
 }
 
 pub fn list_worktree_paths_on_disk() -> Result<Vec<PathBuf>> {
+    list_worktree_paths_in(&worktree_storage_roots())
+}
+
+fn list_worktree_paths_in(roots: &[PathBuf]) -> Result<Vec<PathBuf>> {
     let mut paths = Vec::new();
-    for root in worktree_storage_roots() {
+    for root in roots {
         if !root.is_dir() {
             continue;
         }
-        for repo_entry in std::fs::read_dir(&root)? {
+        for repo_entry in std::fs::read_dir(root)? {
             let repo_entry = repo_entry?;
             if !repo_entry.file_type()?.is_dir() {
                 continue;
@@ -910,6 +924,14 @@ fn delete_checkpoint_ref(repo_root: &Path, reference: &str) -> Result<()> {
 }
 
 pub fn prune_orphan_worktrees(sessions_dir: &Path, dry_run: bool) -> Result<PruneReport> {
+    prune_orphan_worktrees_in(sessions_dir, dry_run, &worktree_storage_roots())
+}
+
+fn prune_orphan_worktrees_in(
+    sessions_dir: &Path,
+    dry_run: bool,
+    roots: &[PathBuf],
+) -> Result<PruneReport> {
     let referenced = referenced_worktree_paths(sessions_dir)?;
     let mut report = PruneReport {
         removed: Vec::new(),
@@ -917,7 +939,7 @@ pub fn prune_orphan_worktrees(sessions_dir: &Path, dry_run: bool) -> Result<Prun
         kept: 0,
         errors: Vec::new(),
     };
-    for path in list_worktree_paths_on_disk()? {
+    for path in list_worktree_paths_in(roots)? {
         let canonical = std::fs::canonicalize(&path).unwrap_or(path.clone());
         if referenced.contains(&canonical) || referenced.contains(&path) {
             report.kept += 1;
@@ -1058,29 +1080,15 @@ mod tests {
     fn worktree_storage_is_owner_only() {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
-        let _guard = crate::testing::test_env::lock();
         let storage = tempfile::tempdir().expect("storage");
         // Canonicalize so ancestor validation sees real directories: on macOS
         // TMPDIR lives below /var (a symlink to /private/var), which the
         // symlink guard would otherwise reject and send this test down the
         // home-directory fallback. No-op on Linux CI.
         let storage_root = std::fs::canonicalize(storage.path()).expect("canonical tmp");
-        let previous_tmpdir = std::env::var_os("TMPDIR");
-        // SAFETY: test-only TMPDIR override; restored below before asserting.
-        unsafe {
-            std::env::set_var("TMPDIR", &storage_root);
-        }
 
-        let parent = worktree_parent_dir("private-repo").expect("private worktree parent");
-
-        // SAFETY: restore prior TMPDIR before asserting, so a failure below
-        // cannot leak a deleted temp root into later tests in this process.
-        unsafe {
-            match previous_tmpdir {
-                Some(value) => std::env::set_var("TMPDIR", value),
-                None => std::env::remove_var("TMPDIR"),
-            }
-        }
+        let parent =
+            worktree_parent_dir_in(&storage_root, "private-repo").expect("private worktree parent");
 
         // SAFETY: geteuid has no preconditions and cannot modify process state.
         let uid = unsafe { libc::geteuid() };
@@ -1300,18 +1308,11 @@ mod tests {
 
     #[test]
     fn prune_removes_unreferenced_worktree_dirs() {
-        let _guard = crate::testing::test_env::lock();
         let sessions = tempfile::tempdir().expect("sessions");
         let storage = tempfile::tempdir().expect("storage");
         // Canonicalize so ancestor validation sees real directories (see
-        // worktree_storage_is_owner_only): otherwise macOS falls back to the
-        // shared home directory and orphan counts stop being hermetic.
+        // worktree_storage_is_owner_only).
         let storage_path = std::fs::canonicalize(storage.path()).expect("canonical tmp");
-        let previous_tmpdir = std::env::var_os("TMPDIR");
-        // SAFETY: test-only TMPDIR override; restored below before asserting.
-        unsafe {
-            std::env::set_var("TMPDIR", &storage_path);
-        }
 
         let orphan = storage_path
             .join(private_tmp_dir_name())
@@ -1359,29 +1360,12 @@ mod tests {
         let checkpoint_ref = "refs/yolop/checkpoints/orphan-session/cp_1";
         run(&["update-ref", checkpoint_ref, "HEAD"]);
 
-        // Point HOME at an empty directory: orphan scans cover the home
-        // storage root as well, and the real one may hold unrelated checkouts.
+        // Scan an empty home: orphan scans cover the home storage root as
+        // well, and the real one may hold unrelated checkouts.
         let fake_home = tempfile::tempdir().expect("fake home");
-        let previous_home = std::env::var_os("HOME");
-        // SAFETY: test-only HOME override; restored below before asserting.
-        unsafe {
-            std::env::set_var("HOME", fake_home.path());
-        }
+        let roots = worktree_storage_roots_in(&storage_path, fake_home.path());
 
-        let report = prune_orphan_worktrees(sessions.path(), false).expect("prune");
-
-        // SAFETY: restore prior TMPDIR/HOME before asserting, so a failure
-        // here cannot leak deleted temp roots into later tests in this process.
-        unsafe {
-            match &previous_tmpdir {
-                Some(value) => std::env::set_var("TMPDIR", value),
-                None => std::env::remove_var("TMPDIR"),
-            }
-            match &previous_home {
-                Some(value) => std::env::set_var("HOME", value),
-                None => std::env::remove_var("HOME"),
-            }
-        }
+        let report = prune_orphan_worktrees_in(sessions.path(), false, &roots).expect("prune");
 
         assert_eq!(report.kept, 0);
         assert_eq!(report.removed.len(), 1);
