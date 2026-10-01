@@ -1882,9 +1882,13 @@ mod tests {
         let (cap, settings, _ext_dir) = capability(tmp.path());
         let tools = cap.management_tools();
         let get = |n: &str| tools.iter().find(|t| t.name() == n).unwrap();
-        get("install_extension")
+        let installed = get("install_extension")
             .execute(json!({ "source": src.to_str().unwrap() }))
             .await;
+        assert!(
+            matches!(installed, ToolExecutionResult::Success(_)),
+            "install failed: {installed:?}"
+        );
 
         match get("set_extension_config")
             .execute(json!({ "name": "demo", "field": "endpoint", "value": "https://example" }))
