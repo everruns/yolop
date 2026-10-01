@@ -1,5 +1,18 @@
 # Knowledge Log
 
+## 2026-09-30, Soft approval now comes from everruns-builtins
+
+Yolop registers the upstream `soft_approval` capability instead of its own
+copy. `everruns-builtins` owns the levels, the prompt block, the three tools,
+and the pause store; `src/capabilities/approval.rs` is now just the adapter
+that fits a server-shaped capability to a single-user host. The level stays
+central configuration through a `SettingsApprovalModes` implementation of the
+upstream `ApprovalModeStore`, so `/setup approval`, `set_approval_mode`, and
+the status bar are unchanged and the setting still outlives the session. The
+TUI reads the session-keyed pause store with its own session id. The prompt is
+upstream's generalized wording now, same thresholds and rules, without the
+shell and git specific examples. See [Approval](specs/approval.md).
+
 ## 2026-09-25, Compatible model catalogs gate turn persistence
 
 - Turn preflight now uses the same direct `GET /models` fallback and Gemini id
@@ -70,6 +83,16 @@
   provider names. Environment credentials now reach MCP servers only through
   explicit `${VAR}` header bindings, so workspace metadata cannot select an
   unrelated process credential.
+## 2026-09-17, Soft approval upstreamed to everruns-builtins
+
+Everruns generalized yolop's soft-approval layer into a portable
+`soft_approval` capability, on by default for its Generic and Platform Chat
+harnesses. Same levels, same prompt block, same three tools, plus two seams
+yolop needs: a host-owned `ApprovalModeStore` so the level can stay in
+`settings.toml`, and a session-keyed `PendingApprovalStore`. Recorded the
+migration in [Approval](specs/approval.md). `everruns-builtins` 0.29.0 carries
+the capability and this tree pins `=0.29.0`, so the swap is unblocked and
+`approval.rs` is now a duplicate of an upstream implementation.
 
 ## 2026-09-14, Maintenance review angles second pass
 

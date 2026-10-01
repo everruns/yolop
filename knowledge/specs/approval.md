@@ -122,6 +122,45 @@ The paranoia level can be changed three ways, all writing the same setting:
   careful", "stop asking me", "yolo mode"), the `set_approval_mode` tool lets
   the model switch the level in response.
 
+## Upstream ownership
+
+This layer started here and was generalized into `soft_approval` in
+`everruns-builtins`, which now owns the three levels, the `<soft_approval>`
+block, the three tools, and the pause store. Yolop registers that capability
+rather than keeping a copy, so there is one implementation of the design
+instead of two drifting ones. `src/capabilities/approval.rs` is what remains
+on this side: the adapter that makes a server-shaped capability fit a
+single-user terminal host.
+
+Three seams carry the difference:
+
+- **The level.** Upstream resolves it as a host or session override, then
+  capability config, then `normal`. Yolop's level is central configuration in
+  `settings.toml`, not per-agent config, so `SettingsApprovalModes` implements
+  the upstream `ApprovalModeStore` over `ConfigService` and `SettingsStore`:
+  reads go through the config service on every call, so `/setup approval`,
+  `set_approval_mode`, and `set_config approval_mode` all take effect on the
+  next turn, and writes land in settings.toml so the level outlives the
+  session. Because the answer is central, the store always answers `Some` and
+  capability config never gets a say.
+- **The pause.** Upstream's `PendingApprovalStore` is keyed by session, since a
+  server holds many at once. The TUI holds one, so it reads and resolves the
+  store with its own session's id. What it renders, action plus question, is
+  unchanged.
+- **The audit trail.** Upstream's tools stamp the turn and input message a
+  consent was spoken in, and leave naming the approver to the host, which is
+  the only party holding an authenticated record of who spoke. Yolop is
+  single-user and local, so the owner of the `events.jsonl` line is the
+  approver and nothing further is needed; the extra fields ride along harmless.
+
+The prompt text is now upstream's, which is the generalized wording rather
+than yolop's git-flavored original: the thresholds and the operating rules are
+the same, the examples are no longer shell and git specific.
+
+What yolop keeps on its own side either way: the status-bar level, the
+`/setup approval` command, and the `/ship` pre-authorization, which are host
+surfaces rather than capability behavior.
+
 ## Non-goals
 
 - **Not a hard sandbox.** Soft approval cannot *prevent* a tool call; it asks

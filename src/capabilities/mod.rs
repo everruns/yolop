@@ -52,7 +52,7 @@ pub(crate) use action_guard::{ActionGuardCapability, evaluate_actionable_promise
 pub(crate) use agent_commands::{
     AGENT_COMMANDS_CAPABILITY_ID, AgentCommandsCapability, CommandDispatch,
 };
-pub(crate) use approval::{APPROVAL_CAPABILITY_ID, ApprovalCapability};
+pub(crate) use approval::{SOFT_APPROVAL_CAPABILITY_ID, soft_approval_capability};
 pub(crate) use ast_grep::{AST_GREP_CAPABILITY_ID, AstEditCapability, AstGrepCapability};
 pub(crate) use attribution::{ATTRIBUTION_CAPABILITY_ID, AttributionCapability};
 pub(crate) use background::{
