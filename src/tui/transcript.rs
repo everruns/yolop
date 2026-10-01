@@ -1111,6 +1111,8 @@ mod tests {
         use everruns_core::{CompactionStepData, ContextCompactedData};
 
         let event = event(ContextCompactedData {
+            checkpoint_bytes: None,
+            replay_source: None,
             checkpoint_id: None,
             strategy_used: "observation_masking+aggressive_trim".into(),
             trigger: everruns_core::CompactionTrigger::ContextBudget,
@@ -1154,6 +1156,8 @@ mod tests {
         use everruns_core::ContextCompactedData;
 
         let event = event(ContextCompactedData {
+            checkpoint_bytes: None,
+            replay_source: None,
             checkpoint_id: Some("checkpoint-test".into()),
             strategy_used: "native".into(),
             trigger: everruns_core::CompactionTrigger::ContextBudget,
