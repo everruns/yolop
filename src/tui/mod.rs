@@ -1426,7 +1426,9 @@ impl App {
     /// two, so surface it, and only once per pause — the answer arrives in the
     /// user's next message, not at the end of this turn.
     fn announce_pending_approval(&mut self) {
-        let Some(pending) = self.pending_approval.peek() else {
+        // Upstream keys pauses by session because a server holds many; this
+        // host holds one, so it reads the store with its own session's id.
+        let Some(pending) = self.pending_approval.peek(&self.session_id()) else {
             return;
         };
         if self.awaiting_approval.as_ref() == Some(&pending) {
@@ -3046,7 +3048,7 @@ impl App {
         // The user has spoken, so whatever soft approval was waiting on is
         // answered now — approved, refused, or overtaken by a new ask. Either
         // way the session is no longer blocked on them.
-        self.pending_approval.resolve();
+        self.pending_approval.resolve(&self.session_id());
         self.awaiting_approval = None;
         self.push_user(display.clone());
         let images = std::mem::take(&mut self.pending_images);
@@ -7454,6 +7456,73 @@ flowchart TD
         _sessions: tempfile::TempDir,
     }
 
+    /// The pause has to survive the trip from the tool to the screen. Upstream's
+    /// `request_approval` writes it into a session-keyed store and the TUI reads
+    /// that store with its own session id, so a mismatch between the two would
+    /// leave the user staring at a turn that merely looks finished. The test
+    /// below sets the store directly and so cannot catch that; this one drives a
+    /// real `request_approval` tool call through the runtime instead.
+    #[tokio::test]
+    async fn a_request_approval_tool_call_surfaces_as_a_pause() {
+        use everruns_llmsim::{SimToolCall, SimTurn};
+
+        let workspace = tempfile::tempdir().expect("workspace tempdir");
+        let sessions = tempfile::tempdir().expect("sessions tempdir");
+        let settings = std::sync::Arc::new(crate::config::SettingsStore::open(
+            sessions.path().join("settings.toml"),
+        ));
+        let runtime = crate::runtime::build_with_options(
+            workspace.path().to_path_buf(),
+            crate::runtime::ProviderChoice::Sim,
+            None,
+            sessions.path().to_path_buf(),
+            settings,
+            crate::runtime::BuildOptions {
+                client_commands: true,
+                llmsim_override: Some(everruns_llmsim::LlmSimConfig::scripted(vec![
+                    SimTurn::ToolCalls(vec![SimToolCall {
+                        name: "request_approval".to_string(),
+                        arguments: serde_json::json!({
+                            "action": "delete the staging database",
+                            "question": "This drops 12k rows. Go ahead?"
+                        }),
+                        id: None,
+                    }]),
+                    SimTurn::Assistant("Waiting on your answer.".to_string()),
+                ])),
+                ..crate::runtime::BuildOptions::default()
+            },
+        )
+        .await
+        .expect("build llmsim runtime");
+        let mut app = App::new(runtime, vec![]);
+        app.model_discovery_enabled = false;
+        app.setup = None;
+        app.lines.clear();
+
+        for ch in "drop the staging database".chars() {
+            app.handle_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::empty()))
+                .await;
+        }
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()))
+            .await;
+        app.pump_turn_until_idle_for_test().await;
+
+        app.announce_pending_approval();
+        let waiting: Vec<String> = system_lines(&app)
+            .into_iter()
+            .filter(|line| line.contains("waiting for your approval"))
+            .collect();
+        assert_eq!(
+            waiting.len(),
+            1,
+            "the tool call should have left exactly one visible pause: {:?}",
+            app.lines
+        );
+        assert!(waiting[0].contains("delete the staging database"));
+        assert!(waiting[0].contains("This drops 12k rows. Go ahead?"));
+    }
+
     /// A soft-approval pause is invisible unless the host says so: the
     /// model's own last words read the same whether it finished or is waiting
     /// on a yes. Announce it once, and stop announcing once the user answers.
@@ -7461,7 +7530,8 @@ flowchart TD
     async fn a_soft_approval_pause_is_announced_once_and_cleared_by_the_reply() {
         let mut test = app_with_llmsim().await;
         let pending = test.app.pending_approval.clone();
-        assert!(pending.peek().is_none());
+        let session = test.app.session_id();
+        assert!(pending.peek(&session).is_none());
 
         test.app.announce_pending_approval();
         assert!(
@@ -7470,10 +7540,13 @@ flowchart TD
         );
 
         // What `request_approval` leaves behind when the model pauses.
-        pending.set(crate::capabilities::approval::PendingApproval {
-            action: "squash-merge PR #677".into(),
-            question: "CI is green. Merge it?".into(),
-        });
+        pending.set(
+            session,
+            crate::capabilities::approval::PendingApproval {
+                action: "squash-merge PR #677".into(),
+                question: "CI is green. Merge it?".into(),
+            },
+        );
 
         test.app.announce_pending_approval();
         test.app.announce_pending_approval();
@@ -7488,7 +7561,7 @@ flowchart TD
         // The user answering ends the pause, whichever way they answered.
         test.app.set_input_text("no, hold off".into());
         test.app.submit_input().await;
-        assert!(test.app.pending_approval.peek().is_none());
+        assert!(test.app.pending_approval.peek(&session).is_none());
         assert!(test.app.awaiting_approval.is_none());
     }
 

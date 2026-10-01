@@ -173,6 +173,7 @@ mod tests {
         let context = ModelViewContext {
             session_id: SessionId::new(),
             prior_usage: None,
+            provider_managed_reduction: false,
         };
         let first = RuntimeMessage::user("first");
         let second = RuntimeMessage::user("second");

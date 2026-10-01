@@ -186,10 +186,12 @@ impl ExtensionCapability {
     /// client). Keyed `<extension>__<server>` so two extensions can't collide
     /// on a logical server name and `/mcp` shows provenance. Manifest-declared
     /// means the approved transport shape is exactly what runs.
-    pub fn contributed_mcp_servers(&self) -> everruns_core::ScopedMcpServers {
+    pub fn contributed_mcp_servers(&self) -> everruns_core::CapabilityMcpServers {
         use super::package::McpTransport;
-        use everruns_core::{McpServerTransportType, ScopedMcpServer};
-        let mut servers = everruns_core::ScopedMcpServers::new();
+        use everruns_core::{
+            CapabilityMcpServer, McpServerActsAs, McpServerTransportType, ScopedMcpServer,
+        };
+        let mut servers = everruns_core::CapabilityMcpServers::new();
         for (name, spec) in &self.package.manifest.mcp_servers {
             let scoped = match spec.transport {
                 McpTransport::Stdio => ScopedMcpServer {
@@ -206,7 +208,12 @@ impl ExtensionCapability {
                     ..Default::default()
                 },
             };
-            servers.insert(format!("{}__{name}", self.package.manifest.name), scoped);
+            // Extension servers carry their own credentials; none is resolved
+            // from an acting identity.
+            servers.insert(
+                format!("{}__{name}", self.package.manifest.name),
+                CapabilityMcpServer::new(scoped, McpServerActsAs::None),
+            );
         }
         servers
     }
@@ -247,7 +254,7 @@ impl Capability for ExtensionCapability {
         }
     }
 
-    fn mcp_servers(&self) -> everruns_core::ScopedMcpServers {
+    fn mcp_servers(&self) -> everruns_core::CapabilityMcpServers {
         self.contributed_mcp_servers()
     }
 
