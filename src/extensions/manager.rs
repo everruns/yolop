@@ -306,13 +306,15 @@ impl ExtensionProcess {
         for (name, value) in &self.spec.env {
             command.env(name, value);
         }
-        let mut child = command.spawn().with_context(|| {
-            format!(
-                "extension `{}`: cannot spawn `{}` (install it or fix `capabilityServer.command`)",
-                self.name(),
-                server.command
-            )
-        })?;
+        let mut child = spawn_retrying_text_busy(&mut command)
+            .await
+            .with_context(|| {
+                format!(
+                    "extension `{}`: cannot spawn `{}` (install it or fix `capabilityServer.command`)",
+                    self.name(),
+                    server.command
+                )
+            })?;
         let stdout = child
             .stdout
             .take()
@@ -440,5 +442,77 @@ impl LiveProcessRegistry {
             .get(name)
             .and_then(Weak::upgrade)?;
         Some(process.reload().await)
+    }
+}
+
+/// Spawn, retrying briefly while the executable is "text file busy".
+///
+/// Linux refuses to exec a file that any process holds open for writing. A
+/// freshly installed or copied server can hit this when another thread forks
+/// while the writer's descriptor is still open: the forked child holds a copy
+/// until its own exec. It clears within milliseconds, so retrying is the fix
+/// (cargo does the same); any other error, and a busy file that stays busy,
+/// is returned as is.
+async fn spawn_retrying_text_busy(command: &mut Command) -> std::io::Result<tokio::process::Child> {
+    const ATTEMPTS: u32 = 10;
+    for attempt in 1..=ATTEMPTS {
+        match command.spawn() {
+            Err(err) if attempt < ATTEMPTS && is_text_file_busy(&err) => {
+                tokio::time::sleep(Duration::from_millis(20 * u64::from(attempt))).await;
+            }
+            result => return result,
+        }
+    }
+    unreachable!("the last attempt always returns")
+}
+
+#[cfg(unix)]
+fn is_text_file_busy(err: &std::io::Error) -> bool {
+    err.raw_os_error() == Some(libc::ETXTBSY)
+}
+
+#[cfg(not(unix))]
+fn is_text_file_busy(_err: &std::io::Error) -> bool {
+    false
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+
+    /// A script still open for writing cannot be exec'd; the spawn must wait
+    /// it out instead of failing the extension.
+    #[tokio::test]
+    async fn spawn_waits_out_a_text_file_busy_executable() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("server");
+        let mut writer = std::fs::File::create(&script).unwrap();
+        writer.write_all(b"#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        // Precondition: while the writer is open the kernel really refuses.
+        let busy = std::process::Command::new(&script).spawn().unwrap_err();
+        assert!(is_text_file_busy(&busy), "expected ETXTBSY, got {busy}");
+
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(60));
+            drop(writer);
+        });
+        let mut command = Command::new(&script);
+        let mut child = spawn_retrying_text_busy(&mut command)
+            .await
+            .expect("spawn succeeds once the writer closes");
+        assert!(child.wait().await.unwrap().success());
+        release.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn spawn_does_not_retry_other_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut command = Command::new(dir.path().join("missing"));
+        let err = spawn_retrying_text_busy(&mut command).await.unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
     }
 }
