@@ -4808,7 +4808,9 @@ pub async fn build_with_options(
     let skill_commands = crate::capabilities::skills::user_invocable_commands(
         &skill_dirs,
         &extension_skill_scopes,
-        &runtime.file_store(),
+        &runtime.file_store(everruns_host::in_process_internal_org_id(
+            everruns_core::DEFAULT_ORG_PUBLIC_ID,
+        )),
         session_id,
     )
     .await;

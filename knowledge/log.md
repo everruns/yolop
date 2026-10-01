@@ -1,5 +1,13 @@
 # Knowledge Log
 
+## 2026-10-01, Everruns 0.32.0 adopted as one batch
+
+All `everruns-*` pins move to 0.32.0 together; the per-crate Dependabot PRs
+cannot pass CI alone because mixed versions split the shared types. Adaptations
+are mechanical: extension MCP contributions are `CapabilityMcpServer` with an
+explicit `acts_as` of none, `file_store` takes an org id, and the compaction and
+model-view structs gained fields.
+
 ## 2026-09-30, Soft approval now comes from everruns-builtins
 
 Yolop registers the upstream `soft_approval` capability instead of its own
