@@ -226,6 +226,10 @@ pub struct CodexChatDriver {
     refresh_gate: Arc<tokio::sync::Mutex<()>>,
     auth_store: Option<Arc<dyn CodexAuthStore>>,
     compaction_policy: CompactionCapabilityPolicy,
+    /// Set for an open-source Sign in with ChatGPT login: the token endpoint
+    /// refresh uses. Turns then go to the public Responses API with the
+    /// request shaped by `crate::drivers::chatgpt_plan`.
+    plan_token_url: Option<String>,
 }
 
 pub fn register_driver(registry: &mut DriverRegistry, settings: Arc<SettingsStore>) {
@@ -246,11 +250,11 @@ fn register_driver_with_url(
         // A login from the open-source route runs on the public Responses API,
         // not the Codex backend; the provider name stays `codex` either way.
         if crate::drivers::chatgpt_plan::is_open_source_login(&config.metadata) {
-            return Box::new(crate::drivers::chatgpt_plan::ChatGptPlanDriver::new(
+            return Box::new(CodexChatDriver::open_source(
                 CodexTokens::from_config(config, config_auth_store.as_deref()),
                 config_auth_store,
                 refresh_gate.clone(),
-                crate::auth::siwc::API_BASE_URL.to_string(),
+                crate::drivers::chatgpt_plan::RESPONSES_URL.to_string(),
                 crate::auth::siwc::Endpoints::production().token,
             ));
         }
@@ -290,14 +294,59 @@ impl CodexChatDriver {
             refresh_gate,
             auth_store,
             compaction_policy,
+            plan_token_url: None,
+        }
+    }
+
+    /// The driver for an open-source login: the same token handling and
+    /// stream parsing, the public Responses API as endpoint, and refresh
+    /// against that route's token endpoint.
+    pub(super) fn open_source(
+        tokens: CodexTokens,
+        auth_store: Option<Arc<dyn CodexAuthStore>>,
+        refresh_gate: Arc<tokio::sync::Mutex<()>>,
+        responses_url: String,
+        token_url: String,
+    ) -> Self {
+        let compaction_scope = CompactionCapabilityScope::new(
+            &responses_url,
+            tokens.account_id.as_deref(),
+            &tokens.access_token,
+        );
+        Self {
+            client: reqwest::Client::new(),
+            responses_url,
+            compaction_scope,
+            tokens: Arc::new(tokio::sync::Mutex::new(tokens)),
+            refresh_gate,
+            auth_store,
+            compaction_policy: CompactionCapabilityPolicy::new(
+                NATIVE_COMPACTION_REPROBE_AFTER,
+                Arc::new(Instant::now),
+            ),
+            plan_token_url: Some(token_url),
         }
     }
 
     async fn token_snapshot(&self) -> EverrunsResult<CodexTokens> {
-        self.refresh_tokens_with(|client_id, refresh_token| async move {
-            crate::auth::codex::refresh_with_token(&client_id, &refresh_token).await
-        })
-        .await
+        let Some(token_url) = self.plan_token_url.clone() else {
+            return self
+                .refresh_tokens_with(|client_id, refresh_token| async move {
+                    crate::auth::codex::refresh_with_token(&client_id, &refresh_token).await
+                })
+                .await;
+        };
+        let tokens = self
+            .refresh_tokens_with(move |client_id, refresh_token| {
+                let token_url = token_url.clone();
+                async move {
+                    crate::auth::siwc::refresh_with_token_at(&token_url, &client_id, &refresh_token)
+                        .await
+                }
+            })
+            .await?;
+        crate::drivers::chatgpt_plan::ensure_plan_scope(tokens.open_source_scopes())?;
+        Ok(tokens)
     }
 
     async fn refresh_tokens_with<F, Fut>(&self, refresh: F) -> EverrunsResult<CodexTokens>
@@ -351,10 +400,6 @@ impl CodexTokens {
             client_id,
             open_source,
         }
-    }
-
-    pub(super) fn access_token(&self) -> &str {
-        &self.access_token
     }
 
     /// Granted scopes of an open-source login; `None` for a Codex login.
@@ -543,6 +588,7 @@ fn adopt_disk_auth(tokens: &mut CodexTokens, store: &dyn CodexAuthStore) {
         && disk.refresh_token == tokens.refresh_token
         && disk.expires_at == tokens.expires_at
         && disk.client_id == tokens.client_id
+        && disk.open_source == tokens.open_source
     {
         return;
     }
@@ -642,14 +688,22 @@ impl ChatDriver for CodexChatDriver {
             }),
         };
 
-        let headers = codex_headers(&tokens, config.metadata.get("session_id"));
+        let mut body = serde_json::to_value(&request)
+            .map_err(|err| AgentLoopError::llm(format!("Failed to serialize request: {err}")))?;
+        let headers = if self.plan_token_url.is_some() {
+            // The public API takes none of the Codex backend's headers.
+            crate::drivers::chatgpt_plan::shape_request(&mut body);
+            HeaderMap::new()
+        } else {
+            codex_headers(&tokens, config.metadata.get("session_id"))
+        };
 
         let response = self
             .client
             .post(&self.responses_url)
             .bearer_auth(&tokens.access_token)
             .headers(headers)
-            .json(&request)
+            .json(&body)
             .send()
             .await
             .map_err(|err| AgentLoopError::llm(format!("Failed to send Codex request: {err}")))?;
@@ -657,6 +711,12 @@ impl ChatDriver for CodexChatDriver {
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
+            if self.plan_token_url.is_some() {
+                return Err(crate::drivers::chatgpt_plan::response_error(
+                    status.as_u16(),
+                    &body,
+                ));
+            }
             return Err(codex_response_error(
                 "API",
                 status,
@@ -708,7 +768,8 @@ impl ChatDriver for CodexChatDriver {
     }
 
     fn supports_compact(&self) -> bool {
-        self.compaction_policy.supports(&self.compaction_scope)
+        // Only `POST /v1/responses` is documented for the open-source route.
+        self.plan_token_url.is_none() && self.compaction_policy.supports(&self.compaction_scope)
     }
 
     fn effective_context_window(&self, model: &str) -> Option<usize> {
@@ -726,7 +787,7 @@ impl ChatDriver for CodexChatDriver {
         _endpoint: &ProviderEndpoint,
         request: CompactRequest,
     ) -> EverrunsResult<Option<CompactResponse>> {
-        if !self.compaction_policy.supports(&self.compaction_scope) {
+        if !self.supports_compact() {
             tracing::debug!("Codex native compaction skipped: policy does not support compact");
             return Ok(None);
         }
@@ -1751,6 +1812,7 @@ mod tests {
             refresh_gate: Arc::new(tokio::sync::Mutex::new(())),
             auth_store: None,
             compaction_policy: CompactionCapabilityPolicy::new(cooldown, clock),
+            plan_token_url: None,
         }
     }
 
@@ -2396,6 +2458,7 @@ mod tests {
             refresh_gate: refresh_gate.clone(),
             auth_store: Some(auth_store.clone()),
             compaction_policy: compaction_policy.clone(),
+            plan_token_url: None,
         };
         let first = make_driver();
         let second = make_driver();

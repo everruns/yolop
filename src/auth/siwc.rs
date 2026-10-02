@@ -47,8 +47,6 @@ pub const SCOPE: &str =
     "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct";
 /// The `resource` (token audience) for every authorize, exchange and refresh.
 pub const RESOURCE: &str = "https://api.openai.com/v1";
-/// Where turns go: the public Responses API, not the Codex backend.
-pub const API_BASE_URL: &str = "https://api.openai.com/v1";
 const PREFERRED_CALLBACK_PORT: u16 = 1455;
 const CALLBACK_PATH: &str = "/auth/callback";
 const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
@@ -737,7 +735,7 @@ pub(crate) mod test_support {
     use base64::Engine as _;
 
     pub const TEST_KID: &str = "yolop-test-key";
-    const TEST_KEY_PKCS8: &str = include_str!("../../tests/fixtures/siwc_test_rsa_pkcs8.b64");
+    const TEST_KEY_PKCS1: &str = include_str!("../../tests/fixtures/siwc_test_rsa_pkcs1.b64");
 
     fn b64(bytes: &[u8]) -> String {
         base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
@@ -745,9 +743,9 @@ pub(crate) mod test_support {
 
     fn key_pair() -> ring::rsa::KeyPair {
         let der = base64::engine::general_purpose::STANDARD
-            .decode(TEST_KEY_PKCS8.split_whitespace().collect::<String>())
+            .decode(TEST_KEY_PKCS1.split_whitespace().collect::<String>())
             .expect("fixture base64");
-        ring::rsa::KeyPair::from_pkcs8(&der).expect("fixture key")
+        ring::rsa::KeyPair::from_der(&der).expect("fixture key")
     }
 
     /// The JWKS document publishing the test key.

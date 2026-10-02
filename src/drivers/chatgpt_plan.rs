@@ -2,39 +2,34 @@
 //
 // A login from the open-source Sign in with ChatGPT route (`crate::auth::siwc`)
 // carries a token whose audience is `https://api.openai.com/v1`. Turns go to
-// `POST /v1/responses` with it as the bearer, not to the Codex backend.
+// `POST /v1/responses` with it as the bearer, not to the Codex backend. This
+// module holds what differs from the Codex route; the HTTP path, stream
+// parsing, and refresh gate are the Codex driver's (`CodexChatDriver::open_source`).
 //
 // Decisions:
-// - No new HTTP client: this wraps everruns' Open Responses driver (the same
-//   wire driver `everruns-openai` builds on) with every optional OpenAI
-//   extension off: no stateful continuation, no hosted tools or tool_search,
-//   no background mode, no explicit cache controls.
-// - The route's preview limits are applied as a request extension that edits
-//   the serialized body: the fields the docs list as rejected are removed,
-//   `store: false` and `stream: true` are forced, and `system` items become
-//   `developer`. `service_tier` is dropped too: the docs name a service-tier
-//   override among unsupported capabilities, so the `speed` setting does not
-//   apply on this route (inferred, not listed field by field).
-// - Auth is a `ProviderAuth` that refreshes per request with the client saved
-//   on the token set, sharing the Codex driver's refresh gate and disk
-//   adoption so two processes never race a rotating refresh token.
+// - Not everruns' Open Responses driver. It was the first choice, but at
+//   everruns 0.33 it removes `store` from every foreground request after any
+//   request extension has run (`background::mark`), and the route requires
+//   `store: false`. The Codex driver already builds a stateless
+//   `store: false` request for the same model family, so it is reused instead
+//   of adding another HTTP client.
+// - The route's preview limits are applied to the serialized body: the fields
+//   the docs list as rejected are removed, `store: false` and `stream: true`
+//   are forced, and `system` items become `developer`. `service_tier` is
+//   dropped too: the docs name a service-tier override among unsupported
+//   capabilities (inferred, not listed field by field).
 // - Native compaction and model listing are off until the route is proven:
 //   the docs document only `POST /v1/responses`, and `/v1/models` answers in a
-//   ChatGPT-specific shape the shared parser does not read.
+//   ChatGPT-specific shape.
 //
 // See knowledge/specs/chatgpt-sign-in.md.
-use super::codex::{CodexAuthStore, CodexTokens, ensure_fresh_tokens, metadata_extra_string};
-use async_trait::async_trait;
+use super::codex::metadata_extra_string;
 use everruns_provider::error::Result as EverrunsResult;
-use everruns_provider::message::Message as LlmMessage;
-use everruns_provider::{
-    AgentLoopError, ChatDriver, DiscoveredModel, LlmCallConfig, LlmErrorKind, LlmResponseStream,
-    OpenResponsesProtocolChatDriver, OpenResponsesRequestExtension, ProviderAuth,
-    ProviderAuthRequest, ProviderEndpoint, ProviderMetadata, RuntimeProvider,
-};
-use reqwest::header::HeaderMap;
+use everruns_provider::{AgentLoopError, LlmErrorKind, ProviderMetadata};
 use serde_json::Value;
-use std::sync::Arc;
+
+/// Where turns on this route go.
+pub const RESPONSES_URL: &str = "https://api.openai.com/v1/responses";
 
 /// `flow` metadata value the runtime sets for an open-source login.
 pub const OPEN_SOURCE_FLOW: &str = "open-source";
@@ -129,165 +124,53 @@ pub fn plan_error_kind(body: &str) -> Option<LlmErrorKind> {
     }
 }
 
-struct PlanRequestShape;
-
-impl OpenResponsesRequestExtension for PlanRequestShape {
-    fn decorate(&self, body: &mut Value, _config: &LlmCallConfig) -> EverrunsResult<()> {
-        shape_request(body);
-        Ok(())
-    }
-
-    fn classify_error(
-        &self,
-        _status: u16,
-        _headers: &HeaderMap,
-        error_body: &str,
-    ) -> Option<LlmErrorKind> {
-        plan_error_kind(error_body)
-    }
+/// A failed turn on this route, classified by its documented error code.
+/// Credentials are kept: a plan-usage error is not proof the login is dead.
+pub fn response_error(status: u16, body: &str) -> AgentLoopError {
+    let kind =
+        plan_error_kind(body).unwrap_or_else(|| LlmErrorKind::from_provider_status(status, body));
+    let hint = match kind {
+        LlmErrorKind::QuotaExhausted => {
+            " ChatGPT plan usage limit reached; see https://chatgpt.com/settings/usage."
+        }
+        LlmErrorKind::Authentication => {
+            " Run `/setup` to sign in with ChatGPT again, or choose another provider."
+        }
+        _ => "",
+    };
+    AgentLoopError::llm_kind(
+        kind,
+        format!("ChatGPT plan API error ({status}): {body}{hint}"),
+    )
 }
 
-/// Bearer auth from the saved open-source login, refreshed near expiry with
-/// the client that issued it.
-struct PlanAuth {
-    tokens: Arc<tokio::sync::Mutex<CodexTokens>>,
-    refresh_gate: Arc<tokio::sync::Mutex<()>>,
-    store: Option<Arc<dyn CodexAuthStore>>,
-    token_url: String,
-}
-
-#[async_trait]
-impl ProviderAuth for PlanAuth {
-    async fn headers(
-        &self,
-        _request: ProviderAuthRequest<'_>,
-    ) -> EverrunsResult<Vec<(String, String)>> {
-        // Refresh tokens rotate; serialize with every other ChatGPT driver.
-        let _gate = self.refresh_gate.lock().await;
-        let mut tokens = self.tokens.lock().await;
-        let token_url = self.token_url.clone();
-        ensure_fresh_tokens(
-            &mut tokens,
-            self.store.as_deref(),
-            move |client_id, refresh| {
-                let token_url = token_url.clone();
-                async move {
-                    crate::auth::siwc::refresh_with_token_at(&token_url, &client_id, &refresh).await
-                }
-            },
-        )
-        .await?;
-        if tokens.open_source_scopes().is_some_and(|scopes| {
-            !scopes.is_empty() && !crate::auth::siwc::grants_plan_usage(scopes)
-        }) {
-            return Err(AgentLoopError::llm_kind(
+/// Refuse a turn when the login's granted scopes lack plan usage. An empty
+/// list (scopes not recorded) is let through for the API to decide.
+pub fn ensure_plan_scope(scopes: Option<&[String]>) -> EverrunsResult<()> {
+    match scopes {
+        Some(scopes) if !scopes.is_empty() && !crate::auth::siwc::grants_plan_usage(scopes) => {
+            Err(AgentLoopError::llm_kind(
                 LlmErrorKind::Authentication,
                 "ChatGPT plan use is not enabled for this sign-in. Run `/setup` and allow it, or choose another provider.",
-            ));
+            ))
         }
-        Ok(vec![(
-            "authorization".to_string(),
-            format!("Bearer {}", tokens.access_token()),
-        )])
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-}
-
-/// The `codex` provider's driver for an open-source login.
-pub struct ChatGptPlanDriver {
-    inner: OpenResponsesProtocolChatDriver,
-    endpoint: ProviderEndpoint,
-}
-
-impl ChatGptPlanDriver {
-    pub(super) fn new(
-        tokens: CodexTokens,
-        store: Option<Arc<dyn CodexAuthStore>>,
-        refresh_gate: Arc<tokio::sync::Mutex<()>>,
-        base_url: String,
-        token_url: String,
-    ) -> Self {
-        let inner = OpenResponsesProtocolChatDriver::new()
-            .with_stateful_responses(false)
-            .with_native_features(false, false)
-            .with_hosted_tools(false)
-            .with_background_mode(false)
-            .with_prompt_cache_options(false)
-            .with_request_extension(Arc::new(PlanRequestShape));
-        let auth = PlanAuth {
-            tokens: Arc::new(tokio::sync::Mutex::new(tokens)),
-            refresh_gate,
-            store,
-            token_url,
-        };
-        let endpoint = RuntimeProvider::new("chatgpt-plan", inner.clone())
-            .base_url(base_url)
-            .auth(auth)
-            .endpoint()
-            .clone();
-        Self { inner, endpoint }
-    }
-}
-
-#[async_trait]
-impl ChatDriver for ChatGptPlanDriver {
-    // Like the Codex driver, this one owns its endpoint and rotating
-    // credentials, so it ignores the endpoint the runtime passes in.
-    async fn chat_completion_stream(
-        &self,
-        _endpoint: &ProviderEndpoint,
-        messages: Vec<LlmMessage>,
-        config: &LlmCallConfig,
-    ) -> EverrunsResult<LlmResponseStream> {
-        self.inner
-            .chat_completion_stream(&self.endpoint, messages, config)
-            .await
-    }
-
-    async fn list_models(
-        &self,
-        _endpoint: &ProviderEndpoint,
-    ) -> EverrunsResult<Option<Vec<DiscoveredModel>>> {
-        Ok(None)
-    }
-
-    fn supports_compact(&self) -> bool {
-        false
-    }
-
-    fn supports_stateful_responses(&self) -> bool {
-        false
-    }
-
-    fn effective_context_window(&self, model: &str) -> Option<usize> {
-        super::codex::model_profile(model).and_then(|profile| {
-            profile
-                .limits
-                .map(|limits| usize::try_from(limits.context).unwrap_or(usize::MAX))
-        })
-    }
-
-    fn supports_parallel_tool_calls(&self, model: &str) -> bool {
-        self.inner.supports_parallel_tool_calls(model)
-    }
-
-    fn supports_response_format(&self, model: &str) -> bool {
-        self.inner.supports_response_format(model)
+        _ => Ok(()),
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::super::codex::{CodexAuthStore, CodexChatDriver, CodexTokens};
     use super::*;
     use crate::config::{CodexAuth, OpenSourceGrant};
     use everruns_provider::driver_registry::DriverConfig;
+    use everruns_provider::message::Message as LlmMessage;
     use everruns_provider::message::MessageRole as LlmMessageRole;
+    use everruns_provider::{ChatDriver, LlmCallConfig, ProviderEndpoint};
     use futures::StreamExt;
     use std::io::{Read, Write};
     use std::net::TcpListener;
+    use std::sync::Arc;
     use std::sync::Mutex as StdMutex;
 
     #[test]
@@ -360,6 +243,25 @@ mod tests {
         );
         assert_eq!(plan_error_kind(r#"{"detail":"not enabled"}"#), None);
         assert_eq!(plan_error_kind(&body("something_else")), None);
+    }
+
+    #[test]
+    fn response_errors_keep_status_and_point_at_recovery() {
+        let limit = response_error(
+            429,
+            r#"{"error":{"code":"subscription_sharing_usage_limit_exceeded"}}"#,
+        );
+        assert_eq!(limit.llm_error_kind(), Some(LlmErrorKind::QuotaExhausted));
+        assert!(
+            limit.to_string().contains("chatgpt.com/settings/usage"),
+            "{limit}"
+        );
+        let admission = response_error(503, r#"{"detail":"direct routing unavailable"}"#);
+        assert!(admission.to_string().contains("(503)"), "{admission}");
+        assert!(ensure_plan_scope(Some(&["openid".to_string()])).is_err());
+        assert!(ensure_plan_scope(Some(&[crate::auth::siwc::PLAN_SCOPE.to_string()])).is_ok());
+        assert!(ensure_plan_scope(Some(&[])).is_ok());
+        assert!(ensure_plan_scope(None).is_ok());
     }
 
     #[test]
@@ -501,11 +403,11 @@ mod tests {
                 }),
             })
             .unwrap();
-        let driver = ChatGptPlanDriver::new(
+        let driver = CodexChatDriver::open_source(
             expired_open_source_tokens(),
             Some(store.clone() as Arc<dyn CodexAuthStore>),
             Arc::new(tokio::sync::Mutex::new(())),
-            format!("{base}/v1"),
+            format!("{base}/v1/responses"),
             format!("{base}/token"),
         );
 
@@ -555,7 +457,7 @@ mod tests {
         );
         let body: Value =
             serde_json::from_str(turn.split("\r\n\r\n").nth(1).unwrap()).expect("json body");
-        assert_eq!(body["store"], false);
+        assert_eq!(body["store"], false, "{turn}");
         assert_eq!(body["stream"], true);
         for field in REJECTED_FIELDS {
             assert!(body.get(*field).is_none(), "{field} sent: {body}");
@@ -584,11 +486,11 @@ mod tests {
             subject: None,
         });
         tokens.set_expires_at_for_test(Some(crate::auth::codex::now_epoch_millis() + 3_600_000));
-        let driver = ChatGptPlanDriver::new(
+        let driver = CodexChatDriver::open_source(
             tokens,
             None,
             Arc::new(tokio::sync::Mutex::new(())),
-            format!("{base}/v1"),
+            format!("{base}/v1/responses"),
             format!("{base}/token"),
         );
         let mut config = LlmCallConfig::default();

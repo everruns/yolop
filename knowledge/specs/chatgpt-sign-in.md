@@ -140,12 +140,15 @@ host ID stay for the next sign-in.
 
 ### Inference
 
-The `codex` provider name is kept; a login with `flow = "open-source"` selects
-a different driver (`src/drivers/chatgpt_plan.rs`) that sends
-`POST https://api.openai.com/v1/responses` with the access token as bearer. It
-is everruns' Open Responses wire driver with stateful continuation, hosted
-tools, `tool_search`, background mode, and explicit cache controls off, plus a
-request extension that applies the preview limits to the serialized body:
+The `codex` provider name is kept; a login with `flow = "open-source"` makes
+the codex driver send `POST https://api.openai.com/v1/responses` with the
+access token as bearer and none of the Codex backend's headers. The plan was to
+reuse everruns' Open Responses wire driver, but at everruns 0.33 that driver
+strips `store` from every foreground request after its request extensions run,
+and this route requires `store: false`. Yolop's Codex driver already builds a
+stateless `store: false` request for the same models, so the route reuses its
+HTTP path, stream parsing, and refresh gate, and `src/drivers/chatgpt_plan.rs`
+applies the preview limits to the serialized body:
 
 - `store: false` and `stream: true` on every request; history goes in `input`.
 - Removed: `background`, `conversation`, `max_output_tokens`, `max_tool_calls`,
@@ -155,7 +158,7 @@ request extension that applies the preview limits to the serialized body:
 - `system` input items become `developer`; instructions stay in
   `instructions`.
 - Tools other than `function`, `custom`, `namespace`, and `web_search` are
-  dropped.
+  dropped (the Codex request sends only function tools today).
 
 The documented plan-usage error codes map to error kinds: a usage limit to
 quota exhausted, ineligible or unauthorized accounts to authentication,
@@ -173,22 +176,23 @@ any request.
   input items, which may mean ungrouped top-level tools are rejected; the
   Codex app-server configuration they document sends ordinary function tools,
   so this is the first thing to check live.
-- `include: ["reasoning.encrypted_content"]`, `reasoning`, `text`,
-  `parallel_tool_calls`, and `prompt_cache_key` are kept; none is listed as
+- `reasoning` (effort and an `auto` summary) is kept; it is not listed as
   rejected.
 - Native compaction and `/v1/models` listing are off. Only `POST
   /v1/responses` is documented for this route, and the model catalog has a
   ChatGPT-specific shape (`models[].slug`, `visibility`). The menus show the
   same model IDs as the Codex route.
-- Usage-limit `429`s still go through everruns' bounded retry before they are
-  reported; the docs ask to pause instead.
+- Errors are not retried in the driver, matching the Codex route; the docs
+  ask for bounded backoff on the `503` codes.
 
 ## Remaining work
 
 Before this route becomes the default: a live sign-in and turn against a
 ChatGPT account (the open questions above), an account picker over several
 registrations, the model catalog from `/v1/models`, and the in-product ChatGPT
-plan disclosures the SIWC UI guidelines ask for.
+plan disclosures the SIWC UI guidelines ask for. Upstream, everruns' Open
+Responses driver should keep an explicit `store: false` so this route can move
+onto it.
 
 ## Ownership boundary
 

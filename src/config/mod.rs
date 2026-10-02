@@ -2134,6 +2134,75 @@ mod tests {
     }
 
     #[test]
+    fn open_source_login_registration_and_host_id_roundtrip_via_disk() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let path = tmp.path().join("settings.toml");
+        let store = SettingsStore::open(path.clone());
+        store
+            .set_chatgpt_sign_in(Some("open-source".to_string()))
+            .expect("route");
+        let host = store
+            .ensure_chatgpt_host_id(|| "urn:uuid:first".to_string())
+            .expect("host id");
+        // A host ID is generated once and then reused.
+        assert_eq!(
+            store
+                .ensure_chatgpt_host_id(|| "urn:uuid:second".to_string())
+                .unwrap(),
+            host
+        );
+        store
+            .set_chatgpt_registration(Some(ChatGptRegistration {
+                client_id: "oaiapp_issued".to_string(),
+                subject: "user-sub-1".to_string(),
+                email: Some("user@example.com".to_string()),
+            }))
+            .expect("registration");
+        let grant = OpenSourceGrant {
+            id_token: Some("id.token".to_string()),
+            scopes: vec![
+                "openid".to_string(),
+                "chatgpt.tokens.use.direct".to_string(),
+            ],
+            subject: Some("user-sub-1".to_string()),
+        };
+        store
+            .set_codex_auth(CodexAuth {
+                access_token: "access".to_string(),
+                refresh_token: Some("refresh".to_string()),
+                expires_at: None,
+                account_id: None,
+                email: None,
+                client_id: Some("oaiapp_issued".to_string()),
+                open_source: Some(grant.clone()),
+            })
+            .expect("auth");
+
+        let on_disk = std::fs::read_to_string(&path).expect("read");
+        assert!(on_disk.contains("flow = \"open-source\""), "got: {on_disk}");
+        let snapshot = SettingsStore::open(path.clone()).snapshot();
+        assert_eq!(snapshot.chatgpt_sign_in(), Some("open-source"));
+        assert_eq!(snapshot.chatgpt_host_id.as_deref(), Some("urn:uuid:first"));
+        assert_eq!(
+            snapshot
+                .chatgpt_registration()
+                .map(|r| r.client_id.as_str()),
+            Some("oaiapp_issued")
+        );
+        assert_eq!(
+            snapshot.codex_auth().and_then(|a| a.open_source.clone()),
+            Some(grant)
+        );
+
+        // Signing out clears the tokens but keeps the registration and host.
+        store.clear_codex_auth().expect("clear");
+        let snapshot = SettingsStore::open(path).snapshot();
+        assert!(snapshot.codex_auth().is_none());
+        assert!(snapshot.chatgpt_registration().is_some());
+        assert_eq!(snapshot.chatgpt_host_id.as_deref(), Some("urn:uuid:first"));
+    }
+
+    #[test]
     fn refresh_codex_auth_from_disk_picks_up_external_writes() {
         let tmp = tempfile::tempdir().expect("tmp");
         let path = tmp.path().join("settings.toml");

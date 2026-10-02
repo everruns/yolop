@@ -5,8 +5,9 @@
 The codex provider gains a second sign-in route, selected by
 `chatgpt_sign_in = "open-source"` or `YOLOP_CHATGPT_SIGN_IN`: dynamic client
 registration with a persisted host ID, an RS256-verified ID token, and turns on
-the public Responses API through everruns' Open Responses driver with the
-preview's rejected fields stripped. The registered client is saved apart from
+the public Responses API with the preview's rejected fields stripped. Turns
+reuse the Codex driver's HTTP path rather than everruns' Open Responses driver,
+which at 0.33 drops the `store: false` the route requires. The registered client is saved apart from
 the tokens so sign-out keeps it, and refresh uses the client saved on the token
 set, the storage the configurable-client change put in place. The Codex route
 stays the default until the new one is proven against a live account; what was
