@@ -7,7 +7,7 @@
 use crate::tui::input::image_input::MAX_IMAGE_BYTES;
 use everruns_core::ContentPart;
 use image::ImageEncoder;
-use std::io::{self, BufReader, Read, Write};
+use std::io::{self, BufReader, Write};
 use std::path::Path;
 #[cfg(target_os = "linux")]
 use std::path::PathBuf;
