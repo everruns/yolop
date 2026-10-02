@@ -95,9 +95,11 @@ impl ModelEntry {
 /// so listing several providers here costs nothing to a user who has one.
 pub fn default_models() -> Vec<ModelEntry> {
     vec![
+        ModelEntry::new("openai", "gpt-6.1-sol"),
         ModelEntry::new("openai", "gpt-5.6-sol"),
         ModelEntry::new("openai", "gpt-5.6-terra"),
         ModelEntry::new("openai", "gpt-5.6-luna"),
+        ModelEntry::new("codex", "gpt-6.1-sol"),
         ModelEntry::new("codex", "gpt-5.6-sol"),
         ModelEntry::new("codex", "gpt-5.6-terra"),
         ModelEntry::new("codex", "gpt-5.6-luna"),
@@ -172,15 +174,17 @@ mod tests {
     }
 
     #[test]
-    fn default_list_offers_the_gpt_5_6_line_on_both_accounts() {
+    fn default_list_offers_gpt_6_1_sol_and_the_gpt_5_6_line_on_both_accounts() {
         let defaults = default_models();
-        assert_eq!(defaults[0], ModelEntry::new("openai", "gpt-5.6-sol"));
+        assert_eq!(defaults[0], ModelEntry::new("openai", "gpt-6.1-sol"));
         assert_eq!(
             defaults,
             vec![
+                ModelEntry::new("openai", "gpt-6.1-sol"),
                 ModelEntry::new("openai", "gpt-5.6-sol"),
                 ModelEntry::new("openai", "gpt-5.6-terra"),
                 ModelEntry::new("openai", "gpt-5.6-luna"),
+                ModelEntry::new("codex", "gpt-6.1-sol"),
                 ModelEntry::new("codex", "gpt-5.6-sol"),
                 ModelEntry::new("codex", "gpt-5.6-terra"),
                 ModelEntry::new("codex", "gpt-5.6-luna"),

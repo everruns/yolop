@@ -197,12 +197,12 @@ yolop --provider ollama -p "explain this file"
 yolop --provider local -p "refactor the parser without network access"
 ```
 
-Pick per run with `--provider` and `-m`, persist choices with `/setup` or `yolop config model set`, and switch mid-session with `/model` and `/effort`.
+Pick per run with `--provider` and `-m`, persist choices with `/setup` or `yolop config model set`, and switch mid-session with `/model` and `/effort`. GPT-6.1 Sol is on the menu (`-m gpt-6.1-sol`); for OpenAI's faster or cheaper service tiers set `yolop config set speed fast` (or `flex`, `ultrafast`, `default`), or `YOLOP_SPEED` for one run. A tier the model does not offer is skipped.
 
 <details>
 <summary>Codex, OpenRouter, custom endpoints, and local inference</summary>
 
-**Codex.** `--provider codex` uses your ChatGPT plan via a browser or device login (`/setup` walks through it). Pin a model with `yolop config model set codex <id>`, tune reasoning with `/effort`.
+**Codex.** `--provider codex` uses your ChatGPT plan via a browser or device login (`/setup` walks through it). Pin a model with `yolop config model set codex <id>`, tune reasoning with `/effort`. Sign-in uses the Codex CLI's public OAuth client until yolop has its own; to sign in with a different client, set `yolop config set chatgpt_client_id <id>` or `YOLOP_CHATGPT_CLIENT_ID` and log in again. An existing login keeps refreshing with the client that issued it.
 
 **OpenRouter.** Sign in from the browser or set `OPENROUTER_API_KEY`. The default model is `openai/gpt-5.6-sol`; any `provider/model` id works with `-m`.
 

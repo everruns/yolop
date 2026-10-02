@@ -50,6 +50,8 @@ const REWRITTEN_KEYS: &[&str] = &[
 const GLOBAL_ONLY_KEYS: &[&str] = &[
     "tokens",
     "codex_auth",
+    // Picks the OAuth client credentials are issued to, so it lives beside them.
+    "chatgpt_client_id",
     "theme",
     "attribution",
     "proactive_wake",

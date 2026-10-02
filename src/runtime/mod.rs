@@ -14,6 +14,7 @@ pub(crate) mod attestation;
 pub(crate) mod reasoning;
 pub mod session;
 pub mod session_log;
+pub(crate) mod speed;
 
 use crate::capabilities::mcp::McpCapability as YolopMcpCapability;
 use crate::capabilities::memory::{GlobalMemoryCapability, MEMORY_CAPABILITY_ID, MemoryStore};
@@ -247,6 +248,9 @@ fn mcp_connection_for(
         endpoint,
         auth_mode: server.auth_mode.clone(),
         protocol_mode: server.protocol_mode,
+        // 0.33 made form-mode elicitation opt-in per server; carry the
+        // server's own policy (`url` unless its config says otherwise).
+        elicitation_policy: server.elicitation_policy,
         oauth_provider_id: server.oauth_provider_id.clone(),
         pending_oauth_provider: None,
         // Secret bindings (0.17.24) are resolved by the hosted control plane
@@ -1821,7 +1825,10 @@ impl ProviderChoice {
 
     pub fn model_suggestions_for_provider(provider: &str) -> &'static [&'static str] {
         match provider {
+            // GPT-6.1 Sol (everruns 0.33, #3925) leads the OpenAI lines. Its
+            // fast tier is the `speed` setting, not a separate model id.
             "openai" => &[
+                "gpt-6.1-sol",
                 "gpt-5.6-sol",
                 "gpt-5.6-terra",
                 "gpt-5.6-luna",
@@ -1832,6 +1839,7 @@ impl ProviderChoice {
                 "gpt-5.2",
             ],
             "codex" => &[
+                "gpt-6.1-sol",
                 "gpt-5.6-sol",
                 "gpt-5.6-terra",
                 "gpt-5.6-luna",
@@ -1861,6 +1869,7 @@ impl ProviderChoice {
             "meta" => &["muse-spark-1.2", "muse-spark-1.2-contributor"],
             "google" => &["gemini-2.5-flash", "gemini-2.5-pro"],
             "openrouter" => &[
+                "openai/gpt-6.1-sol",
                 "openai/gpt-5.6-sol",
                 "openai/gpt-5.6-terra",
                 "openai/gpt-5.6-luna",
@@ -2134,6 +2143,8 @@ impl ProviderChoice {
                     .or_else(|| crate::auth::codex::extract_account_id(&access_token));
                 let refresh_token = auth_from_settings.and_then(|auth| auth.refresh_token.clone());
                 let expires_at = auth_from_settings.and_then(|auth| auth.expires_at);
+                // Refresh must go to the client that issued this token set.
+                let client_id = auth_from_settings.and_then(|auth| auth.client_id.clone());
                 Ok(ResolvedModel {
                     model: model.clone(),
                     provider_type: DriverId::external(crate::drivers::codex::CODEX_DRIVER_ID),
@@ -2142,6 +2153,7 @@ impl ProviderChoice {
                         account_id,
                         extra: Some(serde_json::json!({
                             "expires_at": expires_at,
+                            "client_id": client_id,
                             "auth_source": if auth_from_settings.is_some() {
                                 "settings"
                             } else {
@@ -3472,10 +3484,12 @@ impl ModelState {
     }
 
     pub fn input_message(&self, text: impl Into<String>) -> InputMessage {
-        self.provider
+        let input = self
+            .provider
             .read()
             .expect("provider lock poisoned")
-            .input_message(text)
+            .input_message(text);
+        self.with_speed(input)
     }
 
     pub fn input_message_with_images(
@@ -3483,11 +3497,32 @@ impl ModelState {
         text: impl Into<String>,
         images: Vec<ContentPart>,
     ) -> InputMessage {
-        self.provider
+        let input = self
+            .provider
             .read()
             .expect("provider lock poisoned")
-            .input_message_with_images(text, images)
+            .input_message_with_images(text, images);
+        self.with_speed(input)
     }
+
+    /// Stamp the configured service tier on a user turn (see
+    /// [`speed`]). Read per turn so `/config set speed` applies to the next
+    /// message without a restart.
+    fn with_speed(&self, input: InputMessage) -> InputMessage {
+        let env = std::env::var(speed::SPEED_ENV).ok();
+        let settings = self.settings.snapshot();
+        apply_speed(
+            input,
+            speed::resolve_speed(env.as_deref(), settings.speed()),
+        )
+    }
+}
+
+fn apply_speed(mut input: InputMessage, speed: Option<String>) -> InputMessage {
+    if let Some(speed) = speed {
+        input.controls.get_or_insert_with(Controls::default).speed = Some(speed);
+    }
+    input
 }
 
 /// Optional knobs for [`build`]. Lets the streaming integration tests
@@ -7611,14 +7646,17 @@ mod tests {
     #[test]
     fn model_suggestions_include_gpt_5_6_variants() {
         let suggestions = ProviderChoice::model_suggestions_for_provider("openai");
-        assert_eq!(suggestions[0], "gpt-5.6-sol");
-        assert_eq!(suggestions[1], "gpt-5.6-terra");
-        assert_eq!(suggestions[2], "gpt-5.6-luna");
+        assert_eq!(suggestions[0], "gpt-6.1-sol");
+        assert_eq!(suggestions[1], "gpt-5.6-sol");
+        assert_eq!(suggestions[2], "gpt-5.6-terra");
+        assert_eq!(suggestions[3], "gpt-5.6-luna");
         let codex = ProviderChoice::model_suggestions_for_provider("codex");
+        assert!(codex.contains(&"gpt-6.1-sol"));
         assert!(codex.contains(&"gpt-5.6-sol"));
         assert!(codex.contains(&"gpt-5.6-terra"));
         assert!(codex.contains(&"gpt-5.6-luna"));
         let openrouter = ProviderChoice::model_suggestions_for_provider("openrouter");
+        assert!(openrouter.contains(&"openai/gpt-6.1-sol"));
         assert!(openrouter.contains(&"openai/gpt-5.6-sol"));
         assert!(openrouter.contains(&"openai/gpt-5.6-terra"));
         assert!(openrouter.contains(&"openai/gpt-5.6-luna"));
@@ -7647,6 +7685,42 @@ mod tests {
                     .any(|value| reasoning_effort_value(&value.value).as_deref() == Some("xhigh"))
             );
         }
+    }
+
+    /// GPT-6.1 Sol comes from the upstream profile (everruns 0.33, #3925):
+    /// Astra's efforts without `none`, and Flex/Standard/Fast tiers but no
+    /// Ultrafast yet, which is why `speed = "ultrafast"` is dropped for it.
+    #[test]
+    fn gpt_6_1_sol_uses_the_upstream_profile_and_tiers() {
+        let provider = ProviderChoice::OpenAi {
+            model: "gpt-5.6-sol".to_string(),
+            reasoning_effort: None,
+        };
+        let next = provider.resolve_model_spec("gpt-6.1-sol high").unwrap();
+        assert_eq!(next.model_id(), "gpt-6.1-sol");
+        assert_eq!(next.reasoning_effort(), Some("high"));
+
+        let efforts = next
+            .reasoning_effort_config()
+            .expect("gpt-6.1-sol reasoning effort config");
+        assert_eq!(
+            reasoning_effort_value(&efforts.default).as_deref(),
+            Some("medium")
+        );
+        let names: Vec<_> = efforts
+            .values
+            .iter()
+            .filter_map(|value| reasoning_effort_value(&value.value))
+            .collect();
+        assert!(names.iter().any(|name| name == "max"), "{names:?}");
+        assert!(!names.iter().any(|name| name == "none"), "{names:?}");
+
+        let profile = get_model_profile(&DriverId::OpenAI, "gpt-6.1-sol").expect("profile");
+        let tiers = profile.speed.expect("gpt-6.1-sol speed config").values;
+        let serves = |tier: &str| tiers.iter().any(|value| value.value.matches_tier(tier));
+        assert!(serves("flex") && serves("default") && serves("fast"));
+        assert!(serves("priority"), "fast and priority are one tier");
+        assert!(!serves("ultrafast"), "6.1 Sol has no ultrafast tier yet");
     }
 
     #[test]
@@ -8247,6 +8321,7 @@ mod tests {
                 expires_at: Some(1_771_000_000_000),
                 account_id: Some("acc_123".to_string()),
                 email: None,
+                client_id: None,
             }),
             ..Default::default()
         };
@@ -8296,6 +8371,7 @@ mod tests {
                 expires_at: Some(1_771_000_000_000),
                 account_id: Some("saved-account".to_string()),
                 email: None,
+                client_id: None,
             }),
             ..Default::default()
         };

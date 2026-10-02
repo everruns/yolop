@@ -1288,23 +1288,29 @@ impl App {
         self.next_codex_login_id = self.next_codex_login_id.wrapping_add(1);
         let id = self.next_codex_login_id;
         let tx = self.codex_login_tx.clone();
+        let client_id = crate::auth::codex::configured_client_id(&self.settings.snapshot());
         let task = tokio::spawn(async move {
-            let result = match method {
-                CodexLoginMethod::Browser => crate::auth::codex::login_with_browser()
-                    .await
-                    .map_err(|error| error.to_string()),
-                CodexLoginMethod::Device => match crate::auth::codex::start_device_login().await {
-                    Ok(login) => {
-                        let _ = tx.send(CodexLoginEvent::DeviceCode {
-                            id,
-                            verification_uri: login.verification_uri.clone(),
-                            user_code: login.user_code.clone(),
-                        });
-                        crate::auth::codex::complete_device_login(login)
-                            .await
-                            .map_err(|error| error.to_string())
+            let result = match client_id {
+                Err(error) => Err(format!("{error:#}")),
+                Ok(client_id) => match method {
+                    CodexLoginMethod::Browser => crate::auth::codex::login_with_browser(&client_id)
+                        .await
+                        .map_err(|error| error.to_string()),
+                    CodexLoginMethod::Device => {
+                        match crate::auth::codex::start_device_login(&client_id).await {
+                            Ok(login) => {
+                                let _ = tx.send(CodexLoginEvent::DeviceCode {
+                                    id,
+                                    verification_uri: login.verification_uri.clone(),
+                                    user_code: login.user_code.clone(),
+                                });
+                                crate::auth::codex::complete_device_login(login)
+                                    .await
+                                    .map_err(|error| error.to_string())
+                            }
+                            Err(error) => Err(error.to_string()),
+                        }
                     }
-                    Err(error) => Err(error.to_string()),
                 },
             };
             let _ = tx.send(CodexLoginEvent::Finished {
@@ -1979,6 +1985,7 @@ mod tests {
                 expires_at,
                 account_id: None,
                 email: None,
+                client_id: None,
             }),
             ..Settings::default()
         }

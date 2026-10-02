@@ -608,7 +608,7 @@ mod tests {
         let models = saved(&capability);
         assert_eq!(
             models.first(),
-            Some(&ModelEntry::new("openai", "gpt-5.6-sol")),
+            Some(&ModelEntry::new("openai", "gpt-6.1-sol")),
             "the default list is kept, not replaced by the first edit: {models:?}"
         );
         assert_eq!(

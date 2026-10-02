@@ -43,7 +43,7 @@ effort = "high"
 ```
 
 An unset list means "never configured" and resolves to a built-in default menu
-led by `openai/gpt-5.6-sol`. The first edit materializes that default and
+led by `openai/gpt-6.1-sol`. The first edit materializes that default and
 appends to it, so a user never silently loses the entries they were using.
 Loading is tolerant like the rest of settings: an entry naming an unsupported
 provider or missing a model is skipped, never fatal.
@@ -96,6 +96,25 @@ A model reference resolves as `provider/model`, `provider:model`, or a bare
 model id when it names exactly one entry. Ambiguity is an error naming the
 candidate providers, never a guess: distinguishing one model across two
 providers is what the list is for.
+
+### Service tiers are a setting, not entries
+
+GPT-6.1 Sol (everruns 0.33) leads the default menu and the OpenAI, Codex, and
+OpenRouter suggestions; the per-provider default model stays `gpt-5.6-sol`.
+Its faster tiers are not separate menu entries. OpenAI sells them as a
+`service_tier` on the same model id, and which tiers a model offers is upstream
+profile data that changes without a model rename: 6.1 Sol lists Flex, Standard,
+and Fast (2x), GPT-6 Astra adds Ultrafast (6x), and OpenAI has announced
+Ultrafast for 6.1 Sol without shipping it. Encoding tiers as entries would pin
+that table into yolop and go stale.
+
+So the tier is one setting, `speed` (`flex`, `default`, `fast`, `priority`,
+`ultrafast`; `YOLOP_SPEED` overrides it), stamped on every user turn as
+`controls.speed` (`crate::runtime::speed`). The engine drops a tier the selected
+model's profile does not list, with a warning, so a global `ultrafast` is safe
+across model switches and simply has no effect on 6.1 Sol until upstream adds
+the tier. The setting reaches providers whose driver sends `service_tier`
+(`openai`); yolop's own Codex driver does not send it.
 
 ## Relationship to the per-provider default
 

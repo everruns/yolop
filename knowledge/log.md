@@ -1,5 +1,18 @@
 # Knowledge Log
 
+## 2026-10-02, Everruns 0.33.0, GPT-6.1 Sol, and a configurable ChatGPT client
+
+All `everruns-*` pins move to 0.33.0 together. The adaptations are two new
+struct fields: MCP connections carry the server's `elicitation_policy` (form
+mode is opt-in per server upstream), and decision outcomes carry `calibrated`.
+GPT-6.1 Sol joins the default menu and suggestions; its fast tier is the new
+`speed` setting rather than a model-list entry, because tiers are upstream
+profile data ([Model list](specs/model-list.md)). The ChatGPT sign-in client ID
+is now configurable and each login records the client that issued it, so a
+future switch to Yolop's own client strands nobody; the SIWC open-source flow
+turned out to be dynamic registration against the public Responses API, a
+larger change recorded in [ChatGPT sign-in](specs/chatgpt-sign-in.md).
+
 ## 2026-10-01, Everruns 0.32.0 adopted as one batch
 
 All `everruns-*` pins move to 0.32.0 together; the per-crate Dependabot PRs
