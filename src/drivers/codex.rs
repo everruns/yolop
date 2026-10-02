@@ -209,6 +209,9 @@ struct CodexTokens {
     account_id: Option<String>,
     /// Preserved across refresh for settings.toml; not sent on API calls.
     email: Option<String>,
+    /// OAuth client that issued the refresh token; refresh must reuse it.
+    /// `None` is a pre-tracking record, which the borrowed Codex client issued.
+    client_id: Option<String>,
 }
 
 #[derive(Clone)]
@@ -272,10 +275,10 @@ impl CodexChatDriver {
             .account_id
             .clone()
             .or_else(|| crate::auth::codex::extract_account_id(&access_token));
-        let email = auth_store
-            .as_ref()
-            .and_then(|store| store.load_from_disk())
-            .and_then(|auth| auth.email);
+        let disk_auth = auth_store.as_ref().and_then(|store| store.load_from_disk());
+        let client_id = metadata_extra_string(&config.metadata, "client_id")
+            .or_else(|| disk_auth.as_ref().and_then(|auth| auth.client_id.clone()));
+        let email = disk_auth.and_then(|auth| auth.email);
         let compaction_scope =
             CompactionCapabilityScope::new(&responses_url, account_id.as_deref(), &access_token);
         Self {
@@ -288,6 +291,7 @@ impl CodexChatDriver {
                 expires_at,
                 account_id,
                 email,
+                client_id,
             })),
             refresh_gate,
             auth_store,
@@ -296,15 +300,15 @@ impl CodexChatDriver {
     }
 
     async fn token_snapshot(&self) -> EverrunsResult<CodexTokens> {
-        self.refresh_tokens_with(|refresh_token| async move {
-            crate::auth::codex::refresh_with_token(&refresh_token).await
+        self.refresh_tokens_with(|client_id, refresh_token| async move {
+            crate::auth::codex::refresh_with_token(&client_id, &refresh_token).await
         })
         .await
     }
 
     async fn refresh_tokens_with<F, Fut>(&self, refresh: F) -> EverrunsResult<CodexTokens>
     where
-        F: Fn(String) -> Fut,
+        F: Fn(String, String) -> Fut,
         Fut: Future<Output = anyhow::Result<CodexAuth>>,
     {
         // Refresh tokens are single-use. Factories can create multiple driver
@@ -330,7 +334,7 @@ async fn ensure_fresh_tokens<F, Fut>(
     refresh: F,
 ) -> EverrunsResult<()>
 where
-    F: Fn(String) -> Fut,
+    F: Fn(String, String) -> Fut,
     Fut: Future<Output = anyhow::Result<CodexAuth>>,
 {
     if tokens.access_token.is_empty() {
@@ -352,7 +356,7 @@ where
         return Ok(());
     };
 
-    match refresh(refresh_token.clone()).await {
+    match refresh(issuing_client_id(tokens), refresh_token.clone()).await {
         Ok(refreshed) => {
             apply_refreshed(tokens, refreshed, &refresh_token);
             persist_tokens(tokens, store)?;
@@ -372,7 +376,7 @@ async fn recover_from_refresh_token_reused<F, Fut>(
     spent_refresh_token: &str,
 ) -> EverrunsResult<()>
 where
-    F: Fn(String) -> Fut,
+    F: Fn(String, String) -> Fut,
     Fut: Future<Output = anyhow::Result<CodexAuth>>,
 {
     if let Some(store) = store {
@@ -383,7 +387,7 @@ where
         if let Some(retry_token) = tokens.refresh_token.clone()
             && retry_token != spent_refresh_token
         {
-            match refresh(retry_token.clone()).await {
+            match refresh(issuing_client_id(tokens), retry_token.clone()).await {
                 Ok(refreshed) => {
                     apply_refreshed(tokens, refreshed, &retry_token);
                     persist_tokens(tokens, Some(store))?;
@@ -465,6 +469,12 @@ fn codex_response_error(
     AgentLoopError::llm_kind(kind, format!("Codex {operation} error ({status}): {body}"))
 }
 
+/// The client to refresh `tokens` with, read at refresh time so a record just
+/// adopted from disk refreshes with its own issuing client.
+fn issuing_client_id(tokens: &CodexTokens) -> String {
+    crate::auth::codex::refresh_client_id(tokens.client_id.as_deref()).to_string()
+}
+
 fn adopt_disk_auth(tokens: &mut CodexTokens, store: &dyn CodexAuthStore) {
     let Some(disk) = store.load_from_disk() else {
         return;
@@ -472,6 +482,7 @@ fn adopt_disk_auth(tokens: &mut CodexTokens, store: &dyn CodexAuthStore) {
     if disk.access_token == tokens.access_token
         && disk.refresh_token == tokens.refresh_token
         && disk.expires_at == tokens.expires_at
+        && disk.client_id == tokens.client_id
     {
         return;
     }
@@ -484,6 +495,8 @@ fn adopt_disk_auth(tokens: &mut CodexTokens, store: &dyn CodexAuthStore) {
     if disk.email.is_some() {
         tokens.email = disk.email;
     }
+    // A disk record from a fresh sign-in may come from a different client.
+    tokens.client_id = disk.client_id;
 }
 
 fn apply_refreshed(tokens: &mut CodexTokens, refreshed: CodexAuth, used_refresh_token: &str) {
@@ -499,6 +512,9 @@ fn apply_refreshed(tokens: &mut CodexTokens, refreshed: CodexAuth, used_refresh_
     if refreshed.email.is_some() {
         tokens.email = refreshed.email;
     }
+    if refreshed.client_id.is_some() {
+        tokens.client_id = refreshed.client_id;
+    }
 }
 
 fn persist_tokens(tokens: &CodexTokens, store: Option<&dyn CodexAuthStore>) -> EverrunsResult<()> {
@@ -512,6 +528,7 @@ fn persist_tokens(tokens: &CodexTokens, store: Option<&dyn CodexAuthStore>) -> E
             expires_at: tokens.expires_at,
             account_id: tokens.account_id.clone(),
             email: tokens.email.clone(),
+            client_id: tokens.client_id.clone(),
         })
         .map_err(|err| {
             AgentLoopError::llm(format!(
@@ -1606,6 +1623,7 @@ mod tests {
             expires_at: Some(crate::auth::codex::now_epoch_millis() - 1_000),
             account_id: Some("acc".to_string()),
             email: Some("user@example.com".to_string()),
+            client_id: None,
         }
     }
 
@@ -1652,6 +1670,7 @@ mod tests {
                 expires_at: Some(crate::auth::codex::now_epoch_millis() + 3_600_000),
                 account_id: Some("account-test".to_string()),
                 email: None,
+                client_id: None,
             })),
             refresh_gate: Arc::new(tokio::sync::Mutex::new(())),
             auth_store: None,
@@ -2123,6 +2142,70 @@ mod tests {
         assert!(request_rx.try_recv().is_err(), "only one probe is allowed");
     }
 
+    /// Refresh tokens are bound to their issuing OAuth client: a token set
+    /// signed in with a configured client must refresh with that client, and
+    /// keep it across the rotation, even if the configured client changes.
+    #[tokio::test]
+    async fn refresh_uses_and_keeps_the_issuing_client_id() {
+        let store = MemoryAuthStore::default();
+        let mut issued = expired_tokens("refresh-old");
+        issued.client_id = Some("app_own".to_string());
+        persist_tokens(&issued, Some(&store)).unwrap();
+        let mut tokens = expired_tokens("refresh-old");
+        let seen = Arc::new(StdMutex::new(Vec::<String>::new()));
+        let seen_clone = seen.clone();
+
+        ensure_fresh_tokens(&mut tokens, Some(&store), move |client, _rt| {
+            seen_clone.lock().unwrap().push(client);
+            async move {
+                Ok(CodexAuth {
+                    access_token: "access-new".to_string(),
+                    refresh_token: Some("refresh-new".to_string()),
+                    expires_at: Some(crate::auth::codex::now_epoch_millis() + 3_600_000),
+                    account_id: Some("acc".to_string()),
+                    email: None,
+                    client_id: Some("app_own".to_string()),
+                })
+            }
+        })
+        .await
+        .expect("refresh");
+
+        assert_eq!(*seen.lock().unwrap(), vec!["app_own".to_string()]);
+        let saved = store.load_from_disk().expect("saved");
+        assert_eq!(saved.client_id.as_deref(), Some("app_own"));
+    }
+
+    /// A record saved before yolop tracked the client was issued to the
+    /// borrowed Codex client, so that is what refresh falls back to.
+    #[tokio::test]
+    async fn untracked_record_refreshes_with_the_borrowed_client() {
+        let mut tokens = expired_tokens("refresh-old");
+        let seen = Arc::new(StdMutex::new(Vec::<String>::new()));
+        let seen_clone = seen.clone();
+
+        ensure_fresh_tokens(&mut tokens, None, move |client, _rt| {
+            seen_clone.lock().unwrap().push(client);
+            async move {
+                Ok(CodexAuth {
+                    access_token: "access-new".to_string(),
+                    refresh_token: None,
+                    expires_at: None,
+                    account_id: None,
+                    email: None,
+                    client_id: None,
+                })
+            }
+        })
+        .await
+        .expect("refresh");
+
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![crate::auth::codex::BORROWED_CODEX_CLIENT_ID.to_string()]
+        );
+    }
+
     #[tokio::test]
     async fn refresh_persists_rotated_tokens_to_store() {
         let store = MemoryAuthStore::default();
@@ -2133,13 +2216,14 @@ mod tests {
                 expires_at: Some(crate::auth::codex::now_epoch_millis() - 1_000),
                 account_id: Some("acc".to_string()),
                 email: Some("user@example.com".to_string()),
+                client_id: None,
             })
             .unwrap();
         let mut tokens = expired_tokens("refresh-old");
         let refresh_calls = Arc::new(StdMutex::new(0usize));
         let refresh_calls_clone = refresh_calls.clone();
 
-        ensure_fresh_tokens(&mut tokens, Some(&store), move |_rt| {
+        ensure_fresh_tokens(&mut tokens, Some(&store), move |_client, _rt| {
             let refresh_calls_clone = refresh_calls_clone.clone();
             async move {
                 *refresh_calls_clone.lock().expect("calls") += 1;
@@ -2149,6 +2233,7 @@ mod tests {
                     expires_at: Some(crate::auth::codex::now_epoch_millis() + 3_600_000),
                     account_id: Some("acc".to_string()),
                     email: None,
+                    client_id: None,
                 })
             }
         })
@@ -2176,13 +2261,14 @@ mod tests {
                 expires_at: Some(crate::auth::codex::now_epoch_millis() + 3_600_000),
                 account_id: Some("acc".to_string()),
                 email: Some("user@example.com".to_string()),
+                client_id: None,
             })
             .unwrap();
         let mut tokens = expired_tokens("refresh-old");
         let refresh_calls = Arc::new(StdMutex::new(0usize));
         let refresh_calls_clone = refresh_calls.clone();
 
-        ensure_fresh_tokens(&mut tokens, Some(&store), move |_rt| {
+        ensure_fresh_tokens(&mut tokens, Some(&store), move |_client, _rt| {
             let refresh_calls_clone = refresh_calls_clone.clone();
             async move {
                 *refresh_calls_clone.lock().expect("calls") += 1;
@@ -2207,6 +2293,7 @@ mod tests {
                 expires_at: Some(crate::auth::codex::now_epoch_millis() - 1_000),
                 account_id: Some("acc".to_string()),
                 email: Some("user@example.com".to_string()),
+                client_id: None,
             })
             .unwrap();
         let auth_store: Arc<dyn CodexAuthStore> = store.clone();
@@ -2235,7 +2322,7 @@ mod tests {
         let first_calls = refresh_calls.clone();
         let second_calls = refresh_calls.clone();
         let (first_result, second_result) = tokio::join!(
-            first.refresh_tokens_with(move |_refresh_token| {
+            first.refresh_tokens_with(move |_client, _refresh_token| {
                 let calls = first_calls.clone();
                 async move {
                     *calls.lock().expect("calls") += 1;
@@ -2246,10 +2333,11 @@ mod tests {
                         expires_at: Some(crate::auth::codex::now_epoch_millis() + 3_600_000),
                         account_id: Some("acc".to_string()),
                         email: None,
+                        client_id: None,
                     })
                 }
             }),
-            second.refresh_tokens_with(move |_refresh_token| {
+            second.refresh_tokens_with(move |_client, _refresh_token| {
                 let calls = second_calls.clone();
                 async move {
                     *calls.lock().expect("calls") += 1;
@@ -2259,6 +2347,7 @@ mod tests {
                         expires_at: Some(crate::auth::codex::now_epoch_millis() + 3_600_000),
                         account_id: Some("acc".to_string()),
                         email: None,
+                        client_id: None,
                     })
                 }
             })
@@ -2290,6 +2379,7 @@ mod tests {
                         expires_at: Some(crate::auth::codex::now_epoch_millis() - 1_000),
                         account_id: Some("acc".to_string()),
                         email: Some("user@example.com".to_string()),
+                        client_id: None,
                     });
                 }
                 Some(CodexAuth {
@@ -2298,6 +2388,7 @@ mod tests {
                     expires_at: Some(crate::auth::codex::now_epoch_millis() + 3_600_000),
                     account_id: Some("acc".to_string()),
                     email: Some("user@example.com".to_string()),
+                    client_id: None,
                 })
             }
             fn save(&self, _auth: CodexAuth) -> anyhow::Result<()> {
@@ -2311,7 +2402,7 @@ mod tests {
 
         let flip = FlipStore::default();
         let mut tokens = expired_tokens("refresh-spent");
-        ensure_fresh_tokens(&mut tokens, Some(&flip), |_rt| async {
+        ensure_fresh_tokens(&mut tokens, Some(&flip), |_client, _rt| async {
             Err(anyhow::anyhow!(
                 "Codex token refresh failed (401 Unauthorized): {{\"error\":{{\"code\":\"refresh_token_reused\"}}}}"
             ))
@@ -2334,11 +2425,12 @@ mod tests {
                 expires_at: Some(crate::auth::codex::now_epoch_millis() - 1_000),
                 account_id: Some("acc".to_string()),
                 email: Some("user@example.com".to_string()),
+                client_id: None,
             })
             .unwrap();
         let mut tokens = expired_tokens("refresh-spent");
 
-        let err = ensure_fresh_tokens(&mut tokens, Some(&store), |_rt| async {
+        let err = ensure_fresh_tokens(&mut tokens, Some(&store), |_client, _rt| async {
             Err(anyhow::anyhow!(
                 "Codex token refresh failed (401 Unauthorized): {{\"error\":{{\"code\":\"refresh_token_reused\"}}}}"
             ))
@@ -2363,6 +2455,7 @@ mod tests {
                 expires_at: None,
                 account_id: Some("acc".to_string()),
                 email: Some("user@example.com".to_string()),
+                client_id: None,
             })
             .unwrap();
 

@@ -11839,6 +11839,14 @@ flowchart TD
         assert!(matches!(app.setup, Some(SetupStep::PickListedModel { .. })));
         let rendered = setup_overlay_text(app);
         assert!(rendered.iter().any(|line| line.contains("Models")));
+        // The default list can be taller than the overlay, so walk to the end:
+        // the trailing row must be reachable, not necessarily on first paint.
+        let rows = app.listed_model_rows().len();
+        for _ in 0..=rows {
+            app.handle_setup_key(KeyEvent::new(KeyCode::Down, KeyModifiers::empty()))
+                .await;
+        }
+        let rendered = setup_overlay_text(app);
         assert!(
             rendered
                 .iter()

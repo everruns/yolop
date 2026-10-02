@@ -227,7 +227,11 @@ impl SetupCliCapability {
                         ));
                     }
                 } else if device {
-                    let pending = match codex::start_device_login().await {
+                    let client_id = match codex::configured_client_id(&settings.snapshot()) {
+                        Ok(client_id) => client_id,
+                        Err(err) => return ToolExecutionResult::tool_error(format!("{err:#}")),
+                    };
+                    let pending = match codex::start_device_login(&client_id).await {
                         Ok(pending) => pending,
                         Err(err) => {
                             return ToolExecutionResult::tool_error(format!(
@@ -253,8 +257,12 @@ impl SetupCliCapability {
                         ));
                     }
                 } else {
+                    let client_id = match codex::configured_client_id(&settings.snapshot()) {
+                        Ok(client_id) => client_id,
+                        Err(err) => return ToolExecutionResult::tool_error(format!("{err:#}")),
+                    };
                     println!("Opening browser for Codex login...");
-                    let auth = match codex::login_with_browser().await {
+                    let auth = match codex::login_with_browser(&client_id).await {
                         Ok(auth) => auth,
                         Err(err) => {
                             return ToolExecutionResult::tool_error(format!(

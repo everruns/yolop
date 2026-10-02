@@ -23,6 +23,7 @@ and [`docs/`](../docs/); it must not link back into this internal bundle.
 
 - [Approval](specs/approval.md), confirmation for consequential actions.
 - [Background execution](specs/background.md), asynchronous work and monitoring.
+- [ChatGPT sign-in](specs/chatgpt-sign-in.md), the OAuth client the codex provider signs in with and the path to Sign in with ChatGPT.
 - [Checkpointing](specs/checkpointing.md), session rewind and workspace restoration.
 - [Configuration](specs/configuration.md), schema-driven Yolop settings.
 - [Connectors](specs/connectors.md), remote sandbox integrations.

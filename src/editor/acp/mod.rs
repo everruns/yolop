@@ -100,7 +100,9 @@ impl RuntimeFactory for ConfigRuntimeFactory {
     async fn authenticate(&self, method_id: &str) -> Result<()> {
         match method_id {
             "codex_browser" => {
-                let auth = crate::auth::codex::login_with_browser().await?;
+                let client_id =
+                    crate::auth::codex::configured_client_id(&self.settings.snapshot())?;
+                let auth = crate::auth::codex::login_with_browser(&client_id).await?;
                 self.settings.set_codex_auth(auth)
             }
             "openrouter_browser" => {

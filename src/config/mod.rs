@@ -44,6 +44,10 @@ pub struct CodexAuth {
     pub expires_at: Option<i64>,
     pub account_id: Option<String>,
     pub email: Option<String>,
+    /// OAuth client that issued this token set. Refresh must use the same
+    /// client; `None` means a record saved before yolop tracked it, which the
+    /// borrowed Codex client issued (`crate::auth::codex::refresh_client_id`).
+    pub client_id: Option<String>,
 }
 
 /// When yolop provisions an isolated git worktree for code changes.
@@ -266,6 +270,14 @@ pub struct Settings {
     /// TypeSafe backend). `None` means the backend default. The
     /// `--classifier-model` flag overrides this for a single run.
     pub classifier_model: Option<String>,
+    /// OAuth client ID for new ChatGPT (Codex) sign-ins. `None` means the
+    /// borrowed Codex CLI client; `YOLOP_CHATGPT_CLIENT_ID` overrides this.
+    /// See `crate::auth::codex::configured_client_id`.
+    pub chatgpt_client_id: Option<String>,
+    /// OpenAI service tier for every turn (`flex`, `priority`, `fast`,
+    /// `ultrafast`). `None` is the standard tier; `YOLOP_SPEED` overrides it.
+    /// See `crate::runtime::speed`.
+    pub speed: Option<String>,
     /// Global MCP servers (`[mcp.servers.<name>]` in settings.toml). Repo
     /// `.mcp.json` HTTP entries override these by name; stdio entries are ignored.
     pub mcp: McpSettings,
@@ -298,6 +310,8 @@ impl Default for Settings {
             sandbox: SandboxMode::DangerFullAccess,
             theme: None,
             classifier_model: None,
+            chatgpt_client_id: None,
+            speed: None,
             mcp: McpSettings::default(),
             capabilities: Vec::new(),
             instructions: None,
@@ -356,6 +370,18 @@ impl Settings {
             .get("classifier_model")
             .and_then(Value::as_str)
             .map(str::to_string);
+        let chatgpt_client_id = table
+            .get("chatgpt_client_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        let speed = table
+            .get("speed")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
         let string_map = |key: &str| {
             let mut map = BTreeMap::new();
             if let Some(t) = table.get(key).and_then(Value::as_table) {
@@ -393,6 +419,8 @@ impl Settings {
             sandbox,
             theme,
             classifier_model,
+            chatgpt_client_id,
+            speed,
             mcp: parse_mcp_settings(table),
             capabilities: parse_capabilities_table(table),
             instructions: None,
@@ -454,6 +482,15 @@ impl Settings {
                 "classifier_model".to_string(),
                 Value::String(classifier_model.to_string()),
             );
+        }
+        if let Some(client_id) = self.chatgpt_client_id.as_deref() {
+            table.insert(
+                "chatgpt_client_id".to_string(),
+                Value::String(client_id.to_string()),
+            );
+        }
+        if let Some(speed) = self.speed.as_deref() {
+            table.insert("speed".to_string(), Value::String(speed.to_string()));
         }
         let mut insert_map = |key: &str, map: &BTreeMap<String, String>| {
             if !map.is_empty() {
@@ -572,6 +609,14 @@ impl Settings {
         self.classifier_model.as_deref()
     }
 
+    pub fn chatgpt_client_id(&self) -> Option<&str> {
+        self.chatgpt_client_id.as_deref()
+    }
+
+    pub fn speed(&self) -> Option<&str> {
+        self.speed.as_deref()
+    }
+
     pub fn capability_overrides_for(&self, id: &str) -> Vec<(usize, &CapabilityOverride)> {
         self.capabilities
             .iter()
@@ -618,6 +663,11 @@ fn parse_codex_auth(table: &Table) -> Option<CodexAuth> {
             .and_then(Value::as_str)
             .filter(|value| !value.is_empty())
             .map(str::to_string),
+        client_id: table
+            .get("client_id")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string),
     })
 }
 
@@ -641,6 +691,9 @@ fn codex_auth_to_table(auth: &CodexAuth) -> Table {
     }
     if let Some(email) = &auth.email {
         table.insert("email".to_string(), Value::String(email.clone()));
+    }
+    if let Some(client_id) = &auth.client_id {
+        table.insert("client_id".to_string(), Value::String(client_id.clone()));
     }
     table
 }
@@ -1020,6 +1073,18 @@ impl SettingsStore {
     pub fn set_classifier_model(&self, classifier_model: Option<String>) -> Result<()> {
         let mut guard = self.lock_fresh_for_update()?;
         guard.base.classifier_model = classifier_model;
+        self.save_base_locked(&mut guard)
+    }
+
+    pub fn set_chatgpt_client_id(&self, client_id: Option<String>) -> Result<()> {
+        let mut guard = self.lock_fresh_for_update()?;
+        guard.base.chatgpt_client_id = client_id;
+        self.save_base_locked(&mut guard)
+    }
+
+    pub fn set_speed(&self, speed: Option<String>) -> Result<()> {
+        let mut guard = self.lock_fresh_for_update()?;
+        guard.base.speed = speed;
         self.save_base_locked(&mut guard)
     }
 
@@ -1832,6 +1897,7 @@ mod tests {
                 expires_at: Some(1_771_000_000_000),
                 account_id: Some("acc_123".to_string()),
                 email: Some("user@example.com".to_string()),
+                client_id: None,
             })
             .expect("save codex auth");
 
@@ -1851,6 +1917,43 @@ mod tests {
     }
 
     #[test]
+    fn chatgpt_client_id_and_issuing_client_roundtrip_via_disk() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let path = tmp.path().join("settings.toml");
+        let store = SettingsStore::open(path.clone());
+        store
+            .set_chatgpt_client_id(Some("app_yolop".to_string()))
+            .expect("save client id");
+        store
+            .set_codex_auth(CodexAuth {
+                access_token: "access-token".to_string(),
+                refresh_token: Some("refresh-token".to_string()),
+                expires_at: None,
+                account_id: None,
+                email: None,
+                client_id: Some("app_yolop".to_string()),
+            })
+            .expect("save auth");
+
+        let on_disk = std::fs::read_to_string(&path).expect("read");
+        assert!(
+            on_disk.contains("chatgpt_client_id = \"app_yolop\""),
+            "got: {on_disk}"
+        );
+        let snapshot = SettingsStore::open(path.clone()).snapshot();
+        assert_eq!(snapshot.chatgpt_client_id(), Some("app_yolop"));
+        assert_eq!(
+            snapshot.codex_auth().and_then(|a| a.client_id.as_deref()),
+            Some("app_yolop")
+        );
+
+        // Clearing returns to the default and drops the key from the file.
+        store.set_chatgpt_client_id(None).expect("clear");
+        let on_disk = std::fs::read_to_string(&path).expect("read");
+        assert!(!on_disk.contains("chatgpt_client_id"), "got: {on_disk}");
+    }
+
+    #[test]
     fn refresh_codex_auth_from_disk_picks_up_external_writes() {
         let tmp = tempfile::tempdir().expect("tmp");
         let path = tmp.path().join("settings.toml");
@@ -1862,6 +1965,7 @@ mod tests {
                 expires_at: Some(1),
                 account_id: None,
                 email: None,
+                client_id: None,
             })
             .expect("save");
 
@@ -1874,6 +1978,7 @@ mod tests {
                 expires_at: Some(9),
                 account_id: Some("acc".to_string()),
                 email: Some("a@b.c".to_string()),
+                client_id: None,
             })
             .expect("external write");
 

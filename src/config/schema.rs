@@ -255,6 +255,34 @@ pub fn schema() -> &'static [ConfigField] {
             provider_scoped: false,
         },
         ConfigField {
+            key: "chatgpt_client_id",
+            aliases: &["chatgpt-client-id", "codex_client_id"],
+            title: "ChatGPT sign-in client ID",
+            description: "OAuth client ID for new ChatGPT (codex provider) sign-ins. Unset uses \
+                          the Codex CLI's public client, which yolop borrows until OpenAI issues \
+                          yolop its own. `YOLOP_CHATGPT_CLIENT_ID` overrides this. Existing \
+                          logins keep refreshing with the client that issued them; sign in again \
+                          to move to a new one.",
+            kind: ValueKind::Text,
+            default: Some("app_EMoamEEZ73f0CkXaXp7hrann (borrowed Codex CLI client)"),
+            examples: &["\"app_...\""],
+            provider_scoped: false,
+        },
+        ConfigField {
+            key: "speed",
+            aliases: &["service_tier"],
+            title: "Speed (service tier)",
+            description: "OpenAI service tier for every turn: `flex` (cheaper, slower), \
+                          `default`, `fast` (2x price; `priority` is its older name) or \
+                          `ultrafast` (6x). Sent only when the selected model's profile lists \
+                          the tier, otherwise dropped: GPT-6.1 Sol offers flex and fast, GPT-6 \
+                          Astra also ultrafast. `YOLOP_SPEED` overrides this.",
+            kind: ValueKind::Text,
+            default: Some("default"),
+            examples: &["fast", "ultrafast", "flex", "default"],
+            provider_scoped: false,
+        },
+        ConfigField {
             key: "capabilities",
             aliases: &["capability"],
             title: "Harness capabilities",
@@ -305,6 +333,10 @@ pub enum KeyTarget {
     Theme,
     /// Classifier model for the Muse-only actionable-promise guard.
     ClassifierModel,
+    /// OAuth client ID for new ChatGPT (codex provider) sign-ins.
+    ChatgptClientId,
+    /// OpenAI service tier for every turn.
+    Speed,
     /// Per-provider model spec, for the named provider.
     Model(String),
     /// The ordered `[[models]]` list, edited through `yolop config models`.
@@ -335,6 +367,8 @@ impl KeyTarget {
             KeyTarget::Sandbox => "sandbox_mode",
             KeyTarget::Theme => "theme",
             KeyTarget::ClassifierModel => "classifier_model",
+            KeyTarget::ChatgptClientId => "chatgpt_client_id",
+            KeyTarget::Speed => "speed",
             KeyTarget::Model(_) => "default_models",
             KeyTarget::Models => "models",
             KeyTarget::Token(_) => "tokens",
@@ -395,6 +429,10 @@ pub fn parse_key(input: &str) -> Result<KeyTarget, String> {
         "classifier_model" | "classifier-model" | "classifier.model" => {
             scalar(KeyTarget::ClassifierModel)
         }
+        "chatgpt_client_id" | "chatgpt-client-id" | "codex_client_id" => {
+            scalar(KeyTarget::ChatgptClientId)
+        }
+        "speed" | "service_tier" => scalar(KeyTarget::Speed),
         // `models` is the ordered list; the per-provider memory it used to name
         // is `default_models`. A bare `models.<provider>` still routes to the
         // per-provider key so older muscle memory and settings files work.

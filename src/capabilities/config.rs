@@ -956,6 +956,37 @@ impl SetConfigTool {
                     "classifier_model = {value}; applies to new sessions"
                 )))
             }
+            // Service tier for every turn; `default` or empty clears it.
+            KeyTarget::Speed => {
+                let speed = crate::runtime::speed::parse_speed(value)
+                    .map_err(|err| err.to_string())?;
+                let message = match &speed {
+                    Some(speed) => format!("speed = {speed}; applies to the next turn"),
+                    None => "cleared speed (default: standard tier)".to_string(),
+                };
+                self.settings.set_speed(speed).map_err(map_err)?;
+                Ok(saved(message))
+            }
+            // OAuth client for new ChatGPT sign-ins; empty clears back to the
+            // borrowed Codex client. Validated like the env override.
+            KeyTarget::ChatgptClientId => {
+                let value = value.trim();
+                if value.is_empty() {
+                    self.settings.set_chatgpt_client_id(None).map_err(map_err)?;
+                    return Ok(saved(
+                        "cleared chatgpt_client_id (default: borrowed Codex CLI client)"
+                            .to_string(),
+                    ));
+                }
+                crate::auth::codex::validate_client_id(value)
+                    .map_err(|err| format!("invalid chatgpt_client_id: {err}"))?;
+                self.settings
+                    .set_chatgpt_client_id(Some(value.to_string()))
+                    .map_err(map_err)?;
+                Ok(saved(format!(
+                    "chatgpt_client_id = {value}; applies to the next ChatGPT sign-in"
+                )))
+            }
             // The list has one editor: `yolop config models`, which validates
             // provider/model pairs and owns ordering. A key/value setter here
             // would be a second, weaker write path for the same file.

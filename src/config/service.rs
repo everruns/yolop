@@ -80,6 +80,11 @@ pub(crate) fn current_value(settings: &Settings, target: &KeyTarget) -> Value {
             .classifier_model()
             .map(|m| Value::String(m.to_string()))
             .unwrap_or(Value::Null),
+        KeyTarget::Speed => Value::String(settings.speed().unwrap_or("default").to_string()),
+        KeyTarget::ChatgptClientId => settings
+            .chatgpt_client_id()
+            .map(|id| Value::String(id.to_string()))
+            .unwrap_or(Value::Null),
         KeyTarget::Model(p) => settings
             .model_for(p)
             .map(|s| Value::String(s.to_string()))

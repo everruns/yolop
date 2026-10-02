@@ -1,4 +1,21 @@
-use crate::config::CodexAuth;
+// Which OAuth client yolop signs in with.
+//
+// Yolop's ChatGPT/Codex login borrows the Codex CLI's public OAuth client
+// (`BORROWED_CODEX_CLIENT_ID`). OpenAI now offers "Sign in with ChatGPT" to
+// third-party apps, so the client is configurable instead of hard-coded:
+// `YOLOP_CHATGPT_CLIENT_ID` beats the `chatgpt_client_id` setting, which beats
+// the borrowed default. The borrowed ID stays the default until OpenAI issues
+// yolop its own; switching the default is then a one-line change here.
+// SIWC's open-source plan-usage flow (dynamic registration against the public
+// Responses API) is a different flow, not just a different ID; the spec below
+// records what adopting it takes.
+//
+// A refresh token is bound to the client that issued it, so each saved token
+// set records its `client_id` and refreshes with that one, never with whatever
+// is configured now. Records saved before this field existed were issued to
+// the borrowed client, which is what `refresh_client_id` falls back to.
+// See knowledge/specs/chatgpt-sign-in.md.
+use crate::config::{CodexAuth, Settings};
 use anyhow::{Context, Result, anyhow};
 use reqwest::Url;
 use serde::Deserialize;
@@ -7,7 +24,12 @@ use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-pub const CODEX_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
+/// The Codex CLI's public OAuth client ID, borrowed until yolop has its own.
+pub const BORROWED_CODEX_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
+/// Environment override for the OAuth client ID; wins over the setting.
+pub const CLIENT_ID_ENV: &str = "YOLOP_CHATGPT_CLIENT_ID";
+/// Upper bound on an accepted client ID; real ones are a few dozen bytes.
+const MAX_CLIENT_ID_LEN: usize = 256;
 pub const CODEX_ORIGINATOR: &str = "yolop";
 const AUTHORIZE_URL: &str = "https://auth.openai.com/oauth/authorize";
 const TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
@@ -27,6 +49,55 @@ pub struct DeviceLogin {
     pub verification_uri: String,
     device_auth_id: String,
     interval_secs: u64,
+    /// The client the device code was issued to; the code exchange must use it.
+    client_id: String,
+}
+
+/// The OAuth client ID a new sign-in uses: `YOLOP_CHATGPT_CLIENT_ID`, then the
+/// `chatgpt_client_id` setting, then [`BORROWED_CODEX_CLIENT_ID`].
+pub fn configured_client_id(settings: &Settings) -> Result<String> {
+    let env = std::env::var(CLIENT_ID_ENV).ok();
+    resolve_client_id(env.as_deref(), settings.chatgpt_client_id())
+}
+
+/// Pure precedence + validation behind [`configured_client_id`]. A blank value
+/// counts as unset; a malformed one is an error naming its source rather than a
+/// silent fall back to the borrowed client.
+pub fn resolve_client_id(env: Option<&str>, setting: Option<&str>) -> Result<String> {
+    let candidates = [(CLIENT_ID_ENV, env), ("chatgpt_client_id", setting)];
+    for (source, value) in candidates {
+        let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+            continue;
+        };
+        validate_client_id(value).with_context(|| format!("invalid {source}"))?;
+        return Ok(value.to_string());
+    }
+    Ok(BORROWED_CODEX_CLIENT_ID.to_string())
+}
+
+/// A client ID goes into URLs and form bodies; accept only the printable,
+/// whitespace-free ASCII that OAuth client identifiers use.
+pub fn validate_client_id(value: &str) -> Result<()> {
+    if value.is_empty() {
+        return Err(anyhow!("client ID is empty"));
+    }
+    if value.len() > MAX_CLIENT_ID_LEN {
+        return Err(anyhow!(
+            "client ID is longer than {MAX_CLIENT_ID_LEN} characters"
+        ));
+    }
+    if !value.chars().all(|c| c.is_ascii_graphic()) {
+        return Err(anyhow!("client ID must be printable ASCII without spaces"));
+    }
+    Ok(())
+}
+
+/// The client a saved token set refreshes with: the one that issued it, or
+/// the borrowed Codex client for records saved before yolop tracked it.
+pub fn refresh_client_id(issued_to: Option<&str>) -> &str {
+    issued_to
+        .filter(|value| !value.is_empty())
+        .unwrap_or(BORROWED_CODEX_CLIENT_ID)
 }
 
 #[derive(Debug, Deserialize)]
@@ -58,7 +129,8 @@ struct DeviceTokenResponse {
     code_verifier: String,
 }
 
-pub async fn login_with_browser() -> Result<CodexAuth> {
+pub async fn login_with_browser(client_id: &str) -> Result<CodexAuth> {
+    validate_client_id(client_id)?;
     let redirect_uri = format!("http://localhost:{CALLBACK_PORT}{CALLBACK_PATH}");
     let state = crate::auth::oauth_flow::random_token(32);
     let verifier = crate::auth::oauth_flow::random_pkce_verifier();
@@ -70,7 +142,7 @@ pub async fn login_with_browser() -> Result<CodexAuth> {
     let mut url = Url::parse(AUTHORIZE_URL)?;
     url.query_pairs_mut()
         .append_pair("response_type", "code")
-        .append_pair("client_id", CODEX_CLIENT_ID)
+        .append_pair("client_id", client_id)
         .append_pair("redirect_uri", &redirect_uri)
         .append_pair("scope", SCOPE)
         .append_pair("code_challenge", &challenge)
@@ -84,14 +156,15 @@ pub async fn login_with_browser() -> Result<CodexAuth> {
     let code = tokio::time::timeout(USER_AUTH_TIMEOUT, wait_for_callback(listener, &state))
         .await
         .map_err(|_| anyhow!("Codex browser login timed out"))??;
-    exchange_code(&code, &verifier, &redirect_uri).await
+    exchange_code(client_id, &code, &verifier, &redirect_uri).await
 }
 
-pub async fn start_device_login() -> Result<DeviceLogin> {
+pub async fn start_device_login(client_id: &str) -> Result<DeviceLogin> {
+    validate_client_id(client_id)?;
     let client = auth_http_client()?;
     let response = client
         .post(DEVICE_USER_CODE_URL)
-        .json(&serde_json::json!({ "client_id": CODEX_CLIENT_ID }))
+        .json(&serde_json::json!({ "client_id": client_id }))
         .send()
         .await
         .context("start Codex device login")?;
@@ -111,6 +184,7 @@ pub async fn start_device_login() -> Result<DeviceLogin> {
             .unwrap_or_else(|| DEVICE_USER_URL.to_string()),
         device_auth_id: parsed.device_auth_id,
         interval_secs: parsed.interval.unwrap_or(5).max(1),
+        client_id: client_id.to_string(),
     })
 }
 
@@ -137,6 +211,7 @@ async fn complete_device_login_inner(login: DeviceLogin) -> Result<CodexAuth> {
             let token: DeviceTokenResponse =
                 response.json().await.context("parse Codex device token")?;
             return exchange_code(
+                &login.client_id,
                 &token.authorization_code,
                 &token.code_verifier,
                 DEVICE_REDIRECT_URI,
@@ -155,19 +230,25 @@ async fn complete_device_login_inner(login: DeviceLogin) -> Result<CodexAuth> {
     ))
 }
 
-pub async fn refresh_with_token(refresh_token: &str) -> Result<CodexAuth> {
-    refresh_with_token_at(TOKEN_URL, refresh_token).await
+/// Refresh a token set with the client that issued it (see
+/// [`refresh_client_id`]).
+pub async fn refresh_with_token(client_id: &str, refresh_token: &str) -> Result<CodexAuth> {
+    refresh_with_token_at(TOKEN_URL, client_id, refresh_token).await
 }
 
 /// Refresh against an arbitrary token endpoint (tests inject a local mock).
-pub async fn refresh_with_token_at(token_url: &str, refresh_token: &str) -> Result<CodexAuth> {
+pub async fn refresh_with_token_at(
+    token_url: &str,
+    client_id: &str,
+    refresh_token: &str,
+) -> Result<CodexAuth> {
     let client = auth_http_client()?;
     let response = client
         .post(token_url)
         .form(&[
             ("grant_type", "refresh_token"),
             ("refresh_token", refresh_token),
-            ("client_id", CODEX_CLIENT_ID),
+            ("client_id", client_id),
         ])
         .send()
         .await
@@ -178,7 +259,7 @@ pub async fn refresh_with_token_at(token_url: &str, refresh_token: &str) -> Resu
         return Err(anyhow!("Codex token refresh failed ({status}): {body}"));
     }
     let token: TokenResponse = response.json().await.context("parse Codex refresh token")?;
-    auth_from_token_response(token)
+    auth_from_token_response(token, client_id)
 }
 
 /// OpenAI rotates Codex refresh tokens; reuse of an already-spent token returns
@@ -196,6 +277,8 @@ pub fn auth_from_access_token(access_token: String) -> CodexAuth {
         access_token,
         refresh_token: None,
         expires_at: None,
+        // A pasted token has no refresh token, so its client never matters.
+        client_id: None,
     }
 }
 
@@ -241,7 +324,7 @@ fn extract_email(access_token: &str) -> Option<String> {
     })
 }
 
-fn auth_from_token_response(token: TokenResponse) -> Result<CodexAuth> {
+fn auth_from_token_response(token: TokenResponse, client_id: &str) -> Result<CodexAuth> {
     let expires_at = token
         .expires_in
         .filter(|seconds| *seconds > 0)
@@ -256,16 +339,22 @@ fn auth_from_token_response(token: TokenResponse) -> Result<CodexAuth> {
         expires_at,
         account_id,
         email,
+        client_id: Some(client_id.to_string()),
     })
 }
 
-async fn exchange_code(code: &str, verifier: &str, redirect_uri: &str) -> Result<CodexAuth> {
+async fn exchange_code(
+    client_id: &str,
+    code: &str,
+    verifier: &str,
+    redirect_uri: &str,
+) -> Result<CodexAuth> {
     let client = auth_http_client()?;
     let response = client
         .post(TOKEN_URL)
         .form(&[
             ("grant_type", "authorization_code"),
-            ("client_id", CODEX_CLIENT_ID),
+            ("client_id", client_id),
             ("code", code),
             ("code_verifier", verifier),
             ("redirect_uri", redirect_uri),
@@ -279,7 +368,7 @@ async fn exchange_code(code: &str, verifier: &str, redirect_uri: &str) -> Result
         return Err(anyhow!("Codex OAuth exchange failed ({status}): {body}"));
     }
     let token: TokenResponse = response.json().await.context("parse Codex OAuth token")?;
-    auth_from_token_response(token)
+    auth_from_token_response(token, client_id)
 }
 
 fn auth_http_client() -> Result<reqwest::Client> {
@@ -429,6 +518,115 @@ mod tests {
         );
         assert!(is_refresh_token_reused(&err));
         assert!(!is_refresh_token_reused(&anyhow!("network down")));
+    }
+
+    #[test]
+    fn client_id_defaults_to_the_borrowed_codex_client() {
+        assert_eq!(
+            resolve_client_id(None, None).unwrap(),
+            BORROWED_CODEX_CLIENT_ID
+        );
+        // Blank values count as unset rather than as an empty client ID.
+        assert_eq!(
+            resolve_client_id(Some("  "), Some("")).unwrap(),
+            BORROWED_CODEX_CLIENT_ID
+        );
+    }
+
+    #[test]
+    fn client_id_env_beats_setting_beats_default() {
+        assert_eq!(
+            resolve_client_id(Some(" app_env "), Some("app_setting")).unwrap(),
+            "app_env"
+        );
+        assert_eq!(
+            resolve_client_id(None, Some("app_setting")).unwrap(),
+            "app_setting"
+        );
+    }
+
+    #[test]
+    fn malformed_client_id_is_rejected_with_its_source() {
+        let err = resolve_client_id(Some("app id"), None).unwrap_err();
+        assert!(format!("{err:#}").contains(CLIENT_ID_ENV), "{err:#}");
+        let err = resolve_client_id(None, Some("app\u{7}x")).unwrap_err();
+        assert!(format!("{err:#}").contains("chatgpt_client_id"), "{err:#}");
+        assert!(validate_client_id(&"a".repeat(MAX_CLIENT_ID_LEN + 1)).is_err());
+        assert!(validate_client_id("app_EMoamEEZ73f0CkXaXp7hrann").is_ok());
+    }
+
+    #[test]
+    fn refresh_uses_the_issuing_client() {
+        assert_eq!(refresh_client_id(Some("app_own")), "app_own");
+        // Records saved before yolop tracked the client came from the borrowed one.
+        assert_eq!(refresh_client_id(None), BORROWED_CODEX_CLIENT_ID);
+        assert_eq!(refresh_client_id(Some("")), BORROWED_CODEX_CLIENT_ID);
+    }
+
+    #[test]
+    fn token_response_records_the_issuing_client() {
+        let auth = auth_from_token_response(
+            TokenResponse {
+                access_token: "access".to_string(),
+                refresh_token: Some("refresh".to_string()),
+                expires_in: Some(3600),
+                id_token: None,
+            },
+            "app_own",
+        )
+        .unwrap();
+        assert_eq!(auth.client_id.as_deref(), Some("app_own"));
+        assert_eq!(auth_from_access_token("pasted".to_string()).client_id, None);
+    }
+
+    #[tokio::test]
+    async fn refresh_posts_the_issuing_client_id() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0u8; 4096];
+            loop {
+                let n = socket.read(&mut buffer).await.unwrap();
+                request.extend_from_slice(&buffer[..n]);
+                let text = String::from_utf8_lossy(&request);
+                if let Some(head_end) = text.find("\r\n\r\n") {
+                    let length = text[..head_end]
+                        .lines()
+                        .find_map(|line| {
+                            line.to_ascii_lowercase()
+                                .strip_prefix("content-length:")
+                                .map(|v| v.trim().parse::<usize>().unwrap())
+                        })
+                        .unwrap_or(0);
+                    if request.len() >= head_end + 4 + length {
+                        break;
+                    }
+                }
+                if n == 0 {
+                    break;
+                }
+            }
+            let body = r#"{"access_token":"new","refresh_token":"next","expires_in":3600}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            socket.write_all(response.as_bytes()).await.unwrap();
+            String::from_utf8(request).unwrap()
+        });
+
+        let auth = refresh_with_token_at(&format!("http://{addr}/token"), "app_own", "old")
+            .await
+            .unwrap();
+        let request = server.await.unwrap();
+        assert!(request.contains("client_id=app_own"), "{request}");
+        assert!(request.contains("refresh_token=old"), "{request}");
+        assert_eq!(auth.client_id.as_deref(), Some("app_own"));
+        assert_eq!(auth.refresh_token.as_deref(), Some("next"));
     }
 
     #[test]
