@@ -277,7 +277,7 @@ impl App {
             return "setup: no login to clear here".to_string();
         }
         if provider == "codex" {
-            return match settings.clear_codex_auth() {
+            return match crate::auth::siwc::clear_login(settings) {
                 Ok(true) => "setup: logged out of Codex".to_string(),
                 Ok(false) => "setup: Codex is not logged in".to_string(),
                 Err(error) => format!("setup: logout failed: {error}"),
@@ -1244,7 +1244,7 @@ impl App {
             }
             CredentialAction::ClearSaved => {
                 if provider == "codex" {
-                    match self.settings.clear_codex_auth() {
+                    match crate::auth::siwc::clear_login(&self.settings) {
                         Ok(_) => {
                             self.setup = None;
                             self.push_system("setup complete: cleared saved Codex login".into());
@@ -1288,15 +1288,16 @@ impl App {
         self.next_codex_login_id = self.next_codex_login_id.wrapping_add(1);
         let id = self.next_codex_login_id;
         let tx = self.codex_login_tx.clone();
-        let client_id = crate::auth::codex::configured_client_id(&self.settings.snapshot());
+        let client_id = crate::auth::codex::device_sign_in_client_id(&self.settings.snapshot());
+        let settings = self.settings.clone();
         let task = tokio::spawn(async move {
-            let result = match client_id {
-                Err(error) => Err(format!("{error:#}")),
-                Ok(client_id) => match method {
-                    CodexLoginMethod::Browser => crate::auth::codex::login_with_browser(&client_id)
-                        .await
-                        .map_err(|error| error.to_string()),
-                    CodexLoginMethod::Device => {
+            let result = match method {
+                CodexLoginMethod::Browser => crate::auth::codex::sign_in_with_browser(&settings)
+                    .await
+                    .map_err(|error| format!("{error:#}")),
+                CodexLoginMethod::Device => match client_id {
+                    Err(error) => Err(format!("{error:#}")),
+                    Ok(client_id) => {
                         match crate::auth::codex::start_device_login(&client_id).await {
                             Ok(login) => {
                                 let _ = tx.send(CodexLoginEvent::DeviceCode {
@@ -1986,6 +1987,7 @@ mod tests {
                 account_id: None,
                 email: None,
                 client_id: None,
+                open_source: None,
             }),
             ..Settings::default()
         }

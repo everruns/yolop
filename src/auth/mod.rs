@@ -8,3 +8,4 @@ pub mod mcp_oauth;
 pub mod mcp_oauth_login;
 pub mod oauth_flow;
 pub mod openrouter;
+pub mod siwc;

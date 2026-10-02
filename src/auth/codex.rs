@@ -15,7 +15,7 @@
 // is configured now. Records saved before this field existed were issued to
 // the borrowed client, which is what `refresh_client_id` falls back to.
 // See knowledge/specs/chatgpt-sign-in.md.
-use crate::config::{CodexAuth, Settings};
+use crate::config::{CodexAuth, Settings, SettingsStore};
 use anyhow::{Context, Result, anyhow};
 use reqwest::Url;
 use serde::Deserialize;
@@ -127,6 +127,35 @@ struct DeviceCodeResponse {
 struct DeviceTokenResponse {
     authorization_code: String,
     code_verifier: String,
+}
+
+/// Browser sign-in through the configured route (`chatgpt_sign_in` /
+/// `YOLOP_CHATGPT_SIGN_IN`): the Codex client by default, or the open-source
+/// Sign in with ChatGPT route (`crate::auth::siwc`). The caller saves the
+/// returned login either way.
+pub async fn sign_in_with_browser(settings: &SettingsStore) -> Result<CodexAuth> {
+    let snapshot = settings.snapshot();
+    match crate::auth::siwc::configured_sign_in(&snapshot)? {
+        crate::auth::siwc::SignInRoute::Codex => {
+            login_with_browser(&configured_client_id(&snapshot)?).await
+        }
+        crate::auth::siwc::SignInRoute::OpenSource => {
+            crate::auth::siwc::login_with_browser(settings).await
+        }
+    }
+}
+
+/// The client a device sign-in uses. The open-source route documents no
+/// device flow, so it is refused there rather than silently using Codex.
+pub fn device_sign_in_client_id(settings: &Settings) -> Result<String> {
+    if crate::auth::siwc::configured_sign_in(settings)?
+        == crate::auth::siwc::SignInRoute::OpenSource
+    {
+        return Err(anyhow!(
+            "the open-source ChatGPT sign-in has no device flow; use the browser sign-in"
+        ));
+    }
+    configured_client_id(settings)
 }
 
 pub async fn login_with_browser(client_id: &str) -> Result<CodexAuth> {
@@ -279,6 +308,7 @@ pub fn auth_from_access_token(access_token: String) -> CodexAuth {
         expires_at: None,
         // A pasted token has no refresh token, so its client never matters.
         client_id: None,
+        open_source: None,
     }
 }
 
@@ -340,6 +370,7 @@ fn auth_from_token_response(token: TokenResponse, client_id: &str) -> Result<Cod
         account_id,
         email,
         client_id: Some(client_id.to_string()),
+        open_source: None,
     })
 }
 
