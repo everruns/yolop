@@ -936,13 +936,15 @@ mod tests {
 
     #[test]
     fn id_token_validation_accepts_a_good_token() {
-        let token = sign(&claims("oaiapp_issued", "nonce-1", 2_000_000_000));
+        // A fresh nonce per run, the same way a real sign-in draws one.
+        let nonce = crate::auth::oauth_flow::random_token(32);
+        let token = sign(&claims("oaiapp_issued", &nonce, 2_000_000_000));
         let identity = validate_id_token(
             &token,
             &jwks(),
             ISSUER,
             "oaiapp_issued",
-            "nonce-1",
+            &nonce,
             1_900_000_000,
         )
         .unwrap();
@@ -953,9 +955,10 @@ mod tests {
     #[test]
     fn id_token_validation_rejects_bad_claims_and_signatures() {
         let now = 1_900_000_000;
-        let good = claims("oaiapp_issued", "nonce-1", 2_000_000_000);
+        let nonce = crate::auth::oauth_flow::random_token(32);
+        let good = claims("oaiapp_issued", &nonce, 2_000_000_000);
         let check = |token: &str| {
-            validate_id_token(token, &jwks(), ISSUER, "oaiapp_issued", "nonce-1", now)
+            validate_id_token(token, &jwks(), ISSUER, "oaiapp_issued", &nonce, now)
                 .map(|_| ())
                 .unwrap_err()
                 .to_string()
