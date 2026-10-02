@@ -158,6 +158,7 @@ mod tests {
                 model: "stub".to_string(),
                 answers,
                 usage: DecisionUsage::default(),
+                calibrated: true,
             })
         }
     }
