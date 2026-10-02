@@ -1,5 +1,18 @@
 # Knowledge Log
 
+## 2026-10-02, Open-source Sign in with ChatGPT route
+
+The codex provider gains a second sign-in route, selected by
+`chatgpt_sign_in = "open-source"` or `YOLOP_CHATGPT_SIGN_IN`: dynamic client
+registration with a persisted host ID, an RS256-verified ID token, and turns on
+the public Responses API through everruns' Open Responses driver with the
+preview's rejected fields stripped. The registered client is saved apart from
+the tokens so sign-out keeps it, and refresh uses the client saved on the token
+set, the storage the configurable-client change put in place. The Codex route
+stays the default until the new one is proven against a live account; what was
+inferred rather than read in the docs is listed in
+[ChatGPT sign-in](specs/chatgpt-sign-in.md).
+
 ## 2026-10-02, Everruns 0.33.0, GPT-6.1 Sol, and a configurable ChatGPT client
 
 All `everruns-*` pins move to 0.33.0 together. The adaptations are two new

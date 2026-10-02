@@ -81,6 +81,14 @@ pub(crate) fn current_value(settings: &Settings, target: &KeyTarget) -> Value {
             .map(|m| Value::String(m.to_string()))
             .unwrap_or(Value::Null),
         KeyTarget::Speed => Value::String(settings.speed().unwrap_or("default").to_string()),
+        KeyTarget::ChatgptSignIn => Value::String(
+            settings
+                .chatgpt_sign_in()
+                .and_then(crate::auth::siwc::SignInRoute::parse)
+                .unwrap_or(crate::auth::siwc::SignInRoute::Codex)
+                .as_str()
+                .to_string(),
+        ),
         KeyTarget::ChatgptClientId => settings
             .chatgpt_client_id()
             .map(|id| Value::String(id.to_string()))

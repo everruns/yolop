@@ -2145,6 +2145,10 @@ impl ProviderChoice {
                 let expires_at = auth_from_settings.and_then(|auth| auth.expires_at);
                 // Refresh must go to the client that issued this token set.
                 let client_id = auth_from_settings.and_then(|auth| auth.client_id.clone());
+                // An open-source login runs on the public Responses API.
+                let flow = auth_from_settings
+                    .and_then(|auth| auth.open_source.as_ref())
+                    .map(|_| crate::drivers::chatgpt_plan::OPEN_SOURCE_FLOW);
                 Ok(ResolvedModel {
                     model: model.clone(),
                     provider_type: DriverId::external(crate::drivers::codex::CODEX_DRIVER_ID),
@@ -2154,6 +2158,7 @@ impl ProviderChoice {
                         extra: Some(serde_json::json!({
                             "expires_at": expires_at,
                             "client_id": client_id,
+                            "flow": flow,
                             "auth_source": if auth_from_settings.is_some() {
                                 "settings"
                             } else {
@@ -8322,6 +8327,7 @@ mod tests {
                 account_id: Some("acc_123".to_string()),
                 email: None,
                 client_id: None,
+                open_source: None,
             }),
             ..Default::default()
         };
@@ -8372,6 +8378,7 @@ mod tests {
                 account_id: Some("saved-account".to_string()),
                 email: None,
                 client_id: None,
+                open_source: None,
             }),
             ..Default::default()
         };

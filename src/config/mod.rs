@@ -48,6 +48,34 @@ pub struct CodexAuth {
     /// client; `None` means a record saved before yolop tracked it, which the
     /// borrowed Codex client issued (`crate::auth::codex::refresh_client_id`).
     pub client_id: Option<String>,
+    /// Set when this login came from the open-source Sign in with ChatGPT
+    /// route (`crate::auth::siwc`): turns then run on the public Responses API
+    /// instead of the Codex backend, and refresh uses that route's token
+    /// endpoint. `None` is a Codex-backend login.
+    pub open_source: Option<OpenSourceGrant>,
+}
+
+/// What the open-source Sign in with ChatGPT route adds to a saved login.
+/// See knowledge/specs/chatgpt-sign-in.md.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct OpenSourceGrant {
+    /// The last validated ID token, kept as `id_token_hint` for re-sign-in.
+    pub id_token: Option<String>,
+    /// Scopes the token endpoint granted; plan usage needs
+    /// `chatgpt.tokens.use.direct`.
+    pub scopes: Vec<String>,
+    /// Validated ID-token subject: the account this login belongs to.
+    pub subject: Option<String>,
+}
+
+/// The client OpenAI registered for this host's ChatGPT account through
+/// dynamic client registration. Kept apart from `[codex_auth]` so signing out
+/// clears tokens but keeps the registration, and the next sign-in reuses it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatGptRegistration {
+    pub client_id: String,
+    pub subject: String,
+    pub email: Option<String>,
 }
 
 /// When yolop provisions an isolated git worktree for code changes.
@@ -274,6 +302,15 @@ pub struct Settings {
     /// borrowed Codex CLI client; `YOLOP_CHATGPT_CLIENT_ID` overrides this.
     /// See `crate::auth::codex::configured_client_id`.
     pub chatgpt_client_id: Option<String>,
+    /// Which route a new ChatGPT sign-in takes: `codex` (default) or
+    /// `open-source`. `YOLOP_CHATGPT_SIGN_IN` overrides this. See
+    /// `crate::auth::siwc::configured_sign_in`.
+    pub chatgpt_sign_in: Option<String>,
+    /// This host's stable `ext_agent_host_id` for the open-source route,
+    /// generated once on first use and never user-edited.
+    pub chatgpt_host_id: Option<String>,
+    /// The dynamically registered client for the open-source route.
+    pub chatgpt_registration: Option<ChatGptRegistration>,
     /// OpenAI service tier for every turn (`flex`, `priority`, `fast`,
     /// `ultrafast`). `None` is the standard tier; `YOLOP_SPEED` overrides it.
     /// See `crate::runtime::speed`.
@@ -311,6 +348,9 @@ impl Default for Settings {
             theme: None,
             classifier_model: None,
             chatgpt_client_id: None,
+            chatgpt_sign_in: None,
+            chatgpt_host_id: None,
+            chatgpt_registration: None,
             speed: None,
             mcp: McpSettings::default(),
             capabilities: Vec::new(),
@@ -376,6 +416,20 @@ impl Settings {
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(str::to_string);
+        let non_empty = |key: &str| {
+            table
+                .get(key)
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        };
+        let chatgpt_sign_in = non_empty("chatgpt_sign_in");
+        let chatgpt_host_id = non_empty("chatgpt_host_id");
+        let chatgpt_registration = table
+            .get("chatgpt_registration")
+            .and_then(Value::as_table)
+            .and_then(parse_chatgpt_registration);
         let speed = table
             .get("speed")
             .and_then(Value::as_str)
@@ -420,6 +474,9 @@ impl Settings {
             theme,
             classifier_model,
             chatgpt_client_id,
+            chatgpt_sign_in,
+            chatgpt_host_id,
+            chatgpt_registration,
             speed,
             mcp: parse_mcp_settings(table),
             capabilities: parse_capabilities_table(table),
@@ -487,6 +544,24 @@ impl Settings {
             table.insert(
                 "chatgpt_client_id".to_string(),
                 Value::String(client_id.to_string()),
+            );
+        }
+        if let Some(sign_in) = self.chatgpt_sign_in.as_deref() {
+            table.insert(
+                "chatgpt_sign_in".to_string(),
+                Value::String(sign_in.to_string()),
+            );
+        }
+        if let Some(host_id) = self.chatgpt_host_id.as_deref() {
+            table.insert(
+                "chatgpt_host_id".to_string(),
+                Value::String(host_id.to_string()),
+            );
+        }
+        if let Some(registration) = &self.chatgpt_registration {
+            table.insert(
+                "chatgpt_registration".to_string(),
+                Value::Table(chatgpt_registration_to_table(registration)),
             );
         }
         if let Some(speed) = self.speed.as_deref() {
@@ -617,6 +692,14 @@ impl Settings {
         self.speed.as_deref()
     }
 
+    pub fn chatgpt_sign_in(&self) -> Option<&str> {
+        self.chatgpt_sign_in.as_deref()
+    }
+
+    pub fn chatgpt_registration(&self) -> Option<&ChatGptRegistration> {
+        self.chatgpt_registration.as_ref()
+    }
+
     pub fn capability_overrides_for(&self, id: &str) -> Vec<(usize, &CapabilityOverride)> {
         self.capabilities
             .iter()
@@ -668,7 +751,59 @@ fn parse_codex_auth(table: &Table) -> Option<CodexAuth> {
             .and_then(Value::as_str)
             .filter(|value| !value.is_empty())
             .map(str::to_string),
+        open_source: (table.get("flow").and_then(Value::as_str) == Some(OPEN_SOURCE_FLOW)).then(
+            || {
+                let text = |key: &str| {
+                    table
+                        .get(key)
+                        .and_then(Value::as_str)
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_string)
+                };
+                OpenSourceGrant {
+                    id_token: text("id_token"),
+                    scopes: text("scope")
+                        .map(|scope| scope.split_whitespace().map(str::to_string).collect())
+                        .unwrap_or_default(),
+                    subject: text("subject"),
+                }
+            },
+        ),
     })
+}
+
+/// `flow` value marking a `[codex_auth]` record from the open-source route.
+const OPEN_SOURCE_FLOW: &str = "open-source";
+
+fn parse_chatgpt_registration(table: &Table) -> Option<ChatGptRegistration> {
+    let text = |key: &str| {
+        table
+            .get(key)
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    };
+    Some(ChatGptRegistration {
+        client_id: text("client_id")?,
+        subject: text("subject")?,
+        email: text("email"),
+    })
+}
+
+fn chatgpt_registration_to_table(registration: &ChatGptRegistration) -> Table {
+    let mut table = Table::new();
+    table.insert(
+        "client_id".to_string(),
+        Value::String(registration.client_id.clone()),
+    );
+    table.insert(
+        "subject".to_string(),
+        Value::String(registration.subject.clone()),
+    );
+    if let Some(email) = &registration.email {
+        table.insert("email".to_string(), Value::String(email.clone()));
+    }
+    table
 }
 
 fn codex_auth_to_table(auth: &CodexAuth) -> Table {
@@ -694,6 +829,21 @@ fn codex_auth_to_table(auth: &CodexAuth) -> Table {
     }
     if let Some(client_id) = &auth.client_id {
         table.insert("client_id".to_string(), Value::String(client_id.clone()));
+    }
+    if let Some(grant) = &auth.open_source {
+        table.insert(
+            "flow".to_string(),
+            Value::String(OPEN_SOURCE_FLOW.to_string()),
+        );
+        if let Some(id_token) = &grant.id_token {
+            table.insert("id_token".to_string(), Value::String(id_token.clone()));
+        }
+        if !grant.scopes.is_empty() {
+            table.insert("scope".to_string(), Value::String(grant.scopes.join(" ")));
+        }
+        if let Some(subject) = &grant.subject {
+            table.insert("subject".to_string(), Value::String(subject.clone()));
+        }
     }
     table
 }
@@ -1079,6 +1229,34 @@ impl SettingsStore {
     pub fn set_chatgpt_client_id(&self, client_id: Option<String>) -> Result<()> {
         let mut guard = self.lock_fresh_for_update()?;
         guard.base.chatgpt_client_id = client_id;
+        self.save_base_locked(&mut guard)
+    }
+
+    pub fn set_chatgpt_sign_in(&self, sign_in: Option<String>) -> Result<()> {
+        let mut guard = self.lock_fresh_for_update()?;
+        guard.base.chatgpt_sign_in = sign_in;
+        self.save_base_locked(&mut guard)
+    }
+
+    /// This host's `ext_agent_host_id`, generated by `generate` and persisted
+    /// the first time it is asked for. Later calls return the saved value.
+    pub fn ensure_chatgpt_host_id(&self, generate: impl FnOnce() -> String) -> Result<String> {
+        let mut guard = self.lock_fresh_for_update()?;
+        if let Some(host_id) = guard.base.chatgpt_host_id.clone() {
+            return Ok(host_id);
+        }
+        let host_id = generate();
+        guard.base.chatgpt_host_id = Some(host_id.clone());
+        self.save_base_locked(&mut guard)?;
+        Ok(host_id)
+    }
+
+    pub fn set_chatgpt_registration(
+        &self,
+        registration: Option<ChatGptRegistration>,
+    ) -> Result<()> {
+        let mut guard = self.lock_fresh_for_update()?;
+        guard.base.chatgpt_registration = registration;
         self.save_base_locked(&mut guard)
     }
 
@@ -1898,6 +2076,7 @@ mod tests {
                 account_id: Some("acc_123".to_string()),
                 email: Some("user@example.com".to_string()),
                 client_id: None,
+                open_source: None,
             })
             .expect("save codex auth");
 
@@ -1932,6 +2111,7 @@ mod tests {
                 account_id: None,
                 email: None,
                 client_id: Some("app_yolop".to_string()),
+                open_source: None,
             })
             .expect("save auth");
 
@@ -1966,6 +2146,7 @@ mod tests {
                 account_id: None,
                 email: None,
                 client_id: None,
+                open_source: None,
             })
             .expect("save");
 
@@ -1979,6 +2160,7 @@ mod tests {
                 account_id: Some("acc".to_string()),
                 email: Some("a@b.c".to_string()),
                 client_id: None,
+                open_source: None,
             })
             .expect("external write");
 

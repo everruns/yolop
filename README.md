@@ -202,7 +202,7 @@ Pick per run with `--provider` and `-m`, persist choices with `/setup` or `yolop
 <details>
 <summary>Codex, OpenRouter, custom endpoints, and local inference</summary>
 
-**Codex.** `--provider codex` uses your ChatGPT plan via a browser or device login (`/setup` walks through it). Pin a model with `yolop config model set codex <id>`, tune reasoning with `/effort`. Sign-in uses the Codex CLI's public OAuth client until yolop has its own; to sign in with a different client, set `yolop config set chatgpt_client_id <id>` or `YOLOP_CHATGPT_CLIENT_ID` and log in again. An existing login keeps refreshing with the client that issued it.
+**Codex.** `--provider codex` uses your ChatGPT plan via a browser or device login (`/setup` walks through it). Pin a model with `yolop config model set codex <id>`, tune reasoning with `/effort`. Sign-in uses the Codex CLI's public OAuth client until yolop has its own; to sign in with a different client, set `yolop config set chatgpt_client_id <id>` or `YOLOP_CHATGPT_CLIENT_ID` and log in again. An existing login keeps refreshing with the client that issued it. To try OpenAI's open-source Sign in with ChatGPT instead, which needs no borrowed client, run `yolop config set chatgpt_sign_in open-source` (or set `YOLOP_CHATGPT_SIGN_IN=open-source`) and sign in again from the browser: yolop registers a client for your account on the first sign-in and runs turns on the public Responses API, still billed to your ChatGPT plan. It is a preview route, so a few request options (output token cap, temperature, `speed`) do not apply there.
 
 **OpenRouter.** Sign in from the browser or set `OPENROUTER_API_KEY`. The default model is `openai/gpt-5.6-sol`; any `provider/model` id works with `-m`.
 

@@ -1,5 +1,5 @@
 use crate::auth::codex::CODEX_ORIGINATOR;
-use crate::config::{CodexAuth, SettingsStore};
+use crate::config::{CodexAuth, OpenSourceGrant, SettingsStore};
 use async_trait::async_trait;
 use eventsource_stream::Eventsource;
 use everruns_provider::ProviderEndpoint;
@@ -202,7 +202,7 @@ impl CodexAuthStore for SettingsStore {
 }
 
 #[derive(Debug, Clone)]
-struct CodexTokens {
+pub(super) struct CodexTokens {
     access_token: String,
     refresh_token: Option<String>,
     expires_at: Option<i64>,
@@ -212,6 +212,9 @@ struct CodexTokens {
     /// OAuth client that issued the refresh token; refresh must reuse it.
     /// `None` is a pre-tracking record, which the borrowed Codex client issued.
     client_id: Option<String>,
+    /// Set for an open-source Sign in with ChatGPT login (see
+    /// `crate::drivers::chatgpt_plan`); carried so refresh persists it.
+    open_source: Option<OpenSourceGrant>,
 }
 
 #[derive(Clone)]
@@ -240,6 +243,17 @@ fn register_driver_with_url(
         CompactionCapabilityPolicy::new(NATIVE_COMPACTION_REPROBE_AFTER, Arc::new(Instant::now));
     registry.register_external(CODEX_DRIVER_ID, move |config| {
         let config_auth_store = settings_backed_auth(&config.metadata).then(|| auth_store.clone());
+        // A login from the open-source route runs on the public Responses API,
+        // not the Codex backend; the provider name stays `codex` either way.
+        if crate::drivers::chatgpt_plan::is_open_source_login(&config.metadata) {
+            return Box::new(crate::drivers::chatgpt_plan::ChatGptPlanDriver::new(
+                CodexTokens::from_config(config, config_auth_store.as_deref()),
+                config_auth_store,
+                refresh_gate.clone(),
+                crate::auth::siwc::API_BASE_URL.to_string(),
+                crate::auth::siwc::Endpoints::production().token,
+            ));
+        }
         Box::new(CodexChatDriver::from_config_with_refresh_gate(
             config,
             config_auth_store,
@@ -262,37 +276,17 @@ impl CodexChatDriver {
         compaction_policy: CompactionCapabilityPolicy,
         responses_url: String,
     ) -> Self {
-        let access_token = config
-            .api_key
-            .clone()
-            .or_else(|| metadata_extra_string(&config.metadata, "access_token"))
-            .unwrap_or_default();
-        let refresh_token = config.metadata.refresh_token.clone();
-        let expires_at = metadata_extra_i64(&config.metadata, "expires_at")
-            .or_else(|| metadata_extra_i64(&config.metadata, "expires_at_ms"));
-        let account_id = config
-            .metadata
-            .account_id
-            .clone()
-            .or_else(|| crate::auth::codex::extract_account_id(&access_token));
-        let disk_auth = auth_store.as_ref().and_then(|store| store.load_from_disk());
-        let client_id = metadata_extra_string(&config.metadata, "client_id")
-            .or_else(|| disk_auth.as_ref().and_then(|auth| auth.client_id.clone()));
-        let email = disk_auth.and_then(|auth| auth.email);
-        let compaction_scope =
-            CompactionCapabilityScope::new(&responses_url, account_id.as_deref(), &access_token);
+        let tokens = CodexTokens::from_config(config, auth_store.as_deref());
+        let compaction_scope = CompactionCapabilityScope::new(
+            &responses_url,
+            tokens.account_id.as_deref(),
+            &tokens.access_token,
+        );
         Self {
             client: reqwest::Client::new(),
             responses_url,
             compaction_scope,
-            tokens: Arc::new(tokio::sync::Mutex::new(CodexTokens {
-                access_token,
-                refresh_token,
-                expires_at,
-                account_id,
-                email,
-                client_id,
-            })),
+            tokens: Arc::new(tokio::sync::Mutex::new(tokens)),
             refresh_gate,
             auth_store,
             compaction_policy,
@@ -320,6 +314,67 @@ impl CodexChatDriver {
     }
 }
 
+impl CodexTokens {
+    /// The token set a driver starts from: the resolved model's credentials,
+    /// with the email and issuing client filled in from disk when present.
+    pub(super) fn from_config(config: &DriverConfig, store: Option<&dyn CodexAuthStore>) -> Self {
+        let access_token = config
+            .api_key
+            .clone()
+            .or_else(|| metadata_extra_string(&config.metadata, "access_token"))
+            .unwrap_or_default();
+        let refresh_token = config.metadata.refresh_token.clone();
+        let expires_at = metadata_extra_i64(&config.metadata, "expires_at")
+            .or_else(|| metadata_extra_i64(&config.metadata, "expires_at_ms"));
+        let account_id = config
+            .metadata
+            .account_id
+            .clone()
+            .or_else(|| crate::auth::codex::extract_account_id(&access_token));
+        let disk_auth = store.and_then(|store| store.load_from_disk());
+        let client_id = metadata_extra_string(&config.metadata, "client_id")
+            .or_else(|| disk_auth.as_ref().and_then(|auth| auth.client_id.clone()));
+        let open_source = disk_auth
+            .as_ref()
+            .and_then(|auth| auth.open_source.clone())
+            .or_else(|| {
+                crate::drivers::chatgpt_plan::is_open_source_login(&config.metadata)
+                    .then(OpenSourceGrant::default)
+            });
+        let email = disk_auth.and_then(|auth| auth.email);
+        Self {
+            access_token,
+            refresh_token,
+            expires_at,
+            account_id,
+            email,
+            client_id,
+            open_source,
+        }
+    }
+
+    pub(super) fn access_token(&self) -> &str {
+        &self.access_token
+    }
+
+    /// Granted scopes of an open-source login; `None` for a Codex login.
+    pub(super) fn open_source_scopes(&self) -> Option<&[String]> {
+        self.open_source
+            .as_ref()
+            .map(|grant| grant.scopes.as_slice())
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_open_source_for_test(&mut self, grant: OpenSourceGrant) {
+        self.open_source = Some(grant);
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_expires_at_for_test(&mut self, expires_at: Option<i64>) {
+        self.expires_at = expires_at;
+    }
+}
+
 /// Refresh Codex OAuth tokens when near expiry, persisting the rotated pair.
 ///
 /// OpenAI refresh tokens are single-use. Without persisting, the next process
@@ -328,7 +383,7 @@ impl CodexChatDriver {
 /// rotated already). On `refresh_token_reused` we reload once; if still stuck,
 /// clear broken login and ask the user to run `/setup` — do not auto-open a
 /// browser mid-turn.
-async fn ensure_fresh_tokens<F, Fut>(
+pub(super) async fn ensure_fresh_tokens<F, Fut>(
     tokens: &mut CodexTokens,
     store: Option<&dyn CodexAuthStore>,
     refresh: F,
@@ -479,6 +534,11 @@ fn adopt_disk_auth(tokens: &mut CodexTokens, store: &dyn CodexAuthStore) {
     let Some(disk) = store.load_from_disk() else {
         return;
     };
+    // A login from the other route belongs to the other driver; this one keeps
+    // its credentials until the runtime rebuilds the provider.
+    if disk.open_source.is_some() != tokens.open_source.is_some() {
+        return;
+    }
     if disk.access_token == tokens.access_token
         && disk.refresh_token == tokens.refresh_token
         && disk.expires_at == tokens.expires_at
@@ -497,6 +557,7 @@ fn adopt_disk_auth(tokens: &mut CodexTokens, store: &dyn CodexAuthStore) {
     }
     // A disk record from a fresh sign-in may come from a different client.
     tokens.client_id = disk.client_id;
+    tokens.open_source = disk.open_source;
 }
 
 fn apply_refreshed(tokens: &mut CodexTokens, refreshed: CodexAuth, used_refresh_token: &str) {
@@ -515,6 +576,18 @@ fn apply_refreshed(tokens: &mut CodexTokens, refreshed: CodexAuth, used_refresh_
     if refreshed.client_id.is_some() {
         tokens.client_id = refreshed.client_id;
     }
+    // A refresh may omit the ID token or scopes; keep what the sign-in saved.
+    if let (Some(current), Some(fresh)) = (tokens.open_source.as_mut(), refreshed.open_source) {
+        if fresh.id_token.is_some() {
+            current.id_token = fresh.id_token;
+        }
+        if !fresh.scopes.is_empty() {
+            current.scopes = fresh.scopes;
+        }
+        if fresh.subject.is_some() {
+            current.subject = fresh.subject;
+        }
+    }
 }
 
 fn persist_tokens(tokens: &CodexTokens, store: Option<&dyn CodexAuthStore>) -> EverrunsResult<()> {
@@ -529,6 +602,7 @@ fn persist_tokens(tokens: &CodexTokens, store: Option<&dyn CodexAuthStore>) -> E
             account_id: tokens.account_id.clone(),
             email: tokens.email.clone(),
             client_id: tokens.client_id.clone(),
+            open_source: tokens.open_source.clone(),
         })
         .map_err(|err| {
             AgentLoopError::llm(format!(
@@ -1525,7 +1599,7 @@ fn provider_error_status(value: &Value) -> Option<u16> {
         .and_then(|status| u16::try_from(status).ok())
 }
 
-fn metadata_extra_string(metadata: &ProviderMetadata, key: &str) -> Option<String> {
+pub(super) fn metadata_extra_string(metadata: &ProviderMetadata, key: &str) -> Option<String> {
     metadata
         .extra
         .as_ref()
@@ -1624,6 +1698,7 @@ mod tests {
             account_id: Some("acc".to_string()),
             email: Some("user@example.com".to_string()),
             client_id: None,
+            open_source: None,
         }
     }
 
@@ -1671,6 +1746,7 @@ mod tests {
                 account_id: Some("account-test".to_string()),
                 email: None,
                 client_id: None,
+                open_source: None,
             })),
             refresh_gate: Arc::new(tokio::sync::Mutex::new(())),
             auth_store: None,
@@ -2165,6 +2241,7 @@ mod tests {
                     account_id: Some("acc".to_string()),
                     email: None,
                     client_id: Some("app_own".to_string()),
+                    open_source: None,
                 })
             }
         })
@@ -2194,6 +2271,7 @@ mod tests {
                     account_id: None,
                     email: None,
                     client_id: None,
+                    open_source: None,
                 })
             }
         })
@@ -2217,6 +2295,7 @@ mod tests {
                 account_id: Some("acc".to_string()),
                 email: Some("user@example.com".to_string()),
                 client_id: None,
+                open_source: None,
             })
             .unwrap();
         let mut tokens = expired_tokens("refresh-old");
@@ -2234,6 +2313,7 @@ mod tests {
                     account_id: Some("acc".to_string()),
                     email: None,
                     client_id: None,
+                    open_source: None,
                 })
             }
         })
@@ -2262,6 +2342,7 @@ mod tests {
                 account_id: Some("acc".to_string()),
                 email: Some("user@example.com".to_string()),
                 client_id: None,
+                open_source: None,
             })
             .unwrap();
         let mut tokens = expired_tokens("refresh-old");
@@ -2294,6 +2375,7 @@ mod tests {
                 account_id: Some("acc".to_string()),
                 email: Some("user@example.com".to_string()),
                 client_id: None,
+                open_source: None,
             })
             .unwrap();
         let auth_store: Arc<dyn CodexAuthStore> = store.clone();
@@ -2334,6 +2416,7 @@ mod tests {
                         account_id: Some("acc".to_string()),
                         email: None,
                         client_id: None,
+                        open_source: None,
                     })
                 }
             }),
@@ -2348,6 +2431,7 @@ mod tests {
                         account_id: Some("acc".to_string()),
                         email: None,
                         client_id: None,
+                        open_source: None,
                     })
                 }
             })
@@ -2380,6 +2464,7 @@ mod tests {
                         account_id: Some("acc".to_string()),
                         email: Some("user@example.com".to_string()),
                         client_id: None,
+                        open_source: None,
                     });
                 }
                 Some(CodexAuth {
@@ -2389,6 +2474,7 @@ mod tests {
                     account_id: Some("acc".to_string()),
                     email: Some("user@example.com".to_string()),
                     client_id: None,
+                    open_source: None,
                 })
             }
             fn save(&self, _auth: CodexAuth) -> anyhow::Result<()> {
@@ -2426,6 +2512,7 @@ mod tests {
                 account_id: Some("acc".to_string()),
                 email: Some("user@example.com".to_string()),
                 client_id: None,
+                open_source: None,
             })
             .unwrap();
         let mut tokens = expired_tokens("refresh-spent");
@@ -2456,6 +2543,7 @@ mod tests {
                 account_id: Some("acc".to_string()),
                 email: Some("user@example.com".to_string()),
                 client_id: None,
+                open_source: None,
             })
             .unwrap();
 
