@@ -31,7 +31,7 @@ use everruns_core::command::{
 };
 use everruns_core::tool_narration::ToolNarrationPhase;
 use everruns_core::{Capability, CapabilityStatus, SystemPromptContext};
-use everruns_platform::capabilities::BackgroundExecutionCapability;
+use everruns_capabilities::capabilities::BackgroundExecutionCapability;
 use std::sync::Arc;
 
 pub(crate) const BACKGROUND_CAPABILITY_ID: &str = "background";

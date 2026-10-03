@@ -1,7 +1,7 @@
 //! Host adapter for the upstream soft-approval capability.
 //!
 //! Soft approval started here and was generalized into `soft_approval` in
-//! `everruns-builtins`, so the prompt block, the three tools, and the pause
+//! `everruns-core::builtins`, so the prompt block, the three tools, and the pause
 //! store now live upstream and this module is the seam that makes them fit a
 //! single-user terminal host.
 //!
@@ -22,11 +22,11 @@ use crate::config::ApprovalMode;
 use crate::config::SettingsStore;
 use crate::config::service::ConfigService;
 
-pub(crate) use everruns_builtins::soft_approval::SOFT_APPROVAL_CAPABILITY_ID;
-use everruns_builtins::soft_approval::{
+pub(crate) use everruns_core::builtins::soft_approval::SOFT_APPROVAL_CAPABILITY_ID;
+use everruns_core::builtins::soft_approval::{
     ApprovalMode as UpstreamApprovalMode, ApprovalModeStore, SoftApprovalCapability,
 };
-pub use everruns_builtins::soft_approval::{PendingApproval, PendingApprovalStore};
+pub use everruns_core::builtins::soft_approval::{PendingApproval, PendingApprovalStore};
 
 /// Yolop's level as upstream spells it. Total both ways: the enums carry the
 /// same three variants because upstream's is a copy of this one.
@@ -56,7 +56,7 @@ fn from_upstream(mode: UpstreamApprovalMode) -> ApprovalMode {
 /// the running host asks for the text.
 #[cfg(test)]
 pub(crate) fn render_approval_block(mode: ApprovalMode) -> Option<String> {
-    everruns_builtins::soft_approval::render_approval_block(to_upstream(mode))
+    everruns_core::builtins::soft_approval::render_approval_block(to_upstream(mode))
 }
 
 /// The upstream level store backed by yolop's central setting.

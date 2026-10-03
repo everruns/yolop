@@ -233,7 +233,7 @@ its response cannot arrive until the server has handled every notification
 queued before it. Bounded, so a server that will not answer cannot hold up
 exit. Covered by `teardown_flushes_the_final_trace_events`.
 
-Attached control: the upstream runtime (`everruns-host`) grew a live-reconfigure boundary
+Attached control: the upstream runtime (`everruns-core`) grew a live-reconfigure boundary
 (`InProcessRuntime::activate_capability`/`deactivate_capability` →
 `CapabilityDelta`, EVE-795). `yolop extensions enable|disable` persists the
 `ext:<name>` override to settings, and when invoked through the TUI's Bash it

@@ -74,7 +74,7 @@ pub(crate) enum TurnEvent {
     /// the model's context window. Replaces (not accumulates) the prior value.
     ContextUsed(u32),
     Done {
-        result: Option<everruns_host::TurnResult>,
+        result: Option<everruns_core::host::TurnResult>,
         success: bool,
     },
     Failed(String),

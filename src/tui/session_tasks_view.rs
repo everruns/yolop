@@ -606,7 +606,7 @@ mod tests {
         SessionTaskState, TASK_KIND_BACKGROUND_TOOL, TASK_KIND_MONITOR, TASK_KIND_SUBAGENT,
         TaskLinks,
     };
-    use everruns_host::SessionBuilder;
+    use everruns_core::host::SessionBuilder;
     use serde_json::json;
     use std::collections::HashMap;
 

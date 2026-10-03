@@ -20,7 +20,7 @@
 // model was actually shown.
 
 use async_trait::async_trait;
-use everruns_builtins::TOOL_SEARCH_TOOL_NAME;
+use everruns_core::builtins::TOOL_SEARCH_TOOL_NAME;
 use everruns_contracts::typed_id::SessionId;
 use everruns_contracts::{ToolCall, ToolDefinition, ToolResult};
 use everruns_core::ToolContext;

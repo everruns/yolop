@@ -14,7 +14,7 @@
 //! markdown renderer, so `[OpenRouter preferences](url)` becomes an OSC 8
 //! target. Compact work also shows Assistant lines, while a System hint would
 //! sit in collapsed details. Replace this with the upstream structured error
-//! once `everruns-openrouter` reports these gates as first-class kinds.
+//! once `everruns-drivers::openrouter` reports these gates as first-class kinds.
 //! Provider 0.21 added `LlmErrorKind::AttestationRequired` plus a structured
 //! parser, but the parser drops overlong types and returns `None` where this
 //! module promises truncation and an empty fallback, so the string-level

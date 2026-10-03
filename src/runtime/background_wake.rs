@@ -25,7 +25,7 @@ use everruns_core::RuntimeMessageRole;
 use everruns_core::{PlatformCreateSessionRequest, PlatformMessage};
 use everruns_core::{SessionTask, SessionTaskRegistry};
 use everruns_core::{TaskTransition, wake_text_for};
-use everruns_host::{InProcessRuntime, RuntimeSessionStore, SessionBuilder};
+use everruns_core::host::{InProcessRuntime, RuntimeSessionStore, SessionBuilder};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
@@ -770,7 +770,7 @@ mod tests {
         ContentPart, CreateSessionTask, EventContext, SessionTaskState, TaskWakePolicy,
         ToolCompletedData,
     };
-    use everruns_host::HostBackends;
+    use everruns_core::host::HostBackends;
 
     fn runner() -> WakeRunner {
         let backends = HostBackends::in_memory();

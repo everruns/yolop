@@ -1730,7 +1730,7 @@ async fn run_prompt_once(
     session: Arc<Session>,
     prompt: String,
     input: InputMessage,
-) -> (StopReason, Option<everruns_host::TurnResult>) {
+) -> (StopReason, Option<everruns_core::host::TurnResult>) {
     let handles = session.handles.clone();
     let session_id = handles.session_id;
     let acp_id = session.acp_id.clone();
@@ -1857,7 +1857,7 @@ async fn run_prompt_once(
 const PROVIDER_STALL_CONTINUATION: &str = "The provider stopped responding during the previous model step. Continue the current task from the durable conversation state. Do not repeat completed tool calls or settled work.";
 
 fn provider_stall_followup(
-    turn_result: &everruns_host::TurnResult,
+    turn_result: &everruns_core::host::TurnResult,
     followups: usize,
 ) -> Option<String> {
     if followups == 0
@@ -1876,7 +1876,7 @@ fn provider_stall_followup(
 async fn completion_followup(
     peer: &Arc<Peer>,
     session: &Arc<Session>,
-    result: &everruns_host::TurnResult,
+    result: &everruns_core::host::TurnResult,
 ) -> Option<String> {
     let session_id = session.handles.session_id;
     if !session.user_ask_enabled || !session.user_ask_store.is_active(session_id) {
@@ -1949,8 +1949,9 @@ async fn completion_followup(
             if evaluation.outcome == AskOutcome::Achieved
                 && result.tool_calls_count == 0
                 && crate::capabilities::is_muse(Some(session.model.model_id().as_str()))
-                && let Some(classifier) =
-                    everruns_host::RuntimeHostAdapter::decisions(session.handles.runtime.as_ref())
+                && let Some(classifier) = everruns_core::host::RuntimeHostAdapter::decisions(
+                    session.handles.runtime.as_ref(),
+                )
                 && crate::capabilities::evaluate_actionable_promise(
                     &result.response,
                     result.tool_calls_count,
@@ -2159,8 +2160,8 @@ mod tests {
         );
     }
 
-    fn turn_result(success: bool, error: Option<&str>) -> everruns_host::TurnResult {
-        everruns_host::TurnResult {
+    fn turn_result(success: bool, error: Option<&str>) -> everruns_core::host::TurnResult {
+        everruns_core::host::TurnResult {
             response: String::new(),
             iterations: 1,
             tool_calls_count: 0,

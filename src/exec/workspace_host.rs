@@ -5,7 +5,7 @@
 // repointable disk handle synced from the worktree's active-root lock.
 
 use anyhow::{Context, Result, bail};
-use everruns_host::RealDiskFileStore;
+use everruns_core::host::RealDiskFileStore;
 use std::ops::Deref;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};

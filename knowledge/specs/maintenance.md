@@ -128,12 +128,12 @@ Do not declare release-ready for surfaces the pass did not actually check.
 
 ## Dependency and Toolchain Health
 
-- `everruns-host` and every `everruns-*` provider crate stay on exact version
+- `everruns-core` and every `everruns-*` provider crate stay on exact version
   pins. The graph is large and transitive drift is the failure mode the pins
   prevent.
-- Reviews consider the whole published family (`everruns-host`,
+- Reviews consider the whole published family (`everruns-core`,
   `everruns-core`, `everruns-contracts`, `everruns-drivers`,
-  `everruns-integrations-duckduckgo`, `everruns-platform`), not only the
+  `everruns-integrations-duckduckgo`, `everruns-capabilities`), not only the
   crates named in the root manifest, since a stale transitive member can keep
   a known bug alive.
 - Patch and minor updates go through `cargo update -p <crate>` deliberately.

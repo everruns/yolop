@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use everruns_builtins::tool_approval::ToolApprovalCapability as UpstreamToolApprovalCapability;
+use everruns_core::builtins::tool_approval::ToolApprovalCapability as UpstreamToolApprovalCapability;
 use everruns_contracts::typed_id::SessionId;
 use everruns_contracts::{ToolCall, ToolDefinition};
 use everruns_core::ToolContext;
@@ -20,8 +20,8 @@ use crate::config::ApprovalMode;
 use crate::config::service::ConfigService;
 use crate::exec::shell_policy::requires_destructive_approval;
 
-pub(crate) use everruns_builtins::TOOL_APPROVAL_CAPABILITY_ID;
-pub(crate) use everruns_builtins::{ApprovalDecision, ToolApprover};
+pub(crate) use everruns_core::builtins::TOOL_APPROVAL_CAPABILITY_ID;
+pub(crate) use everruns_core::builtins::{ApprovalDecision, ToolApprover};
 
 /// Delegates approval policy to everruns-core while resolving Yolop's live mode.
 pub struct ToolApprovalCapability {

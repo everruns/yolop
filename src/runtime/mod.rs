@@ -56,7 +56,7 @@ use crate::session_state::user_ask::UserAskStore;
 use crate::tui::host_ui::{HostUi, TuiHandle, UiCommand, UiRequest};
 use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
-use everruns_builtins::{
+use everruns_core::builtins::{
     AGENT_INSTRUCTIONS_CAPABILITY_ID, AgentInstructionsCapability, BTW_CAPABILITY_ID,
     BtwCapability, COMPACTION_CAPABILITY_ID, CompactionCapability, INFINITY_CONTEXT_CAPABILITY_ID,
     InfinityContextCapability, LOOP_DETECTION_CAPABILITY_ID, LoopDetectionCapability,
@@ -68,7 +68,7 @@ use everruns_builtins::{
 };
 // host 0.19 absorbed the session services; the standalone crate's copy writes to
 // a store this runtime no longer reads.
-use everruns_host::{
+use everruns_core::host::{
     RuntimeHostAdapter, SESSION_CAPABILITY_ID, SESSION_STORAGE_CAPABILITY_ID, SessionCapability,
     SessionStorageCapability,
 };
@@ -96,21 +96,21 @@ use everruns_core::{ContentPart, RuntimeMessageRole};
 use everruns_core::{
     FileInfo, FileStat, GrepMatch, GrepOptions, GrepSearchResult, InitialFile, SessionFile,
 };
-use everruns_host::RuntimeProviderStore;
-use everruns_host::{
+use everruns_core::host::RuntimeProviderStore;
+use everruns_core::host::{
     AgentBuilder, CapabilityDelta, HarnessBuilder, HostBackends, InProcessRuntime,
     InProcessRuntimeBuilder, RealDiskFileStore, RuntimeSessionStore, SessionBuilder,
     WriteBlocklistFileStore,
 };
-use everruns_host::{SessionFileSystemFactory, SessionFileSystemFactoryContext};
+use everruns_core::host::{SessionFileSystemFactory, SessionFileSystemFactoryContext};
 use everruns_integrations_daytona::DaytonaCapability;
 use everruns_integrations_duckduckgo::DuckDuckGoCapability;
 use everruns_integrations_filesystem::{FileSystemCapability, SESSION_FILE_SYSTEM_CAPABILITY_ID};
 use everruns_integrations_web_fetch::{WEB_FETCH_CAPABILITY_ID, WebFetchCapability};
 use everruns_llmsim::LlmSimConfig;
 use everruns_llmsim::LlmSimRuntimeExt;
-use everruns_mcp::{McpAuthProvider, McpAuthRequest, McpCredential};
-use everruns_platform::capabilities::{
+use everruns_core::mcp::{McpAuthProvider, McpAuthRequest, McpCredential};
+use everruns_capabilities::capabilities::{
     SESSION_TASKS_CAPABILITY_ID, SUBAGENTS_CAPABILITY_ID, USER_HOOKS_CAPABILITY_ID,
     UserHooksCapability,
 };
@@ -187,13 +187,13 @@ pub(crate) fn provider_recovery_config() -> everruns_contracts::llm_retry::LlmRe
 /// refreshing them when they near expiry. The stored connection is keyed by
 /// the server's `oauth_provider_id` when set, otherwise its name.
 pub(crate) struct StoredMcpAuthProvider {
-    oauth: everruns_mcp::oauth::OAuthAuthProvider<crate::auth::mcp_oauth::ConnectionTokenStore>,
+    oauth: everruns_core::mcp::oauth::OAuthAuthProvider<crate::auth::mcp_oauth::ConnectionTokenStore>,
 }
 
 impl StoredMcpAuthProvider {
     pub(crate) fn new(connections: Arc<ConnectionStore>) -> Self {
         Self {
-            oauth: everruns_mcp::oauth::OAuthAuthProvider::new(
+            oauth: everruns_core::mcp::oauth::OAuthAuthProvider::new(
                 crate::auth::mcp_oauth::ConnectionTokenStore::new(connections),
                 crate::auth::mcp_oauth::oauth_egress(),
             ),
@@ -225,9 +225,9 @@ impl McpAuthProvider for StoredMcpAuthProvider {
 fn mcp_connection_for(
     name: &str,
     server: &everruns_core::ScopedMcpServer,
-) -> Option<everruns_mcp::McpConnection> {
+) -> Option<everruns_core::mcp::McpConnection> {
     use everruns_core::McpServerTransportType;
-    use everruns_mcp::{McpConnection, McpEndpoint};
+    use everruns_core::mcp::{McpConnection, McpEndpoint};
 
     let endpoint = match server.transport_type {
         McpServerTransportType::Http => McpEndpoint::Http {
@@ -270,8 +270,8 @@ pub(crate) async fn discover_mcp_tool_names(
     if servers.is_empty() {
         return Vec::new();
     }
-    let client = everruns_mcp::McpClient::new(
-        Arc::new(everruns_host::DirectEgressService::default()),
+    let client = everruns_core::mcp::McpClient::new(
+        Arc::new(everruns_core::host::DirectEgressService::default()),
         Arc::new(StoredMcpAuthProvider::new(connections.clone())),
     );
     let mut names = Vec::new();
@@ -2427,10 +2427,10 @@ pub(crate) async fn run_with_reasoning_recovery<F, Fut>(
     input: InputMessage,
     notice: &(dyn Fn(String) + Send + Sync),
     run: F,
-) -> anyhow::Result<everruns_host::TurnResult>
+) -> anyhow::Result<everruns_core::host::TurnResult>
 where
     F: Fn(InputMessage) -> Fut,
-    Fut: std::future::Future<Output = anyhow::Result<everruns_host::TurnResult>>,
+    Fut: std::future::Future<Output = anyhow::Result<everruns_core::host::TurnResult>>,
 {
     // Inputs the host builds itself (a background wake, a resumed turn) do not
     // come from `input_message`, so they carry no controls at all. Give them
@@ -2513,9 +2513,9 @@ pub(crate) fn agent_output_start(
 }
 
 /// The provider-facing error of a finished turn, whether it failed by `Err` or
-/// by an unsuccessful [`everruns_host::TurnResult`]. `None` for a turn that
+/// by an unsuccessful [`everruns_core::host::TurnResult`]. `None` for a turn that
 /// succeeded.
-fn turn_failure(result: &anyhow::Result<everruns_host::TurnResult>) -> Option<String> {
+fn turn_failure(result: &anyhow::Result<everruns_core::host::TurnResult>) -> Option<String> {
     match result {
         Err(error) => Some(format!("{error:#}")),
         Ok(turn) if !turn.success => turn.error.clone(),
@@ -3049,7 +3049,7 @@ impl RuntimeHandles {
         &self,
         prompt: &str,
         input: InputMessage,
-    ) -> anyhow::Result<everruns_host::TurnResult> {
+    ) -> anyhow::Result<everruns_core::host::TurnResult> {
         let checkpoint = self.checkpoints.start_turn(prompt)?;
         let result = self.runtime.run_turn(self.session_id, input).await;
         let success = result.as_ref().is_ok_and(|turn| turn.success);
@@ -3080,7 +3080,7 @@ impl RuntimeHandles {
         prompt: &str,
         input: InputMessage,
         notice: &(dyn Fn(String) + Send + Sync),
-    ) -> anyhow::Result<everruns_host::TurnResult> {
+    ) -> anyhow::Result<everruns_core::host::TurnResult> {
         run_with_reasoning_recovery(model, input, notice, move |input| async move {
             self.run_checkpointed_turn(prompt, input).await
         })
@@ -3760,7 +3760,7 @@ impl everruns_core::ProviderStore for YolopProviderStore {
 }
 
 #[async_trait]
-impl everruns_host::RuntimeProviderStore for YolopProviderStore {
+impl everruns_core::host::RuntimeProviderStore for YolopProviderStore {
     async fn set_default_model_spec(
         &self,
         model: everruns_contracts::model_spec::ModelSpec,
@@ -4030,10 +4030,10 @@ pub async fn build_with_options(
     // ACP streams. There is no message store any more — messages are a
     // projection of the canonical log, which is why the replayed branch is
     // seeded into the emitter above rather than into a second store.
-    let event_log: Arc<dyn everruns_host::EventLog> = event_bus_typed.clone();
-    let event_sink: Arc<dyn everruns_host::EventSink> = event_bus_typed.clone();
+    let event_log: Arc<dyn everruns_core::host::EventLog> = event_bus_typed.clone();
+    let event_sink: Arc<dyn everruns_core::host::EventSink> = event_bus_typed.clone();
     let provider_state = Arc::new(std::sync::RwLock::new(provider.clone()));
-    let yolop_provider_store: Arc<dyn everruns_host::RuntimeProviderStore> =
+    let yolop_provider_store: Arc<dyn everruns_core::host::RuntimeProviderStore> =
         Arc::new(YolopProviderStore {
             provider: provider_state.clone(),
             settings: settings.clone(),
@@ -4427,8 +4427,7 @@ pub async fn build_with_options(
     capabilities.register(
         crate::capabilities::session_tasks_override::TruthfulSessionTasksCapability::new(),
     );
-    capabilities
-        .register(crate::capabilities::subagents_override::NarratedSubagentCapability::new());
+    capabilities.register(everruns_capabilities::capabilities::SubagentCapability);
     capabilities.register(crate::capabilities::NarratedBackgroundExecutionCapability::new());
     capabilities.register(SessionStorageCapability);
     capabilities.register(DaytonaCapability);
@@ -4720,10 +4719,10 @@ pub async fn build_with_options(
     // tokens.typesafe in settings second. Absent key keeps the builder
     // default (Disabled), so the guard stays dormant and turns proceed
     // unchanged (fail open).
-    let mut platform_builder = everruns_host::HostComposition::builder()
+    let mut platform_builder = everruns_core::host::HostComposition::builder()
         .capability_registry(capabilities)
         .driver_registry(driver_registry)
-        .egress_service(everruns_host::runtime_egress_service())
+        .egress_service(everruns_core::host::runtime_egress_service())
         .session_file_system_factory(Arc::new(CodingCliSessionFileSystemFactory {
             workspace: workspace_host.clone(),
             session_dir: session_dir.clone(),
@@ -4769,7 +4768,7 @@ pub async fn build_with_options(
     // only from the *resolved* capability set.
     if options.tool_approver.is_some() {
         harness_capabilities.push(CapabilityRef::new(
-            everruns_builtins::tool_approval::TOOL_APPROVAL_CAPABILITY_ID,
+            everruns_core::builtins::tool_approval::TOOL_APPROVAL_CAPABILITY_ID,
         ));
     }
     let user_ask_enabled = harness_capabilities
@@ -4874,7 +4873,7 @@ pub async fn build_with_options(
     let skill_commands = crate::capabilities::skills::user_invocable_commands(
         &skill_dirs,
         &extension_skill_scopes,
-        &runtime.file_store(everruns_host::in_process_internal_org_id(
+        &runtime.file_store(everruns_core::host::in_process_internal_org_id(
             everruns_core::DEFAULT_ORG_PUBLIC_ID,
         )),
         session_id,
@@ -5512,7 +5511,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn build_keeps_connectors_cli_only() {
-        use everruns_host::RuntimeHostAdapter;
+        use everruns_core::host::RuntimeHostAdapter;
 
         let workspace = tempfile::tempdir().expect("workspace");
         let sessions = tempfile::tempdir().expect("sessions");
@@ -6526,7 +6525,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn build_uses_everruns_local_backend_stores() {
-        use everruns_host::RuntimeHostAdapter;
+        use everruns_core::host::RuntimeHostAdapter;
 
         let workspace = tempfile::tempdir().expect("workspace");
         let sessions = tempfile::tempdir().expect("sessions");
@@ -6555,7 +6554,7 @@ mod tests {
             built
                 .handles
                 .runtime
-                .schedule_store(everruns_host::in_process_internal_org_id(
+                .schedule_store(everruns_core::host::in_process_internal_org_id(
                     everruns_core::DEFAULT_ORG_PUBLIC_ID
                 ))
                 .is_some(),
@@ -9540,7 +9539,7 @@ mod tests {
                     .lock()
                     .expect("recorded")
                     .push(reasoning::sent_reasoning_effort(&input).map(str::to_string));
-                Ok(everruns_host::TurnResult {
+                Ok(everruns_core::host::TurnResult {
                     response: String::new(),
                     iterations: 1,
                     tool_calls_count: 0,
@@ -9615,7 +9614,7 @@ mod tests {
                         .await
                         .expect("apply the switch");
                 }
-                Ok(everruns_host::TurnResult {
+                Ok(everruns_core::host::TurnResult {
                     response: String::new(),
                     iterations: 1,
                     tool_calls_count: 1,
@@ -9694,7 +9693,7 @@ mod tests {
                     .and_then(|reasoning| reasoning.effort)
                     .map(|effort| effort.as_str().to_string());
                 recorded.lock().expect("recorded").push(effort.clone());
-                Ok(everruns_host::TurnResult {
+                Ok(everruns_core::host::TurnResult {
                     response: String::new(),
                     iterations: 1,
                     tool_calls_count: 0,
@@ -9780,7 +9779,7 @@ mod tests {
                 let mut attempts = run_attempts.lock().expect("attempts");
                 *attempts += 1;
                 let first = *attempts == 1;
-                Ok(everruns_host::TurnResult {
+                Ok(everruns_core::host::TurnResult {
                     response: String::new(),
                     iterations: 1,
                     tool_calls_count: 0,
@@ -10137,7 +10136,7 @@ mod tests {
     #[test]
     fn harness_applies_message_metadata_from_settings() {
         use crate::config::capability_settings::CapabilityOverride;
-        use everruns_builtins::MESSAGE_METADATA_CAPABILITY_ID;
+        use everruns_core::builtins::MESSAGE_METADATA_CAPABILITY_ID;
 
         let mut settings = Settings::default();
         settings.capabilities.push(CapabilityOverride {
@@ -10368,7 +10367,7 @@ mod tests {
 
     #[test]
     fn tool_search_keeps_only_first_turn_profile_schemas_loaded() {
-        use everruns_builtins::DEFAULT_TOOL_SEARCH_THRESHOLD;
+        use everruns_core::builtins::DEFAULT_TOOL_SEARCH_THRESHOLD;
         use everruns_contracts::{
             BuiltinTool, DeferrablePolicy, ToolDefinition, ToolHints, ToolPolicy,
         };
@@ -10582,7 +10581,7 @@ mod tests {
     /// helping and this test fails loudly so the threshold can be revisited.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn tool_surface_exceeds_tool_search_threshold() {
-        use everruns_builtins::DEFAULT_TOOL_SEARCH_THRESHOLD;
+        use everruns_core::builtins::DEFAULT_TOOL_SEARCH_THRESHOLD;
 
         let workspace = tempfile::tempdir().expect("workspace");
         let sessions = tempfile::tempdir().expect("sessions");
@@ -11107,7 +11106,7 @@ mod tests {
             compaction.config_value()["budget_percent"],
             serde_json::json!(0.85)
         );
-        let config: everruns_builtins::compaction::RuntimeCompactionConfig =
+        let config: everruns_core::builtins::compaction::RuntimeCompactionConfig =
             serde_json::from_value(compaction.config_value().clone())
                 .expect("valid compaction config");
         assert_eq!(

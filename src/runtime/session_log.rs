@@ -67,7 +67,7 @@ use everruns_core::{
     OutputMessageCompletedData, REASON_COMPLETED, REASON_ITEM, SESSION_TITLE_UPDATED,
     TOOL_COMPLETED,
 };
-use everruns_host::{
+use everruns_core::host::{
     EventCursor, EventDurability, EventLog, EventLogError, EventPage, EventReadRequest,
     EventReader, EventSink, EventSinkError,
 };
@@ -1039,7 +1039,7 @@ mod tests {
         EventContext, InputMessageData, OutputMessageCompletedData, SessionTitleUpdatedData,
         ToolCompletedData,
     };
-    use everruns_host::EventReadLimit;
+    use everruns_core::host::EventReadLimit;
 
     fn input_event(session_id: SessionId, text: &str) -> Event {
         Event::new(
