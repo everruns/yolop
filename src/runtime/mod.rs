@@ -2162,7 +2162,7 @@ impl ProviderChoice {
                 // An open-source login runs on the public Responses API.
                 let flow = auth_from_settings
                     .and_then(|auth| auth.open_source.as_ref())
-                    .map(|_| crate::drivers::chatgpt_plan::OPEN_SOURCE_FLOW);
+                    .map(|_| "open-source");
                 Ok(ResolvedModel {
                     model: model.clone(),
                     provider_type: DriverId::external(crate::drivers::codex::CODEX_DRIVER_ID),
@@ -4607,12 +4607,12 @@ pub async fn build_with_options(
     capabilities.register_arc(config_capability);
 
     let mut driver_registry = DriverRegistry::new();
-    everruns_anthropic::register_driver(&mut driver_registry);
-    everruns_meta::register_driver(&mut driver_registry);
-    everruns_openai::register_driver(&mut driver_registry);
+    everruns_drivers::anthropic::register_driver(&mut driver_registry);
+    everruns_drivers::meta::register_driver(&mut driver_registry);
+    everruns_drivers::openai::register_driver(&mut driver_registry);
     // OpenRouter moved to its own crate in everruns 0.13.0; register its
     // first-class DriverId::OpenRouter driver here (was bundled with openai).
-    everruns_openrouter::register_driver(&mut driver_registry);
+    everruns_drivers::openrouter::register_driver(&mut driver_registry);
     crate::drivers::codex::register_driver(&mut driver_registry, settings.clone());
     #[cfg(feature = "local-inference")]
     crate::drivers::local::register_driver(&mut driver_registry);
@@ -6615,7 +6615,7 @@ mod tests {
             Some(env!("YOLOP_EVERRUNS_HOST_VERSION"))
         );
         // OpenRouter attribution headers flow through embedder metadata.
-        use everruns_openrouter::options::{
+        use everruns_drivers::openrouter::options::{
             OPENROUTER_HTTP_REFERER_METADATA_KEY, OPENROUTER_X_TITLE_METADATA_KEY,
         };
         assert_eq!(
@@ -10706,10 +10706,10 @@ mod tests {
         // ~45-byte deferred stub in the eager surface. Measured 14,302 locally
         // and 13,938 in Linux CI for the same tree; the environment delta
         // predates this change. Thin headroom kept on the larger number.
-        // 2026-10-03: 14,350 -> 14,500. everruns 0.34.2 grew eager tool schemas
-        // (+83 bytes locally, 14,302 to 14,433). Linux CI measures lower for the
-        // same tree; thin headroom kept on the larger number.
-        const BASELINE_SCHEMA_BYTES: usize = 14_500;
+        // Everruns 0.38 adds mandatory approval request/record schemas (710 bytes).
+        // Keep their safety-critical arguments eager and retain the prior budget
+        // for the rest of the surface rather than deferring approval controls.
+        const BASELINE_SCHEMA_BYTES: usize = 14_500 + 710;
         let workspace = tempfile::tempdir().expect("workspace");
         let sessions = tempfile::tempdir().expect("sessions");
         let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));

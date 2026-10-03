@@ -92,14 +92,6 @@ pub fn validate_client_id(value: &str) -> Result<()> {
     Ok(())
 }
 
-/// The client a saved token set refreshes with: the one that issued it, or
-/// the borrowed Codex client for records saved before yolop tracked it.
-pub fn refresh_client_id(issued_to: Option<&str>) -> &str {
-    issued_to
-        .filter(|value| !value.is_empty())
-        .unwrap_or(BORROWED_CODEX_CLIENT_ID)
-}
-
 #[derive(Debug, Deserialize)]
 struct TokenResponse {
     access_token: String,
@@ -262,45 +254,6 @@ async fn complete_device_login_inner(login: DeviceLogin) -> Result<CodexAuth> {
 }
 
 /// Refresh a token set with the client that issued it (see
-/// [`refresh_client_id`]).
-pub async fn refresh_with_token(client_id: &str, refresh_token: &str) -> Result<CodexAuth> {
-    refresh_with_token_at(TOKEN_URL, client_id, refresh_token).await
-}
-
-/// Refresh against an arbitrary token endpoint (tests inject a local mock).
-pub async fn refresh_with_token_at(
-    token_url: &str,
-    client_id: &str,
-    refresh_token: &str,
-) -> Result<CodexAuth> {
-    let client = auth_http_client()?;
-    let response = client
-        .post(token_url)
-        .form(&[
-            ("grant_type", "refresh_token"),
-            ("refresh_token", refresh_token),
-            ("client_id", client_id),
-        ])
-        .send()
-        .await
-        .context("refresh Codex token")?;
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        return Err(anyhow!("Codex token refresh failed ({status}): {body}"));
-    }
-    let token: TokenResponse = response.json().await.context("parse Codex refresh token")?;
-    auth_from_token_response(token, client_id)
-}
-
-/// OpenAI rotates Codex refresh tokens; reuse of an already-spent token returns
-/// `refresh_token_reused` and requires either adopting a newer on-disk token or
-/// signing in again.
-pub fn is_refresh_token_reused(err: &anyhow::Error) -> bool {
-    let message = format!("{err:#}");
-    message.contains("refresh_token_reused")
-}
-
 pub fn auth_from_access_token(access_token: String) -> CodexAuth {
     CodexAuth {
         account_id: extract_account_id(&access_token),
@@ -545,15 +498,6 @@ mod tests {
     }
 
     #[test]
-    fn detects_refresh_token_reused_error() {
-        let err = anyhow!(
-            "Codex token refresh failed (401 Unauthorized): {{\"error\":{{\"code\":\"refresh_token_reused\"}}}}"
-        );
-        assert!(is_refresh_token_reused(&err));
-        assert!(!is_refresh_token_reused(&anyhow!("network down")));
-    }
-
-    #[test]
     fn client_id_defaults_to_the_borrowed_codex_client() {
         assert_eq!(
             resolve_client_id(None, None).unwrap(),
@@ -589,14 +533,6 @@ mod tests {
     }
 
     #[test]
-    fn refresh_uses_the_issuing_client() {
-        assert_eq!(refresh_client_id(Some("app_own")), "app_own");
-        // Records saved before yolop tracked the client came from the borrowed one.
-        assert_eq!(refresh_client_id(None), BORROWED_CODEX_CLIENT_ID);
-        assert_eq!(refresh_client_id(Some("")), BORROWED_CODEX_CLIENT_ID);
-    }
-
-    #[test]
     fn token_response_records_the_issuing_client() {
         let auth = auth_from_token_response(
             TokenResponse {
@@ -610,56 +546,6 @@ mod tests {
         .unwrap();
         assert_eq!(auth.client_id.as_deref(), Some("app_own"));
         assert_eq!(auth_from_access_token("pasted".to_string()).client_id, None);
-    }
-
-    #[tokio::test]
-    async fn refresh_posts_the_issuing_client_id() {
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
-            .await
-            .unwrap();
-        let addr = listener.local_addr().unwrap();
-        let server = tokio::spawn(async move {
-            let (mut socket, _) = listener.accept().await.unwrap();
-            let mut request = Vec::new();
-            let mut buffer = [0u8; 4096];
-            loop {
-                let n = socket.read(&mut buffer).await.unwrap();
-                request.extend_from_slice(&buffer[..n]);
-                let text = String::from_utf8_lossy(&request);
-                if let Some(head_end) = text.find("\r\n\r\n") {
-                    let length = text[..head_end]
-                        .lines()
-                        .find_map(|line| {
-                            line.to_ascii_lowercase()
-                                .strip_prefix("content-length:")
-                                .map(|v| v.trim().parse::<usize>().unwrap())
-                        })
-                        .unwrap_or(0);
-                    if request.len() >= head_end + 4 + length {
-                        break;
-                    }
-                }
-                if n == 0 {
-                    break;
-                }
-            }
-            let body = r#"{"access_token":"new","refresh_token":"next","expires_in":3600}"#;
-            let response = format!(
-                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
-                body.len()
-            );
-            socket.write_all(response.as_bytes()).await.unwrap();
-            String::from_utf8(request).unwrap()
-        });
-
-        let auth = refresh_with_token_at(&format!("http://{addr}/token"), "app_own", "old")
-            .await
-            .unwrap();
-        let request = server.await.unwrap();
-        assert!(request.contains("client_id=app_own"), "{request}");
-        assert!(request.contains("refresh_token=old"), "{request}");
-        assert_eq!(auth.client_id.as_deref(), Some("app_own"));
-        assert_eq!(auth.refresh_token.as_deref(), Some("next"));
     }
 
     #[test]

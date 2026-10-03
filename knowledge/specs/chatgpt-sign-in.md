@@ -210,3 +210,19 @@ refreshes with its own client.
 
 - [Configuration](configuration.md), the settings schema the key lives in.
 - [Model list](model-list.md), the models the `codex` provider offers.
+
+## Shared Everruns driver boundary
+
+Everruns 0.36 owns both protocol drivers, OAuth validation, shared credential
+shapes, and refresh sequencing in `everruns-drivers`. Yolop supplies settings
+storage, installation identity, browser navigation, and route selection. The
+settings adapter reads current disk credentials under a cross-process lease and
+atomically compares before saving rotations, so a new login or logout cannot be
+restored by an older refresh. Disconnect revokes a plan grant before clearing it;
+a failed revocation retains it for retry. Legacy browser/device routes retain
+their existing host UX while using Everruns for inference and refresh.
+
+The migration uses exact, aligned Everruns package versions. It cannot be
+released until the corresponding shared-driver packages are published. Local
+verification may patch those packages to the sibling Everruns checkout; such
+machine-specific paths are not a distribution dependency.
