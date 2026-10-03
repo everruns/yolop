@@ -11,9 +11,11 @@
 // go to the public Responses API (`crate::drivers::chatgpt_plan`).
 //
 // Decisions:
-// - The route is opt-in (`chatgpt_sign_in = "open-source"` or
-//   `YOLOP_CHATGPT_SIGN_IN`); the Codex route stays the default until this one
-//   is proven against a live account.
+// - This route is the default for new sign-ins (owner's call, 2026-10-03).
+//   `chatgpt_sign_in = "codex"` or `YOLOP_CHATGPT_SIGN_IN=codex` picks the
+//   Codex route; a login keeps the route it was made with.
+// - A device sign-in with no explicit route falls back to Codex, because this
+//   route has no device flow; only an explicit `open-source` refuses it.
 // - The ID token is verified against OpenAI's JWKS with `ring` (already in the
 //   tree through rustls) instead of adding a JWT crate: RS256 is the only
 //   algorithm the discovery document advertises.
@@ -57,11 +59,15 @@ const CLOCK_SKEW_SECS: i64 = 60;
 /// Which route a new ChatGPT sign-in takes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SignInRoute {
-    /// The Codex CLI's client and the Codex backend (the default).
+    /// The Codex CLI's client and the Codex backend.
     Codex,
-    /// Dynamic registration and the public Responses API.
+    /// Dynamic registration and the public Responses API (the default).
     OpenSource,
 }
+
+/// The route a new sign-in takes when neither the env var nor the setting
+/// names one.
+pub const DEFAULT_SIGN_IN: SignInRoute = SignInRoute::OpenSource;
 
 impl SignInRoute {
     pub fn as_str(self) -> &'static str {
@@ -73,7 +79,8 @@ impl SignInRoute {
 
     pub fn parse(raw: &str) -> Option<Self> {
         match raw.trim().to_ascii_lowercase().as_str() {
-            "codex" | "default" => Some(Self::Codex),
+            "default" => Some(DEFAULT_SIGN_IN),
+            "codex" => Some(Self::Codex),
             "open-source" | "opensource" | "oss" | "siwc" => Some(Self::OpenSource),
             _ => None,
         }
@@ -81,23 +88,38 @@ impl SignInRoute {
 }
 
 /// The route a new sign-in takes: `YOLOP_CHATGPT_SIGN_IN`, then the
-/// `chatgpt_sign_in` setting, then [`SignInRoute::Codex`].
+/// `chatgpt_sign_in` setting, then [`DEFAULT_SIGN_IN`].
 pub fn configured_sign_in(settings: &Settings) -> Result<SignInRoute> {
-    let env = std::env::var(SIGN_IN_ENV).ok();
-    resolve_sign_in(env.as_deref(), settings.chatgpt_sign_in())
+    Ok(explicit_sign_in(settings)?.unwrap_or(DEFAULT_SIGN_IN))
 }
 
-/// Pure precedence behind [`configured_sign_in`]. Blank counts as unset; an
+/// The route the env var or the setting names, or `None` when neither does.
+pub fn explicit_sign_in(settings: &Settings) -> Result<Option<SignInRoute>> {
+    let env = std::env::var(SIGN_IN_ENV).ok();
+    resolve_explicit_sign_in(env.as_deref(), settings.chatgpt_sign_in())
+}
+
+/// Pure precedence behind [`configured_sign_in`], for tests.
+#[cfg(test)]
+fn resolve_sign_in(env: Option<&str>, setting: Option<&str>) -> Result<SignInRoute> {
+    Ok(resolve_explicit_sign_in(env, setting)?.unwrap_or(DEFAULT_SIGN_IN))
+}
+
+/// Pure precedence behind [`explicit_sign_in`]. Blank counts as unset; an
 /// unknown value is an error naming its source.
-pub fn resolve_sign_in(env: Option<&str>, setting: Option<&str>) -> Result<SignInRoute> {
+fn resolve_explicit_sign_in(
+    env: Option<&str>,
+    setting: Option<&str>,
+) -> Result<Option<SignInRoute>> {
     for (source, value) in [(SIGN_IN_ENV, env), ("chatgpt_sign_in", setting)] {
         let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
             continue;
         };
         return SignInRoute::parse(value)
+            .map(Some)
             .ok_or_else(|| anyhow!("invalid {source} `{value}`; expected codex or open-source"));
     }
-    Ok(SignInRoute::Codex)
+    Ok(None)
 }
 
 /// OpenAI's auth endpoints. Tests point these at a local mock.
@@ -526,21 +548,24 @@ pub fn validate_id_token(
 /// registration, and return the token set (the caller saves it like any
 /// other ChatGPT login).
 pub async fn login_with_browser(settings: &SettingsStore) -> Result<CodexAuth> {
-    login_with(&Endpoints::production(), settings, |url| {
-        crate::auth::oauth_flow::open_browser(url)
+    // The async opener, as on the Codex route: the blocking one waits for the
+    // launcher to exit, which stalls cancel and exit while it is still running.
+    login_with(&Endpoints::production(), settings, |url| async move {
+        crate::auth::codex::open_browser(&url).await
     })
     .await
 }
 
 /// [`login_with_browser`] against arbitrary endpoints, with the browser
 /// launch injected so tests can drive the callback.
-pub async fn login_with<F>(
+pub async fn login_with<F, Fut>(
     endpoints: &Endpoints,
     settings: &SettingsStore,
     open: F,
 ) -> Result<CodexAuth>
 where
-    F: FnOnce(&str) -> Result<()>,
+    F: FnOnce(String) -> Fut,
+    Fut: std::future::Future<Output = Result<()>>,
 {
     let host_id = settings.ensure_chatgpt_host_id(new_host_id)?;
     let snapshot = settings.snapshot();
@@ -583,7 +608,7 @@ where
             code_challenge: &challenge,
         },
     )?;
-    open(url.as_str())?;
+    open(url.to_string()).await?;
     let params = tokio::time::timeout(USER_AUTH_TIMEOUT, wait_for_callback(listener, &state))
         .await
         .map_err(|_| anyhow!("ChatGPT sign-in timed out"))??;
@@ -819,11 +844,23 @@ mod tests {
     }
 
     #[test]
-    fn sign_in_route_defaults_to_codex_and_env_wins() {
-        assert_eq!(resolve_sign_in(None, None).unwrap(), SignInRoute::Codex);
+    fn sign_in_route_defaults_to_open_source_and_env_wins() {
+        assert_eq!(
+            resolve_sign_in(None, None).unwrap(),
+            SignInRoute::OpenSource
+        );
         assert_eq!(
             resolve_sign_in(Some(" "), Some("")).unwrap(),
+            SignInRoute::OpenSource
+        );
+        assert_eq!(
+            resolve_sign_in(None, Some("codex")).unwrap(),
             SignInRoute::Codex
+        );
+        assert_eq!(
+            resolve_explicit_sign_in(None, None).unwrap(),
+            None,
+            "no explicit route when nothing is set"
         );
         assert_eq!(
             resolve_sign_in(None, Some("open-source")).unwrap(),
@@ -1162,12 +1199,12 @@ mod tests {
         nonce: Arc<Mutex<String>>,
         issued_client: Option<&'static str>,
         seen_urls: Arc<Mutex<Vec<String>>>,
-    ) -> impl FnOnce(&str) -> Result<()> {
-        move |url: &str| {
-            let parsed = Url::parse(url).unwrap();
+    ) -> impl FnOnce(String) -> std::future::Ready<Result<()>> {
+        move |url: String| {
+            let parsed = Url::parse(&url).unwrap();
             let q = query(&parsed);
             *nonce.lock().unwrap() = q["nonce"].clone();
-            seen_urls.lock().unwrap().push(url.to_string());
+            seen_urls.lock().unwrap().push(url.clone());
             let mut callback = Url::parse(&q["redirect_uri"]).unwrap();
             {
                 let mut pairs = callback.query_pairs_mut();
@@ -1180,7 +1217,7 @@ mod tests {
             tokio::spawn(async move {
                 let _ = reqwest::get(callback.as_str()).await;
             });
-            Ok(())
+            std::future::ready(Ok(()))
         }
     }
 

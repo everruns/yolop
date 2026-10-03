@@ -302,8 +302,8 @@ pub struct Settings {
     /// borrowed Codex CLI client; `YOLOP_CHATGPT_CLIENT_ID` overrides this.
     /// See `crate::auth::codex::configured_client_id`.
     pub chatgpt_client_id: Option<String>,
-    /// Which route a new ChatGPT sign-in takes: `codex` (default) or
-    /// `open-source`. `YOLOP_CHATGPT_SIGN_IN` overrides this. See
+    /// Which route a new ChatGPT sign-in takes: `open-source` (default) or
+    /// `codex`. `YOLOP_CHATGPT_SIGN_IN` overrides this. See
     /// `crate::auth::siwc::configured_sign_in`.
     pub chatgpt_sign_in: Option<String>,
     /// This host's stable `ext_agent_host_id` for the open-source route,

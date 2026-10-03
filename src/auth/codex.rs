@@ -130,8 +130,8 @@ struct DeviceTokenResponse {
 }
 
 /// Browser sign-in through the configured route (`chatgpt_sign_in` /
-/// `YOLOP_CHATGPT_SIGN_IN`): the Codex client by default, or the open-source
-/// Sign in with ChatGPT route (`crate::auth::siwc`). The caller saves the
+/// `YOLOP_CHATGPT_SIGN_IN`): the open-source Sign in with ChatGPT route
+/// (`crate::auth::siwc`) by default, or the Codex client. The caller saves the
 /// returned login either way.
 pub async fn sign_in_with_browser(settings: &SettingsStore) -> Result<CodexAuth> {
     let snapshot = settings.snapshot();
@@ -146,10 +146,12 @@ pub async fn sign_in_with_browser(settings: &SettingsStore) -> Result<CodexAuth>
 }
 
 /// The client a device sign-in uses. The open-source route documents no
-/// device flow, so it is refused there rather than silently using Codex.
+/// device flow: when it is only the default, a device sign-in uses the Codex
+/// client; when it was chosen explicitly, the device sign-in is refused rather
+/// than silently switching routes.
 pub fn device_sign_in_client_id(settings: &Settings) -> Result<String> {
-    if crate::auth::siwc::configured_sign_in(settings)?
-        == crate::auth::siwc::SignInRoute::OpenSource
+    if crate::auth::siwc::explicit_sign_in(settings)?
+        == Some(crate::auth::siwc::SignInRoute::OpenSource)
     {
         return Err(anyhow!(
             "the open-source ChatGPT sign-in has no device flow; use the browser sign-in"
@@ -480,7 +482,7 @@ fn callback_page(status: &str, message: &str) -> String {
     crate::auth::oauth_flow::callback_page(status, message, "Codex")
 }
 
-async fn open_browser(url: &str) -> Result<()> {
+pub(crate) async fn open_browser(url: &str) -> Result<()> {
     let mut command = if cfg!(target_os = "macos") {
         let mut command = tokio::process::Command::new("open");
         command.arg(url);
