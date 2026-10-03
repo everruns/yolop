@@ -1,7 +1,7 @@
 # Yolop, coding-agent guidance
 
 Yolop is a terminal coding agent built on
-[`everruns-host`](https://crates.io/crates/everruns-host). The binary and
+[`everruns-core`](https://crates.io/crates/everruns-core). The binary and
 the crate are both named `yolop`.
 
 This file is read on every turn. It carries repository facts and gotchas only;

@@ -125,7 +125,7 @@ The paranoia level can be changed three ways, all writing the same setting:
 ## Upstream ownership
 
 This layer started here and was generalized into `soft_approval` in
-`everruns-builtins`, which now owns the three levels, the `<soft_approval>`
+`everruns-core::builtins`, which now owns the three levels, the `<soft_approval>`
 block, the three tools, and the pause store. Yolop registers that capability
 rather than keeping a copy, so there is one implementation of the design
 instead of two drifting ones. `src/capabilities/approval.rs` is what remains
