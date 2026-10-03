@@ -280,8 +280,8 @@ pub fn schema() -> &'static [ConfigField] {
                           `YOLOP_CHATGPT_SIGN_IN` overrides this. An existing login keeps the \
                           route it was made with until you sign in again.",
             kind: ValueKind::Text,
-            default: Some("codex"),
-            examples: &["open-source", "codex"],
+            default: Some("open-source"),
+            examples: &["codex", "open-source"],
             provider_scoped: false,
         },
         ConfigField {

@@ -85,7 +85,7 @@ pub(crate) fn current_value(settings: &Settings, target: &KeyTarget) -> Value {
             settings
                 .chatgpt_sign_in()
                 .and_then(crate::auth::siwc::SignInRoute::parse)
-                .unwrap_or(crate::auth::siwc::SignInRoute::Codex)
+                .unwrap_or(crate::auth::siwc::DEFAULT_SIGN_IN)
                 .as_str()
                 .to_string(),
         ),

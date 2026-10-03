@@ -6,10 +6,11 @@ description: Defines the two routes Yolop's ChatGPT (codex provider) sign-in can
 
 # ChatGPT sign-in
 
-Status: configurable Codex client implemented; open-source route implemented
-behind `chatgpt_sign_in = "open-source"`, verified against local mocks only,
-not yet against a live ChatGPT account. The Codex route stays the default until
-it is.
+Status: configurable Codex client implemented; the open-source route is the
+default for new browser sign-ins since 2026-10-03 (owner's decision), verified
+against local mocks only, not yet against a live ChatGPT account.
+`chatgpt_sign_in = "codex"` (or `YOLOP_CHATGPT_SIGN_IN=codex`) selects the
+Codex route.
 
 ## Why
 
@@ -118,9 +119,10 @@ so changing the setting affects only the next sign-in, like the client ID.
    login is saved, so the retry reuses the client and asks for consent, but
    sign-in reports that plan use was not granted.
 
-The route is browser-only; the docs describe no device flow, so a device
-sign-in with this route selected is an error rather than a silent fall back to
-Codex. One registration per host: there is no account picker yet, so signing
+The route is browser-only; the docs describe no device flow. A device sign-in
+with no route configured uses the Codex client, since the open-source route is
+only the default there. When `open-source` is chosen explicitly, a device
+sign-in is an error rather than a silent switch to Codex. One registration per host: there is no account picker yet, so signing
 in to a different account means removing `[chatgpt_registration]` first.
 
 ### Refresh and sign-out
@@ -187,8 +189,8 @@ any request.
 
 ## Remaining work
 
-Before this route becomes the default: a live sign-in and turn against a
-ChatGPT account (the open questions above), an account picker over several
+Still open now that this route is the default: a live sign-in and turn
+against a ChatGPT account (the open questions above), an account picker over several
 registrations, the model catalog from `/v1/models`, and the in-product ChatGPT
 plan disclosures the SIWC UI guidelines ask for. Upstream, everruns' Open
 Responses driver should keep an explicit `store: false` so this route can move

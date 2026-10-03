@@ -1,5 +1,14 @@
 # Knowledge Log
 
+## 2026-10-03, Open-source ChatGPT sign-in is the default
+
+New browser sign-ins for the codex provider take the open-source Sign in with
+ChatGPT route unless `chatgpt_sign_in = "codex"` or `YOLOP_CHATGPT_SIGN_IN=codex`
+says otherwise. Existing logins keep the route they were made with. A device
+sign-in with no route configured still uses the Codex client, because the
+open-source route has no device flow. See
+[ChatGPT sign-in](specs/chatgpt-sign-in.md).
+
 ## 2026-10-02, Open-source Sign in with ChatGPT route
 
 The codex provider gains a second sign-in route, selected by
