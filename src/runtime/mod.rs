@@ -4786,7 +4786,7 @@ pub async fn build_with_options(
     let mut harness_builder = HarnessBuilder::new("yolop", harness_prompt)
         .metadata_entry("app", "yolop")
         .metadata_entry("yolop_version", env!("CARGO_PKG_VERSION"))
-        .metadata_entry("everruns_host_version", env!("YOLOP_EVERRUNS_HOST_VERSION"))
+        .metadata_entry("everruns_core_version", env!("YOLOP_EVERRUNS_CORE_VERSION"))
         // Attribute LLM calls routed through OpenRouter so they show up under
         // Yolop on OpenRouter's app dashboards. The driver forwards these as
         // the `HTTP-Referer` and `X-Title` headers (everruns 0.14+).
@@ -6612,9 +6612,9 @@ mod tests {
         assert_eq!(
             context
                 .embedder_metadata
-                .get("everruns_host_version")
+                .get("everruns_core_version")
                 .map(String::as_str),
-            Some(env!("YOLOP_EVERRUNS_HOST_VERSION"))
+            Some(env!("YOLOP_EVERRUNS_CORE_VERSION"))
         );
         // OpenRouter attribution headers flow through embedder metadata.
         use everruns_drivers::openrouter::options::{
