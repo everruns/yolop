@@ -52,6 +52,11 @@ const GLOBAL_ONLY_KEYS: &[&str] = &[
     "codex_auth",
     // Picks the OAuth client credentials are issued to, so it lives beside them.
     "chatgpt_client_id",
+    // The sign-in route, this host's ID, and its registered client belong to
+    // the credentials too.
+    "chatgpt_sign_in",
+    "chatgpt_host_id",
+    "chatgpt_registration",
     "theme",
     "attribution",
     "proactive_wake",

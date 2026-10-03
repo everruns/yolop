@@ -131,8 +131,10 @@ session.
 The profileable keys are `default_provider`, `models`, `default_models`, `base_urls`,
 `approval_mode`, `approval_policy`, `sandbox_mode`, `worktrees`,
 `capabilities`, `capabilities_mode`, `mcp`, `mcp_mode`, `instructions`,
-`instructions_file`, and `skills_dir`. Credentials (`tokens`, `codex_auth`, and the `chatgpt_client_id` that picks
-their issuing client, see [ChatGPT sign-in](chatgpt-sign-in.md)) and
+`instructions_file`, and `skills_dir`. Credentials (`tokens`, `codex_auth`, and
+the ChatGPT sign-in keys beside them: `chatgpt_client_id`, `chatgpt_sign_in`,
+`chatgpt_host_id`, `chatgpt_registration`, see
+[ChatGPT sign-in](chatgpt-sign-in.md)) and
 personal settings (`theme`, `attribution`, `proactive_wake`, `acp_setup_page`)
 are global-only and make a selected profile fail validation. Invalid known
 values also fail startup; unknown keys produce a warning and are ignored for

@@ -967,6 +967,24 @@ impl SetConfigTool {
                 self.settings.set_speed(speed).map_err(map_err)?;
                 Ok(saved(message))
             }
+            // Route for new ChatGPT sign-ins; empty or `codex` clears it.
+            KeyTarget::ChatgptSignIn => {
+                let value = value.trim();
+                let route = if value.is_empty() {
+                    crate::auth::siwc::SignInRoute::Codex
+                } else {
+                    crate::auth::siwc::SignInRoute::parse(value).ok_or_else(|| {
+                        format!("invalid chatgpt_sign_in `{value}`; expected codex or open-source")
+                    })?
+                };
+                let stored = (route != crate::auth::siwc::SignInRoute::Codex)
+                    .then(|| route.as_str().to_string());
+                self.settings.set_chatgpt_sign_in(stored).map_err(map_err)?;
+                Ok(saved(format!(
+                    "chatgpt_sign_in = {}; applies to the next ChatGPT sign-in",
+                    route.as_str()
+                )))
+            }
             // OAuth client for new ChatGPT sign-ins; empty clears back to the
             // borrowed Codex client. Validated like the env override.
             KeyTarget::ChatgptClientId => {

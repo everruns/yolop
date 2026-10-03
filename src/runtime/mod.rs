@@ -1829,6 +1829,9 @@ impl ProviderChoice {
             // fast tier is the `speed` setting, not a separate model id.
             "openai" => &[
                 "gpt-6.1-sol",
+                "gpt-6-sol",
+                "gpt-6-luna",
+                "gpt-6-astra",
                 "gpt-5.6-sol",
                 "gpt-5.6-terra",
                 "gpt-5.6-luna",
@@ -1857,24 +1860,35 @@ impl ProviderChoice {
                 "claude-opus-4-7",
                 "claude-opus-4-8",
                 "claude-sonnet-5",
+                "claude-sonnet-5-5",
                 "claude-opus-5",
+                "claude-opus-5-5",
                 "claude-fable-5",
+                "claude-fable-5-1",
                 // `[1m]` ids are the 1M-context twins of the 200K base models;
                 // the everruns-anthropic driver strips the suffix on the wire
                 // and requests the window via the `context-1m` beta header.
                 "claude-fable-5[1m]",
+                "claude-fable-5-1[1m]",
                 "claude-opus-5[1m]",
+                "claude-opus-5-5[1m]",
                 "claude-opus-4-8[1m]",
             ],
             "meta" => &["muse-spark-1.2", "muse-spark-1.2-contributor"],
             "google" => &["gemini-2.5-flash", "gemini-2.5-pro"],
             "openrouter" => &[
                 "openai/gpt-6.1-sol",
+                "openai/gpt-6-sol",
+                "openai/gpt-6-luna",
+                "openai/gpt-6-astra",
                 "openai/gpt-5.6-sol",
                 "openai/gpt-5.6-terra",
                 "openai/gpt-5.6-luna",
                 "openai/gpt-5.5",
                 "anthropic/claude-opus-4-8",
+                "anthropic/claude-opus-5-5",
+                "anthropic/claude-sonnet-5-5",
+                "anthropic/claude-fable-5-1",
                 "nvidia/nemotron-3-super-120b-a12b high",
             ],
             "ollama" => &["llama3.2"],
@@ -2145,6 +2159,10 @@ impl ProviderChoice {
                 let expires_at = auth_from_settings.and_then(|auth| auth.expires_at);
                 // Refresh must go to the client that issued this token set.
                 let client_id = auth_from_settings.and_then(|auth| auth.client_id.clone());
+                // An open-source login runs on the public Responses API.
+                let flow = auth_from_settings
+                    .and_then(|auth| auth.open_source.as_ref())
+                    .map(|_| crate::drivers::chatgpt_plan::OPEN_SOURCE_FLOW);
                 Ok(ResolvedModel {
                     model: model.clone(),
                     provider_type: DriverId::external(crate::drivers::codex::CODEX_DRIVER_ID),
@@ -2154,6 +2172,7 @@ impl ProviderChoice {
                         extra: Some(serde_json::json!({
                             "expires_at": expires_at,
                             "client_id": client_id,
+                            "flow": flow,
                             "auth_source": if auth_from_settings.is_some() {
                                 "settings"
                             } else {
@@ -2571,7 +2590,6 @@ fn local_model_profile(provider_type: &DriverId, model: &str) -> Option<ModelPro
     {
         return Some(GPT_5_6_PROFILE.clone());
     }
-
     None
 }
 
@@ -7657,9 +7675,12 @@ mod tests {
     fn model_suggestions_include_gpt_5_6_variants() {
         let suggestions = ProviderChoice::model_suggestions_for_provider("openai");
         assert_eq!(suggestions[0], "gpt-6.1-sol");
-        assert_eq!(suggestions[1], "gpt-5.6-sol");
-        assert_eq!(suggestions[2], "gpt-5.6-terra");
-        assert_eq!(suggestions[3], "gpt-5.6-luna");
+        assert_eq!(suggestions[1], "gpt-6-sol");
+        assert_eq!(suggestions[2], "gpt-6-luna");
+        assert_eq!(suggestions[3], "gpt-6-astra");
+        assert!(suggestions.contains(&"gpt-5.6-sol"));
+        assert!(suggestions.contains(&"gpt-5.6-terra"));
+        assert!(suggestions.contains(&"gpt-5.6-luna"));
         let codex = ProviderChoice::model_suggestions_for_provider("codex");
         assert!(codex.contains(&"gpt-6.1-sol"));
         assert!(codex.contains(&"gpt-5.6-sol"));
@@ -7667,9 +7688,45 @@ mod tests {
         assert!(codex.contains(&"gpt-5.6-luna"));
         let openrouter = ProviderChoice::model_suggestions_for_provider("openrouter");
         assert!(openrouter.contains(&"openai/gpt-6.1-sol"));
+        assert!(openrouter.contains(&"openai/gpt-6-sol"));
         assert!(openrouter.contains(&"openai/gpt-5.6-sol"));
         assert!(openrouter.contains(&"openai/gpt-5.6-terra"));
         assert!(openrouter.contains(&"openai/gpt-5.6-luna"));
+        assert!(openrouter.contains(&"anthropic/claude-opus-5-5"));
+        assert!(openrouter.contains(&"anthropic/claude-sonnet-5-5"));
+        assert!(openrouter.contains(&"anthropic/claude-fable-5-1"));
+    }
+
+    #[test]
+    fn model_suggestions_include_latest_anthropic_point_releases() {
+        let suggestions = ProviderChoice::model_suggestions_for_provider("anthropic");
+        assert!(suggestions.contains(&"claude-opus-5-5"));
+        assert!(suggestions.contains(&"claude-sonnet-5-5"));
+        assert!(suggestions.contains(&"claude-fable-5-1"));
+        assert!(suggestions.contains(&"claude-opus-5-5[1m]"));
+        assert!(suggestions.contains(&"claude-fable-5-1[1m]"));
+
+        let provider = ProviderChoice::Anthropic {
+            model: "claude-sonnet-4-5".to_string(),
+            reasoning_effort: None,
+        };
+        let next = provider.resolve_model_spec("claude-sonnet-5-5").unwrap();
+        assert_eq!(next.label(), "anthropic/claude-sonnet-5-5 high");
+    }
+
+    #[test]
+    fn latest_flagship_models_resolve_to_profiles() {
+        // everruns-model-profiles 0.33 ships all five flagship profiles
+        // upstream, so no local stopgap shadows them.
+        assert!(get_model_profile(&DriverId::OpenAI, "gpt-6-sol").is_some());
+        assert!(get_model_profile(&DriverId::OpenAI, "gpt-6.1-sol").is_some());
+        assert!(get_model_profile(&DriverId::Anthropic, "claude-sonnet-5-5").is_some());
+        assert!(get_model_profile(&DriverId::Anthropic, "claude-opus-5-5").is_some());
+        assert!(get_model_profile(&DriverId::Anthropic, "claude-fable-5-1").is_some());
+        assert!(local_model_profile(&DriverId::OpenAI, "gpt-6.1-sol").is_none());
+        let sonnet = get_model_profile(&DriverId::Anthropic, "claude-sonnet-5-5")
+            .expect("claude-sonnet-5-5 upstream profile");
+        assert_eq!(sonnet.name, "Claude Sonnet 5.5");
     }
 
     #[test]
@@ -8332,6 +8389,7 @@ mod tests {
                 account_id: Some("acc_123".to_string()),
                 email: None,
                 client_id: None,
+                open_source: None,
             }),
             ..Default::default()
         };
@@ -8382,6 +8440,7 @@ mod tests {
                 account_id: Some("saved-account".to_string()),
                 email: None,
                 client_id: None,
+                open_source: None,
             }),
             ..Default::default()
         };

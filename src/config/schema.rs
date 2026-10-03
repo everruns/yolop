@@ -269,6 +269,22 @@ pub fn schema() -> &'static [ConfigField] {
             provider_scoped: false,
         },
         ConfigField {
+            key: "chatgpt_sign_in",
+            aliases: &["chatgpt-sign-in", "codex_sign_in"],
+            title: "ChatGPT sign-in route",
+            description: "Which route a new ChatGPT (codex provider) sign-in takes. `codex` uses \
+                          the Codex CLI client and runs turns on the Codex backend. \
+                          `open-source` uses OpenAI's open-source Sign in with ChatGPT: the \
+                          sign-in registers a client for this host, and turns run on the public \
+                          Responses API on the ChatGPT plan, browser sign-in only. \
+                          `YOLOP_CHATGPT_SIGN_IN` overrides this. An existing login keeps the \
+                          route it was made with until you sign in again.",
+            kind: ValueKind::Text,
+            default: Some("codex"),
+            examples: &["open-source", "codex"],
+            provider_scoped: false,
+        },
+        ConfigField {
             key: "speed",
             aliases: &["service_tier"],
             title: "Speed (service tier)",
@@ -335,6 +351,8 @@ pub enum KeyTarget {
     ClassifierModel,
     /// OAuth client ID for new ChatGPT (codex provider) sign-ins.
     ChatgptClientId,
+    /// Which route a new ChatGPT sign-in takes.
+    ChatgptSignIn,
     /// OpenAI service tier for every turn.
     Speed,
     /// Per-provider model spec, for the named provider.
@@ -368,6 +386,7 @@ impl KeyTarget {
             KeyTarget::Theme => "theme",
             KeyTarget::ClassifierModel => "classifier_model",
             KeyTarget::ChatgptClientId => "chatgpt_client_id",
+            KeyTarget::ChatgptSignIn => "chatgpt_sign_in",
             KeyTarget::Speed => "speed",
             KeyTarget::Model(_) => "default_models",
             KeyTarget::Models => "models",
@@ -432,6 +451,7 @@ pub fn parse_key(input: &str) -> Result<KeyTarget, String> {
         "chatgpt_client_id" | "chatgpt-client-id" | "codex_client_id" => {
             scalar(KeyTarget::ChatgptClientId)
         }
+        "chatgpt_sign_in" | "chatgpt-sign-in" | "codex_sign_in" => scalar(KeyTarget::ChatgptSignIn),
         "speed" | "service_tier" => scalar(KeyTarget::Speed),
         // `models` is the ordered list; the per-provider memory it used to name
         // is `default_models`. A bare `models.<provider>` still routes to the

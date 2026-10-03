@@ -227,7 +227,7 @@ impl SetupCliCapability {
                         ));
                     }
                 } else if device {
-                    let client_id = match codex::configured_client_id(&settings.snapshot()) {
+                    let client_id = match codex::device_sign_in_client_id(&settings.snapshot()) {
                         Ok(client_id) => client_id,
                         Err(err) => return ToolExecutionResult::tool_error(format!("{err:#}")),
                     };
@@ -257,12 +257,8 @@ impl SetupCliCapability {
                         ));
                     }
                 } else {
-                    let client_id = match codex::configured_client_id(&settings.snapshot()) {
-                        Ok(client_id) => client_id,
-                        Err(err) => return ToolExecutionResult::tool_error(format!("{err:#}")),
-                    };
-                    println!("Opening browser for Codex login...");
-                    let auth = match codex::login_with_browser(&client_id).await {
+                    println!("Opening browser for ChatGPT sign-in...");
+                    let auth = match codex::sign_in_with_browser(settings).await {
                         Ok(auth) => auth,
                         Err(err) => {
                             return ToolExecutionResult::tool_error(format!(
