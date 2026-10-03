@@ -111,6 +111,31 @@ pub(crate) fn is_reasoning_required_error(message: &str) -> bool {
         || message.contains("is required")
 }
 
+/// A stateful Responses continuation the server no longer honors: the
+/// `previous_response_id` the turn chained onto is unknown or expired.
+/// Observed as `referenced response not found or expired` after a long tool
+/// run; the transcript is intact, so a fresh turn replaying it recovers.
+/// Kept to chain wording (`response` plus not-found/expired) so a reworded
+/// upstream message still routes to the same retry, without matching
+/// unrelated 400s.
+/// TODO(upstream): retire this turn-level retry once everruns-provider handles
+/// referenced-response expiry natively (everruns branch
+/// fix-expired-response-chain-retry); then route through the in-turn replay.
+pub(crate) fn is_expired_response_chain_error(message: &str) -> bool {
+    let message = message.to_ascii_lowercase();
+    if !message.contains("response") {
+        return false;
+    }
+    let stale_id = message.contains("previous_response")
+        || message.contains("previous response")
+        || message.contains("referenced response");
+    let gone = message.contains("not found")
+        || message.contains("expired")
+        || message.contains("no longer")
+        || message.contains("does not exist");
+    stale_id && gone
+}
+
 /// The effort to retry a mandatory-reasoning failure with, or `None` when the
 /// failure is not one this can fix.
 ///
@@ -253,6 +278,25 @@ mod tests {
         // not be routed into reasoning recovery.
         assert!(!is_reasoning_required_error(
             "provider error: field `model` is mandatory"
+        ));
+    }
+
+    #[test]
+    fn an_expired_chained_response_is_recognized() {
+        // The exact Meta failure: a long tool run let the chained response expire.
+        let error = "LLM error: provider \"meta\": OpenAI Responses API error (400 Bad Request): \
+            {\"error\":{\"code\":null,\"message\":\"referenced response not found or expired\",\"param\":null,\"type\":\"invalid_request_error\"}}";
+        assert!(is_expired_response_chain_error(error));
+        assert!(is_expired_response_chain_error(
+            "previous_response_id not found: resp_123"
+        ));
+        assert!(!is_expired_response_chain_error(
+            "LLM error: provider 'openrouter': 401 Unauthorized"
+        ));
+        // A reasoning-mandatory message is a different recovery and must not
+        // match here.
+        assert!(!is_expired_response_chain_error(
+            "Reasoning is mandatory for this endpoint and cannot be disabled."
         ));
     }
 

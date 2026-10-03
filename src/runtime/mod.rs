@@ -2444,6 +2444,16 @@ where
     let Some(error) = turn_failure(&first) else {
         return first;
     };
+    // A chained `previous_response_id` can expire on the server while tools
+    // run; the transcript is intact, so a fresh turn replaying it recovers.
+    // This is separate from reasoning recovery (which changes the effort),
+    // retried here with the same input and no notice.
+    // TODO(upstream): drop this once everruns-provider retries referenced-response
+    // expiry in-turn; kept until the everruns release with the native fix ships.
+    if reasoning::is_expired_response_chain_error(&error) {
+        tracing::warn!("previous server response expired; turn retried statelessly");
+        return run(input).await;
+    }
     // What the model names comes first: on a mid-turn `set_model` the level is
     // already chosen and only the in-flight request missed it, so the retry
     // honors that choice instead of overwriting it with a profile default.
@@ -9710,6 +9720,83 @@ mod tests {
                 .iter()
                 .any(|line| line.contains("requires reasoning") && line.contains("medium")),
             "the user is told what changed: {lines:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_expired_chained_response_retries_once_with_the_same_input() {
+        // The Meta failure: after a long tool run the chained `previous_response_id`
+        // is gone server-side (`referenced response not found or expired`). The
+        // transcript is intact, so the same input replayed as a fresh turn recovers.
+        let workspace = tempfile::tempdir().expect("workspace");
+        let sessions = tempfile::tempdir().expect("sessions");
+        let settings = Arc::new(crate::config::SettingsStore::open(
+            sessions.path().join("settings.toml"),
+        ));
+        settings
+            .set_token("meta".to_string(), "test-key".to_string())
+            .expect("store a meta token");
+        let built = build_with_options(
+            workspace.path().to_path_buf(),
+            ProviderChoice::Meta {
+                model: "meta/muse-spark-1.3-contributor".to_string(),
+                reasoning_effort: None,
+            },
+            None,
+            sessions.path().to_path_buf(),
+            settings,
+            BuildOptions::default(),
+        )
+        .await
+        .expect("build runtime");
+        let model = built.model;
+        let attempts = Arc::new(std::sync::Mutex::new(0));
+        let run_attempts = attempts.clone();
+        let run = move |_input: InputMessage| {
+            let run_attempts = run_attempts.clone();
+            async move {
+                let mut attempts = run_attempts.lock().expect("attempts");
+                *attempts += 1;
+                let first = *attempts == 1;
+                Ok(everruns_host::TurnResult {
+                    response: String::new(),
+                    iterations: 1,
+                    tool_calls_count: 0,
+                    success: !first,
+                    error: first.then(|| {
+                        "LLM error: provider \"meta\": OpenAI Responses API error (400 Bad Request): \
+                         {\"error\":{\"code\":null,\"message\":\"referenced response not found or expired\",\"param\":null,\"type\":\"invalid_request_error\"}}"
+                            .to_string()
+                    }),
+                    stop_reason: if first {
+                        everruns_core::turn::TurnStopReason::Error
+                    } else {
+                        everruns_core::turn::TurnStopReason::EndTurn
+                    },
+                    turn_id: everruns_provider::typed_id::TurnId::new(),
+                })
+            }
+        };
+
+        let notice = |_: String| {};
+        let result =
+            run_with_reasoning_recovery(&model, model.input_message("hello"), &notice, run)
+                .await
+                .expect("the retried turn");
+
+        assert!(
+            result.success,
+            "the replayed turn must be the turn the user gets"
+        );
+        assert_eq!(
+            *attempts.lock().expect("attempts"),
+            2,
+            "exactly one stateless replay, not a retry loop"
+        );
+        assert_eq!(
+            model.reasoning_effort().as_deref(),
+            None,
+            "an expired chain changes no setting, so the effort stays off"
         );
     }
 
