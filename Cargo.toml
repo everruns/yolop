@@ -93,7 +93,7 @@ hf-hub = { version = "0.4.3", default-features = false, features = [
 ], optional = true }
 rand = "0.10"
 rustix = { version = "1.1", features = ["fs"] }
-# Already present through everruns-local. Yolop uses the same SQLite handle for
+# Already present through the facade's local backend. Yolop uses the same SQLite handle for
 # its capability-owned local session coordination tables.
 rusqlite = "0.39"
 # Already in the tree via the everruns driver crates; used directly only for
