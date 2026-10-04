@@ -10,6 +10,68 @@ mechanical `### What's Changed` list of merged PRs.
 Releases are cut via [`/release`](./.agents/skills/release/SKILL.md), which
 tags the version and publishes to crates.io and the Homebrew tap.
 
+## [0.19.0] - 2026-10-04
+
+### Highlights
+
+- Move Yolop to the published Everruns 0.41 crate family and remove direct dependencies on retired shims while preserving runtime capabilities.
+- Add GPT-6.1 speed tiers, GPT-6 and Claude 5.x model options, and open-source Sign in with ChatGPT for the Codex provider.
+- Strengthen approval, extension, filesystem, image, and workspace boundaries.
+- Improve ACP, TUI, and runtime behavior, including retries for expired response chains.
+
+### What's Changed
+
+* refactor(runtime): migrate yolop to Everruns 0.41 crates ([#811](https://github.com/everruns/yolop/pull/811)) by @chaliy
+* feat(drivers): use shared Everruns ChatGPT and Codex drivers ([#810](https://github.com/everruns/yolop/pull/810)) by @chaliy
+* chore(deps): bump everruns to 0.34.2 ([#809](https://github.com/everruns/yolop/pull/809)) by @chaliy
+* feat(auth): make open-source Sign in with ChatGPT the default route ([#808](https://github.com/everruns/yolop/pull/808)) by @chaliy
+* fix(runtime): retry turns on expired response chains ([#807](https://github.com/everruns/yolop/pull/807)) by @chaliy
+* feat(auth): open-source Sign in with ChatGPT route for the codex provider ([#806](https://github.com/everruns/yolop/pull/806)) by @chaliy
+* feat(models): register GPT-6 family and Claude 5.x point releases ([#805](https://github.com/everruns/yolop/pull/805)) by @chaliy
+* feat(codex): everruns 0.33, GPT-6.1 Sol with speed tiers, configurable ChatGPT sign-in client ([#804](https://github.com/everruns/yolop/pull/804)) by @chaliy
+* fix(extensions): retry spawning a server that is briefly text-file-busy ([#803](https://github.com/everruns/yolop/pull/803)) by @chaliy
+* fix(test): stop worktree tests overriding process-wide TMPDIR and HOME ([#802](https://github.com/everruns/yolop/pull/802)) by @chaliy
+* chore(deps): bump everruns to 0.32.0 ([#801](https://github.com/everruns/yolop/pull/801)) by @chaliy
+* chore(deps): bump rustix from 1.1.4 to 1.1.5 in the cargo-minor-and-patch group ([#791](https://github.com/everruns/yolop/pull/791)) by @app/dependabot
+* chore(evals): move Anthropic eval targets off sunset Sonnet 4.5 ([#790](https://github.com/everruns/yolop/pull/790)) by @chaliy
+* refactor(approval): register upstream soft_approval instead of a local copy ([#789](https://github.com/everruns/yolop/pull/789)) by @chaliy
+* fix(skills): contain recursive skill deletion ([#788](https://github.com/everruns/yolop/pull/788)) by @chaliy
+* fix(lsp): prevent workspace edit symlink races ([#787](https://github.com/everruns/yolop/pull/787)) by @chaliy
+* fix(extensions): reject malformed hook decisions ([#786](https://github.com/everruns/yolop/pull/786)) by @chaliy
+* fix(codex): preserve environment token override ([#785](https://github.com/everruns/yolop/pull/785)) by @chaliy
+* fix(extensions): confine scaffold writes ([#784](https://github.com/everruns/yolop/pull/784)) by @chaliy
+* fix(approval): honor `Off` approval mode in base harness prompt ([#783](https://github.com/everruns/yolop/pull/783)) by @chaliy
+* fix(extensions): scope prompt text to capability lifecycle ([#782](https://github.com/everruns/yolop/pull/782)) by @chaliy
+* fix(herdr): restore resumed session titles ([#781](https://github.com/everruns/yolop/pull/781)) by @chaliy
+* fix(runtime): validate compatible provider models ([#780](https://github.com/everruns/yolop/pull/780)) by @chaliy
+* fix(acp): preserve explicit provider selection ([#779](https://github.com/everruns/yolop/pull/779)) by @chaliy
+* fix(tui): render help markdown ([#778](https://github.com/everruns/yolop/pull/778)) by @chaliy
+* fix(codex): flatten `input_file` fields to match Responses wire shape ([#777](https://github.com/everruns/yolop/pull/777)) by @chaliy
+* fix(config): preserve state on malformed reload ([#776](https://github.com/everruns/yolop/pull/776)) by @chaliy
+* fix(progress-guard): always emit session budget warning ([#775](https://github.com/everruns/yolop/pull/775)) by @chaliy
+* fix(acp): honor skill scope precedence ([#774](https://github.com/everruns/yolop/pull/774)) by @chaliy
+* fix(models): bound discovery catalog responses ([#773](https://github.com/everruns/yolop/pull/773)) by @chaliy
+* fix(security): reject control characters in model ids ([#772](https://github.com/everruns/yolop/pull/772)) by @chaliy
+* fix(image): bound reads from local image paths ([#771](https://github.com/everruns/yolop/pull/771)) by @chaliy
+* fix(tui): bound clipboard image processing ([#770](https://github.com/everruns/yolop/pull/770)) by @chaliy
+* fix(acp): bound inline prompt images ([#768](https://github.com/everruns/yolop/pull/768)) by @chaliy
+* fix(docs): isolate hero demo from shared Cargo config ([#767](https://github.com/everruns/yolop/pull/767)) by @chaliy
+* fix(okf): distrust repository execution metadata ([#766](https://github.com/everruns/yolop/pull/766)) by @chaliy
+* fix(editor): protect integration settings permissions ([#765](https://github.com/everruns/yolop/pull/765)) by @chaliy
+* fix(acp): time out stalled setup connections ([#764](https://github.com/everruns/yolop/pull/764)) by @chaliy
+* fix(runtime): pin OpenRouter attestation links ([#763](https://github.com/everruns/yolop/pull/763)) by @chaliy
+* fix(hooks): scope attached management to workspace ([#762](https://github.com/everruns/yolop/pull/762)) by @chaliy
+* fix(memory): require approval for durable mutations ([#761](https://github.com/everruns/yolop/pull/761)) by @chaliy
+* fix(config): honor user_hooks disable override ([#760](https://github.com/everruns/yolop/pull/760)) by @chaliy
+* fix(worktree): protect temporary worktrees with per-user owner-only storage ([#759](https://github.com/everruns/yolop/pull/759)) by @chaliy
+* fix(extensions): resolve path-shaped capability-server commands from package to prevent workspace hijack ([#758](https://github.com/everruns/yolop/pull/758)) by @chaliy
+* fix(extensions): contain crate extraction paths ([#757](https://github.com/everruns/yolop/pull/757)) by @chaliy
+* fix(approval): require unmodified 'a' for session-wide approval ([#756](https://github.com/everruns/yolop/pull/756)) by @chaliy
+* fix(extensions): reject symlinked binary destinations ([#755](https://github.com/everruns/yolop/pull/755)) by @chaliy
+* fix(evals): give prior-session-reference a one-call budget cushion ([#753](https://github.com/everruns/yolop/pull/753)) by @chaliy
+
+**Full Changelog**: https://github.com/everruns/yolop/compare/v0.18.4...v0.19.0
+
 ## [0.18.4] - 2026-09-25
 
 ### Highlights
