@@ -147,6 +147,10 @@ impl PreToolUseHook for LiveApprovalHook {
                 }
                 ApprovalDecision::Cancelled => Self::block(tool_call, "turn cancelled"),
                 ApprovalDecision::Unavailable => Self::block(tool_call, "approval UI unavailable"),
+                // Deferred is returned by durable hosts that park the turn until a person
+                // answers. Yolop approvers are interactive and never return it, so fail
+                // closed here; the upstream hook owns the park path for normal gating.
+                ApprovalDecision::Deferred => Self::block(tool_call, "approval deferred"),
             };
         }
 
@@ -202,6 +206,23 @@ mod tests {
         ) -> ApprovalDecision {
             self.asked.fetch_add(1, Ordering::Relaxed);
             ApprovalDecision::AllowAlways
+        }
+    }
+
+    struct DeferringApprover {
+        asked: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl ToolApprover for DeferringApprover {
+        async fn approve(
+            &self,
+            _session_id: SessionId,
+            _tool_call: &ToolCall,
+            _tool_def: &ToolDefinition,
+        ) -> ApprovalDecision {
+            self.asked.fetch_add(1, Ordering::Relaxed);
+            ApprovalDecision::Deferred
         }
     }
 
@@ -340,5 +361,31 @@ mod tests {
         }
 
         assert_eq!(approver.asked.load(Ordering::Relaxed), 2);
+    }
+
+    #[tokio::test]
+    async fn deferred_critical_command_fails_closed_without_running() {
+        let temp = tempfile::tempdir().unwrap();
+        let settings = Arc::new(SettingsStore::open(temp.path().join("settings.toml")));
+        let approver = Arc::new(DeferringApprover {
+            asked: AtomicUsize::new(0),
+        });
+        let capability = ToolApprovalCapability::new(approver.clone(), settings);
+        let hook = capability.pre_tool_use_hooks().pop().unwrap();
+        let context = ToolContext::new(SessionId::new());
+
+        match hook
+            .before_exec(bash_call("deferred", "kill 1234"), &bash_tool(), &context)
+            .await
+        {
+            PreToolUseDecision::Block { reason, .. } => {
+                assert!(
+                    reason.contains("approval deferred"),
+                    "unexpected reason: {reason}"
+                );
+            }
+            other => panic!("expected deferred critical command to block, got {other:?}"),
+        }
+        assert_eq!(approver.asked.load(Ordering::Relaxed), 1);
     }
 }

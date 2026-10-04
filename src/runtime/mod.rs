@@ -10687,7 +10687,10 @@ mod tests {
         // ~45-byte deferred stub in the eager surface. Measured 14,302 locally
         // and 13,938 in Linux CI for the same tree; the environment delta
         // predates this change. Thin headroom kept on the larger number.
-        const BASELINE_SCHEMA_BYTES: usize = 14_350;
+        // 2026-10-03: 14,350 -> 14,500. everruns 0.34.2 grew eager tool schemas
+        // (+83 bytes locally, 14,302 to 14,433). Linux CI measures lower for the
+        // same tree; thin headroom kept on the larger number.
+        const BASELINE_SCHEMA_BYTES: usize = 14_500;
         let workspace = tempfile::tempdir().expect("workspace");
         let sessions = tempfile::tempdir().expect("sessions");
         let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
