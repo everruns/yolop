@@ -261,7 +261,7 @@ mod tests {
         assert!(response.contains("MCP server is connected."));
     }
 
-    // everruns-mcp 0.17.24 binds the OAuth resource to the MCP server origin
+    // The MCP host binds the OAuth resource to the MCP server origin
     // and requires that origin to be HTTPS, so an authorization server cannot
     // mint a token for an endpoint it does not control. The loopback *redirect*
     // below is still plain HTTP — that is the native-app pattern and unchanged.

@@ -145,20 +145,20 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Keep the Everruns family on aligned exact pins. Contracts owns provider/tool
 # interfaces; core exposes optional host, builtins and MCP modules.
-everruns-contracts = { version = "=0.38.0", default-features = false, features = ["definition"] }
-everruns-core = { version = "=0.38.0", features = ["host", "builtins", "mcp-stdio", "direct-egress"] }
-everruns-drivers = { version = "=0.38.0", default-features = false, features = ["openai", "anthropic", "meta", "openrouter", "chatgpt", "codex"] }
-everruns-capabilities = "=0.38.0"
+everruns-contracts = { version = "=0.41.0", default-features = false, features = ["definition"] }
+everruns-core = { version = "=0.41.0", features = ["host", "builtins", "mcp-stdio", "direct-egress"] }
+everruns-drivers = { version = "=0.41.0", default-features = false, features = ["openai", "anthropic", "meta", "openrouter", "chatgpt", "codex"] }
+everruns-capabilities = "=0.41.0"
 # The facade's local backend supplies SQLite, git workspace and durable logs.
 # TypeSafe supplies the Muse actionable-promise classifier.
-everruns = { version = "=0.38.0", default-features = false, features = ["local", "typesafe"] }
+everruns = { version = "=0.41.0", default-features = false, features = ["local", "typesafe"] }
 # LLMSim is a user-facing offline provider, so it remains a production dependency.
-everruns-llmsim = { version = "=0.38.0", features = ["host"] }
-everruns-integrations-filesystem = "=0.38.0"
-everruns-integrations-web-fetch = "=0.38.0"
-everruns-integrations-duckduckgo = "=0.38.0"
-everruns-integrations-parallel = "=0.38.0"
-everruns-integrations-daytona = "=0.38.0"
+everruns-llmsim = { version = "=0.41.0", features = ["host"] }
+everruns-integrations-filesystem = "=0.41.0"
+everruns-integrations-web-fetch = "=0.41.0"
+everruns-integrations-duckduckgo = "=0.41.0"
+everruns-integrations-parallel = "=0.41.0"
+everruns-integrations-daytona = "=0.41.0"
 arboard = { version = "3", features = ["wayland-data-control"] }
 futures = "0.3"
 html-escape = "0.2"
