@@ -213,8 +213,8 @@ fn escape_untrusted_json(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use everruns_provider::ToolCall;
-    use everruns_provider::typed_id::SessionId;
+    use everruns_contracts::ToolCall;
+    use everruns_contracts::typed_id::SessionId;
     use serde_json::json;
 
     use crate::runtime::background_wake::TaskHandoff;

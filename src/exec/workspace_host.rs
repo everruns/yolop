@@ -21,7 +21,7 @@ impl WorkspaceHost {
     pub fn new(
         active_root: Arc<RwLock<PathBuf>>,
         initial: PathBuf,
-    ) -> everruns_provider::error::Result<Self> {
+    ) -> everruns_contracts::error::Result<Self> {
         Ok(Self {
             disk: Arc::new(RealDiskFileStore::new(initial.clone())?),
             applied_root: Mutex::new(initial),
@@ -41,8 +41,8 @@ impl WorkspaceHost {
     }
 
     /// Repoint the host disk when the worktree active root changed.
-    pub fn sync(&self) -> everruns_provider::error::Result<()> {
-        use everruns_provider::AgentLoopError;
+    pub fn sync(&self) -> everruns_contracts::error::Result<()> {
+        use everruns_contracts::AgentLoopError;
 
         let current = self
             .active_root
@@ -62,7 +62,7 @@ impl WorkspaceHost {
         Ok(())
     }
 
-    pub fn host_root(&self) -> everruns_provider::error::Result<PathBuf> {
+    pub fn host_root(&self) -> everruns_contracts::error::Result<PathBuf> {
         self.sync()?;
         Ok(self.disk.root())
     }

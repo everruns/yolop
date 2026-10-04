@@ -11,6 +11,7 @@ use super::manager::{
 use super::package::{ExtensionPackage, ToolDefinition, extension_capability_id};
 use crate::capabilities::narration::stable_labeled;
 use async_trait::async_trait;
+use everruns_contracts::ToolCall;
 use everruns_core::command::{
     CommandArg, CommandDescriptor, CommandExecutionContext, CommandResult, CommandSource,
     ExecuteCommandRequest,
@@ -18,7 +19,6 @@ use everruns_core::command::{
 use everruns_core::tool_narration::ToolNarrationPhase;
 use everruns_core::{Capability, SystemPromptContext};
 use everruns_core::{Tool, ToolExecutionResult};
-use everruns_provider::ToolCall;
 use serde_json::Value;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -371,7 +371,7 @@ impl Capability for ExtensionCapability {
         &self,
         request: &ExecuteCommandRequest,
         _ctx: &CommandExecutionContext,
-    ) -> everruns_provider::error::Result<CommandResult> {
+    ) -> everruns_contracts::error::Result<CommandResult> {
         let prefix = format!("{}:", self.package.manifest.name);
         let name = request.name.strip_prefix(&prefix).unwrap_or(&request.name);
         if !self
@@ -381,7 +381,7 @@ impl Capability for ExtensionCapability {
             .iter()
             .any(|c| c.name == name)
         {
-            return Err(everruns_provider::error::AgentLoopError::config(format!(
+            return Err(everruns_contracts::error::AgentLoopError::config(format!(
                 "extension `{}` does not provide command `{name}`",
                 self.package.manifest.name
             )));

@@ -21,9 +21,9 @@
 //! reference on-disk paths, which yolop does not materialize). Empty and
 //! `None` fields are skipped when serializing, per the RFC's convention.
 
+use everruns_contracts::typed_id::SessionId;
 use everruns_core::{ContentPart, RuntimeMessage, RuntimeMessageRole};
 use everruns_core::{Event, EventData, TokenUsage, ToolCompletedData};
-use everruns_provider::typed_id::SessionId;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
@@ -351,12 +351,12 @@ fn add_f64(total: &mut Option<f64>, value: Option<f64>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use everruns_contracts::tool_types::ToolCall as RuntimeToolCall;
     use everruns_core::RuntimeMessage;
     use everruns_core::{
         EventContext, InputMessageData, OutputMessageCompletedData, ReasonItemData,
         ToolCompletedData,
     };
-    use everruns_provider::tool_types::ToolCall as RuntimeToolCall;
 
     fn session() -> SessionId {
         SessionId::from_seed(7)
@@ -389,8 +389,8 @@ mod tests {
         with_tools.content.insert(
             0,
             everruns_core::ContentPart::reasoning(
-                everruns_provider::reasoning::ReasoningContentPart::opaque("sim").with_text(
-                    everruns_provider::reasoning::ReasoningText::Plain {
+                everruns_contracts::reasoning::ReasoningContentPart::opaque("sim").with_text(
+                    everruns_contracts::reasoning::ReasoningText::Plain {
                         text: "The user wants the file contents.".to_string(),
                     },
                 ),
@@ -401,7 +401,7 @@ mod tests {
                 RuntimeMessage::user("fix the bug"),
             ))),
             event(EventData::ReasonItem(ReasonItemData {
-                turn_id: everruns_provider::typed_id::TurnId::from_seed(1),
+                turn_id: everruns_contracts::typed_id::TurnId::from_seed(1),
                 provider: "sim".to_string(),
                 model: None,
                 item_id: "ri_1".to_string(),
@@ -496,7 +496,7 @@ mod tests {
                 RuntimeMessage::user("hi"),
             ))),
             event(EventData::ReasonItem(ReasonItemData {
-                turn_id: everruns_provider::typed_id::TurnId::from_seed(2),
+                turn_id: everruns_contracts::typed_id::TurnId::from_seed(2),
                 provider: "sim".to_string(),
                 model: None,
                 item_id: "ri_2".to_string(),

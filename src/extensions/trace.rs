@@ -10,10 +10,10 @@
 //! and a forward failure degrades to a warning.
 
 use super::manager::ExtensionProcess;
+use everruns_contracts::typed_id::SessionId;
 use everruns_core::{
     Event, OUTPUT_MESSAGE_DELTA, REASON_THINKING_DELTA, TOOL_OUTPUT_DELTA, TOOL_PROGRESS,
 };
-use everruns_provider::typed_id::SessionId;
 use serde_json::Value;
 use std::sync::Arc;
 use tokio::sync::{broadcast, watch};
@@ -216,7 +216,7 @@ mod tests {
             metadata: None,
             tags: None,
         };
-        let event = request.into_event(everruns_provider::typed_id::EventId::new(), 1);
+        let event = request.into_event(everruns_contracts::typed_id::EventId::new(), 1);
         let params = trace_event_params(&event);
         assert_eq!(params["event_type"], "tool.completed");
         assert_eq!(params["session_id"], session.to_string());

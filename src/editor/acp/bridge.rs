@@ -104,7 +104,7 @@ impl Translator {
                     return Vec::new();
                 }
                 let recovery_message = (data.error_code.as_deref()
-                    == Some(everruns_provider::user_facing_error::codes::PROVIDER_MISCONFIGURED))
+                    == Some(everruns_contracts::user_facing_error::codes::PROVIDER_MISCONFIGURED))
                 .then(|| provider_authentication_message(data.error_fields.as_ref()));
                 let mut updates = recovery_message
                     .or_else(|| data.message.text())
@@ -240,7 +240,7 @@ impl Translator {
 }
 
 fn provider_authentication_message(
-    fields: Option<&everruns_provider::user_facing_error::UserFacingErrorFields>,
+    fields: Option<&everruns_contracts::user_facing_error::UserFacingErrorFields>,
 ) -> &'static str {
     let provider = fields
         .and_then(|fields| fields.get("provider"))
@@ -355,14 +355,14 @@ fn non_null(value: Value) -> Option<Value> {
 mod tests {
     use super::*;
     use chrono::Utc;
+    use everruns_contracts::ExecutionPhase;
+    use everruns_contracts::ToolCall;
+    use everruns_contracts::typed_id::{EventId, MessageId, SessionId, TurnId};
     use everruns_core::RuntimeMessage;
     use everruns_core::{
         Event, EventContext, OutputMessageCompletedData, OutputMessageDeltaData, ReasonItemData,
         ReasonThinkingDeltaData, SessionTitleUpdatedData, ToolCompletedData, ToolStartedData,
     };
-    use everruns_provider::ExecutionPhase;
-    use everruns_provider::ToolCall;
-    use everruns_provider::typed_id::{EventId, MessageId, SessionId, TurnId};
     use serde_json::json;
 
     fn event(data: EventData) -> Event {
@@ -459,7 +459,8 @@ mod tests {
                 metadata: None,
                 usage: None,
                 error_code: Some(
-                    everruns_provider::user_facing_error::codes::PROVIDER_MISCONFIGURED.to_string(),
+                    everruns_contracts::user_facing_error::codes::PROVIDER_MISCONFIGURED
+                        .to_string(),
                 ),
                 error_fields: Some(std::collections::BTreeMap::from([(
                     "provider".to_string(),

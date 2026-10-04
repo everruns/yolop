@@ -2,10 +2,10 @@ use std::time::Duration;
 
 use crate::capabilities::narration::stable_labeled;
 use async_trait::async_trait;
+use everruns_contracts::ToolCall;
+use everruns_contracts::tool_types::ToolHints;
 use everruns_core::tool_narration::{ToolNarrationPhase, arg_str, truncate};
 use everruns_core::{Tool, ToolExecutionResult, capabilities::Capability};
-use everruns_provider::ToolCall;
-use everruns_provider::tool_types::ToolHints;
 use html_escape::decode_html_entities;
 use regex::Regex;
 use reqwest::Client;

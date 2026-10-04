@@ -317,7 +317,7 @@ impl HerdrReporter {
 
     pub(crate) fn start_monitor(
         &self,
-        session_id: everruns_provider::typed_id::SessionId,
+        session_id: everruns_contracts::typed_id::SessionId,
         session_title: Option<String>,
         mut events: broadcast::Receiver<Event>,
     ) {
@@ -543,10 +543,10 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn monitor_reports_turn_lifecycle_and_releases_the_agent() {
+        use everruns_contracts::typed_id::{MessageId, TurnId};
         use everruns_core::{
             EventContext, SessionTitleUpdatedData, TurnCompletedData, TurnStartedData,
         };
-        use everruns_provider::typed_id::{MessageId, TurnId};
         use std::os::unix::fs::PermissionsExt;
 
         let temp = tempfile::tempdir().expect("tempdir");
@@ -567,7 +567,7 @@ mod tests {
         let reporter = HerdrReporter::from_lookup_inner("session_test".into(), true, |key| {
             vars.get(key).cloned()
         });
-        let session_id = everruns_provider::typed_id::SessionId::from_seed(91);
+        let session_id = everruns_contracts::typed_id::SessionId::from_seed(91);
         let turn_id = TurnId::from_seed(92);
         let (events, receiver) = broadcast::channel(8);
         reporter.start_monitor(

@@ -4,10 +4,10 @@
 //! [`everruns_core::tools::Tool::narrate`]. These helpers keep transcript lines
 //! stable across started/completed phases and include safe argument detail.
 
+use everruns_contracts::ToolCall;
 use everruns_core::tool_narration::{
     ToolNarrationPhase, arg_str, labeled_phrase, safe_arg_str, truncate,
 };
-use everruns_provider::ToolCall;
 use serde_json::Value;
 
 /// Present-tense label for started and completed; explicit failure wording.
@@ -171,7 +171,7 @@ fn set_config_detail(arguments: &Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use everruns_provider::ToolCall;
+    use everruns_contracts::ToolCall;
     use serde_json::json;
 
     fn call(arguments: Value) -> ToolCall {

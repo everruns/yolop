@@ -38,9 +38,9 @@ use crossterm::event::{
 };
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use crossterm::{execute, queue};
+use everruns_contracts::typed_id::SessionId;
 use everruns_core::command::ExecuteCommandRequest;
 use everruns_core::{ContentPart, RuntimeMessageRole};
-use everruns_provider::typed_id::SessionId;
 use runtime::{
     BuiltRuntime, DEFAULT_LOCAL_MODEL, ProviderChoice, ResolvedProviderChoice, resolve_for_settings,
 };

@@ -1,7 +1,7 @@
 //! Process-wide cache of the model profiles providers advertise at discovery
 //! time.
 //!
-//! The static registry in `everruns_provider::model_profiles` is curated data
+//! The static registry in `everruns_contracts::model_profiles` is curated data
 //! that grows on release cadence, so it is always behind a gateway's catalog.
 //! Gateways describe their own models instead: OpenRouter's `/models` carries a
 //! `supported_parameters` array, and its driver turns that into a
@@ -26,7 +26,7 @@
 use std::collections::HashMap;
 use std::sync::{LazyLock, RwLock};
 
-use everruns_provider::{DiscoveredModel, DriverId, ModelProfile, ReasoningEffortConfig};
+use everruns_contracts::{DiscoveredModel, DriverId, ModelProfile, ReasoningEffortConfig};
 
 type ProfileKey = (String, String);
 
@@ -110,11 +110,11 @@ pub(crate) fn catalog_scale_override(
         .collect::<Vec<_>>();
     if candidate_values
         != [
-            everruns_provider::ReasoningEffort::Low,
-            everruns_provider::ReasoningEffort::Medium,
-            everruns_provider::ReasoningEffort::High,
+            everruns_contracts::ReasoningEffort::Low,
+            everruns_contracts::ReasoningEffort::Medium,
+            everruns_contracts::ReasoningEffort::High,
         ]
-        || candidate.default != everruns_provider::ReasoningEffort::Medium
+        || candidate.default != everruns_contracts::ReasoningEffort::Medium
     {
         // The driver has learned to map the real levels, or the selected layer
         // carries a narrower scale. Its metadata speaks for itself now.
@@ -122,19 +122,19 @@ pub(crate) fn catalog_scale_override(
     }
     Some(ReasoningEffortConfig {
         values: [
-            everruns_provider::ReasoningEffort::Minimal,
-            everruns_provider::ReasoningEffort::Low,
-            everruns_provider::ReasoningEffort::Medium,
-            everruns_provider::ReasoningEffort::High,
-            everruns_provider::ReasoningEffort::Xhigh,
+            everruns_contracts::ReasoningEffort::Minimal,
+            everruns_contracts::ReasoningEffort::Low,
+            everruns_contracts::ReasoningEffort::Medium,
+            everruns_contracts::ReasoningEffort::High,
+            everruns_contracts::ReasoningEffort::Xhigh,
         ]
         .into_iter()
-        .map(|value| everruns_provider::ReasoningEffortValue {
+        .map(|value| everruns_contracts::ReasoningEffortValue {
             name: format!("{value:?}"),
             value,
         })
         .collect(),
-        default: everruns_provider::ReasoningEffort::Medium,
+        default: everruns_contracts::ReasoningEffort::Medium,
     })
 }
 
@@ -143,9 +143,9 @@ pub(crate) fn catalog_scale_override(
 /// from the curated registry's answer.
 #[cfg(test)]
 pub(crate) fn advertised_profile_for_test() -> ModelProfile {
-    use everruns_provider::{ReasoningEffort, ReasoningEffortValue};
+    use everruns_contracts::{ReasoningEffort, ReasoningEffortValue};
 
-    let mut profile = everruns_provider::model_profiles::get_model_profile(
+    let mut profile = everruns_contracts::model_profiles::get_model_profile(
         &DriverId::OpenRouter,
         "nvidia/nemotron-3-super-120b-a12b",
     )
@@ -164,7 +164,7 @@ pub(crate) fn advertised_profile_for_test() -> ModelProfile {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use everruns_provider::ReasoningEffort;
+    use everruns_contracts::ReasoningEffort;
 
     fn model(model_id: &str, profile: Option<ModelProfile>) -> DiscoveredModel {
         DiscoveredModel {

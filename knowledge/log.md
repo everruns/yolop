@@ -4,8 +4,9 @@
 
 Yolop consumes `everruns-drivers` for ChatGPT plan, legacy Codex, and vendor
 protocols. Host adapters retain settings and browser behavior; refresh leases
-and compare-and-save preserve rotations across processes. Release follows the
-matching Everruns package publication. See [ChatGPT sign-in](specs/chatgpt-sign-in.md).
+and compare-and-save preserve rotations across processes. The published 0.38
+batch supplies the shared drivers and contracts; retired provider/capability
+facades are removed. Initial prompt budgets include mandatory approval schemas. See [ChatGPT sign-in](specs/chatgpt-sign-in.md).
 
 ## 2026-10-03, Open-source ChatGPT sign-in is the default
 

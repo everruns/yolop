@@ -12,13 +12,13 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use anyhow::Result;
+use everruns_contracts::typed_id::SessionId;
 use everruns_core::ContentPart;
 use everruns_core::Event;
 use everruns_core::InputMessage;
 use everruns_core::Tool;
 use everruns_core::command::ExecuteCommandRequest;
 use everruns_host::InProcessRuntime;
-use everruns_provider::typed_id::SessionId;
 use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::exec::tools::{BashTool, Workspace};
@@ -72,7 +72,7 @@ impl Session {
         self.handles.report_herdr_state(state);
     }
 
-    pub(crate) async fn turn_tokens(&self, turn_id: everruns_provider::typed_id::TurnId) -> u64 {
+    pub(crate) async fn turn_tokens(&self, turn_id: everruns_contracts::typed_id::TurnId) -> u64 {
         self.handles.turn_tokens(turn_id).await
     }
 
@@ -590,11 +590,11 @@ fn route_catch_up_events(
 mod tests {
     use super::*;
     use async_trait::async_trait;
+    use everruns_contracts::DriverId;
+    use everruns_contracts::error::Result as EverrunsResult;
+    use everruns_contracts::message::Message as LlmMessage;
+    use everruns_contracts::{ChatDriver, DiscoveredModel, LlmCallConfig, LlmResponseStream};
     use everruns_core::{EventContext, ToolCompletedData};
-    use everruns_provider::DriverId;
-    use everruns_provider::error::Result as EverrunsResult;
-    use everruns_provider::message::Message as LlmMessage;
-    use everruns_provider::{ChatDriver, DiscoveredModel, LlmCallConfig, LlmResponseStream};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
@@ -647,7 +647,7 @@ mod tests {
         impl ChatDriver for ModelListingDriver {
             async fn chat_completion_stream(
                 &self,
-                _endpoint: &everruns_provider::runtime_provider::ProviderEndpoint,
+                _endpoint: &everruns_contracts::runtime_provider::ProviderEndpoint,
                 _messages: Vec<LlmMessage>,
                 _config: &LlmCallConfig,
             ) -> EverrunsResult<LlmResponseStream> {
@@ -657,7 +657,7 @@ mod tests {
 
             async fn list_models(
                 &self,
-                _endpoint: &everruns_provider::runtime_provider::ProviderEndpoint,
+                _endpoint: &everruns_contracts::runtime_provider::ProviderEndpoint,
             ) -> EverrunsResult<Option<Vec<DiscoveredModel>>> {
                 Ok(Some(vec![DiscoveredModel {
                     model_id: "different-model".to_string(),

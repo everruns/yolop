@@ -10,9 +10,9 @@
 use crate::config::Settings;
 use crate::runtime::{Provider, ProviderChoice};
 use anyhow::{Context, Result, anyhow};
-use everruns_provider::model_profiles::get_model_profile;
-use everruns_provider::{DiscoveredModel, DriverRegistry, ProviderConfig};
-use everruns_provider::{DriverId, ProviderEndpoint};
+use everruns_contracts::model_profiles::get_model_profile;
+use everruns_contracts::{DiscoveredModel, DriverRegistry, ProviderConfig};
+use everruns_contracts::{DriverId, ProviderEndpoint};
 use futures::StreamExt;
 use std::collections::HashSet;
 

@@ -177,8 +177,6 @@ everruns-core = "=0.38.0"
 # everruns-core into its own crate in 0.17.24; yolop implements PlatformStore
 # to route background-task wakes (src/runtime/background_wake.rs).
 everruns-platform = "=0.38.0"
-# OpenRouter's first-class driver was split out of everruns-openai into its own
-# crate in 0.13.0; register it alongside openai to keep DriverId::OpenRouter.
 # Filesystem persistence comes from the `everruns` facade's `local` feature, not
 # the standalone `everruns-local` crate: same SQLite, git-workspace, and durable
 # log backend, re-exported under `everruns::local`. `everruns-local` is not a
@@ -201,9 +199,8 @@ everruns-host = { version = "=0.38.0", features = ["mcp-stdio"] }
 # `direct-egress` module; `mcp-stdio` already turns that feature on. The
 # standalone everruns-http crate that used to carry it is yanked on crates.io,
 # and a yanked dependency would make yolop unpublishable.
-# #3182 completed the library boundary cleanup: driver/model/provider types
-# and the built-in capabilities left everruns-core for their own crates.
-everruns-provider = "=0.38.0"
+# Shared provider and capability definitions live in contracts; built-in
+# implementations live in builtins.
 everruns-builtins = "=0.38.0"
 everruns-contracts = { version = "=0.38.0", default-features = false, features = ["definition"] }
 # Yolop ships `--provider llmsim` as a user-facing offline mode, not just a test

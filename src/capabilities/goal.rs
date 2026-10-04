@@ -66,9 +66,9 @@ impl Capability for GoalCapability {
         &self,
         request: &ExecuteCommandRequest,
         ctx: &CommandExecutionContext,
-    ) -> everruns_provider::error::Result<CommandResult> {
+    ) -> everruns_contracts::error::Result<CommandResult> {
         if request.name != GOAL_COMMAND_NAME {
-            return Err(everruns_provider::error::AgentLoopError::config(format!(
+            return Err(everruns_contracts::error::AgentLoopError::config(format!(
                 "{} cannot execute /{}",
                 self.id(),
                 request.name
@@ -77,12 +77,14 @@ impl Capability for GoalCapability {
 
         if is_goal_evaluate_request(request) {
             let condition = self.store.active_condition(ctx.session_id).ok_or_else(|| {
-                everruns_provider::error::AgentLoopError::config("no active goal to evaluate")
+                everruns_contracts::error::AgentLoopError::config("no active goal to evaluate")
             })?;
             let evaluation = evaluate_active_goal(ctx, &condition).await?;
             self.store
                 .record_evaluation(ctx.session_id, &evaluation)
-                .map_err(|err| everruns_provider::error::AgentLoopError::config(err.to_string()))?;
+                .map_err(|err| {
+                    everruns_contracts::error::AgentLoopError::config(err.to_string())
+                })?;
             return Ok(CommandResult {
                 success: true,
                 message: evaluation_result_message(&evaluation),
@@ -92,7 +94,7 @@ impl Capability for GoalCapability {
         }
 
         let outcome = GoalStore::parse_user_args(request.arguments.as_deref())
-            .map_err(|err| everruns_provider::error::AgentLoopError::config(err.to_string()))?;
+            .map_err(|err| everruns_contracts::error::AgentLoopError::config(err.to_string()))?;
 
         if let GoalCommandOutcome::Status(_) = &outcome {
             let status = self.store.status(ctx.session_id, None);
@@ -107,7 +109,7 @@ impl Capability for GoalCapability {
         let message = self
             .store
             .apply_outcome(ctx.session_id, outcome)
-            .map_err(|err| everruns_provider::error::AgentLoopError::config(err.to_string()))?;
+            .map_err(|err| everruns_contracts::error::AgentLoopError::config(err.to_string()))?;
         Ok(CommandResult {
             success: true,
             message,
@@ -121,10 +123,10 @@ impl Capability for GoalCapability {
 mod tests {
     use super::*;
     use crate::session_state::goal::GOAL_EVALUATE_ARG;
+    use everruns_contracts::typed_id::SessionId;
     use everruns_core::{
         CommandHost, CommandTurnContext, SessionCompletion, SessionCompletionError,
     };
-    use everruns_provider::typed_id::SessionId;
     use std::sync::Mutex;
 
     struct FakeHost {
@@ -133,7 +135,7 @@ mod tests {
 
     #[async_trait]
     impl CommandHost for FakeHost {
-        async fn turn_context(&self) -> everruns_provider::error::Result<CommandTurnContext> {
+        async fn turn_context(&self) -> everruns_contracts::error::Result<CommandTurnContext> {
             let session_id = SessionId::new();
             Ok(CommandTurnContext {
                 session_id,

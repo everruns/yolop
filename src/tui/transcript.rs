@@ -85,7 +85,7 @@ pub(crate) enum TurnEvent {
 /// `DeltaRouter` per turn.
 #[derive(Default)]
 pub(crate) struct DeltaRouter {
-    last_assistant_turn: Option<everruns_provider::typed_id::TurnId>,
+    last_assistant_turn: Option<everruns_contracts::typed_id::TurnId>,
     last_tool_call: Option<String>,
     write_todos_args: HashMap<String, Value>,
 }
@@ -984,8 +984,8 @@ mod tests {
         );
     }
 
+    use everruns_contracts::tool_types::ToolCall;
     use everruns_core::events::ToolStartedData;
-    use everruns_provider::tool_types::ToolCall;
     use serde_json::json;
 
     fn started_tool(name: &str, arguments: serde_json::Value) -> ToolStartedData {
@@ -1040,7 +1040,7 @@ mod tests {
             None,
         );
         let event = RuntimeEvent::new(
-            everruns_provider::typed_id::SessionId::new(),
+            everruns_contracts::typed_id::SessionId::new(),
             everruns_core::events::EventContext::empty(),
             data,
         );
@@ -1100,7 +1100,7 @@ mod tests {
 
     fn event(data: impl Into<EventData>) -> RuntimeEvent {
         RuntimeEvent::new(
-            everruns_provider::typed_id::SessionId::new(),
+            everruns_contracts::typed_id::SessionId::new(),
             everruns_core::events::EventContext::empty(),
             data.into(),
         )

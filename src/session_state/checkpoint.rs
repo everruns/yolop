@@ -9,9 +9,9 @@ use crate::exec::worktree::WorktreeManager;
 use crate::runtime::session_log::{JsonlEventEmitter, SessionMaterializer, replay};
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::{DateTime, Utc};
+use everruns_contracts::typed_id::SessionId;
 use everruns_core::Event;
 use everruns_core::SessionTaskRegistry;
-use everruns_provider::typed_id::SessionId;
 // TM-FS: upstream deprecated `WRITE_BLOCKLIST` in favour of
 // `WorkspacePolicy`. Swapping yolop's write-protection over is a
 // security-relevant change that deserves its own review rather than riding

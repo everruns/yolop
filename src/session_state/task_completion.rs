@@ -82,8 +82,8 @@ pub(crate) fn failed_turn_evaluation(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use everruns_contracts::typed_id::TurnId;
     use everruns_core::turn::TurnStopReason;
-    use everruns_provider::typed_id::TurnId;
 
     fn result(response: &str, tools: usize, success: bool) -> everruns_host::TurnResult {
         everruns_host::TurnResult {

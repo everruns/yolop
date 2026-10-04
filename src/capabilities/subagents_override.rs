@@ -14,11 +14,11 @@
 
 use crate::capabilities::narration::narrate_spawn_agent;
 use async_trait::async_trait;
+use everruns_contracts::{ToolCall, ToolDefinition};
 use everruns_core::capabilities::{CapabilityLocalization, DelegationTargetProvider, RiskLevel};
 use everruns_core::tool_narration::ToolNarrationPhase;
 use everruns_core::{Capability, CapabilityStatus, Tool};
 use everruns_platform::capabilities::SubagentCapability;
-use everruns_provider::{ToolCall, ToolDefinition};
 use serde_json::Value;
 
 pub(crate) struct NarratedSubagentCapability {

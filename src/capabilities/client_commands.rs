@@ -77,7 +77,7 @@ impl Capability for ClientCommandsCapability {
         &self,
         request: &ExecuteCommandRequest,
         _ctx: &CommandExecutionContext,
-    ) -> everruns_provider::error::Result<CommandResult> {
+    ) -> everruns_contracts::error::Result<CommandResult> {
         let arg = request
             .arguments
             .as_deref()
@@ -85,7 +85,7 @@ impl Capability for ClientCommandsCapability {
             .filter(|s| !s.is_empty())
             .map(str::to_string);
         let command = ui_command_for(&request.name, arg).ok_or_else(|| {
-            everruns_provider::error::AgentLoopError::config(format!(
+            everruns_contracts::error::AgentLoopError::config(format!(
                 "{} cannot execute /{}",
                 self.id(),
                 request.name
@@ -205,8 +205,8 @@ fn arg(name: &str, description: &str, required: bool) -> CommandArg {
 mod tests {
     use super::*;
     use crate::tui::host_ui::RecordingUi;
+    use everruns_contracts::typed_id::SessionId;
     use everruns_core::SystemPromptContext;
-    use everruns_provider::typed_id::SessionId;
 
     #[test]
     fn prompt_covers_the_terminal_commands() {

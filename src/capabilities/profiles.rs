@@ -371,16 +371,17 @@ impl Capability for ProfilesCapability {
         &self,
         request: &ExecuteCommandRequest,
         _ctx: &CommandExecutionContext,
-    ) -> everruns_provider::error::Result<CommandResult> {
+    ) -> everruns_contracts::error::Result<CommandResult> {
         if request.name != PROFILES_CAPABILITY_ID {
-            return Err(everruns_provider::error::AgentLoopError::config(format!(
+            return Err(everruns_contracts::error::AgentLoopError::config(format!(
                 "{} cannot execute /{}",
                 self.id(),
                 request.name
             )));
         }
-        let action = parse_command(request.arguments.as_deref())
-            .map_err(|error| everruns_provider::error::AgentLoopError::config(error.to_string()))?;
+        let action = parse_command(request.arguments.as_deref()).map_err(|error| {
+            everruns_contracts::error::AgentLoopError::config(error.to_string())
+        })?;
         let response = ControlResponse::from_tool_result(self.execute_action(action.clone()).await);
         Ok(CommandResult {
             success: response.ok,

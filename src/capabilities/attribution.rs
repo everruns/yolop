@@ -79,7 +79,7 @@ mod tests {
             config: settings.clone(),
         };
         let ctx =
-            SystemPromptContext::without_file_store(everruns_provider::typed_id::SessionId::new());
+            SystemPromptContext::without_file_store(everruns_contracts::typed_id::SessionId::new());
 
         let enabled = capability
             .system_prompt_contribution(&ctx)

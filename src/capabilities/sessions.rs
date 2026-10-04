@@ -6,8 +6,8 @@
 //! entire session logs.
 
 use async_trait::async_trait;
+use everruns_contracts::typed_id::SessionId;
 use everruns_core::{Capability, CapabilityStatus, ToolExecutionResult};
-use everruns_provider::typed_id::SessionId;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::cmp::Reverse;

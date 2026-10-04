@@ -19,6 +19,8 @@
 use crate::capabilities::narration::narrate_spawn_background;
 use crate::tui::session_tasks_view::{load_task_tree, render_task_tree};
 use async_trait::async_trait;
+use everruns_contracts::typed_id::SessionId;
+use everruns_contracts::{ToolCall, ToolDefinition};
 use everruns_core::SessionStore;
 use everruns_core::SessionTaskRegistry;
 use everruns_core::TASK_KIND_MONITOR;
@@ -30,8 +32,6 @@ use everruns_core::command::{
 use everruns_core::tool_narration::ToolNarrationPhase;
 use everruns_core::{Capability, CapabilityStatus, SystemPromptContext};
 use everruns_platform::capabilities::BackgroundExecutionCapability;
-use everruns_provider::typed_id::SessionId;
-use everruns_provider::{ToolCall, ToolDefinition};
 use std::sync::Arc;
 
 pub(crate) const BACKGROUND_CAPABILITY_ID: &str = "background";
@@ -128,9 +128,9 @@ impl Capability for BackgroundCapability {
         &self,
         request: &ExecuteCommandRequest,
         _ctx: &CommandExecutionContext,
-    ) -> everruns_provider::error::Result<CommandResult> {
+    ) -> everruns_contracts::error::Result<CommandResult> {
         if request.name != "background" {
-            return Err(everruns_provider::error::AgentLoopError::config(format!(
+            return Err(everruns_contracts::error::AgentLoopError::config(format!(
                 "{} cannot execute /{}",
                 self.id(),
                 request.name
@@ -200,7 +200,7 @@ impl Capability for NarratedBackgroundExecutionCapability {
     /// auto-activating — it turns on when some tool declares
     /// `supports_background` — so a wrapper that inherits the default
     /// `false` silently withholds `spawn_background` from the model.
-    fn auto_activates_for(&self, tools: &[everruns_provider::tool_types::ToolDefinition]) -> bool {
+    fn auto_activates_for(&self, tools: &[everruns_contracts::tool_types::ToolDefinition]) -> bool {
         self.inner.auto_activates_for(tools)
     }
 
@@ -243,7 +243,7 @@ mod tests {
         async fn create(
             &self,
             _input: CreateSessionTask,
-        ) -> everruns_provider::error::Result<SessionTask> {
+        ) -> everruns_contracts::error::Result<SessionTask> {
             unimplemented!("stub")
         }
         async fn update(
@@ -251,28 +251,28 @@ mod tests {
             _session_id: SessionId,
             _task_id: &str,
             _update: SessionTaskUpdate,
-        ) -> everruns_provider::error::Result<Option<SessionTask>> {
+        ) -> everruns_contracts::error::Result<Option<SessionTask>> {
             unimplemented!("stub")
         }
         async fn get(
             &self,
             _session_id: SessionId,
             _task_id: &str,
-        ) -> everruns_provider::error::Result<Option<SessionTask>> {
+        ) -> everruns_contracts::error::Result<Option<SessionTask>> {
             unimplemented!("stub")
         }
         async fn list(
             &self,
             _session_id: SessionId,
             _filter: Option<&SessionTaskFilter>,
-        ) -> everruns_provider::error::Result<Vec<SessionTask>> {
+        ) -> everruns_contracts::error::Result<Vec<SessionTask>> {
             Ok(self.tasks.clone())
         }
         async fn request_cancel(
             &self,
             _session_id: SessionId,
             _task_id: &str,
-        ) -> everruns_provider::error::Result<Option<SessionTask>> {
+        ) -> everruns_contracts::error::Result<Option<SessionTask>> {
             unimplemented!("stub")
         }
         async fn record_message(
@@ -280,7 +280,7 @@ mod tests {
             _session_id: SessionId,
             _task_id: &str,
             _message: NewTaskMessage,
-        ) -> everruns_provider::error::Result<TaskMessage> {
+        ) -> everruns_contracts::error::Result<TaskMessage> {
             unimplemented!("stub")
         }
         async fn list_messages(
@@ -289,7 +289,7 @@ mod tests {
             _task_id: &str,
             _limit: Option<u32>,
             _after_id: Option<&str>,
-        ) -> everruns_provider::error::Result<Vec<TaskMessage>> {
+        ) -> everruns_contracts::error::Result<Vec<TaskMessage>> {
             unimplemented!("stub")
         }
     }
@@ -299,7 +299,7 @@ mod tests {
         async fn get_session(
             &self,
             _session_id: SessionId,
-        ) -> everruns_provider::error::Result<Option<everruns_core::ExecutionSession>> {
+        ) -> everruns_contracts::error::Result<Option<everruns_core::ExecutionSession>> {
             Ok(None)
         }
     }

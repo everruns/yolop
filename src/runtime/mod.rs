@@ -75,7 +75,14 @@ use everruns_host::{
 // #3111/#3119 moved the hosted and environment capability implementations out
 // of everruns-core into the platform and integration crates.
 use everruns::local::{LocalBackends, LocalProfile, LocalScheduleRunnerHandle};
-use everruns_capability::CapabilityRef;
+use everruns_contracts::AgentLoopError;
+use everruns_contracts::CapabilityRef;
+use everruns_contracts::model_profiles::get_model_profile;
+use everruns_contracts::typed_id::SessionId;
+use everruns_contracts::{
+    DriverId, ModelProfile, ReasoningEffort, ReasoningEffortConfig, ReasoningEffortValue,
+};
+use everruns_contracts::{DriverRegistry, ProviderMetadata};
 use everruns_core::SessionStore;
 use everruns_core::SessionTaskRegistry;
 use everruns_core::command::{CommandDescriptor, CommandResult, ExecuteCommandRequest};
@@ -107,13 +114,6 @@ use everruns_platform::capabilities::{
     SESSION_TASKS_CAPABILITY_ID, SUBAGENTS_CAPABILITY_ID, USER_HOOKS_CAPABILITY_ID,
     UserHooksCapability,
 };
-use everruns_provider::AgentLoopError;
-use everruns_provider::model_profiles::get_model_profile;
-use everruns_provider::typed_id::SessionId;
-use everruns_provider::{
-    DriverId, ModelProfile, ReasoningEffort, ReasoningEffortConfig, ReasoningEffortValue,
-};
-use everruns_provider::{DriverRegistry, ProviderMetadata};
 use ignore::WalkBuilder;
 use regex::RegexBuilder;
 
@@ -164,9 +164,9 @@ pub(crate) const PROVIDER_STALL_TIMEOUT: Duration = Duration::from_secs(120);
 /// window — so a recovered attempt is clipped and usually stalls again
 /// immediately. Keep SDK-shaped retry counts/backoff, but give the elapsed
 /// budget enough room for `max_retries` full stall windows plus backoff.
-pub(crate) fn provider_recovery_config() -> everruns_provider::llm_retry::LlmRetryConfig {
+pub(crate) fn provider_recovery_config() -> everruns_contracts::llm_retry::LlmRetryConfig {
     let max_retries = 2;
-    everruns_provider::llm_retry::LlmRetryConfig {
+    everruns_contracts::llm_retry::LlmRetryConfig {
         max_retries,
         initial_backoff: Duration::from_secs(1),
         max_backoff: Duration::from_secs(60),
@@ -326,7 +326,7 @@ impl SessionFileSystemFactory for CodingCliSessionFileSystemFactory {
     async fn create_session_file_system(
         &self,
         _context: SessionFileSystemFactoryContext,
-    ) -> everruns_provider::error::Result<Arc<dyn SessionFileSystem>> {
+    ) -> everruns_contracts::error::Result<Arc<dyn SessionFileSystem>> {
         // The writable global skills dir may not exist yet; create it so a skill
         // installed mid-session is discoverable. (System skills are already
         // materialized by `SkillDirs::resolve`.)
@@ -392,7 +392,7 @@ async fn grep_workspace_with_options(
     root: PathBuf,
     pattern: &str,
     options: &GrepOptions,
-) -> everruns_provider::error::Result<GrepSearchResult> {
+) -> everruns_contracts::error::Result<GrepSearchResult> {
     if pattern.len() > MAX_GREP_PATTERN_LEN {
         return Err(AgentLoopError::tool(format!(
             "Regex pattern too long (max {MAX_GREP_PATTERN_LEN} characters)"
@@ -420,7 +420,7 @@ async fn grep_workspace_with_options(
     let options = options.clone();
 
     tokio::task::spawn_blocking(
-        move || -> everruns_provider::error::Result<GrepSearchResult> {
+        move || -> everruns_contracts::error::Result<GrepSearchResult> {
             let mut matches = Vec::new();
             let mut blocks = Vec::new();
             let mut total_matches = 0usize;
@@ -563,7 +563,7 @@ impl SessionFileSystem for GrepOptionsForwardingFileStore {
         &self,
         session_id: SessionId,
         path: &str,
-    ) -> everruns_provider::error::Result<Option<SessionFile>> {
+    ) -> everruns_contracts::error::Result<Option<SessionFile>> {
         self.policy.read_file(session_id, path).await
     }
 
@@ -573,7 +573,7 @@ impl SessionFileSystem for GrepOptionsForwardingFileStore {
         path: &str,
         content: &str,
         encoding: &str,
-    ) -> everruns_provider::error::Result<SessionFile> {
+    ) -> everruns_contracts::error::Result<SessionFile> {
         self.policy
             .write_file(session_id, path, content, encoding)
             .await
@@ -587,7 +587,7 @@ impl SessionFileSystem for GrepOptionsForwardingFileStore {
         expected_encoding: &str,
         content: &str,
         encoding: &str,
-    ) -> everruns_provider::error::Result<Option<SessionFile>> {
+    ) -> everruns_contracts::error::Result<Option<SessionFile>> {
         self.policy
             .write_file_if_content_matches(
                 session_id,
@@ -605,7 +605,7 @@ impl SessionFileSystem for GrepOptionsForwardingFileStore {
         session_id: SessionId,
         path: &str,
         recursive: bool,
-    ) -> everruns_provider::error::Result<bool> {
+    ) -> everruns_contracts::error::Result<bool> {
         self.policy.delete_file(session_id, path, recursive).await
     }
 
@@ -613,7 +613,7 @@ impl SessionFileSystem for GrepOptionsForwardingFileStore {
         &self,
         session_id: SessionId,
         path: &str,
-    ) -> everruns_provider::error::Result<Vec<FileInfo>> {
+    ) -> everruns_contracts::error::Result<Vec<FileInfo>> {
         self.policy.list_directory(session_id, path).await
     }
 
@@ -621,7 +621,7 @@ impl SessionFileSystem for GrepOptionsForwardingFileStore {
         &self,
         session_id: SessionId,
         path: &str,
-    ) -> everruns_provider::error::Result<Option<FileStat>> {
+    ) -> everruns_contracts::error::Result<Option<FileStat>> {
         self.policy.stat_file(session_id, path).await
     }
 
@@ -630,7 +630,7 @@ impl SessionFileSystem for GrepOptionsForwardingFileStore {
         session_id: SessionId,
         pattern: &str,
         path_pattern: Option<&str>,
-    ) -> everruns_provider::error::Result<Vec<GrepMatch>> {
+    ) -> everruns_contracts::error::Result<Vec<GrepMatch>> {
         self.policy
             .grep_files(session_id, pattern, path_pattern)
             .await
@@ -641,7 +641,7 @@ impl SessionFileSystem for GrepOptionsForwardingFileStore {
         session_id: SessionId,
         pattern: &str,
         options: &GrepOptions,
-    ) -> everruns_provider::error::Result<GrepSearchResult> {
+    ) -> everruns_contracts::error::Result<GrepSearchResult> {
         self.grep_backend
             .grep_files_with_options(session_id, pattern, options)
             .await
@@ -651,7 +651,7 @@ impl SessionFileSystem for GrepOptionsForwardingFileStore {
         &self,
         session_id: SessionId,
         path: &str,
-    ) -> everruns_provider::error::Result<FileInfo> {
+    ) -> everruns_contracts::error::Result<FileInfo> {
         self.policy.create_directory(session_id, path).await
     }
 
@@ -659,7 +659,7 @@ impl SessionFileSystem for GrepOptionsForwardingFileStore {
         &self,
         session_id: SessionId,
         file: &InitialFile,
-    ) -> everruns_provider::error::Result<()> {
+    ) -> everruns_contracts::error::Result<()> {
         self.policy.seed_initial_file(session_id, file).await
     }
 }
@@ -681,7 +681,7 @@ impl CodingCliSessionFileStore {
         skill_global: Option<PathBuf>,
         skill_profile: Option<PathBuf>,
         skill_system: Option<PathBuf>,
-    ) -> everruns_provider::error::Result<Self> {
+    ) -> everruns_contracts::error::Result<Self> {
         let materializer = Arc::new(session_log::SessionMaterializer::new(
             session_dir.clone(),
             None,
@@ -702,11 +702,11 @@ impl CodingCliSessionFileStore {
         session_dir: PathBuf,
         skill_roots: Vec<PathBuf>,
         materializer: Arc<session_log::SessionMaterializer>,
-    ) -> everruns_provider::error::Result<Self> {
+    ) -> everruns_contracts::error::Result<Self> {
         let skill_roots = skill_roots
             .into_iter()
             .map(|path| Ok((path.clone(), RealDiskFileStore::new(path)?)))
-            .collect::<everruns_provider::error::Result<Vec<_>>>()?;
+            .collect::<everruns_contracts::error::Result<Vec<_>>>()?;
         Ok(Self {
             workspace: workspace.clone(),
             workspace_disk: workspace.disk().as_ref().clone(),
@@ -719,7 +719,7 @@ impl CodingCliSessionFileStore {
 
     /// The shared workspace disk, repointed via `set_host_root` (EVE-660) when
     /// the active worktree changes.
-    fn workspace_store(&self) -> everruns_provider::error::Result<&RealDiskFileStore> {
+    fn workspace_store(&self) -> everruns_contracts::error::Result<&RealDiskFileStore> {
         self.workspace.sync()?;
         Ok(&self.workspace_disk)
     }
@@ -751,7 +751,7 @@ impl CodingCliSessionFileStore {
         }
     }
 
-    fn ensure_session_storage(&self) -> everruns_provider::error::Result<()> {
+    fn ensure_session_storage(&self) -> everruns_contracts::error::Result<()> {
         self.materializer.ensure()?;
         std::fs::create_dir_all(&self.session_dir).map_err(|e| {
             AgentLoopError::config(format!(
@@ -776,7 +776,7 @@ impl CodingCliSessionFileStore {
     fn session_store(
         &self,
         create: bool,
-    ) -> everruns_provider::error::Result<Option<RealDiskFileStore>> {
+    ) -> everruns_contracts::error::Result<Option<RealDiskFileStore>> {
         let mut session = self
             .session
             .lock()
@@ -796,7 +796,7 @@ impl CodingCliSessionFileStore {
     }
 
     #[cfg(unix)]
-    fn secure_session_artifact_path(&self, path: &str) -> everruns_provider::error::Result<()> {
+    fn secure_session_artifact_path(&self, path: &str) -> everruns_contracts::error::Result<()> {
         use std::os::unix::fs::PermissionsExt;
 
         let absolute = self.session_dir.join(path.trim_start_matches('/'));
@@ -836,7 +836,7 @@ impl CodingCliSessionFileStore {
     }
 
     #[cfg(not(unix))]
-    fn secure_session_artifact_path(&self, _path: &str) -> everruns_provider::error::Result<()> {
+    fn secure_session_artifact_path(&self, _path: &str) -> everruns_contracts::error::Result<()> {
         Ok(())
     }
 }
@@ -880,7 +880,7 @@ impl SessionFileSystem for CodingCliSessionFileStore {
         &self,
         session_id: SessionId,
         path: &str,
-    ) -> everruns_provider::error::Result<Option<SessionFile>> {
+    ) -> everruns_contracts::error::Result<Option<SessionFile>> {
         if let Some((store, path)) = self.skill_route(path) {
             return store.read_file(session_id, &path).await;
         }
@@ -899,7 +899,7 @@ impl SessionFileSystem for CodingCliSessionFileStore {
         path: &str,
         content: &str,
         encoding: &str,
-    ) -> everruns_provider::error::Result<SessionFile> {
+    ) -> everruns_contracts::error::Result<SessionFile> {
         if self.skill_route(path).is_some() {
             return Err(Self::readonly_skill_error(path));
         }
@@ -927,7 +927,7 @@ impl SessionFileSystem for CodingCliSessionFileStore {
         expected_encoding: &str,
         content: &str,
         encoding: &str,
-    ) -> everruns_provider::error::Result<Option<SessionFile>> {
+    ) -> everruns_contracts::error::Result<Option<SessionFile>> {
         if self.skill_route(path).is_some() {
             return Err(Self::readonly_skill_error(path));
         }
@@ -962,7 +962,7 @@ impl SessionFileSystem for CodingCliSessionFileStore {
         session_id: SessionId,
         path: &str,
         recursive: bool,
-    ) -> everruns_provider::error::Result<bool> {
+    ) -> everruns_contracts::error::Result<bool> {
         if self.skill_route(path).is_some() {
             return Err(Self::readonly_skill_error(path));
         }
@@ -981,7 +981,7 @@ impl SessionFileSystem for CodingCliSessionFileStore {
         &self,
         session_id: SessionId,
         path: &str,
-    ) -> everruns_provider::error::Result<Vec<FileInfo>> {
+    ) -> everruns_contracts::error::Result<Vec<FileInfo>> {
         if let Some((store, path)) = self.skill_route(path) {
             return store.list_directory(session_id, &path).await;
         }
@@ -1000,7 +1000,7 @@ impl SessionFileSystem for CodingCliSessionFileStore {
         &self,
         session_id: SessionId,
         path: &str,
-    ) -> everruns_provider::error::Result<Option<FileStat>> {
+    ) -> everruns_contracts::error::Result<Option<FileStat>> {
         if let Some((store, path)) = self.skill_route(path) {
             return store.stat_file(session_id, &path).await;
         }
@@ -1018,7 +1018,7 @@ impl SessionFileSystem for CodingCliSessionFileStore {
         session_id: SessionId,
         pattern: &str,
         path_pattern: Option<&str>,
-    ) -> everruns_provider::error::Result<Vec<GrepMatch>> {
+    ) -> everruns_contracts::error::Result<Vec<GrepMatch>> {
         if let Some(path) = path_pattern
             && let Some((store, path)) = self.skill_route(path)
         {
@@ -1041,7 +1041,7 @@ impl SessionFileSystem for CodingCliSessionFileStore {
         session_id: SessionId,
         pattern: &str,
         options: &GrepOptions,
-    ) -> everruns_provider::error::Result<GrepSearchResult> {
+    ) -> everruns_contracts::error::Result<GrepSearchResult> {
         if let Some(path) = options.path_pattern.as_deref()
             && let Some((store, path)) = self.skill_route(path)
         {
@@ -1081,7 +1081,7 @@ impl SessionFileSystem for CodingCliSessionFileStore {
         &self,
         session_id: SessionId,
         path: &str,
-    ) -> everruns_provider::error::Result<FileInfo> {
+    ) -> everruns_contracts::error::Result<FileInfo> {
         if self.skill_route(path).is_some() {
             return Err(Self::readonly_skill_error(path));
         }
@@ -1101,7 +1101,7 @@ impl SessionFileSystem for CodingCliSessionFileStore {
         &self,
         session_id: SessionId,
         file: &InitialFile,
-    ) -> everruns_provider::error::Result<()> {
+    ) -> everruns_contracts::error::Result<()> {
         if self.skill_route(&file.path).is_some() {
             return Err(Self::readonly_skill_error(&file.path));
         }
@@ -1721,28 +1721,28 @@ pub(crate) struct ResolvedModel {
     pub provider_type: DriverId,
     pub api_key: Option<String>,
     pub base_url: Option<String>,
-    pub provider_metadata: Option<everruns_provider::driver_registry::ProviderMetadata>,
+    pub provider_metadata: Option<everruns_contracts::driver_registry::ProviderMetadata>,
 }
 
 impl ResolvedModel {
-    pub(crate) fn provider_key(&self) -> everruns_provider::runtime_provider::ProviderKey {
+    pub(crate) fn provider_key(&self) -> everruns_contracts::runtime_provider::ProviderKey {
         self.provider_metadata
             .as_ref()
             .and_then(|metadata| metadata.extra.as_ref())
             .and_then(|extra| extra.get("provider_id"))
             .and_then(serde_json::Value::as_str)
-            .map(everruns_provider::runtime_provider::ProviderKey::new)
+            .map(everruns_contracts::runtime_provider::ProviderKey::new)
             .unwrap_or_else(|| {
                 // `DriverId`'s canonical wire form is its `Display`; that is the
                 // string providers are registered under.
-                everruns_provider::runtime_provider::ProviderKey::new(
+                everruns_contracts::runtime_provider::ProviderKey::new(
                     self.provider_type.to_string(),
                 )
             })
     }
 
-    pub(crate) fn model_spec(&self) -> everruns_provider::model_spec::ModelSpec {
-        everruns_provider::model_spec::ModelSpec::on(self.provider_key(), self.model.clone())
+    pub(crate) fn model_spec(&self) -> everruns_contracts::model_spec::ModelSpec {
+        everruns_contracts::model_spec::ModelSpec::on(self.provider_key(), self.model.clone())
     }
 }
 
@@ -3090,7 +3090,7 @@ impl RuntimeHandles {
     /// Provider-reported tokens consumed by one agent turn. Completion gates
     /// use the durable event stream so TUI, print, and ACP share one budget
     /// accounting rule.
-    pub(crate) async fn turn_tokens(&self, turn_id: everruns_provider::typed_id::TurnId) -> u64 {
+    pub(crate) async fn turn_tokens(&self, turn_id: everruns_contracts::typed_id::TurnId) -> u64 {
         self.runtime
             .events()
             .await
@@ -3317,8 +3317,9 @@ impl ModelState {
 
         // Upstream removed its ResolvedModel -> ProviderConfig helper when it
         // split credentials from model selection; build the config here.
-        let mut config =
-            everruns_provider::driver_registry::ProviderConfig::new(resolved.provider_type.clone());
+        let mut config = everruns_contracts::driver_registry::ProviderConfig::new(
+            resolved.provider_type.clone(),
+        );
         if let Some(key) = &resolved.api_key {
             config = config.with_api_key(key);
         }
@@ -3328,7 +3329,7 @@ impl ModelState {
         let driver = self.driver_registry.create_chat_driver(&config)?;
         let discovered = tokio::time::timeout(std::time::Duration::from_secs(10), async {
             let models = driver
-                .list_models(&everruns_provider::runtime_provider::ProviderEndpoint::default())
+                .list_models(&everruns_contracts::runtime_provider::ProviderEndpoint::default())
                 .await?;
             crate::capabilities::model_discovery::complete_provider_model_discovery(
                 models,
@@ -3598,7 +3599,7 @@ pub struct BuildOptions {
     /// Override the bounded provider-recovery policy. Tests inject a short
     /// elapsed budget; production leaves this `None` and uses
     /// [`provider_recovery_config`].
-    pub provider_retry_config: Option<everruns_provider::llm_retry::LlmRetryConfig>,
+    pub provider_retry_config: Option<everruns_contracts::llm_retry::LlmRetryConfig>,
     /// Operator-defined environment context entries (`--env-context
     /// KEY=VALUE`). Applied over sandbox builtins; the ACP editor identity
     /// (below) wins over these on the reserved `editor` key.
@@ -3649,19 +3650,19 @@ struct RuntimeCommandDispatch {
 }
 
 impl RuntimeCommandDispatch {
-    fn runtime(&self) -> everruns_provider::error::Result<Arc<InProcessRuntime>> {
+    fn runtime(&self) -> everruns_contracts::error::Result<Arc<InProcessRuntime>> {
         self.runtime
             .get()
             .and_then(std::sync::Weak::upgrade)
             .ok_or_else(|| {
-                everruns_provider::error::AgentLoopError::config("runtime is not available")
+                everruns_contracts::error::AgentLoopError::config("runtime is not available")
             })
     }
 }
 
 #[async_trait]
 impl CommandDispatch for RuntimeCommandDispatch {
-    async fn list(&self) -> everruns_provider::error::Result<Vec<CommandDescriptor>> {
+    async fn list(&self) -> everruns_contracts::error::Result<Vec<CommandDescriptor>> {
         self.runtime()?.list_commands(self.session_id).await
     }
 
@@ -3669,7 +3670,7 @@ impl CommandDispatch for RuntimeCommandDispatch {
         &self,
         name: &str,
         arguments: Option<String>,
-    ) -> everruns_provider::error::Result<CommandResult> {
+    ) -> everruns_contracts::error::Result<CommandResult> {
         self.runtime()?
             .execute_command(
                 self.session_id,
@@ -3717,22 +3718,23 @@ impl YolopProviderStore {
 impl everruns_core::ProviderStore for YolopProviderStore {
     async fn get_model_spec(
         &self,
-        _model_id: everruns_provider::typed_id::ModelId,
-    ) -> everruns_provider::error::Result<Option<everruns_provider::model_spec::ModelSpec>> {
+        _model_id: everruns_contracts::typed_id::ModelId,
+    ) -> everruns_contracts::error::Result<Option<everruns_contracts::model_spec::ModelSpec>> {
         Ok(self.selection().map(|selected| selected.model_spec()))
     }
 
     async fn get_default_model_spec(
         &self,
-    ) -> everruns_provider::error::Result<Option<everruns_provider::model_spec::ModelSpec>> {
+    ) -> everruns_contracts::error::Result<Option<everruns_contracts::model_spec::ModelSpec>> {
         Ok(self.selection().map(|selected| selected.model_spec()))
     }
 
     async fn get_provider_config(
         &self,
-        _provider: &everruns_provider::runtime_provider::ProviderKey,
-    ) -> everruns_provider::error::Result<Option<everruns_provider::driver_registry::ProviderConfig>>
-    {
+        _provider: &everruns_contracts::runtime_provider::ProviderKey,
+    ) -> everruns_contracts::error::Result<
+        Option<everruns_contracts::driver_registry::ProviderConfig>,
+    > {
         // No stored credentials means there is nothing to configure the driver
         // with. `None` is the documented signal for "selected but not configured
         // yet": the provider stays constructible so configuration commands still
@@ -3744,8 +3746,9 @@ impl everruns_core::ProviderStore for YolopProviderStore {
         if resolved.provider_type == DriverId::LlmSim {
             return Ok(None);
         }
-        let mut config =
-            everruns_provider::driver_registry::ProviderConfig::new(resolved.provider_type.clone());
+        let mut config = everruns_contracts::driver_registry::ProviderConfig::new(
+            resolved.provider_type.clone(),
+        );
         if let Some(key) = &resolved.api_key {
             config = config.with_api_key(key);
         }
@@ -3760,8 +3763,8 @@ impl everruns_core::ProviderStore for YolopProviderStore {
 impl everruns_host::RuntimeProviderStore for YolopProviderStore {
     async fn set_default_model_spec(
         &self,
-        model: everruns_provider::model_spec::ModelSpec,
-    ) -> everruns_provider::error::Result<()> {
+        model: everruns_contracts::model_spec::ModelSpec,
+    ) -> everruns_contracts::error::Result<()> {
         // Yolop's selection lives in `ProviderChoice`; the callers that change
         // it already update that value, so the spec write is a no-op here.
         let _ = model;
@@ -5111,7 +5114,7 @@ mod tests {
             provider: Arc::new(std::sync::RwLock::new(choice)),
             settings: settings.clone(),
         };
-        let key = everruns_provider::runtime_provider::ProviderKey::new("openai");
+        let key = everruns_contracts::runtime_provider::ProviderKey::new("openai");
 
         // Selection resolves without credentials, and stays resolvable while
         // unconfigured so a configuration command can still run.
@@ -5823,7 +5826,7 @@ mod tests {
                 SimTurn::Assistant("recovered after stall".to_string()),
             ])),
             provider_stall_timeout: Some(Duration::from_millis(50)),
-            provider_retry_config: Some(everruns_provider::llm_retry::LlmRetryConfig {
+            provider_retry_config: Some(everruns_contracts::llm_retry::LlmRetryConfig {
                 max_retries: 2,
                 initial_backoff: Duration::from_millis(10),
                 max_backoff: Duration::from_millis(40),
@@ -5877,7 +5880,7 @@ mod tests {
                 SimTurn::Assistant("should not run".to_string()),
             ])),
             provider_stall_timeout: Some(Duration::from_millis(80)),
-            provider_retry_config: Some(everruns_provider::llm_retry::LlmRetryConfig {
+            provider_retry_config: Some(everruns_contracts::llm_retry::LlmRetryConfig {
                 max_retries: 2,
                 initial_backoff: Duration::from_millis(10),
                 max_backoff: Duration::from_millis(40),
@@ -6360,7 +6363,7 @@ mod tests {
                 .first()
                 .and_then(|call| {
                     call.iter().find(|message| {
-                        message.role == everruns_provider::driver_registry::MessageRole::User
+                        message.role == everruns_contracts::driver_registry::MessageRole::User
                             && message.content_as_text().contains("<runtime_context>")
                     })
                 })
@@ -9544,7 +9547,7 @@ mod tests {
                     success: true,
                     error: None,
                     stop_reason: everruns_core::turn::TurnStopReason::EndTurn,
-                    turn_id: everruns_provider::typed_id::TurnId::new(),
+                    turn_id: everruns_contracts::typed_id::TurnId::new(),
                 })
             }
         };
@@ -9628,7 +9631,7 @@ mod tests {
                     } else {
                         everruns_core::turn::TurnStopReason::Error
                     },
-                    turn_id: everruns_provider::typed_id::TurnId::new(),
+                    turn_id: everruns_contracts::typed_id::TurnId::new(),
                 })
             }
         };
@@ -9707,7 +9710,7 @@ mod tests {
                     } else {
                         everruns_core::turn::TurnStopReason::Error
                     },
-                    turn_id: everruns_provider::typed_id::TurnId::new(),
+                    turn_id: everruns_contracts::typed_id::TurnId::new(),
                 })
             }
         };
@@ -9792,7 +9795,7 @@ mod tests {
                     } else {
                         everruns_core::turn::TurnStopReason::EndTurn
                     },
-                    turn_id: everruns_provider::typed_id::TurnId::new(),
+                    turn_id: everruns_contracts::typed_id::TurnId::new(),
                 })
             }
         };
@@ -9971,7 +9974,7 @@ mod tests {
         });
         discovered_profiles::remember(
             &DriverId::OpenRouter,
-            &[everruns_provider::DiscoveredModel {
+            &[everruns_contracts::DiscoveredModel {
                 model_id: "meta/muse-spark-1.3-contributor".to_string(),
                 display_name: None,
                 created_at: None,
@@ -10006,7 +10009,7 @@ mod tests {
     fn discovered_provider_metadata_fills_the_effort_scale_it_does_not_choose_one() {
         discovered_profiles::remember(
             &DriverId::OpenRouter,
-            &[everruns_provider::DiscoveredModel {
+            &[everruns_contracts::DiscoveredModel {
                 model_id: "test-vendor/gateway-reasoner".to_string(),
                 display_name: None,
                 created_at: None,
@@ -10366,10 +10369,10 @@ mod tests {
     #[test]
     fn tool_search_keeps_only_first_turn_profile_schemas_loaded() {
         use everruns_builtins::DEFAULT_TOOL_SEARCH_THRESHOLD;
-        use everruns_core::Capability;
-        use everruns_provider::{
+        use everruns_contracts::{
             BuiltinTool, DeferrablePolicy, ToolDefinition, ToolHints, ToolPolicy,
         };
+        use everruns_core::Capability;
 
         fn fake_tool(name: impl Into<String>) -> ToolDefinition {
             ToolDefinition::Builtin(BuiltinTool {

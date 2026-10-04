@@ -13,7 +13,7 @@
 // A refresh token is bound to the client that issued it, so each saved token
 // set records its `client_id` and refreshes with that one, never with whatever
 // is configured now. Records saved before this field existed were issued to
-// the borrowed client, which is what `refresh_client_id` falls back to.
+// the borrowed client, which the shared credential lifecycle falls back to.
 // See knowledge/specs/chatgpt-sign-in.md.
 use crate::config::{CodexAuth, Settings, SettingsStore};
 use anyhow::{Context, Result, anyhow};
@@ -253,7 +253,7 @@ async fn complete_device_login_inner(login: DeviceLogin) -> Result<CodexAuth> {
     ))
 }
 
-/// Refresh a token set with the client that issued it (see
+/// Create an access-token-only credential without a refresh grant.
 pub fn auth_from_access_token(access_token: String) -> CodexAuth {
     CodexAuth {
         account_id: extract_account_id(&access_token),

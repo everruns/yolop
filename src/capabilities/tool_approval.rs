@@ -10,11 +10,11 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use everruns_builtins::tool_approval::ToolApprovalCapability as UpstreamToolApprovalCapability;
+use everruns_contracts::typed_id::SessionId;
+use everruns_contracts::{ToolCall, ToolDefinition};
 use everruns_core::ToolContext;
 use everruns_core::tool_hooks::{PreToolUseDecision, PreToolUseHook};
 use everruns_core::{Capability, CapabilityStatus};
-use everruns_provider::typed_id::SessionId;
-use everruns_provider::{ToolCall, ToolDefinition};
 
 use crate::config::ApprovalMode;
 use crate::config::service::ConfigService;
@@ -169,7 +169,7 @@ impl PreToolUseHook for LiveApprovalHook {
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use everruns_provider::{BuiltinTool, ToolHints};
+    use everruns_contracts::{BuiltinTool, ToolHints};
     use serde_json::json;
 
     use super::*;

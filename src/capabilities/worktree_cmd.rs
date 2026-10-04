@@ -177,7 +177,7 @@ impl Capability for WorktreeCommandCapability {
         &self,
         request: &ExecuteCommandRequest,
         _ctx: &CommandExecutionContext,
-    ) -> everruns_provider::error::Result<CommandResult> {
+    ) -> everruns_contracts::error::Result<CommandResult> {
         let action = match request.arguments.as_deref().map(str::trim) {
             None | Some("") | Some("init") => WorktreeAction::Init,
             Some("status") => WorktreeAction::Status,

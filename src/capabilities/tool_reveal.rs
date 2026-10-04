@@ -21,11 +21,11 @@
 
 use async_trait::async_trait;
 use everruns_builtins::TOOL_SEARCH_TOOL_NAME;
+use everruns_contracts::typed_id::SessionId;
+use everruns_contracts::{ToolCall, ToolDefinition, ToolResult};
 use everruns_core::ToolContext;
 use everruns_core::tool_hooks::{PostToolExecHook, PostToolExecHookPriority};
 use everruns_core::{Capability, CapabilityStatus};
-use everruns_provider::typed_id::SessionId;
-use everruns_provider::{ToolCall, ToolDefinition, ToolResult};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -182,7 +182,7 @@ fn loaded_tool_names(result: Option<&Value>) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use everruns_provider::{BuiltinTool, DeferrablePolicy, ToolHints, ToolPolicy, ToolResult};
+    use everruns_contracts::{BuiltinTool, DeferrablePolicy, ToolHints, ToolPolicy, ToolResult};
     use serde_json::json;
 
     fn tool_def(name: &str) -> ToolDefinition {

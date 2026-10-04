@@ -22,11 +22,11 @@ use crate::capabilities::client_commands::ui_command_for;
 use crate::capabilities::narration::stable_labeled;
 use crate::tui::host_ui::HostUi;
 use async_trait::async_trait;
+use everruns_contracts::ToolCall;
 use everruns_core::command::{CommandDescriptor, CommandResult, CommandSource};
 use everruns_core::tool_narration::{ToolNarrationPhase, arg_str, truncate};
 use everruns_core::{Capability, CapabilityStatus};
 use everruns_core::{Tool, ToolExecutionResult};
-use everruns_provider::ToolCall;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -47,13 +47,13 @@ slash commands; unknown names also list them. Skills activate by prompt."#;
 /// capabilities) are reachable the moment they are registered.
 #[async_trait]
 pub(crate) trait CommandDispatch: Send + Sync {
-    async fn list(&self) -> everruns_provider::error::Result<Vec<CommandDescriptor>>;
+    async fn list(&self) -> everruns_contracts::error::Result<Vec<CommandDescriptor>>;
 
     async fn execute(
         &self,
         name: &str,
         arguments: Option<String>,
-    ) -> everruns_provider::error::Result<CommandResult>;
+    ) -> everruns_contracts::error::Result<CommandResult>;
 }
 
 pub(crate) struct AgentCommandsCapability {
@@ -347,7 +347,7 @@ pub(crate) struct EmptyCommandDispatch;
 #[cfg(test)]
 #[async_trait]
 impl CommandDispatch for EmptyCommandDispatch {
-    async fn list(&self) -> everruns_provider::error::Result<Vec<CommandDescriptor>> {
+    async fn list(&self) -> everruns_contracts::error::Result<Vec<CommandDescriptor>> {
         Ok(Vec::new())
     }
 
@@ -355,8 +355,8 @@ impl CommandDispatch for EmptyCommandDispatch {
         &self,
         name: &str,
         _arguments: Option<String>,
-    ) -> everruns_provider::error::Result<CommandResult> {
-        Err(everruns_provider::error::AgentLoopError::config(format!(
+    ) -> everruns_contracts::error::Result<CommandResult> {
+        Err(everruns_contracts::error::AgentLoopError::config(format!(
             "no command registry: /{name}"
         )))
     }
@@ -366,9 +366,9 @@ impl CommandDispatch for EmptyCommandDispatch {
 mod tests {
     use super::*;
     use crate::tui::host_ui::{RecordingUi, UiCommand};
+    use everruns_contracts::typed_id::SessionId;
     use everruns_core::SystemPromptContext;
     use everruns_core::command::CommandArg;
-    use everruns_provider::typed_id::SessionId;
     use std::sync::Mutex;
 
     /// Registry stand-in: records what was executed and answers from a fixed
@@ -407,7 +407,7 @@ mod tests {
 
     #[async_trait]
     impl CommandDispatch for RecordingDispatch {
-        async fn list(&self) -> everruns_provider::error::Result<Vec<CommandDescriptor>> {
+        async fn list(&self) -> everruns_contracts::error::Result<Vec<CommandDescriptor>> {
             Ok(self.commands.clone())
         }
 
@@ -415,7 +415,7 @@ mod tests {
             &self,
             name: &str,
             arguments: Option<String>,
-        ) -> everruns_provider::error::Result<CommandResult> {
+        ) -> everruns_contracts::error::Result<CommandResult> {
             self.executed
                 .lock()
                 .expect("executed lock")

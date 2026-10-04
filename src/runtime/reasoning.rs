@@ -18,8 +18,8 @@
 //! ships instead of erroring until the next dependency bump. When the registry
 //! does carry an effort config it wins; this is a fallback, never an override.
 
+use everruns_contracts::{DriverId, ReasoningEffort, ReasoningEffortConfig, ReasoningEffortValue};
 use everruns_core::{InputMessage, ReasoningConfig};
-use everruns_provider::{DriverId, ReasoningEffort, ReasoningEffortConfig, ReasoningEffortValue};
 
 /// A model family whose endpoints reject a request that carries no reasoning
 /// effort, and the provider surfaces where that is true.

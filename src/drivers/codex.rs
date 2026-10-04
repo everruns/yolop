@@ -1,9 +1,9 @@
 //! Settings and registry adapters. Everruns owns the protocols and token lifecycle.
 use crate::config::{CodexAuth, SettingsStore};
 use async_trait::async_trait;
+use everruns_contracts::{DriverRegistry, ModelProfile, ProviderMetadata};
 use everruns_drivers::chatgpt::auth::{RotatingAuth, TokenRoute, TokenStore};
 pub use everruns_drivers::codex::CODEX_DRIVER_ID;
-use everruns_provider::{DriverRegistry, ModelProfile, ProviderMetadata};
 use std::{path::Path, sync::Arc};
 use tokio::sync::Mutex;
 
@@ -103,11 +103,173 @@ pub fn register_driver(registry: &mut DriverRegistry, settings: Arc<SettingsStor
             },
         )
         .with_originator("yolop");
-        let provider = if plan {
+        let mut provider = if plan {
             everruns_drivers::chatgpt::provider(config.provider.clone(), auth)
         } else {
             everruns_drivers::codex::provider(config.provider.clone(), auth)
         };
+        if let Some(base_url) = &config.base_url {
+            provider = provider.base_url(base_url);
+        }
         provider.into_boxed_driver()
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::OpenSourceGrant;
+    use everruns_contracts::{
+        LlmCallConfig, Message, MessageRole, ProviderConfig, ProviderEndpoint,
+    };
+    use futures::StreamExt;
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn registry_routes_use_current_settings_and_stateless_shared_transport() {
+        for plan in [true, false] {
+            let dir = tempfile::tempdir().unwrap();
+            let settings = Arc::new(SettingsStore::open(dir.path().join("settings.toml")));
+            let mut auth = CodexAuth {
+                access_token: "before".into(),
+                refresh_token: None,
+                expires_at: None,
+                account_id: (!plan).then(|| "account_test".into()),
+                email: None,
+                client_id: Some("app_test".into()),
+                open_source: plan.then(|| OpenSourceGrant {
+                    id_token: None,
+                    scopes: vec!["chatgpt.tokens.use.direct".into()],
+                    subject: Some("subject".into()),
+                }),
+            };
+            if plan {
+                settings.save_chatgpt_login(None, auth.clone()).unwrap();
+            } else {
+                settings.set_codex_auth(auth.clone()).unwrap();
+            }
+            let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+            let base_url = format!("http://{}/v1", server.server_addr());
+            let mut registry = DriverRegistry::new();
+            register_driver(&mut registry, settings.clone());
+            let config = ProviderConfig::new(everruns_contracts::DriverId::external(CODEX_DRIVER_ID))
+            .with_api_key("stale-config-token")
+            .with_base_url(base_url)
+            .with_metadata(ProviderMetadata {
+                extra: Some(json!({"flow":if plan { "open-source" } else { "codex" },"auth_source":"settings"})),
+                ..Default::default()
+            });
+            let driver = registry.create_chat_driver(&config).unwrap();
+            // The driver must reload disk, rather than retaining its creation snapshot.
+            auth.access_token = "current-settings-token".into();
+            settings.set_codex_auth(auth).unwrap();
+            let request = std::thread::spawn(move || {
+                let mut request = server
+                    .recv_timeout(std::time::Duration::from_secs(10))
+                    .unwrap()
+                    .expect("shared driver request");
+                assert_eq!(request.url(), "/v1/responses");
+                let authorization = request
+                    .headers()
+                    .iter()
+                    .find(|h| h.field.equiv("authorization"))
+                    .unwrap();
+                assert_eq!(
+                    authorization.value.as_str(),
+                    "Bearer current-settings-token"
+                );
+                let account = request
+                    .headers()
+                    .iter()
+                    .find(|h| h.field.equiv("chatgpt-account-id"));
+                if plan {
+                    assert!(account.is_none());
+                } else {
+                    assert_eq!(account.unwrap().value.as_str(), "account_test");
+                    assert_eq!(
+                        request
+                            .headers()
+                            .iter()
+                            .find(|h| h.field.equiv("originator"))
+                            .unwrap()
+                            .value
+                            .as_str(),
+                        "yolop"
+                    );
+                }
+                let mut body = String::new();
+                request.as_reader().read_to_string(&mut body).unwrap();
+                let body: serde_json::Value = serde_json::from_str(&body).unwrap();
+                assert_eq!(body["store"], false);
+                assert_eq!(body["stream"], true);
+                assert_eq!(body["instructions"], "instructions");
+                let sse = "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"shared-ok\"}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"completed\",\"output\":[]}}\n\n";
+                request
+                    .respond(tiny_http::Response::from_string(sse).with_header(
+                        tiny_http::Header::from_bytes("Content-Type", "text/event-stream").unwrap(),
+                    ))
+                    .unwrap();
+            });
+            let events: Vec<_> = driver
+                .chat_completion_stream(
+                    &ProviderEndpoint::default(),
+                    vec![
+                        Message::text(MessageRole::System, "instructions"),
+                        Message::text(MessageRole::User, "hi"),
+                    ],
+                    &LlmCallConfig::new("test-model"),
+                )
+                .await
+                .unwrap()
+                .collect()
+                .await;
+            assert!(events.iter().all(Result::is_ok), "{events:?}");
+            assert!(events.iter().any(|e| matches!(e, Ok(everruns_contracts::LlmStreamEvent::TextDelta(t)) if t == "shared-ok")));
+            request.join().unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn registry_plan_route_rejects_missing_consent_before_network_access() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = Arc::new(SettingsStore::open(dir.path().join("settings.toml")));
+        settings
+            .save_chatgpt_login(
+                None,
+                CodexAuth {
+                    access_token: "token".into(),
+                    refresh_token: None,
+                    expires_at: None,
+                    account_id: None,
+                    email: None,
+                    client_id: Some("app_test".into()),
+                    open_source: Some(OpenSourceGrant {
+                        id_token: None,
+                        scopes: vec![],
+                        subject: Some("subject".into()),
+                    }),
+                },
+            )
+            .unwrap();
+        let mut registry = DriverRegistry::new();
+        register_driver(&mut registry, settings);
+        let config = ProviderConfig::new(everruns_contracts::DriverId::external(CODEX_DRIVER_ID))
+            .with_metadata(ProviderMetadata {
+                extra: Some(json!({"flow":"open-source","auth_source":"settings"})),
+                ..Default::default()
+            });
+        let driver = registry.create_chat_driver(&config).unwrap();
+        let result = driver
+            .chat_completion_stream(
+                &ProviderEndpoint::default(),
+                vec![],
+                &LlmCallConfig::new("test-model"),
+            )
+            .await;
+        let error = match result {
+            Ok(_) => panic!("missing consent must fail"),
+            Err(e) => e,
+        };
+        assert!(error.to_string().contains("plan use was not granted"));
+    }
 }

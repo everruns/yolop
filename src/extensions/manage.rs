@@ -21,6 +21,7 @@ use crate::control::{
 use crate::tui::host_ui::{UiCommand, UiRequest};
 use async_trait::async_trait;
 use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
+use everruns_contracts::ToolCall;
 use everruns_core::Capability;
 use everruns_core::command::{
     CommandArg, CommandDescriptor, CommandExecutionContext, CommandResult, CommandSource,
@@ -28,7 +29,6 @@ use everruns_core::command::{
 };
 use everruns_core::tool_narration::{ToolNarrationPhase, arg_str, truncate};
 use everruns_core::{Tool, ToolExecutionResult};
-use everruns_provider::ToolCall;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::path::PathBuf;
@@ -464,16 +464,16 @@ impl Capability for ExtensionsCapability {
         &self,
         request: &ExecuteCommandRequest,
         _ctx: &CommandExecutionContext,
-    ) -> everruns_provider::error::Result<CommandResult> {
+    ) -> everruns_contracts::error::Result<CommandResult> {
         if request.name != EXTENSIONS_COMMAND_NAME {
-            return Err(everruns_provider::error::AgentLoopError::config(format!(
+            return Err(everruns_contracts::error::AgentLoopError::config(format!(
                 "{} cannot execute /{}",
                 self.id(),
                 request.name
             )));
         }
         let action = ExtensionAction::parse_command(request.arguments.as_deref())
-            .map_err(everruns_provider::error::AgentLoopError::config)?;
+            .map_err(everruns_contracts::error::AgentLoopError::config)?;
         let response = ControlResponse::from_tool_result(self.execute_action(&action).await);
         Ok(CommandResult {
             success: response.ok,
