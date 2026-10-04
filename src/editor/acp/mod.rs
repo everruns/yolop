@@ -31,8 +31,8 @@ use crate::config::{SandboxMode, SettingsStore};
 use crate::runtime::session_log::{legacy_session_log_path, session_dir_path, session_log_path};
 use crate::runtime::{BuildOptions, BuiltRuntime, ProviderChoice, build_with_options};
 use agent_client_protocol::schema::v1::{AuthMethod, AuthMethodAgent};
+use everruns_contracts::typed_id::SessionId as RuntimeSessionId;
 use everruns_core::ScopedMcpServers;
-use everruns_provider::typed_id::SessionId as RuntimeSessionId;
 
 pub use server::{RuntimeFactory, serve};
 

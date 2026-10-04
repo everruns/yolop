@@ -2,12 +2,12 @@
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use everruns_contracts::typed_id::SessionId;
+use everruns_contracts::{AgentLoopError, Result};
 use everruns_core::{
     CompactionCheckpoint, CompactionCheckpointPayload, CompactionCheckpointStore,
     ProactiveCompactionAttempt,
 };
-use everruns_provider::typed_id::SessionId;
-use everruns_provider::{AgentLoopError, Result};
 use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
@@ -402,8 +402,8 @@ fn store_error(action: &str, error: impl std::fmt::Display) -> AgentLoopError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use everruns_contracts::{CompactOutputItem, ProviderOpaqueContext};
     use everruns_core::COMPACTION_CHECKPOINT_FORMAT_VERSION;
-    use everruns_provider::{CompactOutputItem, ProviderOpaqueContext};
     use std::collections::BTreeSet;
     use std::sync::RwLock;
 

@@ -10,9 +10,9 @@
 use crate::config::Settings;
 use crate::runtime::{Provider, ProviderChoice};
 use anyhow::{Context, Result, anyhow};
-use everruns_provider::model_profiles::get_model_profile;
-use everruns_provider::{DiscoveredModel, DriverRegistry, ProviderConfig};
-use everruns_provider::{DriverId, ProviderEndpoint};
+use everruns_contracts::model_profiles::get_model_profile;
+use everruns_contracts::{DiscoveredModel, DriverRegistry, ProviderConfig};
+use everruns_contracts::{DriverId, ProviderEndpoint};
 use futures::StreamExt;
 use std::collections::HashSet;
 
@@ -59,10 +59,10 @@ pub(crate) async fn discover_provider_models(
     }
 
     let mut registry = DriverRegistry::new();
-    everruns_anthropic::register_driver(&mut registry);
-    everruns_meta::register_driver(&mut registry);
-    everruns_openai::register_driver(&mut registry);
-    everruns_openrouter::register_driver(&mut registry);
+    everruns_drivers::anthropic::register_driver(&mut registry);
+    everruns_drivers::meta::register_driver(&mut registry);
+    everruns_drivers::openai::register_driver(&mut registry);
+    everruns_drivers::openrouter::register_driver(&mut registry);
     let driver = registry.create_chat_driver(&config)?;
 
     // 0.17.26 hands endpoint + auth policy to the driver per call. Drivers

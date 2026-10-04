@@ -328,3 +328,11 @@ yolop --trajectory-out /tmp/run.jsonl -p "reproduce the flake"
 
 
 *Produced by [yolop](https://everruns.com/yolop)*
+
+### Provider driver packages
+
+Yolop uses the aligned Everruns provider-driver packages for API providers,
+ChatGPT plan sign-in, and the legacy Codex backend. Browser/device interaction
+and settings storage stay in Yolop. Personal plan grants retain their issuing
+client through refresh and reconnect; failed revocation keeps the saved grant
+until disconnect can be retried.

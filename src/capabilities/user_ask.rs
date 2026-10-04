@@ -11,6 +11,8 @@ use crate::session_state::user_ask::{
     is_user_ask_evaluate_request, system_prompt_block,
 };
 use async_trait::async_trait;
+use everruns_contracts::ToolCall;
+use everruns_contracts::typed_id::SessionId;
 use everruns_core::command::{
     CommandArg, CommandDescriptor, CommandExecutionContext, CommandResult, CommandSource,
     ExecuteCommandRequest,
@@ -18,8 +20,6 @@ use everruns_core::command::{
 use everruns_core::tool_narration::{ToolNarrationPhase, arg_str, truncate};
 use everruns_core::{Capability, CapabilityStatus, SystemPromptContext};
 use everruns_core::{Tool, ToolExecutionResult};
-use everruns_provider::ToolCall;
-use everruns_provider::typed_id::SessionId;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -73,9 +73,9 @@ impl Capability for UserAskCapability {
         &self,
         request: &ExecuteCommandRequest,
         ctx: &CommandExecutionContext,
-    ) -> everruns_provider::error::Result<CommandResult> {
+    ) -> everruns_contracts::error::Result<CommandResult> {
         if request.name != USER_ASK_COMMAND_NAME {
-            return Err(everruns_provider::error::AgentLoopError::config(format!(
+            return Err(everruns_contracts::error::AgentLoopError::config(format!(
                 "{} cannot execute /{}",
                 self.id(),
                 request.name
@@ -84,12 +84,14 @@ impl Capability for UserAskCapability {
 
         if is_user_ask_evaluate_request(request) {
             let ask = self.store.active_text(ctx.session_id).ok_or_else(|| {
-                everruns_provider::error::AgentLoopError::config("no active user ask to evaluate")
+                everruns_contracts::error::AgentLoopError::config("no active user ask to evaluate")
             })?;
             let evaluation = evaluate_active_user_ask(ctx, &ask).await?;
             self.store
                 .record_evaluation(ctx.session_id, &evaluation)
-                .map_err(|err| everruns_provider::error::AgentLoopError::config(err.to_string()))?;
+                .map_err(|err| {
+                    everruns_contracts::error::AgentLoopError::config(err.to_string())
+                })?;
             return Ok(CommandResult {
                 success: true,
                 message: evaluation_result_message(&evaluation),
@@ -99,7 +101,7 @@ impl Capability for UserAskCapability {
         }
 
         let outcome = UserAskStore::parse_user_args(request.arguments.as_deref())
-            .map_err(|err| everruns_provider::error::AgentLoopError::config(err.to_string()))?;
+            .map_err(|err| everruns_contracts::error::AgentLoopError::config(err.to_string()))?;
 
         if let UserAskCommandOutcome::Status(_) = &outcome {
             let status = self.store.status(ctx.session_id);
@@ -114,7 +116,7 @@ impl Capability for UserAskCapability {
         let message = self
             .store
             .apply_outcome(ctx.session_id, outcome)
-            .map_err(|err| everruns_provider::error::AgentLoopError::config(err.to_string()))?;
+            .map_err(|err| everruns_contracts::error::AgentLoopError::config(err.to_string()))?;
         Ok(CommandResult {
             success: true,
             message,
@@ -260,10 +262,10 @@ impl Tool for ClearUserAskTool {
 mod tests {
     use super::*;
     use crate::session_state::user_ask::USER_ASK_EVALUATE_ARG;
+    use everruns_contracts::typed_id::SessionId;
     use everruns_core::{
         CommandHost, CommandTurnContext, SessionCompletion, SessionCompletionError,
     };
-    use everruns_provider::typed_id::SessionId;
     use std::sync::Mutex;
 
     struct FakeHost {
@@ -272,7 +274,7 @@ mod tests {
 
     #[async_trait]
     impl CommandHost for FakeHost {
-        async fn turn_context(&self) -> everruns_provider::error::Result<CommandTurnContext> {
+        async fn turn_context(&self) -> everruns_contracts::error::Result<CommandTurnContext> {
             let session_id = SessionId::new();
             Ok(CommandTurnContext {
                 session_id,

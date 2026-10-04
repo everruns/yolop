@@ -56,6 +56,10 @@
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use everruns_contracts::ToolResultImage;
+use everruns_contracts::typed_id::EventId;
+use everruns_contracts::typed_id::SessionId;
+use everruns_contracts::{AgentLoopError, Result};
 use everruns_core::EventEmitter;
 use everruns_core::{ContentPart, RuntimeMessage};
 use everruns_core::{
@@ -67,10 +71,6 @@ use everruns_host::{
     EventCursor, EventDurability, EventLog, EventLogError, EventPage, EventReadRequest,
     EventReader, EventSink, EventSinkError,
 };
-use everruns_provider::ToolResultImage;
-use everruns_provider::typed_id::EventId;
-use everruns_provider::typed_id::SessionId;
-use everruns_provider::{AgentLoopError, Result};
 use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions, TryLockError};
 use std::io::{BufRead, BufReader, Seek, SeekFrom, Write};
@@ -1566,8 +1566,8 @@ mod tests {
         // state alike, so providers that thread encrypted reasoning context back
         // (e.g. OpenAI Responses) can continue across `--session <id>` resume.
         // 0.19 made these ordered content parts, so position survives too.
+        use everruns_contracts::reasoning::{ReasoningContentPart, ReasoningText};
         use everruns_core::ContentPart;
-        use everruns_provider::reasoning::{ReasoningContentPart, ReasoningText};
 
         let dir = tempfile::tempdir().expect("tempdir");
         let session_id = SessionId::from_seed(4821);
@@ -1670,8 +1670,8 @@ mod tests {
 
     #[tokio::test]
     async fn reason_item_event_is_persisted_and_replayed() {
+        use everruns_contracts::typed_id::TurnId;
         use everruns_core::ReasonItemData;
-        use everruns_provider::typed_id::TurnId;
 
         let dir = tempfile::tempdir().expect("tempdir");
         let session_id = SessionId::from_seed(4823);
@@ -1713,10 +1713,10 @@ mod tests {
 
     #[tokio::test]
     async fn subscribe_receives_emitted_events_including_deltas() {
+        use everruns_contracts::typed_id::{MessageId, TurnId};
         use everruns_core::{
             OUTPUT_MESSAGE_DELTA, OutputMessageDeltaData, TOOL_OUTPUT_DELTA, ToolOutputDeltaData,
         };
-        use everruns_provider::typed_id::{MessageId, TurnId};
 
         let dir = tempfile::tempdir().expect("tempdir");
         let session_id = SessionId::from_seed(99);

@@ -16,6 +16,7 @@ pub mod capability_settings;
 pub mod hooks;
 pub mod mcp;
 pub mod model_list;
+pub(crate) mod oauth_store;
 pub mod paths;
 pub mod profile;
 pub mod schema;
@@ -35,48 +36,8 @@ use std::time::SystemTime;
 use toml::Table;
 use toml::Value;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CodexAuth {
-    pub access_token: String,
-    pub refresh_token: Option<String>,
-    /// Unix epoch milliseconds. OAuth token responses are relative, but the
-    /// driver needs an absolute expiry so it can refresh before a turn starts.
-    pub expires_at: Option<i64>,
-    pub account_id: Option<String>,
-    pub email: Option<String>,
-    /// OAuth client that issued this token set. Refresh must use the same
-    /// client; `None` means a record saved before yolop tracked it, which the
-    /// borrowed Codex client issued (`crate::auth::codex::refresh_client_id`).
-    pub client_id: Option<String>,
-    /// Set when this login came from the open-source Sign in with ChatGPT
-    /// route (`crate::auth::siwc`): turns then run on the public Responses API
-    /// instead of the Codex backend, and refresh uses that route's token
-    /// endpoint. `None` is a Codex-backend login.
-    pub open_source: Option<OpenSourceGrant>,
-}
-
-/// What the open-source Sign in with ChatGPT route adds to a saved login.
-/// See knowledge/specs/chatgpt-sign-in.md.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct OpenSourceGrant {
-    /// The last validated ID token, kept as `id_token_hint` for re-sign-in.
-    pub id_token: Option<String>,
-    /// Scopes the token endpoint granted; plan usage needs
-    /// `chatgpt.tokens.use.direct`.
-    pub scopes: Vec<String>,
-    /// Validated ID-token subject: the account this login belongs to.
-    pub subject: Option<String>,
-}
-
-/// The client OpenAI registered for this host's ChatGPT account through
-/// dynamic client registration. Kept apart from `[codex_auth]` so signing out
-/// clears tokens but keeps the registration, and the next sign-in reuses it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ChatGptRegistration {
-    pub client_id: String,
-    pub subject: String,
-    pub email: Option<String>,
-}
+// Shared credential shapes; Yolop owns their on-disk settings representation.
+pub use everruns_drivers::chatgpt::{ChatGptRegistration, CodexAuth, OpenSourceGrant};
 
 /// When yolop provisions an isolated git worktree for code changes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -1056,10 +1017,14 @@ impl SettingsStore {
     /// Mutations must not write from stale state when an external edit cannot
     /// be loaded. Keep the last good state for reads, but surface the reload
     /// failure to the caller before it can become a destructive rewrite.
-    fn lock_fresh_for_update(&self) -> Result<MutexGuard<'_, SettingsState>> {
+    fn lock_fresh_for_update(&self) -> Result<oauth_store::UpdateGuard<'_>> {
+        let file = oauth_store::write_lock(&self.path)?;
         let mut guard = self.inner.lock().expect("settings lock poisoned");
         self.refresh_locked(&mut guard)?;
-        Ok(guard)
+        Ok(oauth_store::UpdateGuard {
+            state: guard,
+            _file: file,
+        })
     }
 
     /// Persist the base layer and record the new fingerprint so our own
@@ -1251,6 +1216,7 @@ impl SettingsStore {
         Ok(host_id)
     }
 
+    #[cfg(test)]
     pub fn set_chatgpt_registration(
         &self,
         registration: Option<ChatGptRegistration>,
@@ -1417,9 +1383,40 @@ impl SettingsStore {
     }
 
     pub fn set_codex_auth(&self, auth: CodexAuth) -> Result<()> {
+        let _lease = oauth_store::rotation_lock(&self.path)?;
+        self.set_codex_auth_under_lease(auth)
+    }
+    pub(crate) fn set_codex_auth_under_lease(&self, auth: CodexAuth) -> Result<()> {
         let mut guard = self.lock_fresh_for_update()?;
+        if let Some(grant) = &auth.open_source {
+            anyhow::ensure!(
+                guard
+                    .base
+                    .chatgpt_registration
+                    .as_ref()
+                    .is_some_and(|registration| auth.client_id.as_deref()
+                        == Some(registration.client_id.as_str())
+                        && grant.subject.as_deref() == Some(registration.subject.as_str())),
+                "ChatGPT login no longer matches the saved registration. Try again."
+            );
+        }
         guard.base.codex_auth = Some(auth);
         self.save_base_locked(&mut guard)
+    }
+
+    /// Avoid overwriting a login or logout made while a network refresh was in flight.
+    pub fn compare_and_set_codex_auth(
+        &self,
+        previous: &CodexAuth,
+        auth: CodexAuth,
+    ) -> Result<bool> {
+        let mut guard = self.lock_fresh_for_update()?;
+        if try_load_from(&self.path)?.codex_auth.as_ref() != Some(previous) {
+            return Ok(false);
+        }
+        guard.base.codex_auth = Some(auth);
+        self.save_base_locked(&mut guard)?;
+        Ok(true)
     }
 
     /// Re-read `[codex_auth]` from disk and adopt it into the in-memory cache.
@@ -1431,19 +1428,22 @@ impl SettingsStore {
     /// codex CLI or another yolop process. Unlike the mtime-based refresh,
     /// this reads the file on every call so a rotation can never hide inside
     /// the filesystem timestamp granularity.
-    pub fn refresh_codex_auth_from_disk(&self) -> Option<CodexAuth> {
+    pub fn refresh_codex_auth_from_disk_checked(&self) -> Result<Option<CodexAuth>> {
         let mut guard = self.inner.lock().expect("settings lock poisoned");
-        if let Ok(settings) = try_load_from(&self.path) {
-            let from_disk = settings.codex_auth;
-            guard.base_fingerprint = file_fingerprint(&self.path);
-            guard.base.codex_auth = from_disk.clone();
-            return from_disk;
-        }
-        guard.base.codex_auth.clone()
+        let settings = try_load_from(&self.path)?;
+        let from_disk = settings.codex_auth;
+        guard.base_fingerprint = file_fingerprint(&self.path);
+        guard.base.codex_auth = from_disk.clone();
+        Ok(from_disk)
     }
 
     /// Returns whether a Codex login was actually present before removal.
+    #[cfg(test)]
     pub fn clear_codex_auth(&self) -> Result<bool> {
+        let _lease = oauth_store::rotation_lock(&self.path)?;
+        self.clear_codex_auth_under_lease()
+    }
+    pub(crate) fn clear_codex_auth_under_lease(&self) -> Result<bool> {
         let mut guard = self.lock_fresh_for_update()?;
         let existed = guard.base.codex_auth.take().is_some();
         self.save_base_locked(&mut guard)?;
@@ -2233,7 +2233,10 @@ mod tests {
             })
             .expect("external write");
 
-        let adopted = store.refresh_codex_auth_from_disk().expect("disk auth");
+        let adopted = store
+            .refresh_codex_auth_from_disk_checked()
+            .unwrap()
+            .expect("disk auth");
         assert_eq!(adopted.access_token, "access-new");
         assert_eq!(adopted.refresh_token.as_deref(), Some("refresh-new"));
         assert_eq!(

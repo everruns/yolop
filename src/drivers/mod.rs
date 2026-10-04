@@ -1,9 +1,8 @@
 //! Provider LLM drivers.
 //!
 //! Each submodule implements a `ChatDriver` from
-//! `everruns_core::driver_registry` for a specific provider/auth flavor.
+//! `everruns_contracts::driver_registry` for a specific provider/auth flavor.
 
-pub mod chatgpt_plan;
 pub mod codex;
 #[cfg(feature = "local-inference")]
 pub mod local;

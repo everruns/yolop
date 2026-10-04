@@ -20,10 +20,10 @@ use crate::sandbox_approval::{ApprovalGate, ApprovalRequest, ApprovalScope};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use everruns_contracts::ToolCall;
 use everruns_core::tool_narration::{ToolNarrationPhase, arg_str, truncate};
 use everruns_core::{Capability, CapabilityStatus, SystemPromptContext};
 use everruns_core::{Tool, ToolExecutionResult};
-use everruns_provider::ToolCall;
 use serde_json::{Value, json};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -1642,7 +1642,7 @@ mod tests {
     async fn memory_block_discloses_titles_but_gates_the_framing() {
         let (_tmp, store) = store_in_tmp();
         let reveals = Arc::new(RevealedTools::new());
-        let session = everruns_provider::typed_id::SessionId::new();
+        let session = everruns_contracts::typed_id::SessionId::new();
         let ctx = SystemPromptContext::without_file_store(session);
 
         let capability = GlobalMemoryCapability {
@@ -1724,7 +1724,7 @@ mod tests {
             approval_gate: ApprovalGate::deny(),
         };
         let ctx =
-            SystemPromptContext::without_file_store(everruns_provider::typed_id::SessionId::new());
+            SystemPromptContext::without_file_store(everruns_contracts::typed_id::SessionId::new());
 
         let prompt = capability.system_prompt_contribution(&ctx).await.unwrap();
         assert!(prompt.contains("scope: global"));

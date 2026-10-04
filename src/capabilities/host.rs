@@ -566,9 +566,9 @@ impl Capability for CodingBashCapability {
         &self,
         request: &ExecuteCommandRequest,
         _ctx: &CommandExecutionContext,
-    ) -> everruns_provider::error::Result<CommandResult> {
+    ) -> everruns_contracts::error::Result<CommandResult> {
         if request.name != "shell" {
-            return Err(everruns_provider::error::AgentLoopError::config(format!(
+            return Err(everruns_contracts::error::AgentLoopError::config(format!(
                 "{} cannot execute /{}",
                 self.id(),
                 request.name
@@ -580,7 +580,7 @@ impl Capability for CodingBashCapability {
             .map(str::trim)
             .filter(|command| !command.is_empty())
             .ok_or_else(|| {
-                everruns_provider::error::AgentLoopError::config("/shell requires: command")
+                everruns_contracts::error::AgentLoopError::config("/shell requires: command")
             })?;
         let result = BashTool::with_policy(
             self.workspace.clone(),
@@ -763,9 +763,9 @@ impl Capability for ModelsCapability {
         &self,
         request: &ExecuteCommandRequest,
         _ctx: &CommandExecutionContext,
-    ) -> everruns_provider::error::Result<CommandResult> {
+    ) -> everruns_contracts::error::Result<CommandResult> {
         if request.name != "setup" {
-            return Err(everruns_provider::error::AgentLoopError::config(format!(
+            return Err(everruns_contracts::error::AgentLoopError::config(format!(
                 "{} cannot execute /{}",
                 self.id(),
                 request.name
@@ -909,14 +909,14 @@ impl SetupController {
     pub(crate) async fn change_provider(
         &self,
         raw: &str,
-    ) -> everruns_provider::error::Result<CommandResult> {
+    ) -> everruns_contracts::error::Result<CommandResult> {
         self.change_provider_with_persistence(raw, false).await
     }
 
     async fn change_provider_and_persist(
         &self,
         raw: &str,
-    ) -> everruns_provider::error::Result<CommandResult> {
+    ) -> everruns_contracts::error::Result<CommandResult> {
         self.change_provider_with_persistence(raw, true).await
     }
 
@@ -924,7 +924,7 @@ impl SetupController {
         &self,
         raw: &str,
         persist: bool,
-    ) -> everruns_provider::error::Result<CommandResult> {
+    ) -> everruns_contracts::error::Result<CommandResult> {
         let mut parts = raw.splitn(2, char::is_whitespace);
         let name = parts.next().unwrap_or_default();
         let model_spec = parts.next().unwrap_or_default().trim();
@@ -1010,7 +1010,7 @@ impl SetupController {
     async fn change_model_and_persist(
         &self,
         raw: &str,
-    ) -> everruns_provider::error::Result<CommandResult> {
+    ) -> everruns_contracts::error::Result<CommandResult> {
         self.change_model_with_persistence(raw, true).await
     }
 
@@ -1018,7 +1018,7 @@ impl SetupController {
         &self,
         raw: &str,
         persist: bool,
-    ) -> everruns_provider::error::Result<CommandResult> {
+    ) -> everruns_contracts::error::Result<CommandResult> {
         if raw.is_empty() {
             let current = self
                 .provider
@@ -1159,7 +1159,7 @@ impl SetupController {
         )
     }
 
-    async fn change_effort(&self, raw: &str) -> everruns_provider::error::Result<CommandResult> {
+    async fn change_effort(&self, raw: &str) -> everruns_contracts::error::Result<CommandResult> {
         let current = self
             .provider
             .read()
@@ -1198,7 +1198,7 @@ impl SetupController {
         })
     }
 
-    fn change_token(&self, raw: &str) -> everruns_provider::error::Result<CommandResult> {
+    fn change_token(&self, raw: &str) -> everruns_contracts::error::Result<CommandResult> {
         if raw.is_empty() {
             let snapshot = self.config.snapshot();
             let status: Vec<String> = Provider::token_provider_names()
@@ -1267,7 +1267,7 @@ impl SetupController {
         }
     }
 
-    fn change_base_url(&self, raw: &str) -> everruns_provider::error::Result<CommandResult> {
+    fn change_base_url(&self, raw: &str) -> everruns_contracts::error::Result<CommandResult> {
         let mut parts = raw.splitn(2, char::is_whitespace);
         let provider = parts.next().unwrap_or_default().to_ascii_lowercase();
         let rest = parts.next().unwrap_or_default().trim();
@@ -1329,7 +1329,7 @@ impl SetupController {
         }
     }
 
-    fn change_attribution(&self, raw: &str) -> everruns_provider::error::Result<CommandResult> {
+    fn change_attribution(&self, raw: &str) -> everruns_contracts::error::Result<CommandResult> {
         let trimmed = raw.trim();
         if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("status") {
             let enabled = self.config.attribution_enabled();
@@ -1366,7 +1366,7 @@ impl SetupController {
         }
     }
 
-    fn change_approval(&self, raw: &str) -> everruns_provider::error::Result<CommandResult> {
+    fn change_approval(&self, raw: &str) -> everruns_contracts::error::Result<CommandResult> {
         let trimmed = raw.trim();
         if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("status") {
             return Ok(CommandResult {
@@ -1471,22 +1471,22 @@ pub(crate) mod test_support {
     impl everruns_core::ProviderStore for StubProviderStore {
         async fn get_model_spec(
             &self,
-            _model_id: everruns_provider::typed_id::ModelId,
-        ) -> everruns_provider::error::Result<Option<everruns_provider::model_spec::ModelSpec>>
+            _model_id: everruns_contracts::typed_id::ModelId,
+        ) -> everruns_contracts::error::Result<Option<everruns_contracts::model_spec::ModelSpec>>
         {
             Ok(None)
         }
         async fn get_default_model_spec(
             &self,
-        ) -> everruns_provider::error::Result<Option<everruns_provider::model_spec::ModelSpec>>
+        ) -> everruns_contracts::error::Result<Option<everruns_contracts::model_spec::ModelSpec>>
         {
             Ok(None)
         }
         async fn get_provider_config(
             &self,
-            _provider: &everruns_provider::runtime_provider::ProviderKey,
-        ) -> everruns_provider::error::Result<
-            Option<everruns_provider::driver_registry::ProviderConfig>,
+            _provider: &everruns_contracts::runtime_provider::ProviderKey,
+        ) -> everruns_contracts::error::Result<
+            Option<everruns_contracts::driver_registry::ProviderConfig>,
         > {
             // This stub owns no credentials.
             Ok(None)
@@ -1497,8 +1497,8 @@ pub(crate) mod test_support {
     impl RuntimeProviderStore for StubProviderStore {
         async fn set_default_model_spec(
             &self,
-            _model: everruns_provider::model_spec::ModelSpec,
-        ) -> everruns_provider::error::Result<()> {
+            _model: everruns_contracts::model_spec::ModelSpec,
+        ) -> everruns_contracts::error::Result<()> {
             Ok(())
         }
     }
@@ -1892,7 +1892,7 @@ mod tests {
             EnvironmentContextRegistry::default(),
         );
         let ctx = everruns_core::capabilities::SystemPromptContext::without_file_store(
-            everruns_provider::typed_id::SessionId::new(),
+            everruns_contracts::typed_id::SessionId::new(),
         );
 
         let contribution = capability

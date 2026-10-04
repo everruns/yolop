@@ -74,7 +74,7 @@ is a client ID to request:
 ## The open-source route
 
 Selected per sign-in by `YOLOP_CHATGPT_SIGN_IN`, then the `chatgpt_sign_in`
-setting (`codex` or `open-source`, global-only), then `codex`. An unknown value
+setting (`codex` or `open-source`, global-only), then `open-source`. An unknown value
 is an error naming its source. The route is recorded on the login it produces,
 so changing the setting affects only the next sign-in, like the client ID.
 
@@ -127,86 +127,60 @@ in to a different account means removing `[chatgpt_registration]` first.
 
 ### Refresh and sign-out
 
-Refresh posts `grant_type=refresh_token`, the issued `client_id` saved on the
-token set, the refresh token, and `resource` to the same token endpoint, with
-no `scope` so the grant is kept. It shares the Codex driver's refresh gate,
-disk adoption, and `refresh_token_reused` recovery, and replaces the access
-token, expiry, scopes, and rotating refresh token together, keeping the ID token
-when a refresh returns none. A driver never adopts a disk record from the other
-route.
+Everruns' shared credential lifecycle refreshes with the client that issued the
+saved grant. Yolop supplies private cross-process settings leases and atomic
+compare-and-save operations. A stale refresh cannot restore an older login or
+replace a newer registration. Rotating access and refresh tokens save together
+before inference uses them; another route's disk record is never adopted.
 
-Signing out from `/setup` clears the login locally and revokes the refresh token
-in the background at `https://auth.openai.com/api/accounts/oauth/revoke`
-(`token`, `token_type_hint=refresh_token`, `client_id`). The registration and
-host ID stay for the next sign-in.
+Disconnect confirms plan-grant revocation before clearing local credentials.
+A failed revocation retains the grant for retry. Registration and host ID remain
+for the next sign-in.
 
 ### Inference
 
-The `codex` provider name is kept; a login with `flow = "open-source"` makes
-the codex driver send `POST https://api.openai.com/v1/responses` with the
-access token as bearer and none of the Codex backend's headers. The plan was to
-reuse everruns' Open Responses wire driver, but at everruns 0.33 that driver
-strips `store` from every foreground request after its request extensions run,
-and this route requires `store: false`. Yolop's Codex driver already builds a
-stateless `store: false` request for the same models, so the route reuses its
-HTTP path, stream parsing, and refresh gate, and `src/drivers/chatgpt_plan.rs`
-applies the preview limits to the serialized body:
+The `codex` provider name and existing browser/device UX stay in Yolop. A saved
+`flow = "open-source"` selects Everruns' ChatGPT-plan driver on the public
+Responses API; other logins select the shared legacy Codex driver. Everruns
+owns request shaping, stream parsing, quota errors, token refresh and native
+compaction behavior. The plan route sends stateless `store: false` requests,
+requires the granted plan scope, and fails incomplete streams.
 
-- `store: false` and `stream: true` on every request; history goes in `input`.
-- Removed: `background`, `conversation`, `max_output_tokens`, `max_tool_calls`,
-  `metadata`, `moderation`, `multi_agent`, `prompt`, `prompt_cache_retention`,
-  `safety_identifier`, `temperature`, `top_logprobs`, `top_p`, `truncation`,
-  `user`, and `previous_response_id`.
-- `system` input items become `developer`; instructions stay in
-  `instructions`.
-- Tools other than `function`, `custom`, `namespace`, and `web_search` are
-  dropped (the Codex request sends only function tools today).
-
-The documented plan-usage error codes map to error kinds: a usage limit to
-quota exhausted, ineligible or unauthorized accounts to authentication,
-unsupported capabilities or routes to invalid request, and unavailable usage to
-unavailable. A login whose granted scopes lack the plan scope is refused before
-any request.
-
-### Inferred, not stated by the docs
-
-- `service_tier` is dropped. The docs list no such field, but name a
-  "service-tier override" among unsupported capabilities, so the `speed`
-  setting does not apply on this route.
-- Top-level `function` tools are sent as they are. The docs say to group
-  function and custom tools in namespaces or send them as `additional_tools`
-  input items, which may mean ungrouped top-level tools are rejected; the
-  Codex app-server configuration they document sends ordinary function tools,
-  so this is the first thing to check live.
-- `reasoning` (effort and an `auto` summary) is kept; it is not listed as
-  rejected.
-- Native compaction and `/v1/models` listing are off. Only `POST
-  /v1/responses` is documented for this route, and the model catalog has a
-  ChatGPT-specific shape (`models[].slug`, `visibility`). The menus show the
-  same model IDs as the Codex route.
-- Errors are not retried in the driver, matching the Codex route; the docs
-  ask for bounded backoff on the `503` codes.
+See [Everruns' ChatGPT and Codex drivers](https://github.com/everruns/everruns/tree/main/crates/drivers/drivers/src)
+for the wire implementation and signed OAuth fixtures.
 
 ## Remaining work
 
-Still open now that this route is the default: a live sign-in and turn
-against a ChatGPT account (the open questions above), an account picker over several
-registrations, the model catalog from `/v1/models`, and the in-product ChatGPT
-plan disclosures the SIWC UI guidelines ask for. Upstream, everruns' Open
-Responses driver should keep an explicit `store: false` so this route can move
-onto it.
+A live browser consent and turn against a ChatGPT account remain unverified.
+Account selection across several registrations and a ChatGPT-specific model
+catalog are separate product work; this migration preserves Yolop's existing
+single-registration experience and model menu.
 
 ## Ownership boundary
 
-`src/auth/codex.rs` owns client resolution, validation, the Codex OAuth flows,
-and the route dispatch (`sign_in_with_browser`). `src/auth/siwc.rs` owns the
-open-source route: host ID, registration, ID-token validation, refresh, and
-revocation. `src/drivers/chatgpt_plan.rs` owns its request shaping.
-`src/config` persists the setting and the issuing client. `src/drivers/codex.rs`
-reads the issuing client at refresh time, so a record adopted from disk mid-run
-refreshes with its own client.
+`src/auth/codex.rs` owns legacy browser/device UX, client configuration and route
+selection. `src/auth/siwc.rs` adapts the shared open-source login to Yolop's
+browser and settings. `src/drivers/codex.rs` registers shared drivers and provides
+the leased token store. `src/config` owns the on-disk representation. Protocol
+validation, transport and refresh sequencing live in `everruns-drivers`.
 
 ## Related
 
 - [Configuration](configuration.md), the settings schema the key lives in.
 - [Model list](model-list.md), the models the `codex` provider offers.
+
+## Shared Everruns driver boundary
+
+Everruns 0.38 owns both protocol drivers, OAuth validation, shared credential
+shapes, and refresh sequencing in `everruns-drivers`. Yolop supplies settings
+storage, installation identity, browser navigation, and route selection. The
+settings adapter reads current disk credentials under a cross-process lease and
+atomically compares before saving rotations, so a new login or logout cannot be
+restored by an older refresh. Disconnect revokes a plan grant before clearing it;
+a failed revocation retains it for retry. Legacy browser/device routes retain
+their existing host UX while using Everruns for inference and refresh.
+
+The migration uses exact, aligned registry versions from the published 0.38
+batch. Shared provider and capability types come from `everruns-contracts`;
+retired provider and capability facade crates are not dependencies. Local path
+patches are not a distribution dependency.

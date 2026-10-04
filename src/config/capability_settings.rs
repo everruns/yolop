@@ -8,7 +8,7 @@
 //!   appends when absent
 //! - `append = true` always appends a new harness instance (duplicates allowed)
 
-use everruns_capability::CapabilityRef;
+use everruns_contracts::CapabilityRef;
 use everruns_core::Capability;
 use everruns_core::CapabilityInfo;
 use serde::{Deserialize, Serialize};

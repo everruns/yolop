@@ -146,7 +146,7 @@ mod tests {
         async fn evaluate(
             &self,
             _request: DecisionRequest,
-        ) -> everruns_provider::error::Result<DecisionOutcome> {
+        ) -> everruns_contracts::error::Result<DecisionOutcome> {
             let mut answers = BTreeMap::new();
             if let Some(probability) = self.probability {
                 answers.insert(

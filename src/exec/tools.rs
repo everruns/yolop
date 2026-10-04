@@ -13,6 +13,7 @@ use crate::exec::shell_policy::command_can_signal_yolop;
 use crate::exec::workspace_host::WorkspaceHost;
 use crate::sandbox_approval::{ApprovalGate, ApprovalRequest, ApprovalScope};
 use async_trait::async_trait;
+use everruns_contracts::ToolHints;
 use everruns_core::exec_tool_result::ExecToolResultPayload;
 use everruns_core::tool_narration::ToolNarrationPhase;
 use everruns_core::{
@@ -20,7 +21,6 @@ use everruns_core::{
     ToolContext,
 };
 use everruns_core::{Tool, ToolExecutionResult};
-use everruns_provider::ToolHints;
 use serde_json::{Value, json};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -409,7 +409,7 @@ fn trusted_command(command: &str) -> bool {
 impl Tool for BashTool {
     fn narrate(
         &self,
-        tool_call: &everruns_provider::tool_types::ToolCall,
+        tool_call: &everruns_contracts::tool_types::ToolCall,
         phase: ToolNarrationPhase,
         locale: Option<&str>,
         _ctx: everruns_core::tool_narration::ToolNarrationContext<'_>,
@@ -651,11 +651,11 @@ mod tests {
     }
     use super::*;
     use everruns_builtins::ToolOutputPersistenceCapability;
+    use everruns_contracts::ToolCall;
+    use everruns_contracts::typed_id::SessionId;
     use everruns_core::Capability;
     use everruns_core::ToolContext;
     use everruns_host::RealDiskFileStore;
-    use everruns_provider::ToolCall;
-    use everruns_provider::typed_id::SessionId;
     use std::sync::Mutex;
 
     #[cfg(target_os = "macos")]
@@ -1137,7 +1137,7 @@ mod tests {
 
         #[async_trait]
         impl BackgroundEventSink for RecordingSink {
-            async fn status(&self, message: &str) -> everruns_provider::error::Result<()> {
+            async fn status(&self, message: &str) -> everruns_contracts::error::Result<()> {
                 self.statuses.lock().unwrap().push(message.to_string());
                 Ok(())
             }
@@ -1146,7 +1146,7 @@ mod tests {
                 &self,
                 stream: &str,
                 delta: &str,
-            ) -> everruns_provider::error::Result<()> {
+            ) -> everruns_contracts::error::Result<()> {
                 self.output
                     .lock()
                     .unwrap()
@@ -1157,7 +1157,7 @@ mod tests {
             async fn progress(
                 &self,
                 _progress: BackgroundProgress,
-            ) -> everruns_provider::error::Result<()> {
+            ) -> everruns_contracts::error::Result<()> {
                 Ok(())
             }
         }
@@ -1209,7 +1209,7 @@ mod tests {
 
         #[async_trait]
         impl BackgroundEventSink for NoopSink {
-            async fn status(&self, _message: &str) -> everruns_provider::error::Result<()> {
+            async fn status(&self, _message: &str) -> everruns_contracts::error::Result<()> {
                 Ok(())
             }
 
@@ -1217,14 +1217,14 @@ mod tests {
                 &self,
                 _stream: &str,
                 _delta: &str,
-            ) -> everruns_provider::error::Result<()> {
+            ) -> everruns_contracts::error::Result<()> {
                 Ok(())
             }
 
             async fn progress(
                 &self,
                 _progress: BackgroundProgress,
-            ) -> everruns_provider::error::Result<()> {
+            ) -> everruns_contracts::error::Result<()> {
                 Ok(())
             }
         }
@@ -1259,7 +1259,7 @@ mod tests {
 
         #[async_trait]
         impl BackgroundEventSink for RecordingSink {
-            async fn status(&self, _message: &str) -> everruns_provider::error::Result<()> {
+            async fn status(&self, _message: &str) -> everruns_contracts::error::Result<()> {
                 Ok(())
             }
 
@@ -1267,7 +1267,7 @@ mod tests {
                 &self,
                 stream: &str,
                 delta: &str,
-            ) -> everruns_provider::error::Result<()> {
+            ) -> everruns_contracts::error::Result<()> {
                 self.output
                     .lock()
                     .unwrap()
@@ -1278,7 +1278,7 @@ mod tests {
             async fn progress(
                 &self,
                 _progress: BackgroundProgress,
-            ) -> everruns_provider::error::Result<()> {
+            ) -> everruns_contracts::error::Result<()> {
                 Ok(())
             }
         }

@@ -11,6 +11,7 @@ use crate::runtime::background_wake::{WakeMessage, WakeSender};
 use async_trait::async_trait;
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use everruns::local::SqliteDb;
+use everruns_contracts::typed_id::SessionId;
 use everruns_core::command::{
     CommandArg, CommandDescriptor, CommandExecutionContext, CommandResult, CommandSource,
     ExecuteCommandRequest,
@@ -21,7 +22,6 @@ use everruns_core::{
     SessionTaskUpdate, TaskArtifact, TaskError, TaskLinks, TaskWakePolicy, Tool,
     ToolExecutionResult,
 };
-use everruns_provider::typed_id::SessionId;
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -999,7 +999,7 @@ impl Capability for SessionCoordinationCapability {
         &self,
         request: &ExecuteCommandRequest,
         _ctx: &CommandExecutionContext,
-    ) -> everruns_provider::error::Result<CommandResult> {
+    ) -> everruns_contracts::error::Result<CommandResult> {
         if request.name == YOLOP_SPAWN_COMMAND {
             let parsed = SpawnRequest::try_parse_from(
                 std::iter::once(YOLOP_SPAWN_COMMAND).chain(
@@ -1010,7 +1010,7 @@ impl Capability for SessionCoordinationCapability {
                         .split_ascii_whitespace(),
                 ),
             )
-            .map_err(|error| everruns_provider::AgentLoopError::config(error.to_string()))?;
+            .map_err(|error| everruns_contracts::AgentLoopError::config(error.to_string()))?;
             let task = parsed.task.join(" ");
             let title = if parsed.title.is_empty() {
                 None
@@ -1028,9 +1028,9 @@ impl Capability for SessionCoordinationCapability {
                 &parsed.model,
                 &parsed.worktrees,
             )
-            .map_err(everruns_provider::AgentLoopError::config)?;
+            .map_err(everruns_contracts::AgentLoopError::config)?;
             let message = serde_json::to_string_pretty(&routed)
-                .map_err(|error| everruns_provider::AgentLoopError::config(error.to_string()))?;
+                .map_err(|error| everruns_contracts::AgentLoopError::config(error.to_string()))?;
             return Ok(CommandResult {
                 success: true,
                 message,
@@ -1039,14 +1039,14 @@ impl Capability for SessionCoordinationCapability {
             });
         }
         if request.name != COORDINATION_COMMAND {
-            return Err(everruns_provider::AgentLoopError::config(format!(
+            return Err(everruns_contracts::AgentLoopError::config(format!(
                 "{} cannot execute /{}",
                 self.id(),
                 request.name
             )));
         }
         let action = CoordinationAction::parse(request.arguments.as_deref())
-            .map_err(everruns_provider::AgentLoopError::config)?;
+            .map_err(everruns_contracts::AgentLoopError::config)?;
         let response = ControlResponse::from_tool_result(self.execute_action(&action).await);
         Ok(CommandResult {
             success: response.ok,

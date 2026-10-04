@@ -2,13 +2,13 @@
 
 use crate::session_state::checkpoint::{CheckpointManager, RestoreMode, safe_display};
 use async_trait::async_trait;
+use everruns_contracts::{ToolCall, ToolHints};
 use everruns_core::command::{
     CommandArg, CommandDescriptor, CommandExecutionContext, CommandResult, CommandSource,
     ExecuteCommandRequest,
 };
 use everruns_core::{Capability, CapabilityStatus};
 use everruns_core::{Tool, ToolExecutionResult};
-use everruns_provider::{ToolCall, ToolHints};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -78,7 +78,7 @@ impl Capability for CheckpointCapability {
         &self,
         request: &ExecuteCommandRequest,
         _ctx: &CommandExecutionContext,
-    ) -> everruns_provider::error::Result<CommandResult> {
+    ) -> everruns_contracts::error::Result<CommandResult> {
         let result = execute_command(
             &self.manager,
             &request.name,
@@ -87,7 +87,7 @@ impl Capability for CheckpointCapability {
         )
         .await
         .map_err(|error| {
-            everruns_provider::error::AgentLoopError::config(safe_display(&format!("{error:#}")))
+            everruns_contracts::error::AgentLoopError::config(safe_display(&format!("{error:#}")))
         })?;
         Ok(CommandResult {
             success: true,

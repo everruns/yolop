@@ -1,0 +1,4 @@
+[env]
+# The composed Everruns runtime needs the same stack in Rust's test workers as
+# Yolop's production Tokio workers (src/main.rs). Keep explicit caller overrides.
+RUST_MIN_STACK = { value = "8388608", force = false }

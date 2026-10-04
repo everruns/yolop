@@ -17,10 +17,10 @@ use crossterm::event::{
     self, Event as CrosstermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton,
     MouseEvent, MouseEventKind,
 };
+use everruns_contracts::typed_id::SessionId;
 use everruns_core::ContentPart;
 use everruns_core::SessionTaskRegistry;
 use everruns_core::command::{CommandDescriptor, CommandSource};
-use everruns_provider::typed_id::SessionId;
 use futures::FutureExt;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -1233,7 +1233,7 @@ impl App {
         let driver =
             crate::runtime::Provider::from_name(&self.model.provider_name())?.driver_id()?;
         let profile =
-            everruns_provider::model_profiles::get_model_profile(&driver, &self.model.model_id())?;
+            everruns_contracts::model_profiles::get_model_profile(&driver, &self.model.model_id())?;
         u32::try_from(profile.limits?.context).ok()
     }
 
@@ -4701,6 +4701,8 @@ mod tests {
 
     use super::*;
     use crate::capabilities::model_discovery::DiscoveredProviderModel;
+    use everruns_contracts::ToolCall;
+    use everruns_contracts::typed_id::{MessageId, SessionId, TurnId};
     use everruns_core::RuntimeMessage;
     use everruns_core::events::Event as RuntimeEvent;
     use everruns_core::{
@@ -4711,8 +4713,6 @@ mod tests {
         EventContext, InputMessageData, OutputMessageCompletedData, OutputMessageStartedData,
         ReasonCompletedData, ToolCompletedData,
     };
-    use everruns_provider::ToolCall;
-    use everruns_provider::typed_id::{MessageId, SessionId, TurnId};
 
     use everruns_core::command::{CommandArg, CommandDescriptor, CommandSource};
 
@@ -5489,7 +5489,7 @@ mod tests {
 
     #[test]
     fn lines_for_event_hides_output_message_reasoning() {
-        use everruns_provider::reasoning::{ReasoningContentPart, ReasoningText};
+        use everruns_contracts::reasoning::{ReasoningContentPart, ReasoningText};
 
         let mut message = everruns_core::RuntimeMessage::assistant_with_tools(
             "",
@@ -5601,8 +5601,8 @@ mod tests {
 
     #[test]
     fn handle_live_event_renders_write_todos_from_started_args_when_result_is_counts_only() {
+        use everruns_contracts::ToolCall;
         use everruns_core::ToolStartedData;
-        use everruns_provider::ToolCall;
 
         let (tx, mut rx) = mpsc::unbounded_channel::<TurnEvent>();
         let mut emitted = HashSet::new();
@@ -5817,8 +5817,8 @@ mod tests {
 
     #[test]
     fn handle_live_event_routes_assistant_delta_to_stream_preview() {
+        use everruns_contracts::typed_id::TurnId;
         use everruns_core::{OutputMessageDeltaData, ToolOutputDeltaData};
-        use everruns_provider::typed_id::TurnId;
 
         let (tx, mut rx) = mpsc::unbounded_channel::<TurnEvent>();
         let mut emitted = HashSet::new();
@@ -5912,8 +5912,8 @@ mod tests {
 
     #[test]
     fn handle_live_event_hides_thinking_delta_from_stream_preview() {
+        use everruns_contracts::typed_id::TurnId;
         use everruns_core::ReasonThinkingDeltaData;
-        use everruns_provider::typed_id::TurnId;
 
         let (tx, mut rx) = mpsc::unbounded_channel::<TurnEvent>();
         let mut emitted = HashSet::new();
@@ -7597,8 +7597,8 @@ flowchart TD
 
     #[tokio::test]
     async fn blocked_completion_state_stops_without_presentation_status() {
+        use everruns_contracts::typed_id::TurnId;
         use everruns_core::turn::TurnStopReason;
-        use everruns_provider::typed_id::TurnId;
 
         let mut test = app_with_llmsim_and_user_ask().await;
         let session_id = test.app.session.session_id();

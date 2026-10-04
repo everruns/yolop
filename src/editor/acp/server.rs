@@ -23,14 +23,14 @@ use std::time::Duration;
 use agent_client_protocol::{Agent, Client, ConnectionTo, Lines, Responder};
 use anyhow::Result;
 use async_trait::async_trait;
+use everruns_contracts::tool_types::{
+    ToolCall as RuntimeToolCall, ToolDefinition as RuntimeToolDefinition,
+};
+use everruns_contracts::typed_id::SessionId as RuntimeSessionId;
 use everruns_core::ContentPart;
 use everruns_core::command::{CommandDescriptor, CommandSource, ExecuteCommandRequest};
 use everruns_core::{InputMessage, ScopedMcpServers};
 use everruns_core::{McpServerTransportType, ScopedMcpServer};
-use everruns_provider::tool_types::{
-    ToolCall as RuntimeToolCall, ToolDefinition as RuntimeToolDefinition,
-};
-use everruns_provider::typed_id::SessionId as RuntimeSessionId;
 use futures::{AsyncBufReadExt, AsyncWriteExt, StreamExt};
 use serde_json::{Value, json};
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -2171,7 +2171,7 @@ mod tests {
             } else {
                 everruns_core::turn::TurnStopReason::Error
             },
-            turn_id: everruns_provider::typed_id::TurnId::new(),
+            turn_id: everruns_contracts::typed_id::TurnId::new(),
         }
     }
 

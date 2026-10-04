@@ -22,10 +22,10 @@ use crate::control::{
 use crate::runtime::{SUPPORTED_PROVIDERS, coding_harness_defaults, resolve_for_settings};
 use async_trait::async_trait;
 use clap::{Args, Command, FromArgMatches, Subcommand, ValueEnum};
+use everruns_contracts::ToolCall;
 use everruns_core::tool_narration::ToolNarrationPhase;
 use everruns_core::{Capability, CapabilityStatus, SystemPromptContext};
 use everruns_core::{Tool, ToolExecutionResult};
-use everruns_provider::ToolCall;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -1135,8 +1135,8 @@ fn execute_hooks_cli(
 mod tests {
     use super::*;
     use everruns_builtins::{MESSAGE_METADATA_CAPABILITY_ID, MessageMetadataCapability};
+    use everruns_contracts::ToolCall;
     use everruns_core::tool_narration::ToolNarrationPhase;
-    use everruns_provider::ToolCall;
 
     fn cli_request(args: &[&str]) -> ControlRequest {
         let command = ConfigCommandLine::augment_args(Command::new("config"));

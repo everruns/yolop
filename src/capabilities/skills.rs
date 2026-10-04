@@ -28,11 +28,11 @@ use crate::control::{
 };
 use async_trait::async_trait;
 use everruns_builtins::{SkillDirResolver, SkillScope, SkillsConfig};
+use everruns_contracts::ToolCall;
 use everruns_core::command::{CommandDescriptor, CommandSource};
 use everruns_core::tool_narration::{ToolNarrationPhase, arg_str, truncate};
 use everruns_core::{Capability, CapabilityStatus, SessionFileSystem};
 use everruns_core::{Tool, ToolExecutionResult};
-use everruns_provider::ToolCall;
 use include_dir::{Dir, include_dir};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};

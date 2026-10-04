@@ -269,7 +269,7 @@ impl App {
     /// `x` calls this without leaving the picker so logout stays visible
     /// next to the status it clears. Codex clears its OAuth file, every
     /// other keyed provider clears its saved token.
-    pub(crate) fn logout_provider_message(
+    pub(crate) async fn logout_provider_message(
         settings: &crate::config::SettingsStore,
         provider: &str,
     ) -> String {
@@ -277,7 +277,7 @@ impl App {
             return "setup: no login to clear here".to_string();
         }
         if provider == "codex" {
-            return match crate::auth::siwc::clear_login(settings) {
+            return match crate::auth::siwc::clear_login(settings).await {
                 Ok(true) => "setup: logged out of Codex".to_string(),
                 Ok(false) => "setup: Codex is not logged in".to_string(),
                 Err(error) => format!("setup: logout failed: {error}"),
@@ -971,7 +971,7 @@ impl App {
             }
             KeyCode::Char('x') | KeyCode::Char('X') => {
                 if let Some(option) = PROVIDER_OPTIONS.get(selected) {
-                    let message = Self::logout_provider_message(&self.settings, option.name);
+                    let message = Self::logout_provider_message(&self.settings, option.name).await;
                     self.push_system(message);
                 }
             }
@@ -1244,7 +1244,7 @@ impl App {
             }
             CredentialAction::ClearSaved => {
                 if provider == "codex" {
-                    match crate::auth::siwc::clear_login(&self.settings) {
+                    match crate::auth::siwc::clear_login(&self.settings).await {
                         Ok(_) => {
                             self.setup = None;
                             self.push_system("setup complete: cleared saved Codex login".into());
@@ -2017,14 +2017,14 @@ mod tests {
         assert_eq!(status, "✓ signed in");
     }
 
-    #[test]
-    fn provider_logout_clears_saved_token() {
+    #[tokio::test]
+    async fn provider_logout_clears_saved_token() {
         let dir = tempfile::tempdir().expect("temp dir");
         let store = crate::config::SettingsStore::open(dir.path().join("settings.toml"));
         store
             .set_token("openai".to_string(), "sk-test".to_string())
             .expect("save token");
-        let message = App::logout_provider_message(&store, "openai");
+        let message = App::logout_provider_message(&store, "openai").await;
         assert!(
             message.contains("logged out"),
             "logout should confirm: {message}"
@@ -2033,18 +2033,18 @@ mod tests {
             !store.snapshot().has_token("openai"),
             "saved key should be gone after logout"
         );
-        let again = App::logout_provider_message(&store, "openai");
+        let again = App::logout_provider_message(&store, "openai").await;
         assert!(
             again.contains("not logged in"),
             "second logout should report nothing to clear: {again}"
         );
     }
 
-    #[test]
-    fn provider_logout_needs_nothing_for_keyless_providers() {
+    #[tokio::test]
+    async fn provider_logout_needs_nothing_for_keyless_providers() {
         let dir = tempfile::tempdir().expect("temp dir");
         let store = crate::config::SettingsStore::open(dir.path().join("settings.toml"));
-        let message = App::logout_provider_message(&store, "llmsim");
+        let message = App::logout_provider_message(&store, "llmsim").await;
         assert!(
             message.contains("no login"),
             "llmsim needs no key: {message}"

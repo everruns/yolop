@@ -8,6 +8,9 @@
 
 use crate::capabilities::narration::narrate_session_task_tool;
 use async_trait::async_trait;
+use everruns_contracts::AgentLoopError;
+use everruns_contracts::typed_id::ScheduleId;
+use everruns_contracts::{ToolCall, ToolDefinition, ToolHints, ToolPolicy};
 use everruns_core::ToolContext;
 use everruns_core::capabilities::CapabilityLocalization;
 use everruns_core::session_schedule::SessionSchedule;
@@ -17,9 +20,6 @@ use everruns_core::{Capability, CapabilityStatus, SystemPromptContext};
 use everruns_core::{SessionTask, SessionTaskRegistry, SessionTaskState, SessionTaskUpdate};
 use everruns_core::{Tool, ToolExecutionResult};
 use everruns_platform::capabilities::SessionTasksCapability;
-use everruns_provider::AgentLoopError;
-use everruns_provider::typed_id::ScheduleId;
-use everruns_provider::{ToolCall, ToolDefinition, ToolHints, ToolPolicy};
 use serde_json::{Value, json};
 
 const CANCEL_TASK: &str = "cancel_task";
@@ -242,7 +242,7 @@ pub(crate) async fn cancel_monitor_task(
     task: &SessionTask,
     registry: &dyn SessionTaskRegistry,
     schedule_store: &dyn SessionScheduleStore,
-) -> everruns_provider::error::Result<CanceledMonitor> {
+) -> everruns_contracts::error::Result<CanceledMonitor> {
     let task_id = &task.id;
     let task = registry
         .request_cancel(task.session_id, task_id)
@@ -304,12 +304,12 @@ pub(crate) async fn cancel_monitor_task(
 mod tests {
     use super::*;
     use everruns::local::{LocalScheduleStore, LocalSessionTaskRegistry, SqliteDb};
+    use everruns_contracts::typed_id::{PrincipalId, ScheduleId, SessionId};
     use everruns_core::session_schedule::SessionSchedule;
     use everruns_core::session_services::SessionScheduleStore;
     use everruns_core::{
         CreateSessionTask, SessionTaskRegistry, SessionTaskState, TASK_KIND_MONITOR, TaskWakePolicy,
     };
-    use everruns_provider::typed_id::{PrincipalId, ScheduleId, SessionId};
     use serde_json::json;
     use std::sync::Arc;
 
@@ -324,7 +324,7 @@ mod tests {
             _cron_expression: Option<String>,
             _scheduled_at: Option<chrono::DateTime<chrono::Utc>>,
             _timezone: String,
-        ) -> everruns_provider::error::Result<SessionSchedule> {
+        ) -> everruns_contracts::error::Result<SessionSchedule> {
             unimplemented!()
         }
 
@@ -332,8 +332,8 @@ mod tests {
             &self,
             _session_id: SessionId,
             _schedule_id: ScheduleId,
-        ) -> everruns_provider::error::Result<SessionSchedule> {
-            Err(everruns_provider::error::AgentLoopError::tool(
+        ) -> everruns_contracts::error::Result<SessionSchedule> {
+            Err(everruns_contracts::error::AgentLoopError::tool(
                 "injected schedule cancellation failure",
             ))
         }
@@ -341,18 +341,18 @@ mod tests {
         async fn list_schedules(
             &self,
             _session_id: SessionId,
-        ) -> everruns_provider::error::Result<Vec<SessionSchedule>> {
+        ) -> everruns_contracts::error::Result<Vec<SessionSchedule>> {
             Ok(vec![])
         }
 
         async fn count_active_schedules(
             &self,
             _session_id: SessionId,
-        ) -> everruns_provider::error::Result<u32> {
+        ) -> everruns_contracts::error::Result<u32> {
             Ok(0)
         }
 
-        async fn count_active_org_schedules(&self) -> everruns_provider::error::Result<u32> {
+        async fn count_active_org_schedules(&self) -> everruns_contracts::error::Result<u32> {
             Ok(0)
         }
     }

@@ -16,7 +16,7 @@
 
 use std::sync::Arc;
 
-use everruns_provider::typed_id::SessionId;
+use everruns_contracts::typed_id::SessionId;
 
 use crate::config::ApprovalMode;
 use crate::config::SettingsStore;

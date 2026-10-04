@@ -1,6 +1,6 @@
+use everruns_contracts::typed_id::SessionId;
 use everruns_core::{SessionStore, SessionTask, SessionTaskRegistry, TokenUsage};
 use everruns_core::{SessionTaskState, TASK_KIND_MONITOR, TASK_KIND_SUBAGENT};
-use everruns_provider::typed_id::SessionId;
 use std::collections::HashSet;
 
 const MAX_TREE_SESSIONS: usize = 256;
@@ -599,6 +599,7 @@ mod tests {
     use async_trait::async_trait;
     use chrono::Utc;
     use everruns::local::{LocalSessionTaskRegistry, SqliteDb};
+    use everruns_contracts::typed_id::{HarnessId, SessionId};
     use everruns_core::session_task::new_session_task;
     use everruns_core::{CreateSessionTask, ExecutionSession};
     use everruns_core::{
@@ -606,7 +607,6 @@ mod tests {
         TaskLinks,
     };
     use everruns_host::SessionBuilder;
-    use everruns_provider::typed_id::{HarnessId, SessionId};
     use serde_json::json;
     use std::collections::HashMap;
 
@@ -763,7 +763,7 @@ mod tests {
         async fn get_session(
             &self,
             session_id: SessionId,
-        ) -> everruns_provider::error::Result<Option<ExecutionSession>> {
+        ) -> everruns_contracts::error::Result<Option<ExecutionSession>> {
             Ok(self.0.get(&session_id).cloned())
         }
     }

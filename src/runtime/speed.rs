@@ -82,10 +82,10 @@ mod tests {
 
     #[test]
     fn speed_rides_on_the_turn_controls_beside_reasoning() {
+        use everruns_contracts::ReasoningEffort;
         use everruns_core::{
             ContentPart, Controls, InputMessage, ReasoningConfig, RuntimeMessageRole,
         };
-        use everruns_provider::ReasoningEffort;
         let message = |controls| InputMessage {
             role: RuntimeMessageRole::User,
             content: vec![ContentPart::text("hi")],

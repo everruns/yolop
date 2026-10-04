@@ -15,6 +15,8 @@
 
 use async_trait::async_trait;
 use everruns::local::{HostRoutedRunner, LocalSessionRunner, WakeRoutes};
+use everruns_contracts::typed_id::{AgentId, HarnessId, SessionId};
+use everruns_contracts::{AgentLoopError, Result};
 use everruns_core::Event;
 use everruns_core::EventData;
 use everruns_core::ExecutionSession;
@@ -24,8 +26,6 @@ use everruns_core::{PlatformCreateSessionRequest, PlatformMessage};
 use everruns_core::{SessionTask, SessionTaskRegistry};
 use everruns_core::{TaskTransition, wake_text_for};
 use everruns_host::{InProcessRuntime, RuntimeSessionStore, SessionBuilder};
-use everruns_provider::typed_id::{AgentId, HarnessId, SessionId};
-use everruns_provider::{AgentLoopError, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::{HashMap, HashSet};

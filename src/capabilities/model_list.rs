@@ -24,8 +24,8 @@ use crate::control::{ControlCapability, ControlRequest, ControlResponse, Control
 use crate::runtime::SUPPORTED_PROVIDERS;
 use async_trait::async_trait;
 use clap::{Args, Subcommand};
+use everruns_contracts::ReasoningEffort;
 use everruns_core::{Capability, CapabilityStatus, ToolExecutionResult};
-use everruns_provider::ReasoningEffort;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::sync::Arc;

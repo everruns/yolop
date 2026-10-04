@@ -132,7 +132,7 @@ Do not declare release-ready for surfaces the pass did not actually check.
   pins. The graph is large and transitive drift is the failure mode the pins
   prevent.
 - Reviews consider the whole published family (`everruns-host`,
-  `everruns-core`, `everruns-anthropic`, `everruns-openai`,
+  `everruns-core`, `everruns-contracts`, `everruns-drivers`,
   `everruns-integrations-duckduckgo`, `everruns-platform`), not only the
   crates named in the root manifest, since a stale transitive member can keep
   a known bug alive.

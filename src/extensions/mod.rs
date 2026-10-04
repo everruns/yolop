@@ -118,7 +118,7 @@ mod spawn_tests {
 
         // Dynamic prompt comes from the SDK server's handler.
         let ctx = everruns_core::capabilities::SystemPromptContext::without_file_store(
-            everruns_provider::typed_id::SessionId::new(),
+            everruns_contracts::typed_id::SessionId::new(),
         );
         let prompt = capability
             .system_prompt_contribution(&ctx)
@@ -127,8 +127,8 @@ mod spawn_tests {
         assert!(prompt.contains("dynamic echo prompt"), "{prompt}");
 
         // Pre-hook served by the SDK blocks a forbidden call.
+        use everruns_contracts::{BuiltinTool, ToolCall, ToolDefinition};
         use everruns_core::tool_hooks::PreToolUseDecision;
-        use everruns_provider::{BuiltinTool, ToolCall, ToolDefinition};
         let hooks = capability.pre_tool_use_hooks_with_config(&json!(null));
         let tool_def = ToolDefinition::Builtin(BuiltinTool {
             name: "bash".into(),
@@ -142,7 +142,7 @@ mod spawn_tests {
             full_parameters: None,
         });
         let ctx2 = everruns_core::tool_context::ToolContext::new(
-            everruns_provider::typed_id::SessionId::new(),
+            everruns_contracts::typed_id::SessionId::new(),
         );
         let deny = ToolCall {
             id: "1".into(),
@@ -279,7 +279,7 @@ mod spawn_tests {
         package.manifest.capability_server.args.clear();
         let capability = ExtensionCapability::new(package, workspace_dir);
         let ctx = everruns_core::capabilities::SystemPromptContext::without_file_store(
-            everruns_provider::typed_id::SessionId::new(),
+            everruns_contracts::typed_id::SessionId::new(),
         );
         let prompt = capability
             .system_prompt_contribution(&ctx)
@@ -368,8 +368,8 @@ mod spawn_tests {
     /// wins.
     #[tokio::test]
     async fn teardown_flushes_the_final_trace_events() {
+        use everruns_contracts::typed_id::{EventId, SessionId};
         use everruns_core::events::{EventContext, EventRequest};
-        use everruns_provider::typed_id::{EventId, SessionId};
         use tokio::sync::broadcast;
 
         let Some(python) = python3() else {
@@ -532,7 +532,7 @@ mod spawn_tests {
         };
         let capability = ExtensionCapability::new(fixture_package(&python), std::env::temp_dir());
         let ctx = everruns_core::capabilities::SystemPromptContext::without_file_store(
-            everruns_provider::typed_id::SessionId::new(),
+            everruns_contracts::typed_id::SessionId::new(),
         );
         assert_eq!(
             capability.system_prompt_contribution(&ctx).await.as_deref(),
@@ -574,8 +574,8 @@ mod spawn_tests {
 
     #[tokio::test]
     async fn pre_tool_use_hook_blocks_via_server_decision() {
+        use everruns_contracts::{BuiltinTool, ToolCall, ToolDefinition};
         use everruns_core::tool_hooks::PreToolUseDecision;
-        use everruns_provider::{BuiltinTool, ToolCall, ToolDefinition};
         let Some(python) = python3() else {
             eprintln!("skipping: python3 not available");
             return;
@@ -596,7 +596,7 @@ mod spawn_tests {
             full_parameters: None,
         });
         let ctx = everruns_core::tool_context::ToolContext::new(
-            everruns_provider::typed_id::SessionId::new(),
+            everruns_contracts::typed_id::SessionId::new(),
         );
 
         // Allowed call passes through.
@@ -626,8 +626,8 @@ mod spawn_tests {
 
     #[tokio::test]
     async fn malformed_hook_result_honors_block_on_error() {
+        use everruns_contracts::{BuiltinTool, ToolCall, ToolDefinition};
         use everruns_core::tool_hooks::PreToolUseDecision;
-        use everruns_provider::{BuiltinTool, ToolCall, ToolDefinition};
         let Some(python) = python3() else {
             eprintln!("skipping: python3 not available");
             return;
@@ -649,7 +649,7 @@ mod spawn_tests {
             full_parameters: None,
         });
         let ctx = everruns_core::tool_context::ToolContext::new(
-            everruns_provider::typed_id::SessionId::new(),
+            everruns_contracts::typed_id::SessionId::new(),
         );
         let call = ToolCall {
             id: "1".into(),
@@ -672,8 +672,8 @@ mod spawn_tests {
     /// `bin/` on PATH — no absolute paths, no build step).
     async fn assert_scaffolded_git_block(language: super::scaffold::Language) {
         use super::scaffold::{HookSpec, ScaffoldRequest, scaffold};
+        use everruns_contracts::{BuiltinTool, ToolCall, ToolDefinition};
         use everruns_core::tool_hooks::PreToolUseDecision;
-        use everruns_provider::{BuiltinTool, ToolCall, ToolDefinition};
 
         if which_python(&[language.interpreter()]).is_none() {
             eprintln!("skipping: {} not available", language.interpreter());
@@ -769,7 +769,7 @@ mod spawn_tests {
             full_parameters: None,
         });
         let ctx = everruns_core::tool_context::ToolContext::new(
-            everruns_provider::typed_id::SessionId::new(),
+            everruns_contracts::typed_id::SessionId::new(),
         );
 
         // A git command is denied by the self-authored server.
@@ -882,7 +882,7 @@ mod spawn_tests {
             .execute_command(
                 &request,
                 &CommandExecutionContext::without_host(
-                    everruns_provider::typed_id::SessionId::new(),
+                    everruns_contracts::typed_id::SessionId::new(),
                 ),
             )
             .await
@@ -903,8 +903,8 @@ mod spawn_tests {
     async fn scaffolded_status_extension_pushes_to_the_sink() {
         use super::client::StatusSink;
         use super::scaffold::{HookSpec, Language, ScaffoldRequest, scaffold};
+        use everruns_contracts::{BuiltinTool, ToolCall, ToolDefinition};
         use everruns_core::tool_hooks::PreToolUseDecision;
-        use everruns_provider::{BuiltinTool, ToolCall, ToolDefinition};
         use std::sync::{Arc, Mutex};
 
         if python3().is_none() {
@@ -972,7 +972,7 @@ mod spawn_tests {
             full_parameters: None,
         });
         let ctx = everruns_core::tool_context::ToolContext::new(
-            everruns_provider::typed_id::SessionId::new(),
+            everruns_contracts::typed_id::SessionId::new(),
         );
         let call = ToolCall {
             id: "1".into(),
@@ -1003,7 +1003,7 @@ mod spawn_tests {
         };
         let capability = ExtensionCapability::new(hooks_package(&python), std::env::temp_dir());
         let ctx = everruns_core::capabilities::SystemPromptContext::without_file_store(
-            everruns_provider::typed_id::SessionId::new(),
+            everruns_contracts::typed_id::SessionId::new(),
         );
         let contribution = capability
             .system_prompt_contribution(&ctx)

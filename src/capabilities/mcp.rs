@@ -211,7 +211,7 @@ mod tests {
         let capability = McpCapability { store };
         let prompt = capability
             .system_prompt_contribution(&SystemPromptContext::without_file_store(
-                everruns_provider::typed_id::SessionId::new(),
+                everruns_contracts::typed_id::SessionId::new(),
             ))
             .await
             .expect("mcp prompt");
@@ -230,7 +230,7 @@ mod tests {
         let capability = McpCapability { store };
         let prompt = capability
             .system_prompt_contribution(&SystemPromptContext::without_file_store(
-                everruns_provider::typed_id::SessionId::new(),
+                everruns_contracts::typed_id::SessionId::new(),
             ))
             .await
             .expect("mcp prompt");
