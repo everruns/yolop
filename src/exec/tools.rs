@@ -650,11 +650,11 @@ mod tests {
         assert!(!description.contains("administer"));
     }
     use super::*;
-    use everruns_core::builtins::ToolOutputPersistenceCapability;
     use everruns_contracts::ToolCall;
     use everruns_contracts::typed_id::SessionId;
     use everruns_core::Capability;
     use everruns_core::ToolContext;
+    use everruns_core::builtins::ToolOutputPersistenceCapability;
     use everruns_core::host::RealDiskFileStore;
     use std::sync::Mutex;
 

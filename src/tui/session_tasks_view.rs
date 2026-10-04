@@ -600,13 +600,13 @@ mod tests {
     use chrono::Utc;
     use everruns::local::{LocalSessionTaskRegistry, SqliteDb};
     use everruns_contracts::typed_id::{HarnessId, SessionId};
+    use everruns_core::host::SessionBuilder;
     use everruns_core::session_task::new_session_task;
     use everruns_core::{CreateSessionTask, ExecutionSession};
     use everruns_core::{
         SessionTaskState, TASK_KIND_BACKGROUND_TOOL, TASK_KIND_MONITOR, TASK_KIND_SUBAGENT,
         TaskLinks,
     };
-    use everruns_core::host::SessionBuilder;
     use serde_json::json;
     use std::collections::HashMap;
 

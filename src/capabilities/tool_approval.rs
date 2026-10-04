@@ -9,10 +9,10 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use everruns_core::builtins::tool_approval::ToolApprovalCapability as UpstreamToolApprovalCapability;
 use everruns_contracts::typed_id::SessionId;
 use everruns_contracts::{ToolCall, ToolDefinition};
 use everruns_core::ToolContext;
+use everruns_core::builtins::tool_approval::ToolApprovalCapability as UpstreamToolApprovalCapability;
 use everruns_core::tool_hooks::{PreToolUseDecision, PreToolUseHook};
 use everruns_core::{Capability, CapabilityStatus};
 

@@ -61,15 +61,15 @@ use everruns_contracts::typed_id::EventId;
 use everruns_contracts::typed_id::SessionId;
 use everruns_contracts::{AgentLoopError, Result};
 use everruns_core::EventEmitter;
+use everruns_core::host::{
+    EventCursor, EventDurability, EventLog, EventLogError, EventPage, EventReadRequest,
+    EventReader, EventSink, EventSinkError,
+};
 use everruns_core::{ContentPart, RuntimeMessage};
 use everruns_core::{
     Event, EventData, EventRequest, INPUT_MESSAGE, OUTPUT_MESSAGE_COMPLETED,
     OutputMessageCompletedData, REASON_COMPLETED, REASON_ITEM, SESSION_TITLE_UPDATED,
     TOOL_COMPLETED,
-};
-use everruns_core::host::{
-    EventCursor, EventDurability, EventLog, EventLogError, EventPage, EventReadRequest,
-    EventReader, EventSink, EventSinkError,
 };
 use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions, TryLockError};
@@ -1035,11 +1035,11 @@ fn parse_structured_tool_result_text(text: &str) -> serde_json::Value {
 mod tests {
     use super::*;
     use everruns_core::RuntimeMessage;
+    use everruns_core::host::EventReadLimit;
     use everruns_core::{
         EventContext, InputMessageData, OutputMessageCompletedData, SessionTitleUpdatedData,
         ToolCompletedData,
     };
-    use everruns_core::host::EventReadLimit;
 
     fn input_event(session_id: SessionId, text: &str) -> Event {
         Event::new(

@@ -1134,8 +1134,8 @@ fn execute_hooks_cli(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use everruns_core::builtins::{MESSAGE_METADATA_CAPABILITY_ID, MessageMetadataCapability};
     use everruns_contracts::ToolCall;
+    use everruns_core::builtins::{MESSAGE_METADATA_CAPABILITY_ID, MessageMetadataCapability};
     use everruns_core::tool_narration::ToolNarrationPhase;
 
     fn cli_request(args: &[&str]) -> ControlRequest {

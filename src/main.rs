@@ -89,7 +89,7 @@ impl Write for BoundedTraceWriter {
 #[command(
     name = "yolop",
     version = version::VERSION_DETAILS,
-    about = "Yolop coding agent — embedded terminal agent built on everruns-core"
+    about = "Yolop coding agent, embedded terminal agent built on everruns-core"
 )]
 struct Cli {
     #[command(subcommand)]

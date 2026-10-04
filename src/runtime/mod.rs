@@ -75,6 +75,10 @@ use everruns_core::host::{
 // #3111/#3119 moved the hosted and environment capability implementations out
 // of everruns-core into the platform and integration crates.
 use everruns::local::{LocalBackends, LocalProfile, LocalScheduleRunnerHandle};
+use everruns_capabilities::capabilities::{
+    SESSION_TASKS_CAPABILITY_ID, SUBAGENTS_CAPABILITY_ID, USER_HOOKS_CAPABILITY_ID,
+    UserHooksCapability,
+};
 use everruns_contracts::AgentLoopError;
 use everruns_contracts::CapabilityRef;
 use everruns_contracts::model_profiles::get_model_profile;
@@ -86,6 +90,14 @@ use everruns_contracts::{DriverRegistry, ProviderMetadata};
 use everruns_core::SessionStore;
 use everruns_core::SessionTaskRegistry;
 use everruns_core::command::{CommandDescriptor, CommandResult, ExecuteCommandRequest};
+use everruns_core::host::RuntimeProviderStore;
+use everruns_core::host::{
+    AgentBuilder, CapabilityDelta, HarnessBuilder, HostBackends, InProcessRuntime,
+    InProcessRuntimeBuilder, RealDiskFileStore, RuntimeSessionStore, SessionBuilder,
+    WriteBlocklistFileStore,
+};
+use everruns_core::host::{SessionFileSystemFactory, SessionFileSystemFactoryContext};
+use everruns_core::mcp::{McpAuthProvider, McpAuthRequest, McpCredential};
 use everruns_core::session_file::build_grep_search_result;
 use everruns_core::session_path::GrepPathPattern;
 use everruns_core::{
@@ -96,24 +108,12 @@ use everruns_core::{ContentPart, RuntimeMessageRole};
 use everruns_core::{
     FileInfo, FileStat, GrepMatch, GrepOptions, GrepSearchResult, InitialFile, SessionFile,
 };
-use everruns_core::host::RuntimeProviderStore;
-use everruns_core::host::{
-    AgentBuilder, CapabilityDelta, HarnessBuilder, HostBackends, InProcessRuntime,
-    InProcessRuntimeBuilder, RealDiskFileStore, RuntimeSessionStore, SessionBuilder,
-    WriteBlocklistFileStore,
-};
-use everruns_core::host::{SessionFileSystemFactory, SessionFileSystemFactoryContext};
 use everruns_integrations_daytona::DaytonaCapability;
 use everruns_integrations_duckduckgo::DuckDuckGoCapability;
 use everruns_integrations_filesystem::{FileSystemCapability, SESSION_FILE_SYSTEM_CAPABILITY_ID};
 use everruns_integrations_web_fetch::{WEB_FETCH_CAPABILITY_ID, WebFetchCapability};
 use everruns_llmsim::LlmSimConfig;
 use everruns_llmsim::LlmSimRuntimeExt;
-use everruns_core::mcp::{McpAuthProvider, McpAuthRequest, McpCredential};
-use everruns_capabilities::capabilities::{
-    SESSION_TASKS_CAPABILITY_ID, SUBAGENTS_CAPABILITY_ID, USER_HOOKS_CAPABILITY_ID,
-    UserHooksCapability,
-};
 use ignore::WalkBuilder;
 use regex::RegexBuilder;
 
@@ -187,7 +187,8 @@ pub(crate) fn provider_recovery_config() -> everruns_contracts::llm_retry::LlmRe
 /// refreshing them when they near expiry. The stored connection is keyed by
 /// the server's `oauth_provider_id` when set, otherwise its name.
 pub(crate) struct StoredMcpAuthProvider {
-    oauth: everruns_core::mcp::oauth::OAuthAuthProvider<crate::auth::mcp_oauth::ConnectionTokenStore>,
+    oauth:
+        everruns_core::mcp::oauth::OAuthAuthProvider<crate::auth::mcp_oauth::ConnectionTokenStore>,
 }
 
 impl StoredMcpAuthProvider {
@@ -1128,7 +1129,7 @@ const DEFAULT_ANTHROPIC_MODEL: &str = "claude-opus-5";
 const DEFAULT_META_MODEL: &str = "muse-spark-1.2";
 const DEFAULT_GOOGLE_MODEL: &str = "gemini-2.5-flash";
 // Gemini exposes an OpenAI-compatible surface at this base URL, driven through
-// `everruns_openai`. (OpenRouter has its own first-class driver since
+// `everruns_drivers::openai`. (OpenRouter has its own first-class driver since
 // everruns 0.10 — see `model_with_provider`.)
 const DEFAULT_GOOGLE_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta/openai";
 const DEFAULT_OPENROUTER_MODEL: &str = "openai/gpt-5.6-sol";
@@ -4722,7 +4723,11 @@ pub async fn build_with_options(
     let mut platform_builder = everruns_core::host::HostComposition::builder()
         .capability_registry(capabilities)
         .driver_registry(driver_registry)
-        .egress_service(everruns_core::host::runtime_egress_service())
+        // Core's default transport is offline. Preserve the prior MCP-enabled
+        // host's runtime egress and environment proxy policy explicitly.
+        .egress_service(Arc::new(
+            everruns_core::host::DirectEgressService::for_runtime_traffic_from_env(),
+        ))
         .session_file_system_factory(Arc::new(CodingCliSessionFileSystemFactory {
             workspace: workspace_host.clone(),
             session_dir: session_dir.clone(),
@@ -6393,134 +6398,118 @@ mod tests {
         }));
     }
 
-    #[test]
-    fn scripted_subagent_runs_in_a_real_child_session() {
-        // Deep turn plus foreground subagent future outgrew the default 2 MiB test
-        // thread stack after the everruns 0.34.2 bump; mirror src/main.rs and run
-        // it on an explicit large stack with matching tokio worker stacks.
-        std::thread::Builder::new()
-            .name("scripted-subagent-test".to_string())
-            .stack_size(16 * 1024 * 1024)
-            .spawn(|| {
-                tokio::runtime::Builder::new_multi_thread()
-                    .worker_threads(2)
-                    .thread_stack_size(8 * 1024 * 1024)
-                    .enable_all()
-                    .build()
-                    .expect("build test runtime")
-                    .block_on(async {
-                    use everruns_core::{SessionTaskState, TASK_KIND_SUBAGENT};
-                    use everruns_llmsim::{SimToolCall, SimTurn};
+    // Run this foreground child on the test harness's default stack. The
+    // canonical core boxes the large fallback future instead of requiring a
+    // larger thread stack from library hosts.
+    #[tokio::test]
+    async fn scripted_subagent_runs_in_a_real_child_session() {
+        use everruns_core::{SessionTaskState, TASK_KIND_SUBAGENT};
+        use everruns_llmsim::{SimToolCall, SimTurn};
 
-                    let workspace = tempfile::tempdir().expect("workspace");
-                    let sessions = tempfile::tempdir().expect("sessions");
-                    let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
-                    let options = BuildOptions {
-                        llmsim_override: Some(LlmSimConfig::scripted(vec![
-                            SimTurn::ToolCalls(vec![SimToolCall {
-                                name: "spawn_agent".to_string(),
-                                arguments: serde_json::json!({
-                                    "name": "Orbit Scout",
-                                    "instructions": "Inspect the orbit subsystem and report briefly.",
-                                    "target": { "type": "subagent" },
-                                    "mode": "foreground",
-                                    "seed": "fork"
-                                }),
-                                id: None,
-                            }]),
-                            SimTurn::Assistant("Orbit subsystem inspected.".to_string()),
-                            SimTurn::Assistant("Scout completed.".to_string()),
-                        ])),
-                        ..BuildOptions::default()
-                    };
-                    let built = build_with_options(
-                        workspace.path().to_path_buf(),
-                        ProviderChoice::Sim,
-                        None,
-                        sessions.path().to_path_buf(),
-                        settings,
-                        options,
-                    )
-                    .await
-                    .expect("build runtime");
+        let workspace = tempfile::tempdir().expect("workspace");
+        let sessions = tempfile::tempdir().expect("sessions");
+        let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
+        let options = BuildOptions {
+            llmsim_override: Some(LlmSimConfig::scripted(vec![
+                SimTurn::ToolCalls(vec![SimToolCall {
+                    name: "spawn_agent".to_string(),
+                    arguments: serde_json::json!({
+                        "name": "Orbit Scout",
+                        "instructions": "Inspect the orbit subsystem and report briefly.",
+                        "target": { "type": "subagent" },
+                        "mode": "foreground",
+                        "seed": "fork"
+                    }),
+                    id: None,
+                }]),
+                SimTurn::Assistant("Orbit subsystem inspected.".to_string()),
+                SimTurn::Assistant("Scout completed.".to_string()),
+            ])),
+            ..BuildOptions::default()
+        };
+        let built = build_with_options(
+            workspace.path().to_path_buf(),
+            ProviderChoice::Sim,
+            None,
+            sessions.path().to_path_buf(),
+            settings,
+            options,
+        )
+        .await
+        .expect("build runtime");
 
-                    let result = built
-                        .handles
-                        .run_checkpointed_turn(
-                            "Delegate the orbit inspection.",
-                            built.model.input_message("Delegate the orbit inspection."),
-                        )
-                        .await
-                        .expect("run parent turn");
-                    assert!(result.success, "parent turn: {result:?}");
+        let result = built
+            .handles
+            .run_checkpointed_turn(
+                "Delegate the orbit inspection.",
+                built.model.input_message("Delegate the orbit inspection."),
+            )
+            .await
+            .expect("run parent turn");
+        assert!(result.success, "parent turn: {result:?}");
 
-                    let task = built
-                        .task_registry
-                        .list(built.handles.session_id, None)
-                        .await
-                        .expect("list subagent tasks")
-                        .into_iter()
-                        .find(|task| task.kind == TASK_KIND_SUBAGENT)
-                        .expect("subagent task exists");
-                    let mut task = task;
-                    for _ in 0..100 {
-                        if task.state.is_terminal() {
-                            break;
-                        }
-                        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-                        task = built
-                            .task_registry
-                            .get(built.handles.session_id, &task.id)
-                            .await
-                            .expect("get subagent task")
-                            .expect("subagent task remains present");
-                    }
-                    assert_eq!(task.state, SessionTaskState::Succeeded);
-                    let child_id = task
-                        .links
-                        .child_session_id
-                        .expect("task links a child session");
-                    let child_messages = built
-                        .handles
-                        .runtime
-                        .messages(child_id)
-                        .await
-                        .expect("read child messages");
-                    assert!(child_messages.iter().any(|message| {
-                        message.role == RuntimeMessageRole::Agent
-                            && message.text() == Some("Orbit subsystem inspected.")
-                    }));
+        let task = built
+            .task_registry
+            .list(built.handles.session_id, None)
+            .await
+            .expect("list subagent tasks")
+            .into_iter()
+            .find(|task| task.kind == TASK_KIND_SUBAGENT)
+            .expect("subagent task exists");
+        let mut task = task;
+        for _ in 0..100 {
+            if task.state.is_terminal() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            task = built
+                .task_registry
+                .get(built.handles.session_id, &task.id)
+                .await
+                .expect("get subagent task")
+                .expect("subagent task remains present");
+        }
+        assert_eq!(task.state, SessionTaskState::Succeeded);
+        let child_id = task
+            .links
+            .child_session_id
+            .expect("task links a child session");
+        let child_messages = built
+            .handles
+            .runtime
+            .messages(child_id)
+            .await
+            .expect("read child messages");
+        assert!(child_messages.iter().any(|message| {
+            message.role == RuntimeMessageRole::Agent
+                && message.text() == Some("Orbit subsystem inspected.")
+        }));
 
-                    // The transcript line must name the spawned agent, not read
-                    // "Running Spawn Agent" (the generic display-name fallback).
-                    let events = built
-                        .handles
-                        .runtime
-                        .events()
-                        .await
-                        .expect("runtime events");
-                    let narrations = events
-                        .iter()
-                        .filter_map(|event| match &event.data {
-                            everruns_core::EventData::ToolStarted(data)
-                                if data.tool_call.name == "spawn_agent" =>
-                            {
-                                data.narration.clone()
-                            }
-                            _ => None,
-                        })
-                        .collect::<Vec<_>>();
-                    assert!(
-                        narrations
-                            .iter()
-                            .any(|narration| narration == "Launching Orbit Scout subagent"),
-                        "spawn_agent narration should name the agent: {narrations:?}"
-                    );
-                    })
+        // The transcript line must name the spawned agent, not read
+        // "Running Spawn Agent" (the generic display-name fallback).
+        let events = built
+            .handles
+            .runtime
+            .events()
+            .await
+            .expect("runtime events");
+        let narrations = events
+            .iter()
+            .filter_map(|event| match &event.data {
+                everruns_core::EventData::ToolStarted(data)
+                    if data.tool_call.name == "spawn_agent" =>
+                {
+                    data.narration.clone()
+                }
+                _ => None,
             })
-            .expect("spawn test thread")
-            .join()
-            .expect("test thread");
+            .collect::<Vec<_>>();
+        assert!(
+            narrations
+                .iter()
+                .any(|narration| narration == "Launching Orbit Scout subagent"),
+            "spawn_agent narration should name the agent: {narrations:?}"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -10367,11 +10356,11 @@ mod tests {
 
     #[test]
     fn tool_search_keeps_only_first_turn_profile_schemas_loaded() {
-        use everruns_core::builtins::DEFAULT_TOOL_SEARCH_THRESHOLD;
         use everruns_contracts::{
             BuiltinTool, DeferrablePolicy, ToolDefinition, ToolHints, ToolPolicy,
         };
         use everruns_core::Capability;
+        use everruns_core::builtins::DEFAULT_TOOL_SEARCH_THRESHOLD;
 
         fn fake_tool(name: impl Into<String>) -> ToolDefinition {
             ToolDefinition::Builtin(BuiltinTool {
