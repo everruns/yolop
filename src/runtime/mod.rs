@@ -56,7 +56,7 @@ use crate::session_state::user_ask::UserAskStore;
 use crate::tui::host_ui::{HostUi, TuiHandle, UiCommand, UiRequest};
 use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
-use everruns_builtins::{
+use everruns_core::builtins::{
     AGENT_INSTRUCTIONS_CAPABILITY_ID, AgentInstructionsCapability, BTW_CAPABILITY_ID,
     BtwCapability, COMPACTION_CAPABILITY_ID, CompactionCapability, INFINITY_CONTEXT_CAPABILITY_ID,
     InfinityContextCapability, LOOP_DETECTION_CAPABILITY_ID, LoopDetectionCapability,
@@ -68,13 +68,17 @@ use everruns_builtins::{
 };
 // host 0.19 absorbed the session services; the standalone crate's copy writes to
 // a store this runtime no longer reads.
-use everruns_host::{
+use everruns_core::host::{
     RuntimeHostAdapter, SESSION_CAPABILITY_ID, SESSION_STORAGE_CAPABILITY_ID, SessionCapability,
     SessionStorageCapability,
 };
 // #3111/#3119 moved the hosted and environment capability implementations out
 // of everruns-core into the platform and integration crates.
 use everruns::local::{LocalBackends, LocalProfile, LocalScheduleRunnerHandle};
+use everruns_capabilities::capabilities::{
+    SESSION_TASKS_CAPABILITY_ID, SUBAGENTS_CAPABILITY_ID, USER_HOOKS_CAPABILITY_ID,
+    UserHooksCapability,
+};
 use everruns_contracts::AgentLoopError;
 use everruns_contracts::CapabilityRef;
 use everruns_contracts::model_profiles::get_model_profile;
@@ -86,6 +90,14 @@ use everruns_contracts::{DriverRegistry, ProviderMetadata};
 use everruns_core::SessionStore;
 use everruns_core::SessionTaskRegistry;
 use everruns_core::command::{CommandDescriptor, CommandResult, ExecuteCommandRequest};
+use everruns_core::host::RuntimeProviderStore;
+use everruns_core::host::{
+    AgentBuilder, CapabilityDelta, HarnessBuilder, HostBackends, InProcessRuntime,
+    InProcessRuntimeBuilder, RealDiskFileStore, RuntimeSessionStore, SessionBuilder,
+    WriteBlocklistFileStore,
+};
+use everruns_core::host::{SessionFileSystemFactory, SessionFileSystemFactoryContext};
+use everruns_core::mcp::{McpAuthProvider, McpAuthRequest, McpCredential};
 use everruns_core::session_file::build_grep_search_result;
 use everruns_core::session_path::GrepPathPattern;
 use everruns_core::{
@@ -96,24 +108,12 @@ use everruns_core::{ContentPart, RuntimeMessageRole};
 use everruns_core::{
     FileInfo, FileStat, GrepMatch, GrepOptions, GrepSearchResult, InitialFile, SessionFile,
 };
-use everruns_host::RuntimeProviderStore;
-use everruns_host::{
-    AgentBuilder, CapabilityDelta, HarnessBuilder, HostBackends, InProcessRuntime,
-    InProcessRuntimeBuilder, RealDiskFileStore, RuntimeSessionStore, SessionBuilder,
-    WriteBlocklistFileStore,
-};
-use everruns_host::{SessionFileSystemFactory, SessionFileSystemFactoryContext};
 use everruns_integrations_daytona::DaytonaCapability;
 use everruns_integrations_duckduckgo::DuckDuckGoCapability;
 use everruns_integrations_filesystem::{FileSystemCapability, SESSION_FILE_SYSTEM_CAPABILITY_ID};
 use everruns_integrations_web_fetch::{WEB_FETCH_CAPABILITY_ID, WebFetchCapability};
 use everruns_llmsim::LlmSimConfig;
 use everruns_llmsim::LlmSimRuntimeExt;
-use everruns_mcp::{McpAuthProvider, McpAuthRequest, McpCredential};
-use everruns_platform::capabilities::{
-    SESSION_TASKS_CAPABILITY_ID, SUBAGENTS_CAPABILITY_ID, USER_HOOKS_CAPABILITY_ID,
-    UserHooksCapability,
-};
 use ignore::WalkBuilder;
 use regex::RegexBuilder;
 
@@ -187,13 +187,14 @@ pub(crate) fn provider_recovery_config() -> everruns_contracts::llm_retry::LlmRe
 /// refreshing them when they near expiry. The stored connection is keyed by
 /// the server's `oauth_provider_id` when set, otherwise its name.
 pub(crate) struct StoredMcpAuthProvider {
-    oauth: everruns_mcp::oauth::OAuthAuthProvider<crate::auth::mcp_oauth::ConnectionTokenStore>,
+    oauth:
+        everruns_core::mcp::oauth::OAuthAuthProvider<crate::auth::mcp_oauth::ConnectionTokenStore>,
 }
 
 impl StoredMcpAuthProvider {
     pub(crate) fn new(connections: Arc<ConnectionStore>) -> Self {
         Self {
-            oauth: everruns_mcp::oauth::OAuthAuthProvider::new(
+            oauth: everruns_core::mcp::oauth::OAuthAuthProvider::new(
                 crate::auth::mcp_oauth::ConnectionTokenStore::new(connections),
                 crate::auth::mcp_oauth::oauth_egress(),
             ),
@@ -225,9 +226,9 @@ impl McpAuthProvider for StoredMcpAuthProvider {
 fn mcp_connection_for(
     name: &str,
     server: &everruns_core::ScopedMcpServer,
-) -> Option<everruns_mcp::McpConnection> {
+) -> Option<everruns_core::mcp::McpConnection> {
     use everruns_core::McpServerTransportType;
-    use everruns_mcp::{McpConnection, McpEndpoint};
+    use everruns_core::mcp::{McpConnection, McpEndpoint};
 
     let endpoint = match server.transport_type {
         McpServerTransportType::Http => McpEndpoint::Http {
@@ -270,8 +271,8 @@ pub(crate) async fn discover_mcp_tool_names(
     if servers.is_empty() {
         return Vec::new();
     }
-    let client = everruns_mcp::McpClient::new(
-        Arc::new(everruns_host::DirectEgressService::default()),
+    let client = everruns_core::mcp::McpClient::new(
+        Arc::new(everruns_core::host::DirectEgressService::default()),
         Arc::new(StoredMcpAuthProvider::new(connections.clone())),
     );
     let mut names = Vec::new();
@@ -1128,7 +1129,7 @@ const DEFAULT_ANTHROPIC_MODEL: &str = "claude-opus-5";
 const DEFAULT_META_MODEL: &str = "muse-spark-1.2";
 const DEFAULT_GOOGLE_MODEL: &str = "gemini-2.5-flash";
 // Gemini exposes an OpenAI-compatible surface at this base URL, driven through
-// `everruns_openai`. (OpenRouter has its own first-class driver since
+// `everruns_drivers::openai`. (OpenRouter has its own first-class driver since
 // everruns 0.10 — see `model_with_provider`.)
 const DEFAULT_GOOGLE_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta/openai";
 const DEFAULT_OPENROUTER_MODEL: &str = "openai/gpt-5.6-sol";
@@ -2427,10 +2428,10 @@ pub(crate) async fn run_with_reasoning_recovery<F, Fut>(
     input: InputMessage,
     notice: &(dyn Fn(String) + Send + Sync),
     run: F,
-) -> anyhow::Result<everruns_host::TurnResult>
+) -> anyhow::Result<everruns_core::host::TurnResult>
 where
     F: Fn(InputMessage) -> Fut,
-    Fut: std::future::Future<Output = anyhow::Result<everruns_host::TurnResult>>,
+    Fut: std::future::Future<Output = anyhow::Result<everruns_core::host::TurnResult>>,
 {
     // Inputs the host builds itself (a background wake, a resumed turn) do not
     // come from `input_message`, so they carry no controls at all. Give them
@@ -2513,9 +2514,9 @@ pub(crate) fn agent_output_start(
 }
 
 /// The provider-facing error of a finished turn, whether it failed by `Err` or
-/// by an unsuccessful [`everruns_host::TurnResult`]. `None` for a turn that
+/// by an unsuccessful [`everruns_core::host::TurnResult`]. `None` for a turn that
 /// succeeded.
-fn turn_failure(result: &anyhow::Result<everruns_host::TurnResult>) -> Option<String> {
+fn turn_failure(result: &anyhow::Result<everruns_core::host::TurnResult>) -> Option<String> {
     match result {
         Err(error) => Some(format!("{error:#}")),
         Ok(turn) if !turn.success => turn.error.clone(),
@@ -3049,7 +3050,7 @@ impl RuntimeHandles {
         &self,
         prompt: &str,
         input: InputMessage,
-    ) -> anyhow::Result<everruns_host::TurnResult> {
+    ) -> anyhow::Result<everruns_core::host::TurnResult> {
         let checkpoint = self.checkpoints.start_turn(prompt)?;
         let result = self.runtime.run_turn(self.session_id, input).await;
         let success = result.as_ref().is_ok_and(|turn| turn.success);
@@ -3080,7 +3081,7 @@ impl RuntimeHandles {
         prompt: &str,
         input: InputMessage,
         notice: &(dyn Fn(String) + Send + Sync),
-    ) -> anyhow::Result<everruns_host::TurnResult> {
+    ) -> anyhow::Result<everruns_core::host::TurnResult> {
         run_with_reasoning_recovery(model, input, notice, move |input| async move {
             self.run_checkpointed_turn(prompt, input).await
         })
@@ -3760,7 +3761,7 @@ impl everruns_core::ProviderStore for YolopProviderStore {
 }
 
 #[async_trait]
-impl everruns_host::RuntimeProviderStore for YolopProviderStore {
+impl everruns_core::host::RuntimeProviderStore for YolopProviderStore {
     async fn set_default_model_spec(
         &self,
         model: everruns_contracts::model_spec::ModelSpec,
@@ -4030,10 +4031,10 @@ pub async fn build_with_options(
     // ACP streams. There is no message store any more — messages are a
     // projection of the canonical log, which is why the replayed branch is
     // seeded into the emitter above rather than into a second store.
-    let event_log: Arc<dyn everruns_host::EventLog> = event_bus_typed.clone();
-    let event_sink: Arc<dyn everruns_host::EventSink> = event_bus_typed.clone();
+    let event_log: Arc<dyn everruns_core::host::EventLog> = event_bus_typed.clone();
+    let event_sink: Arc<dyn everruns_core::host::EventSink> = event_bus_typed.clone();
     let provider_state = Arc::new(std::sync::RwLock::new(provider.clone()));
-    let yolop_provider_store: Arc<dyn everruns_host::RuntimeProviderStore> =
+    let yolop_provider_store: Arc<dyn everruns_core::host::RuntimeProviderStore> =
         Arc::new(YolopProviderStore {
             provider: provider_state.clone(),
             settings: settings.clone(),
@@ -4427,8 +4428,7 @@ pub async fn build_with_options(
     capabilities.register(
         crate::capabilities::session_tasks_override::TruthfulSessionTasksCapability::new(),
     );
-    capabilities
-        .register(crate::capabilities::subagents_override::NarratedSubagentCapability::new());
+    capabilities.register(everruns_capabilities::capabilities::SubagentCapability);
     capabilities.register(crate::capabilities::NarratedBackgroundExecutionCapability::new());
     capabilities.register(SessionStorageCapability);
     capabilities.register(DaytonaCapability);
@@ -4720,10 +4720,14 @@ pub async fn build_with_options(
     // tokens.typesafe in settings second. Absent key keeps the builder
     // default (Disabled), so the guard stays dormant and turns proceed
     // unchanged (fail open).
-    let mut platform_builder = everruns_host::HostComposition::builder()
+    let mut platform_builder = everruns_core::host::HostComposition::builder()
         .capability_registry(capabilities)
         .driver_registry(driver_registry)
-        .egress_service(everruns_host::runtime_egress_service())
+        // Core's default transport is offline. Preserve the prior MCP-enabled
+        // host's runtime egress and environment proxy policy explicitly.
+        .egress_service(Arc::new(
+            everruns_core::host::DirectEgressService::for_runtime_traffic_from_env(),
+        ))
         .session_file_system_factory(Arc::new(CodingCliSessionFileSystemFactory {
             workspace: workspace_host.clone(),
             session_dir: session_dir.clone(),
@@ -4769,7 +4773,7 @@ pub async fn build_with_options(
     // only from the *resolved* capability set.
     if options.tool_approver.is_some() {
         harness_capabilities.push(CapabilityRef::new(
-            everruns_builtins::tool_approval::TOOL_APPROVAL_CAPABILITY_ID,
+            everruns_core::builtins::tool_approval::TOOL_APPROVAL_CAPABILITY_ID,
         ));
     }
     let user_ask_enabled = harness_capabilities
@@ -4787,7 +4791,7 @@ pub async fn build_with_options(
     let mut harness_builder = HarnessBuilder::new("yolop", harness_prompt)
         .metadata_entry("app", "yolop")
         .metadata_entry("yolop_version", env!("CARGO_PKG_VERSION"))
-        .metadata_entry("everruns_host_version", env!("YOLOP_EVERRUNS_HOST_VERSION"))
+        .metadata_entry("everruns_core_version", env!("YOLOP_EVERRUNS_CORE_VERSION"))
         // Attribute LLM calls routed through OpenRouter so they show up under
         // Yolop on OpenRouter's app dashboards. The driver forwards these as
         // the `HTTP-Referer` and `X-Title` headers (everruns 0.14+).
@@ -4874,7 +4878,7 @@ pub async fn build_with_options(
     let skill_commands = crate::capabilities::skills::user_invocable_commands(
         &skill_dirs,
         &extension_skill_scopes,
-        &runtime.file_store(everruns_host::in_process_internal_org_id(
+        &runtime.file_store(everruns_core::host::in_process_internal_org_id(
             everruns_core::DEFAULT_ORG_PUBLIC_ID,
         )),
         session_id,
@@ -5512,7 +5516,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn build_keeps_connectors_cli_only() {
-        use everruns_host::RuntimeHostAdapter;
+        use everruns_core::host::RuntimeHostAdapter;
 
         let workspace = tempfile::tempdir().expect("workspace");
         let sessions = tempfile::tempdir().expect("sessions");
@@ -6394,139 +6398,123 @@ mod tests {
         }));
     }
 
-    #[test]
-    fn scripted_subagent_runs_in_a_real_child_session() {
-        // Deep turn plus foreground subagent future outgrew the default 2 MiB test
-        // thread stack after the everruns 0.34.2 bump; mirror src/main.rs and run
-        // it on an explicit large stack with matching tokio worker stacks.
-        std::thread::Builder::new()
-            .name("scripted-subagent-test".to_string())
-            .stack_size(16 * 1024 * 1024)
-            .spawn(|| {
-                tokio::runtime::Builder::new_multi_thread()
-                    .worker_threads(2)
-                    .thread_stack_size(8 * 1024 * 1024)
-                    .enable_all()
-                    .build()
-                    .expect("build test runtime")
-                    .block_on(async {
-                    use everruns_core::{SessionTaskState, TASK_KIND_SUBAGENT};
-                    use everruns_llmsim::{SimToolCall, SimTurn};
+    // Run this foreground child on the test harness's default stack. The
+    // canonical core boxes the large fallback future instead of requiring a
+    // larger thread stack from library hosts.
+    #[tokio::test]
+    async fn scripted_subagent_runs_in_a_real_child_session() {
+        use everruns_core::{SessionTaskState, TASK_KIND_SUBAGENT};
+        use everruns_llmsim::{SimToolCall, SimTurn};
 
-                    let workspace = tempfile::tempdir().expect("workspace");
-                    let sessions = tempfile::tempdir().expect("sessions");
-                    let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
-                    let options = BuildOptions {
-                        llmsim_override: Some(LlmSimConfig::scripted(vec![
-                            SimTurn::ToolCalls(vec![SimToolCall {
-                                name: "spawn_agent".to_string(),
-                                arguments: serde_json::json!({
-                                    "name": "Orbit Scout",
-                                    "instructions": "Inspect the orbit subsystem and report briefly.",
-                                    "target": { "type": "subagent" },
-                                    "mode": "foreground",
-                                    "seed": "fork"
-                                }),
-                                id: None,
-                            }]),
-                            SimTurn::Assistant("Orbit subsystem inspected.".to_string()),
-                            SimTurn::Assistant("Scout completed.".to_string()),
-                        ])),
-                        ..BuildOptions::default()
-                    };
-                    let built = build_with_options(
-                        workspace.path().to_path_buf(),
-                        ProviderChoice::Sim,
-                        None,
-                        sessions.path().to_path_buf(),
-                        settings,
-                        options,
-                    )
-                    .await
-                    .expect("build runtime");
+        let workspace = tempfile::tempdir().expect("workspace");
+        let sessions = tempfile::tempdir().expect("sessions");
+        let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
+        let options = BuildOptions {
+            llmsim_override: Some(LlmSimConfig::scripted(vec![
+                SimTurn::ToolCalls(vec![SimToolCall {
+                    name: "spawn_agent".to_string(),
+                    arguments: serde_json::json!({
+                        "name": "Orbit Scout",
+                        "instructions": "Inspect the orbit subsystem and report briefly.",
+                        "target": { "type": "subagent" },
+                        "mode": "foreground",
+                        "seed": "fork"
+                    }),
+                    id: None,
+                }]),
+                SimTurn::Assistant("Orbit subsystem inspected.".to_string()),
+                SimTurn::Assistant("Scout completed.".to_string()),
+            ])),
+            ..BuildOptions::default()
+        };
+        let built = build_with_options(
+            workspace.path().to_path_buf(),
+            ProviderChoice::Sim,
+            None,
+            sessions.path().to_path_buf(),
+            settings,
+            options,
+        )
+        .await
+        .expect("build runtime");
 
-                    let result = built
-                        .handles
-                        .run_checkpointed_turn(
-                            "Delegate the orbit inspection.",
-                            built.model.input_message("Delegate the orbit inspection."),
-                        )
-                        .await
-                        .expect("run parent turn");
-                    assert!(result.success, "parent turn: {result:?}");
+        let result = built
+            .handles
+            .run_checkpointed_turn(
+                "Delegate the orbit inspection.",
+                built.model.input_message("Delegate the orbit inspection."),
+            )
+            .await
+            .expect("run parent turn");
+        assert!(result.success, "parent turn: {result:?}");
 
-                    let task = built
-                        .task_registry
-                        .list(built.handles.session_id, None)
-                        .await
-                        .expect("list subagent tasks")
-                        .into_iter()
-                        .find(|task| task.kind == TASK_KIND_SUBAGENT)
-                        .expect("subagent task exists");
-                    let mut task = task;
-                    for _ in 0..100 {
-                        if task.state.is_terminal() {
-                            break;
-                        }
-                        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-                        task = built
-                            .task_registry
-                            .get(built.handles.session_id, &task.id)
-                            .await
-                            .expect("get subagent task")
-                            .expect("subagent task remains present");
-                    }
-                    assert_eq!(task.state, SessionTaskState::Succeeded);
-                    let child_id = task
-                        .links
-                        .child_session_id
-                        .expect("task links a child session");
-                    let child_messages = built
-                        .handles
-                        .runtime
-                        .messages(child_id)
-                        .await
-                        .expect("read child messages");
-                    assert!(child_messages.iter().any(|message| {
-                        message.role == RuntimeMessageRole::Agent
-                            && message.text() == Some("Orbit subsystem inspected.")
-                    }));
+        let task = built
+            .task_registry
+            .list(built.handles.session_id, None)
+            .await
+            .expect("list subagent tasks")
+            .into_iter()
+            .find(|task| task.kind == TASK_KIND_SUBAGENT)
+            .expect("subagent task exists");
+        let mut task = task;
+        for _ in 0..100 {
+            if task.state.is_terminal() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            task = built
+                .task_registry
+                .get(built.handles.session_id, &task.id)
+                .await
+                .expect("get subagent task")
+                .expect("subagent task remains present");
+        }
+        assert_eq!(task.state, SessionTaskState::Succeeded);
+        let child_id = task
+            .links
+            .child_session_id
+            .expect("task links a child session");
+        let child_messages = built
+            .handles
+            .runtime
+            .messages(child_id)
+            .await
+            .expect("read child messages");
+        assert!(child_messages.iter().any(|message| {
+            message.role == RuntimeMessageRole::Agent
+                && message.text() == Some("Orbit subsystem inspected.")
+        }));
 
-                    // The transcript line must name the spawned agent, not read
-                    // "Running Spawn Agent" (the generic display-name fallback).
-                    let events = built
-                        .handles
-                        .runtime
-                        .events()
-                        .await
-                        .expect("runtime events");
-                    let narrations = events
-                        .iter()
-                        .filter_map(|event| match &event.data {
-                            everruns_core::EventData::ToolStarted(data)
-                                if data.tool_call.name == "spawn_agent" =>
-                            {
-                                data.narration.clone()
-                            }
-                            _ => None,
-                        })
-                        .collect::<Vec<_>>();
-                    assert!(
-                        narrations
-                            .iter()
-                            .any(|narration| narration == "Launching Orbit Scout subagent"),
-                        "spawn_agent narration should name the agent: {narrations:?}"
-                    );
-                    })
+        // The transcript line must name the spawned agent, not read
+        // "Running Spawn Agent" (the generic display-name fallback).
+        let events = built
+            .handles
+            .runtime
+            .events()
+            .await
+            .expect("runtime events");
+        let narrations = events
+            .iter()
+            .filter_map(|event| match &event.data {
+                everruns_core::EventData::ToolStarted(data)
+                    if data.tool_call.name == "spawn_agent" =>
+                {
+                    data.narration.clone()
+                }
+                _ => None,
             })
-            .expect("spawn test thread")
-            .join()
-            .expect("test thread");
+            .collect::<Vec<_>>();
+        assert!(
+            narrations
+                .iter()
+                .any(|narration| narration == "Launching Orbit Scout subagent"),
+            "spawn_agent narration should name the agent: {narrations:?}"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn build_uses_everruns_local_backend_stores() {
-        use everruns_host::RuntimeHostAdapter;
+        use everruns_core::host::RuntimeHostAdapter;
 
         let workspace = tempfile::tempdir().expect("workspace");
         let sessions = tempfile::tempdir().expect("sessions");
@@ -6555,7 +6543,7 @@ mod tests {
             built
                 .handles
                 .runtime
-                .schedule_store(everruns_host::in_process_internal_org_id(
+                .schedule_store(everruns_core::host::in_process_internal_org_id(
                     everruns_core::DEFAULT_ORG_PUBLIC_ID
                 ))
                 .is_some(),
@@ -6613,9 +6601,9 @@ mod tests {
         assert_eq!(
             context
                 .embedder_metadata
-                .get("everruns_host_version")
+                .get("everruns_core_version")
                 .map(String::as_str),
-            Some(env!("YOLOP_EVERRUNS_HOST_VERSION"))
+            Some(env!("YOLOP_EVERRUNS_CORE_VERSION"))
         );
         // OpenRouter attribution headers flow through embedder metadata.
         use everruns_drivers::openrouter::options::{
@@ -9540,7 +9528,7 @@ mod tests {
                     .lock()
                     .expect("recorded")
                     .push(reasoning::sent_reasoning_effort(&input).map(str::to_string));
-                Ok(everruns_host::TurnResult {
+                Ok(everruns_core::host::TurnResult {
                     response: String::new(),
                     iterations: 1,
                     tool_calls_count: 0,
@@ -9615,7 +9603,7 @@ mod tests {
                         .await
                         .expect("apply the switch");
                 }
-                Ok(everruns_host::TurnResult {
+                Ok(everruns_core::host::TurnResult {
                     response: String::new(),
                     iterations: 1,
                     tool_calls_count: 1,
@@ -9694,7 +9682,7 @@ mod tests {
                     .and_then(|reasoning| reasoning.effort)
                     .map(|effort| effort.as_str().to_string());
                 recorded.lock().expect("recorded").push(effort.clone());
-                Ok(everruns_host::TurnResult {
+                Ok(everruns_core::host::TurnResult {
                     response: String::new(),
                     iterations: 1,
                     tool_calls_count: 0,
@@ -9780,7 +9768,7 @@ mod tests {
                 let mut attempts = run_attempts.lock().expect("attempts");
                 *attempts += 1;
                 let first = *attempts == 1;
-                Ok(everruns_host::TurnResult {
+                Ok(everruns_core::host::TurnResult {
                     response: String::new(),
                     iterations: 1,
                     tool_calls_count: 0,
@@ -10137,7 +10125,7 @@ mod tests {
     #[test]
     fn harness_applies_message_metadata_from_settings() {
         use crate::config::capability_settings::CapabilityOverride;
-        use everruns_builtins::MESSAGE_METADATA_CAPABILITY_ID;
+        use everruns_core::builtins::MESSAGE_METADATA_CAPABILITY_ID;
 
         let mut settings = Settings::default();
         settings.capabilities.push(CapabilityOverride {
@@ -10368,11 +10356,11 @@ mod tests {
 
     #[test]
     fn tool_search_keeps_only_first_turn_profile_schemas_loaded() {
-        use everruns_builtins::DEFAULT_TOOL_SEARCH_THRESHOLD;
         use everruns_contracts::{
             BuiltinTool, DeferrablePolicy, ToolDefinition, ToolHints, ToolPolicy,
         };
         use everruns_core::Capability;
+        use everruns_core::builtins::DEFAULT_TOOL_SEARCH_THRESHOLD;
 
         fn fake_tool(name: impl Into<String>) -> ToolDefinition {
             ToolDefinition::Builtin(BuiltinTool {
@@ -10582,7 +10570,7 @@ mod tests {
     /// helping and this test fails loudly so the threshold can be revisited.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn tool_surface_exceeds_tool_search_threshold() {
-        use everruns_builtins::DEFAULT_TOOL_SEARCH_THRESHOLD;
+        use everruns_core::builtins::DEFAULT_TOOL_SEARCH_THRESHOLD;
 
         let workspace = tempfile::tempdir().expect("workspace");
         let sessions = tempfile::tempdir().expect("sessions");
@@ -11107,7 +11095,7 @@ mod tests {
             compaction.config_value()["budget_percent"],
             serde_json::json!(0.85)
         );
-        let config: everruns_builtins::compaction::RuntimeCompactionConfig =
+        let config: everruns_core::builtins::compaction::RuntimeCompactionConfig =
             serde_json::from_value(compaction.config_value().clone())
                 .expect("valid compaction config");
         assert_eq!(

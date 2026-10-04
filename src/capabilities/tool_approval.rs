@@ -9,10 +9,10 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use everruns_builtins::tool_approval::ToolApprovalCapability as UpstreamToolApprovalCapability;
 use everruns_contracts::typed_id::SessionId;
 use everruns_contracts::{ToolCall, ToolDefinition};
 use everruns_core::ToolContext;
+use everruns_core::builtins::tool_approval::ToolApprovalCapability as UpstreamToolApprovalCapability;
 use everruns_core::tool_hooks::{PreToolUseDecision, PreToolUseHook};
 use everruns_core::{Capability, CapabilityStatus};
 
@@ -20,8 +20,8 @@ use crate::config::ApprovalMode;
 use crate::config::service::ConfigService;
 use crate::exec::shell_policy::requires_destructive_approval;
 
-pub(crate) use everruns_builtins::TOOL_APPROVAL_CAPABILITY_ID;
-pub(crate) use everruns_builtins::{ApprovalDecision, ToolApprover};
+pub(crate) use everruns_core::builtins::TOOL_APPROVAL_CAPABILITY_ID;
+pub(crate) use everruns_core::builtins::{ApprovalDecision, ToolApprover};
 
 /// Delegates approval policy to everruns-core while resolving Yolop's live mode.
 pub struct ToolApprovalCapability {
@@ -209,6 +209,26 @@ mod tests {
         }
     }
 
+    struct DeferredThenAllowApprover {
+        asked: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl ToolApprover for DeferredThenAllowApprover {
+        async fn approve(
+            &self,
+            _session_id: SessionId,
+            _tool_call: &ToolCall,
+            _tool_def: &ToolDefinition,
+        ) -> ApprovalDecision {
+            if self.asked.fetch_add(1, Ordering::Relaxed) == 0 {
+                ApprovalDecision::Deferred
+            } else {
+                ApprovalDecision::Allow
+            }
+        }
+    }
+
     struct DeferringApprover {
         asked: AtomicUsize,
     }
@@ -387,5 +407,28 @@ mod tests {
             other => panic!("expected deferred critical command to block, got {other:?}"),
         }
         assert_eq!(approver.asked.load(Ordering::Relaxed), 1);
+    }
+    #[tokio::test]
+    async fn deferred_critical_approval_blocks_without_remembering_a_decision() {
+        let temp = tempfile::tempdir().unwrap();
+        let settings = Arc::new(SettingsStore::open(temp.path().join("settings.toml")));
+        let approver = Arc::new(DeferredThenAllowApprover {
+            asked: AtomicUsize::new(0),
+        });
+        let capability = ToolApprovalCapability::new(approver.clone(), settings);
+        let hook = capability.pre_tool_use_hooks().pop().unwrap();
+        let context = ToolContext::new(SessionId::new());
+
+        assert!(matches!(
+            hook.before_exec(bash_call("pending", "kill 1234"), &bash_tool(), &context)
+                .await,
+            PreToolUseDecision::Block { .. }
+        ));
+        assert!(matches!(
+            hook.before_exec(bash_call("answered", "kill 1234"), &bash_tool(), &context)
+                .await,
+            PreToolUseDecision::Continue(_)
+        ));
+        assert_eq!(approver.asked.load(Ordering::Relaxed), 2);
     }
 }

@@ -184,7 +184,7 @@ async fn build_runtime(config: LlmSimConfig, marker_dir: &Path, python: &Path) -
     .expect("build runtime")
 }
 
-async fn run_turn(runtime: &BuiltRuntime, text: &str) -> everruns_host::TurnResult {
+async fn run_turn(runtime: &BuiltRuntime, text: &str) -> everruns_core::host::TurnResult {
     let session_id = runtime.handles.session_id;
     let input = runtime.model.input_message(text.to_string());
     tokio::time::timeout(

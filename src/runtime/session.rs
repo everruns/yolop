@@ -18,7 +18,7 @@ use everruns_core::Event;
 use everruns_core::InputMessage;
 use everruns_core::Tool;
 use everruns_core::command::ExecuteCommandRequest;
-use everruns_host::InProcessRuntime;
+use everruns_core::host::InProcessRuntime;
 use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::exec::tools::{BashTool, Workspace};
@@ -126,7 +126,7 @@ impl Session {
     pub async fn activate_capability(
         &self,
         capability_id: &str,
-    ) -> Result<everruns_host::CapabilityDelta> {
+    ) -> Result<everruns_core::host::CapabilityDelta> {
         self.handles.activate_capability(capability_id).await
     }
 
@@ -135,7 +135,7 @@ impl Session {
     pub async fn deactivate_capability(
         &self,
         capability_id: &str,
-    ) -> Result<everruns_host::CapabilityDelta> {
+    ) -> Result<everruns_core::host::CapabilityDelta> {
         self.handles.deactivate_capability(capability_id).await
     }
 

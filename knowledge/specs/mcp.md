@@ -16,8 +16,8 @@ extra tools, local (filesystem, git, sqlite) or remote (docs, issue trackers).
 Supporting it lets yolop use the same `.mcp.json` server catalog that every
 other MCP client understands, with no bespoke per-tool integration.
 
-The MCP **client** lives upstream in `everruns-mcp` (transport-agnostic) and is
-wired into the in-process `everruns-host` runtime; see the upstream
+The MCP **client** lives upstream in `everruns-core::mcp` (transport-agnostic) and is
+wired into the in-process `everruns-core` runtime; see the upstream
 `knowledge/specs/runtime-mcp.md` decision record. Yolop does not implement the protocol
 itself, it configures servers and consumes the runtime's discovery + execution
 path, so MCP tools flow through the same agent loop as the built-in tools.
@@ -142,7 +142,7 @@ host's response text in the tool result; `/tools` includes live discovered
 | Wiring into the session | `src/runtime/mod.rs` (`session_mcp_servers`, `StartupInfo.mcp_server_names`) |
 | `/mcp` command (list/reload/enable/disable/remove) | `src/capabilities/client_commands.rs`, `src/tui/host_ui.rs`, `src/tui/mod.rs` |
 | Live reload boundary | `src/runtime/mod.rs` (`RuntimeHandles::reload_mcp_servers`), `src/runtime/session.rs` |
-| OAuth protocol (discovery, DCR, PKCE, exchange, refresh) | upstream `everruns-core::oauth`, `everruns-mcp::oauth` |
+| OAuth protocol (discovery, DCR, PKCE, exchange, refresh) | upstream `everruns-core::mcp::oauth` |
 | OAuth loopback host, token storage, egress adapter | `src/auth/mcp_oauth_login.rs`, `src/auth/mcp_oauth.rs` |
 | Auth policy (stored OAuth tokens) | `src/runtime/mod.rs` (`StoredMcpAuthProvider`) |
-| Client / transports / executor | upstream `everruns-mcp`, `everruns-host` (`mcp-stdio` feature) |
+| Client / transports / executor | upstream `everruns-core::mcp`, `everruns-core` (`mcp-stdio` feature) |

@@ -11,8 +11,8 @@ use crate::control::{
 };
 use async_trait::async_trait;
 use clap::{Arg, ArgAction, ArgMatches, Command};
+use everruns_capabilities::ConnectorType;
 use everruns_core::{Capability, CapabilityStatus, SystemPromptContext, ToolExecutionResult};
-use everruns_platform::ConnectorType;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashMap;

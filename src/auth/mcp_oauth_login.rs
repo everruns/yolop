@@ -2,7 +2,7 @@
 
 use crate::auth::mcp_oauth::McpOAuthTokenSet;
 use anyhow::{Context, Result, anyhow};
-use everruns_mcp::oauth::RegisteredClient;
+use everruns_core::mcp::oauth::RegisteredClient;
 use std::collections::HashMap;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -12,7 +12,7 @@ const CALLBACK_PATH: &str = "/callback";
 pub(crate) struct PreparedLogin {
     pub authorize_url: String,
     listener: TcpListener,
-    oauth: everruns_mcp::oauth::PreparedLogin,
+    oauth: everruns_core::mcp::oauth::PreparedLogin,
 }
 
 #[allow(dead_code)]
@@ -44,7 +44,7 @@ pub(crate) async fn prepare_login(
         client_secret: None,
     });
     let egress = crate::auth::mcp_oauth::oauth_egress();
-    let oauth = everruns_mcp::oauth::prepare_login(
+    let oauth = everruns_core::mcp::oauth::prepare_login(
         egress.as_ref(),
         mcp_url,
         &redirect_uri,
@@ -67,7 +67,7 @@ pub(crate) async fn complete_login(prepared: PreparedLogin) -> Result<McpOAuthTo
         issuer,
     } = wait_for_callback(prepared.listener, &prepared.oauth.state).await?;
     let egress = crate::auth::mcp_oauth::oauth_egress();
-    everruns_mcp::oauth::complete_login(
+    everruns_core::mcp::oauth::complete_login(
         egress.as_ref(),
         &prepared.oauth,
         &code,
@@ -261,7 +261,7 @@ mod tests {
         assert!(response.contains("MCP server is connected."));
     }
 
-    // everruns-mcp 0.17.24 binds the OAuth resource to the MCP server origin
+    // The MCP host binds the OAuth resource to the MCP server origin
     // and requires that origin to be HTTPS, so an authorization server cannot
     // mint a token for an endpoint it does not control. The loopback *redirect*
     // below is still plain HTTP — that is the native-app pattern and unchanged.
@@ -269,7 +269,7 @@ mod tests {
     // The consequence for this file: `prepare_login` can no longer be driven
     // end-to-end against a local plain-HTTP mock, so the discovery →
     // registration → resource-binding assertions moved upstream, where
-    // everruns-mcp's own tests exercise them over https through a fake egress.
+    // core's MCP tests exercise them over https through a fake egress.
     // What stays here is the boundary yolop owns: a plain-HTTP MCP endpoint is
     // refused before any token is requested.
     #[tokio::test]

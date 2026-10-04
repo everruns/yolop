@@ -19,6 +19,7 @@
 use crate::capabilities::narration::narrate_spawn_background;
 use crate::tui::session_tasks_view::{load_task_tree, render_task_tree};
 use async_trait::async_trait;
+use everruns_capabilities::capabilities::BackgroundExecutionCapability;
 use everruns_contracts::typed_id::SessionId;
 use everruns_contracts::{ToolCall, ToolDefinition};
 use everruns_core::SessionStore;
@@ -31,7 +32,6 @@ use everruns_core::command::{
 };
 use everruns_core::tool_narration::ToolNarrationPhase;
 use everruns_core::{Capability, CapabilityStatus, SystemPromptContext};
-use everruns_platform::capabilities::BackgroundExecutionCapability;
 use std::sync::Arc;
 
 pub(crate) const BACKGROUND_CAPABILITY_ID: &str = "background";

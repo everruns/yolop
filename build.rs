@@ -15,12 +15,11 @@ fn main() {
         .unwrap_or_else(|| git_short_sha().unwrap_or_else(|| "unknown".to_string()));
     println!("cargo:rustc-env=YOLOP_GIT_SHA={git_sha}");
 
-    // everruns-host is what everruns-runtime became when upstream deleted the
-    // latter in 0.18; the version line names the crate that actually ships.
-    let host_version = cargo_lock_package_version("everruns-host")
-        .or_else(|| cargo_toml_dependency_version("everruns-host"))
+    // Host orchestration is an opt-in core module; report its published owner.
+    let core_version = cargo_lock_package_version("everruns-core")
+        .or_else(|| cargo_toml_dependency_version("everruns-core"))
         .unwrap_or_else(|| "unknown".to_string());
-    println!("cargo:rustc-env=YOLOP_EVERRUNS_HOST_VERSION={host_version}");
+    println!("cargo:rustc-env=YOLOP_EVERRUNS_CORE_VERSION={core_version}");
 
     // The host's Rust target triple. Needed at runtime to pick the right
     // prebuilt extension binary; `std::env::consts` gives OS and arch but

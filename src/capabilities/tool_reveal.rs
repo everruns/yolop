@@ -20,10 +20,10 @@
 // model was actually shown.
 
 use async_trait::async_trait;
-use everruns_builtins::TOOL_SEARCH_TOOL_NAME;
 use everruns_contracts::typed_id::SessionId;
 use everruns_contracts::{ToolCall, ToolDefinition, ToolResult};
 use everruns_core::ToolContext;
+use everruns_core::builtins::TOOL_SEARCH_TOOL_NAME;
 use everruns_core::tool_hooks::{PostToolExecHook, PostToolExecHookPriority};
 use everruns_core::{Capability, CapabilityStatus};
 use serde_json::Value;

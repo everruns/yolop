@@ -118,7 +118,7 @@ pub(crate) fn is_reasoning_required_error(message: &str) -> bool {
 /// Kept to chain wording (`response` plus not-found/expired) so a reworded
 /// upstream message still routes to the same retry, without matching
 /// unrelated 400s.
-/// TODO(upstream): retire this turn-level retry once everruns-provider handles
+/// TODO(upstream): retire this turn-level retry once everruns-contracts handles
 /// referenced-response expiry natively (everruns branch
 /// fix-expired-response-chain-retry); then route through the in-turn replay.
 pub(crate) fn is_expired_response_chain_error(message: &str) -> bool {

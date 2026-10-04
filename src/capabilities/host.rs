@@ -11,9 +11,9 @@ use everruns_core::command::{
     CommandArg, CommandDescriptor, CommandExecutionContext, CommandResult, CommandSource,
     ExecuteCommandRequest,
 };
+use everruns_core::host::RuntimeProviderStore;
 use everruns_core::{Capability, CapabilityStatus, SystemPromptContext};
 use everruns_core::{Tool, ToolExecutionResult};
-use everruns_host::RuntimeProviderStore;
 use serde_json::json;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

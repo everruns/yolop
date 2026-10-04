@@ -27,8 +27,8 @@ use crate::control::{
     CliCapability, ControlCapability, ControlRequest, ControlResponse, ControlRoute,
 };
 use async_trait::async_trait;
-use everruns_builtins::{SkillDirResolver, SkillScope, SkillsConfig};
 use everruns_contracts::ToolCall;
+use everruns_core::builtins::{SkillDirResolver, SkillScope, SkillsConfig};
 use everruns_core::command::{CommandDescriptor, CommandSource};
 use everruns_core::tool_narration::{ToolNarrationPhase, arg_str, truncate};
 use everruns_core::{Capability, CapabilityStatus, SessionFileSystem};

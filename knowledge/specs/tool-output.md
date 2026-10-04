@@ -26,7 +26,7 @@ it with a redundant read.
 ## Ownership
 
 The distinction between internal retention and model-visible recovery belongs
-to `everruns-builtins::PersistOutputHook`. Yolop owns composition, regression
+to `everruns-core::builtins::PersistOutputHook`. Yolop owns composition, regression
 coverage at the installed hook boundary, and agent-loop evaluation. It does not
 rewrite the hook result locally.
 

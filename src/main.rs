@@ -89,7 +89,7 @@ impl Write for BoundedTraceWriter {
 #[command(
     name = "yolop",
     version = version::VERSION_DETAILS,
-    about = "Yolop coding agent — embedded terminal agent built on everruns-host"
+    about = "Yolop coding agent, embedded terminal agent built on everruns-core"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -1581,7 +1581,7 @@ fn detached_cli_registry() -> Result<control::CliRegistry> {
         None,
     ));
     let mut catalog = config::capability_settings::CapabilityCatalog::new();
-    catalog.register_arc(Arc::new(everruns_builtins::MessageMetadataCapability));
+    catalog.register_arc(Arc::new(everruns_core::builtins::MessageMetadataCapability));
     registry.register(Arc::new(capabilities::ConfigCapability {
         settings: settings.clone(),
         catalog: Arc::new(catalog),
@@ -2186,61 +2186,62 @@ async fn run_print_mode(
             .unwrap_or_default()
             .iter()
             .any(|task| !task.state.is_terminal());
-        let (outcome, reason) =
-            match session_state::task_completion::gate_turn(&turn.result, has_background) {
-                session_state::task_completion::GateDecision::Conclusive(state) => {
-                    let mut evaluation =
-                        session_state::task_completion::evaluation_for_state(state);
-                    // Muse-only idle-promise guard: the sync gate treats any
-                    // tool-free text as Achieved, so a promised action with
-                    // zero tool calls would end the turn. Ask the Jev
-                    // classifier; a hit continues the turn instead of
-                    // presenting the promise. Misses, errors, and a missing
-                    // key keep Achieved (fail open).
-                    if evaluation.outcome == session_state::user_ask::AskOutcome::Achieved
-                        && turn.result.tool_calls_count == 0
-                        && crate::capabilities::is_muse(Some(model.model_id().as_str()))
-                        && let Some(classifier) =
-                            everruns_host::RuntimeHostAdapter::decisions(handles.runtime.as_ref())
-                        && crate::capabilities::evaluate_actionable_promise(
-                            &turn.result.response,
-                            turn.result.tool_calls_count,
-                            &classifier,
-                            None,
-                        )
-                        .await
-                    {
-                        evaluation = session_state::user_ask::UserAskEvaluation {
-                            outcome: session_state::user_ask::AskOutcome::InProgress,
-                            reason: "promised action but made no tool call".to_string(),
-                        };
-                    }
-                    user_ask_store.record_evaluation(handles.session_id, &evaluation)?;
-                    (evaluation.outcome, evaluation.reason)
+        let (outcome, reason) = match session_state::task_completion::gate_turn(
+            &turn.result,
+            has_background,
+        ) {
+            session_state::task_completion::GateDecision::Conclusive(state) => {
+                let mut evaluation = session_state::task_completion::evaluation_for_state(state);
+                // Muse-only idle-promise guard: the sync gate treats any
+                // tool-free text as Achieved, so a promised action with
+                // zero tool calls would end the turn. Ask the Jev
+                // classifier; a hit continues the turn instead of
+                // presenting the promise. Misses, errors, and a missing
+                // key keep Achieved (fail open).
+                if evaluation.outcome == session_state::user_ask::AskOutcome::Achieved
+                    && turn.result.tool_calls_count == 0
+                    && crate::capabilities::is_muse(Some(model.model_id().as_str()))
+                    && let Some(classifier) =
+                        everruns_core::host::RuntimeHostAdapter::decisions(handles.runtime.as_ref())
+                    && crate::capabilities::evaluate_actionable_promise(
+                        &turn.result.response,
+                        turn.result.tool_calls_count,
+                        &classifier,
+                        None,
+                    )
+                    .await
+                {
+                    evaluation = session_state::user_ask::UserAskEvaluation {
+                        outcome: session_state::user_ask::AskOutcome::InProgress,
+                        reason: "promised action but made no tool call".to_string(),
+                    };
                 }
-                session_state::task_completion::GateDecision::Evaluate => {
-                    let evaluation = handles
-                        .runtime
-                        .execute_command(
-                            handles.session_id,
-                            ExecuteCommandRequest {
-                                name: "ask".to_string(),
-                                arguments: Some(
-                                    session_state::user_ask::USER_ASK_EVALUATE_ARG.to_string(),
-                                ),
-                                controls: None,
-                            },
-                        )
-                        .await?;
-                    if !evaluation.success {
-                        eprintln!("user ask evaluation failed: {}", evaluation.message);
-                        break;
-                    }
-                    let parsed =
-                        session_state::user_ask::parse_evaluation_response(&evaluation.message)?;
-                    (parsed.outcome, parsed.reason)
+                user_ask_store.record_evaluation(handles.session_id, &evaluation)?;
+                (evaluation.outcome, evaluation.reason)
+            }
+            session_state::task_completion::GateDecision::Evaluate => {
+                let evaluation = handles
+                    .runtime
+                    .execute_command(
+                        handles.session_id,
+                        ExecuteCommandRequest {
+                            name: "ask".to_string(),
+                            arguments: Some(
+                                session_state::user_ask::USER_ASK_EVALUATE_ARG.to_string(),
+                            ),
+                            controls: None,
+                        },
+                    )
+                    .await?;
+                if !evaluation.success {
+                    eprintln!("user ask evaluation failed: {}", evaluation.message);
+                    break;
                 }
-            };
+                let parsed =
+                    session_state::user_ask::parse_evaluation_response(&evaluation.message)?;
+                (parsed.outcome, parsed.reason)
+            }
+        };
 
         match outcome {
             session_state::user_ask::AskOutcome::InProgress => {
@@ -2340,7 +2341,7 @@ async fn run_print_goal(
 }
 
 struct PrintTurn {
-    result: everruns_host::TurnResult,
+    result: everruns_core::host::TurnResult,
     output: Vec<String>,
 }
 

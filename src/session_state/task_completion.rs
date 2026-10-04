@@ -18,7 +18,7 @@ pub(crate) fn tag_continuation(
 }
 
 pub(crate) fn gate_turn(
-    result: &everruns_host::TurnResult,
+    result: &everruns_core::host::TurnResult,
     has_active_background: bool,
 ) -> GateDecision {
     everruns_core::turn_completion::gate_turn(&everruns_core::turn_completion::TurnSummary {
@@ -71,7 +71,7 @@ pub(crate) fn evaluation_for_state(
 /// … and never retry blindly." Checking this before `observe_turn` also stops
 /// ACP/TUI from appending a misleading "budget exhausted" line after a stall.
 pub(crate) fn failed_turn_evaluation(
-    result: &everruns_host::TurnResult,
+    result: &everruns_core::host::TurnResult,
 ) -> Option<crate::session_state::user_ask::UserAskEvaluation> {
     if result.success {
         return None;
@@ -85,8 +85,8 @@ mod tests {
     use everruns_contracts::typed_id::TurnId;
     use everruns_core::turn::TurnStopReason;
 
-    fn result(response: &str, tools: usize, success: bool) -> everruns_host::TurnResult {
-        everruns_host::TurnResult {
+    fn result(response: &str, tools: usize, success: bool) -> everruns_core::host::TurnResult {
+        everruns_core::host::TurnResult {
             response: response.to_string(),
             iterations: 1,
             tool_calls_count: tools,

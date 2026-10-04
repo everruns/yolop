@@ -110,7 +110,7 @@ Notes:
 ## Known gap
 
 - **Mid-turn reasoning-effort change** (within a single `run_turn`, not just at the
-  next turn boundary) requires upstream `everruns-host` support and is tracked in
+  next turn boundary) requires upstream `everruns-core` support and is tracked in
   **EVE-595**. `yolop model use <id>:<effort>` delivers turn-boundary escalation today.
 
 ## Evaluation

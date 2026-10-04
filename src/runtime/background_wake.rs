@@ -22,10 +22,10 @@ use everruns_core::EventData;
 use everruns_core::ExecutionSession;
 use everruns_core::InputMessage;
 use everruns_core::RuntimeMessageRole;
+use everruns_core::host::{InProcessRuntime, RuntimeSessionStore, SessionBuilder};
 use everruns_core::{PlatformCreateSessionRequest, PlatformMessage};
 use everruns_core::{SessionTask, SessionTaskRegistry};
 use everruns_core::{TaskTransition, wake_text_for};
-use everruns_host::{InProcessRuntime, RuntimeSessionStore, SessionBuilder};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
@@ -765,12 +765,12 @@ impl LocalSessionRunner for WakeRunner {
 mod tests {
     use super::*;
     use chrono::Utc;
+    use everruns_core::host::HostBackends;
     use everruns_core::session_task::new_session_task;
     use everruns_core::{
         ContentPart, CreateSessionTask, EventContext, SessionTaskState, TaskWakePolicy,
         ToolCompletedData,
     };
-    use everruns_host::HostBackends;
 
     fn runner() -> WakeRunner {
         let backends = HostBackends::in_memory();

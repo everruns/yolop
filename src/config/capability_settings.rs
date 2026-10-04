@@ -385,7 +385,7 @@ pub fn build_capability_override(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use everruns_builtins::{MESSAGE_METADATA_CAPABILITY_ID, MessageMetadataCapability};
+    use everruns_core::builtins::{MESSAGE_METADATA_CAPABILITY_ID, MessageMetadataCapability};
 
     fn defaults() -> Vec<CapabilityRef> {
         vec![

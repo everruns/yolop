@@ -1,7 +1,7 @@
 use async_trait::async_trait;
-use everruns_builtins::apply_cost_control_masking;
 use everruns_core::RuntimeMessage;
 use everruns_core::RuntimeMessageRole;
+use everruns_core::builtins::apply_cost_control_masking;
 use everruns_core::capabilities::{ModelViewContext, ModelViewProvider};
 use everruns_core::{Capability, CapabilityStatus};
 use std::sync::Arc;
@@ -54,7 +54,8 @@ impl ModelViewProvider for ContextCostControlModelViewProvider {
         config: &serde_json::Value,
         context: &ModelViewContext<'_>,
     ) -> Vec<RuntimeMessage> {
-        let config = everruns_builtins::compaction::RuntimeCompactionConfig::from_json(config);
+        let config =
+            everruns_core::builtins::compaction::RuntimeCompactionConfig::from_json(config);
         let result = apply_cost_control_masking(&messages, &config, context.prior_usage);
         if result.masked_count > 0 {
             tracing::debug!(

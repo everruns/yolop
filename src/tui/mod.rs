@@ -4149,7 +4149,7 @@ impl App {
         self.start_turn(prompt);
     }
 
-    async fn after_turn_user_ask_check(&mut self, result: Option<everruns_host::TurnResult>) {
+    async fn after_turn_user_ask_check(&mut self, result: Option<everruns_core::host::TurnResult>) {
         if !self.user_ask_enabled {
             return;
         }
@@ -4195,8 +4195,9 @@ impl App {
             if evaluation.outcome == AskOutcome::Achieved
                 && result.tool_calls_count == 0
                 && crate::capabilities::is_muse(Some(self.model.model_id().as_str()))
-                && let Some(classifier) =
-                    everruns_host::RuntimeHostAdapter::decisions(self.session.runtime().as_ref())
+                && let Some(classifier) = everruns_core::host::RuntimeHostAdapter::decisions(
+                    self.session.runtime().as_ref(),
+                )
                 && crate::capabilities::evaluate_actionable_promise(
                     &result.response,
                     result.tool_calls_count,
@@ -7607,7 +7608,7 @@ flowchart TD
             .record_user_prompt(session_id, "edit the file")
             .expect("record ask");
         test.app
-            .after_turn_user_ask_check(Some(everruns_host::TurnResult {
+            .after_turn_user_ask_check(Some(everruns_core::host::TurnResult {
                 response: "I need the path. Which file should I edit?".to_string(),
                 iterations: 1,
                 tool_calls_count: 0,
