@@ -6391,115 +6391,134 @@ mod tests {
         }));
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn scripted_subagent_runs_in_a_real_child_session() {
-        use everruns_core::{SessionTaskState, TASK_KIND_SUBAGENT};
-        use everruns_llmsim::{SimToolCall, SimTurn};
+    #[test]
+    fn scripted_subagent_runs_in_a_real_child_session() {
+        // Deep turn plus foreground subagent future outgrew the default 2 MiB test
+        // thread stack after the everruns 0.34.2 bump; mirror src/main.rs and run
+        // it on an explicit large stack with matching tokio worker stacks.
+        std::thread::Builder::new()
+            .name("scripted-subagent-test".to_string())
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| {
+                tokio::runtime::Builder::new_multi_thread()
+                    .worker_threads(2)
+                    .thread_stack_size(8 * 1024 * 1024)
+                    .enable_all()
+                    .build()
+                    .expect("build test runtime")
+                    .block_on(async {
+                    use everruns_core::{SessionTaskState, TASK_KIND_SUBAGENT};
+                    use everruns_llmsim::{SimToolCall, SimTurn};
 
-        let workspace = tempfile::tempdir().expect("workspace");
-        let sessions = tempfile::tempdir().expect("sessions");
-        let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
-        let options = BuildOptions {
-            llmsim_override: Some(LlmSimConfig::scripted(vec![
-                SimTurn::ToolCalls(vec![SimToolCall {
-                    name: "spawn_agent".to_string(),
-                    arguments: serde_json::json!({
-                        "name": "Orbit Scout",
-                        "instructions": "Inspect the orbit subsystem and report briefly.",
-                        "target": { "type": "subagent" },
-                        "mode": "foreground",
-                        "seed": "fork"
-                    }),
-                    id: None,
-                }]),
-                SimTurn::Assistant("Orbit subsystem inspected.".to_string()),
-                SimTurn::Assistant("Scout completed.".to_string()),
-            ])),
-            ..BuildOptions::default()
-        };
-        let built = build_with_options(
-            workspace.path().to_path_buf(),
-            ProviderChoice::Sim,
-            None,
-            sessions.path().to_path_buf(),
-            settings,
-            options,
-        )
-        .await
-        .expect("build runtime");
+                    let workspace = tempfile::tempdir().expect("workspace");
+                    let sessions = tempfile::tempdir().expect("sessions");
+                    let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
+                    let options = BuildOptions {
+                        llmsim_override: Some(LlmSimConfig::scripted(vec![
+                            SimTurn::ToolCalls(vec![SimToolCall {
+                                name: "spawn_agent".to_string(),
+                                arguments: serde_json::json!({
+                                    "name": "Orbit Scout",
+                                    "instructions": "Inspect the orbit subsystem and report briefly.",
+                                    "target": { "type": "subagent" },
+                                    "mode": "foreground",
+                                    "seed": "fork"
+                                }),
+                                id: None,
+                            }]),
+                            SimTurn::Assistant("Orbit subsystem inspected.".to_string()),
+                            SimTurn::Assistant("Scout completed.".to_string()),
+                        ])),
+                        ..BuildOptions::default()
+                    };
+                    let built = build_with_options(
+                        workspace.path().to_path_buf(),
+                        ProviderChoice::Sim,
+                        None,
+                        sessions.path().to_path_buf(),
+                        settings,
+                        options,
+                    )
+                    .await
+                    .expect("build runtime");
 
-        let result = built
-            .handles
-            .run_checkpointed_turn(
-                "Delegate the orbit inspection.",
-                built.model.input_message("Delegate the orbit inspection."),
-            )
-            .await
-            .expect("run parent turn");
-        assert!(result.success, "parent turn: {result:?}");
+                    let result = built
+                        .handles
+                        .run_checkpointed_turn(
+                            "Delegate the orbit inspection.",
+                            built.model.input_message("Delegate the orbit inspection."),
+                        )
+                        .await
+                        .expect("run parent turn");
+                    assert!(result.success, "parent turn: {result:?}");
 
-        let task = built
-            .task_registry
-            .list(built.handles.session_id, None)
-            .await
-            .expect("list subagent tasks")
-            .into_iter()
-            .find(|task| task.kind == TASK_KIND_SUBAGENT)
-            .expect("subagent task exists");
-        let mut task = task;
-        for _ in 0..100 {
-            if task.state.is_terminal() {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-            task = built
-                .task_registry
-                .get(built.handles.session_id, &task.id)
-                .await
-                .expect("get subagent task")
-                .expect("subagent task remains present");
-        }
-        assert_eq!(task.state, SessionTaskState::Succeeded);
-        let child_id = task
-            .links
-            .child_session_id
-            .expect("task links a child session");
-        let child_messages = built
-            .handles
-            .runtime
-            .messages(child_id)
-            .await
-            .expect("read child messages");
-        assert!(child_messages.iter().any(|message| {
-            message.role == RuntimeMessageRole::Agent
-                && message.text() == Some("Orbit subsystem inspected.")
-        }));
+                    let task = built
+                        .task_registry
+                        .list(built.handles.session_id, None)
+                        .await
+                        .expect("list subagent tasks")
+                        .into_iter()
+                        .find(|task| task.kind == TASK_KIND_SUBAGENT)
+                        .expect("subagent task exists");
+                    let mut task = task;
+                    for _ in 0..100 {
+                        if task.state.is_terminal() {
+                            break;
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                        task = built
+                            .task_registry
+                            .get(built.handles.session_id, &task.id)
+                            .await
+                            .expect("get subagent task")
+                            .expect("subagent task remains present");
+                    }
+                    assert_eq!(task.state, SessionTaskState::Succeeded);
+                    let child_id = task
+                        .links
+                        .child_session_id
+                        .expect("task links a child session");
+                    let child_messages = built
+                        .handles
+                        .runtime
+                        .messages(child_id)
+                        .await
+                        .expect("read child messages");
+                    assert!(child_messages.iter().any(|message| {
+                        message.role == RuntimeMessageRole::Agent
+                            && message.text() == Some("Orbit subsystem inspected.")
+                    }));
 
-        // The transcript line must name the spawned agent, not read
-        // "Running Spawn Agent" (the generic display-name fallback).
-        let events = built
-            .handles
-            .runtime
-            .events()
-            .await
-            .expect("runtime events");
-        let narrations = events
-            .iter()
-            .filter_map(|event| match &event.data {
-                everruns_core::EventData::ToolStarted(data)
-                    if data.tool_call.name == "spawn_agent" =>
-                {
-                    data.narration.clone()
-                }
-                _ => None,
+                    // The transcript line must name the spawned agent, not read
+                    // "Running Spawn Agent" (the generic display-name fallback).
+                    let events = built
+                        .handles
+                        .runtime
+                        .events()
+                        .await
+                        .expect("runtime events");
+                    let narrations = events
+                        .iter()
+                        .filter_map(|event| match &event.data {
+                            everruns_core::EventData::ToolStarted(data)
+                                if data.tool_call.name == "spawn_agent" =>
+                            {
+                                data.narration.clone()
+                            }
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>();
+                    assert!(
+                        narrations
+                            .iter()
+                            .any(|narration| narration == "Launching Orbit Scout subagent"),
+                        "spawn_agent narration should name the agent: {narrations:?}"
+                    );
+                    })
             })
-            .collect::<Vec<_>>();
-        assert!(
-            narrations
-                .iter()
-                .any(|narration| narration == "Launching Orbit Scout subagent"),
-            "spawn_agent narration should name the agent: {narrations:?}"
-        );
+            .expect("spawn test thread")
+            .join()
+            .expect("test thread");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -10687,7 +10706,10 @@ mod tests {
         // ~45-byte deferred stub in the eager surface. Measured 14,302 locally
         // and 13,938 in Linux CI for the same tree; the environment delta
         // predates this change. Thin headroom kept on the larger number.
-        const BASELINE_SCHEMA_BYTES: usize = 14_350;
+        // 2026-10-03: 14,350 -> 14,500. everruns 0.34.2 grew eager tool schemas
+        // (+83 bytes locally, 14,302 to 14,433). Linux CI measures lower for the
+        // same tree; thin headroom kept on the larger number.
+        const BASELINE_SCHEMA_BYTES: usize = 14_500;
         let workspace = tempfile::tempdir().expect("workspace");
         let sessions = tempfile::tempdir().expect("sessions");
         let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
