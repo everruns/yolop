@@ -978,7 +978,7 @@ impl PreToolUseHook for ProgressGuardGate {
             );
         if blocked {
             PreToolUseDecision::Block {
-                reason: "progress checkpoint required: call progress_checkpoint with facts, hypothesis, missing_evidence, and next_decisive_action before more exploration"
+                reason: "progress checkpoint required: call progress_checkpoint with facts, hypothesis, missing_evidence, and next_decisive_action before more exploration; if progress_checkpoint rejects as consecutive-without-progress, run a mutation, a decisive validation, or ask the user a question instead"
                     .to_string(),
                 user_message: None,
                 tool_call,
@@ -4058,22 +4058,29 @@ mod tests {
                 );
             }
         }
-        // Exploration must stay blocked until real progress lands.
+        // Exploration must stay blocked until real progress lands, and the block
+        // must point at mutation/validation/question once checkpoints run out.
+        let decision = gate
+            .before_exec(
+                call(
+                    "bash",
+                    json!({ "command": "sed -n '1,50p' src/capabilities/session_coordination.rs" }),
+                ),
+                &tool_def("bash"),
+                &context,
+            )
+            .await;
         assert!(
-            matches!(
-                gate.before_exec(
-                    call(
-                        "bash",
-                        json!({ "command": "sed -n '1,50p' src/capabilities/session_coordination.rs" }),
-                    ),
-                    &tool_def("bash"),
-                    &context,
-                )
-                .await,
-                PreToolUseDecision::Block { .. }
-            ),
+            matches!(decision, PreToolUseDecision::Block { .. }),
             "exploration should stay gated after a rejected checkpoint"
         );
+        if let PreToolUseDecision::Block { reason, .. } = decision {
+            assert!(
+                reason.contains("consecutive-without-progress"),
+                "gated block after checkpoint limit should direct to mutation/validation/question, got: {}",
+                reason
+            );
+        }
     }
 
     #[tokio::test]
