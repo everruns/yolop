@@ -3736,6 +3736,15 @@ impl everruns_core::ProviderStore for YolopProviderStore {
     ) -> everruns_contracts::error::Result<
         Option<everruns_contracts::driver_registry::ProviderConfig>,
     > {
+        // Codex login may complete in another process while this store remains
+        // alive, so refresh its persisted auth before credential validation.
+        if matches!(
+            *self.provider.read().expect("provider lock poisoned"),
+            ProviderChoice::Codex { .. }
+        ) {
+            self.settings.refresh_codex_auth_from_disk_checked()?;
+        }
+
         // No stored credentials means there is nothing to configure the driver
         // with. `None` is the documented signal for "selected but not configured
         // yet": the provider stays constructible so configuration commands still
@@ -5157,6 +5166,50 @@ mod tests {
                 .model,
             "gpt-5.4",
             "credentials must not change model selection"
+        );
+    }
+
+    #[tokio::test]
+    async fn provider_store_refreshes_codex_auth_written_after_construction() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.toml");
+        let settings = Arc::new(SettingsStore::open(path.clone()));
+        let store = YolopProviderStore {
+            provider: Arc::new(RwLock::new(ProviderChoice::Codex {
+                model: "gpt-5.3-codex".to_string(),
+                reasoning_effort: None,
+            })),
+            settings: Arc::clone(&settings),
+        };
+
+        SettingsStore::open(path)
+            .set_codex_auth(crate::config::CodexAuth {
+                access_token: "new-access-token".to_string(),
+                refresh_token: Some("new-refresh-token".to_string()),
+                expires_at: None,
+                account_id: Some("account-123".to_string()),
+                email: None,
+                client_id: None,
+                open_source: None,
+            })
+            .expect("external login");
+
+        use everruns_core::ProviderStore as _;
+        let config = store
+            .get_provider_config(&everruns_contracts::runtime_provider::ProviderKey::new(
+                "codex",
+            ))
+            .await
+            .expect("provider config")
+            .expect("configured");
+
+        assert_eq!(config.api_key.as_deref(), Some("new-access-token"));
+        assert_eq!(
+            settings
+                .snapshot()
+                .codex_auth()
+                .map(|auth| auth.access_token.as_str()),
+            Some("new-access-token")
         );
     }
 
