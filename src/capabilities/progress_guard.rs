@@ -1262,6 +1262,7 @@ enum SemanticFailureClass {
     MissingCommand,
     WrongPath,
     Usage,
+    Unknown,
 }
 
 impl SemanticFailureClass {
@@ -1271,6 +1272,7 @@ impl SemanticFailureClass {
             Self::MissingCommand => "missing-command",
             Self::WrongPath => "wrong-path",
             Self::Usage => "usage",
+            Self::Unknown => "unknown",
         }
     }
 }
@@ -1347,7 +1349,11 @@ fn classify_semantic_failure(result: &ToolResult) -> Option<SemanticFailureClass
     {
         return Some(SemanticFailureClass::Invocation);
     }
-    None
+    if result.error.is_some() {
+        Some(SemanticFailureClass::Unknown)
+    } else {
+        None
+    }
 }
 
 fn bounded_failure_diagnostic(result: &ToolResult) -> String {
@@ -2698,6 +2704,34 @@ mod tests {
         for (result, expected) in cases {
             assert_eq!(classify_semantic_failure(&result), expected, "{result:?}");
         }
+    }
+
+    #[test]
+    fn unknown_tool_errors_are_semantic_failures() {
+        let result = tool_error_result("No task found with id: task_stale");
+
+        assert_eq!(
+            classify_semantic_failure(&result),
+            Some(SemanticFailureClass::Unknown)
+        );
+    }
+
+    #[test]
+    fn repeated_unknown_tool_error_triggers_failure_repair() {
+        let mut progress = SessionProgress::default();
+        let call = call("wait_task", json!({ "task_id": "task_stale" }));
+
+        let mut first = tool_error_result("No task found with id: task_stale");
+        assert!(progress.observe(&call, &mut first).is_none());
+
+        let mut second = tool_error_result("No task found with id: task_stale");
+        let warning = progress
+            .observe(&call, &mut second)
+            .expect("second failure escalates to repair");
+        assert!(warning.contains("repeated an equivalent unknown failure"));
+        assert!(warning.contains("Do not rewrite and retry the same invocation path"));
+        assert_eq!(progress.consecutive_equivalent_failures, 2);
+        assert!(progress.failure_gate.is_some());
     }
 
     #[test]
