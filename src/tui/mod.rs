@@ -42,6 +42,7 @@ use tuika::ui::{Color, Line, Modifier, Rect, Span, Style};
 
 pub(crate) mod fullscreen;
 mod keymap;
+mod program_status;
 mod render;
 mod repo_pulse;
 pub(crate) mod routing;
@@ -63,6 +64,7 @@ mod transcript_selection;
 // (the single boundary that interprets `everruns_core` events); re-export them
 // here so the TUI's own submodules keep referring to them as `crate::tui::*`.
 pub(crate) use self::keymap::{GlobalAction, global_keymap};
+use self::program_status::ProgramStatus;
 pub(crate) use self::render::*;
 pub(crate) use crate::tui::presentation::*;
 pub(crate) use crate::tui::transcript::*;
@@ -367,6 +369,7 @@ pub struct App {
     /// non-terminal hosts emit no escape sequences.
     term_progress: TerminalProgress,
     native_progress: bool,
+    program_status: Option<ProgramStatus>,
     /// Shell-style Up/Down recall of previously submitted composer prompts,
     /// persisted across sessions. See [`crate::tui::prompt_history`].
     history: crate::tui::prompt_history::PromptHistory,
@@ -821,6 +824,7 @@ impl App {
             pending_copy: false,
             term_progress: TerminalProgress::new(),
             native_progress: false,
+            program_status: None,
             // Tests run in-memory so recall never reads or appends to the real
             // per-user history file.
             history: if cfg!(test) {
@@ -1185,6 +1189,7 @@ impl App {
     /// Called by `run_tui`; left off for tests and non-terminal hosts.
     pub(crate) fn enable_native_progress(&mut self) {
         self.native_progress = true;
+        self.program_status = Some(ProgramStatus::stdout());
     }
 
     pub fn should_show_resume_hint(&self) -> bool {
@@ -1433,6 +1438,9 @@ impl App {
         };
         if self.awaiting_approval.as_ref() == Some(&pending) {
             return;
+        }
+        if let Some(status) = self.program_status.as_mut() {
+            status.blocked_permission();
         }
         self.push_system(format!(
             "⏸ waiting for your approval — {} · {} (reply \"yes\" to proceed)",
@@ -1923,6 +1931,13 @@ impl App {
                     };
                     self.finalize_compact_turn(outcome);
                     self.finish_busy();
+                    if let Some(status) = self.program_status.as_mut() {
+                        if success {
+                            status.done();
+                        } else {
+                            status.error();
+                        }
+                    }
                     if let Some(notice) = self.session.take_checkpoint_notice() {
                         self.refresh_after_checkpoint_restore(notice).await;
                         for display in self
@@ -1949,6 +1964,9 @@ impl App {
                 Ok(TurnEvent::Failed(err)) => {
                     self.finalize_compact_turn(CompactWorkOutcome::Failed);
                     self.finish_busy();
+                    if let Some(status) = self.program_status.as_mut() {
+                        status.error();
+                    }
                     self.push_system(format!("turn failed: {err}"));
                     self.record_completion_state(
                         crate::session_state::task_completion::CompletionState::Failed,
@@ -1960,6 +1978,9 @@ impl App {
                 Err(mpsc::error::TryRecvError::Disconnected) => {
                     self.finalize_compact_turn(CompactWorkOutcome::Failed);
                     self.finish_busy();
+                    if let Some(status) = self.program_status.as_mut() {
+                        status.error();
+                    }
                     self.start_next_queued_turn();
                 }
             }
@@ -4227,9 +4248,13 @@ impl App {
                         crate::session_state::task_completion::continuation_prompt(&reason);
                     self.start_continuation_turn(prompt);
                 }
-                AskOutcome::Blocked => self
-                    .session
-                    .report_herdr_state(crate::capabilities::herdr::HerdrState::Blocked),
+                AskOutcome::Blocked => {
+                    if let Some(status) = self.program_status.as_mut() {
+                        status.blocked_question();
+                    }
+                    self.session
+                        .report_herdr_state(crate::capabilities::herdr::HerdrState::Blocked);
+                }
                 AskOutcome::Achieved | AskOutcome::Failed | AskOutcome::WaitingOnBackground => {}
             }
             return;
@@ -4257,6 +4282,9 @@ impl App {
             }
         };
         if evaluation.outcome == AskOutcome::Blocked {
+            if let Some(status) = self.program_status.as_mut() {
+                status.blocked_question();
+            }
             self.session
                 .report_herdr_state(crate::capabilities::herdr::HerdrState::Blocked);
         }
@@ -4355,6 +4383,9 @@ impl App {
         handle: crate::runtime::session::TurnHandle,
         activity: Option<String>,
     ) {
+        if let Some(status) = self.program_status.as_mut() {
+            status.working();
+        }
         self.rx = Some(handle.events);
         self.turn_cancel = Some(handle.cancel);
         self.esc_pending_cancel = false;
