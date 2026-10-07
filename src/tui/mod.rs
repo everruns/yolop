@@ -12121,25 +12121,21 @@ flowchart TD
             (cell.fg, cell.bg, cell.modifier)
         };
         let before = terminal.backend().buffer();
-        let highlighted = style_of(before, mouse.column, mouse.row + 3);
-        let plain = style_of(before, mouse.column, mouse.row);
+        let selected_style = style_of(before, mouse.column, mouse.row + 3);
+        let clicked_style = style_of(before, mouse.column, mouse.row);
         assert_ne!(
-            highlighted, plain,
+            selected_style, clicked_style,
             "selected and plain rows should paint differently"
         );
 
         assert!(app.handle_setup_mouse(mouse, area, &mut terminal).await);
         assert!(app.setup.is_none());
-        // The flash frame painted the clicked row with the highlight style.
+        // The flash frame painted the clicked row with the selection style.
         let flash = terminal.backend().buffer();
-        let row_became_bold = (panel.x..panel.x + panel.width).any(|column| {
-            style_of(flash, column, mouse.row)
-                .2
-                .contains(Modifier::BOLD)
-        });
-        assert!(
-            !plain.2.contains(Modifier::BOLD) && row_became_bold,
-            "click should paint the selected row bold before confirming"
+        assert_eq!(
+            style_of(flash, mouse.column, mouse.row),
+            selected_style,
+            "click should paint the selected row before confirming"
         );
         assert!(
             app.lines
