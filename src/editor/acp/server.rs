@@ -1826,7 +1826,8 @@ async fn run_prompt_once(
                 peer.session_update(
                     &acp_id,
                     SessionUpdate::AgentMessageChunk(protocol::text_chunk(format!(
-                        "turn error: {error}"
+                        "turn error: {}",
+                        crate::runtime::session::turn_failure_message(error)
                     ))),
                 );
                 for hint in crate::runtime::session::turn_failure_hints(
