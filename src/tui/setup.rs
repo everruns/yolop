@@ -892,8 +892,11 @@ impl App {
         };
         let mut state = tuika::components::SelectState::new();
         state.select(Some(picker.selected));
-        if state.handle_mouse(&event, len, bounds, first_visible) != tuika::InputOutcome::Submitted
-        {
+        let outcome = state.handle_mouse(&event, len, bounds, first_visible);
+        if !matches!(
+            outcome,
+            tuika::InputOutcome::Changed | tuika::InputOutcome::Submitted
+        ) {
             return false;
         }
         let index = state.selected().unwrap_or(picker.selected).min(len - 1);
@@ -934,11 +937,11 @@ impl App {
             }
             _ => return false,
         };
-        // The click already moved the highlight above. Paint one frame so the
-        // click is visible as a selection, hold it briefly, then confirm:
-        // tuika reports every row click as Submitted, so without this beat
-        // the dialog would close before the user sees what they picked. The
-        // paint is best-effort; a failed frame still confirms the click.
+        // The click already moved or confirmed the highlight above. Paint one
+        // frame so the selection is visible, hold it briefly, then confirm.
+        // Tuika reports a newly selected row as Changed and the current row as
+        // Submitted; setup intentionally confirms either outcome in one click.
+        // The paint is best-effort; a failed frame still confirms the click.
         let _ = terminal.draw(|frame| draw(frame, &mut *self));
         tokio::time::sleep(SETUP_CLICK_FLASH).await;
         match choice {
