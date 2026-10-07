@@ -19,6 +19,7 @@ use everruns_core::InputMessage;
 use everruns_core::Tool;
 use everruns_core::command::ExecuteCommandRequest;
 use everruns_core::host::InProcessRuntime;
+use serde_json::Value;
 use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::exec::tools::{BashTool, Workspace};
@@ -509,6 +510,121 @@ fn codex_auth_error_hint(error: &str) -> Option<String> {
     }
 }
 
+/// A concise provider failure for users, preserving only useful context.
+///
+/// Providers commonly wrap their actual response in retry and transport detail.
+/// Those wrappers are useful in logs, but obscure the one action a user can take.
+pub fn turn_failure_message(error: &str) -> String {
+    let context = provider_error_context(error);
+    let message = deepest_provider_error_message(error)
+        .filter(|message| !is_generic_provider_message(message))
+        .unwrap_or_else(|| error.to_string());
+    let message = message.trim();
+
+    match context {
+        Some(context) if message.starts_with(&context) => message.to_string(),
+        Some(context) => format!("{context}: {message}"),
+        None => message.to_string(),
+    }
+}
+
+fn provider_error_context(error: &str) -> Option<String> {
+    let provider = error
+        .split("provider '")
+        .nth(1)
+        .and_then(|tail| tail.split_once('\''))
+        .map(|(provider, _)| provider)
+        .map(|provider| match provider {
+            "openrouter" => "OpenRouter".to_string(),
+            provider => provider.to_string(),
+        });
+    let status = error
+        .split("API error (")
+        .nth(1)
+        .and_then(|tail| tail.split_once(')'))
+        .map(|(status, _)| status);
+
+    match (provider, status) {
+        (Some(provider), Some(status)) => Some(format!("{provider} ({status})")),
+        (Some(provider), None) => Some(provider),
+        (None, Some(status)) => Some(status.to_string()),
+        (None, None) => None,
+    }
+}
+
+fn deepest_provider_error_message(error: &str) -> Option<String> {
+    error
+        .split_once("API error")
+        .and_then(|(_, error)| error.find('{').map(|start| &error[start..]))
+        .and_then(balanced_json_object)
+        .and_then(|error| serde_json::from_str::<Value>(error).ok())
+        .and_then(|error| {
+            let mut best = None;
+            find_error_message(&error, &mut best);
+            best
+        })
+}
+
+fn balanced_json_object(input: &str) -> Option<&str> {
+    let mut depth = 0;
+    let mut in_string = false;
+    let mut escaped = false;
+
+    for (index, character) in input.char_indices() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+
+        match character {
+            '"' => in_string = true,
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&input[..=index]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn find_error_message(value: &Value, best: &mut Option<String>) {
+    match value {
+        Value::Object(object) => {
+            if let Some(Value::String(message)) = object.get("message") {
+                *best = Some(message.clone());
+            }
+            for value in object.values() {
+                if let Value::String(raw) = value
+                    && let Ok(nested) = serde_json::from_str(raw)
+                {
+                    find_error_message(&nested, best);
+                }
+                find_error_message(value, best);
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                find_error_message(value, best);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn is_generic_provider_message(message: &str) -> bool {
+    matches!(message, "Provider returned error")
+}
+
 /// How a failed turn reads in the transcript: drop a generic everruns
 /// apology when a real hint exists, then the way out (Assistant, so compact
 /// work and markdown links both see it), then the provider's own message.
@@ -528,7 +644,7 @@ fn failed_turn_transcript(
     }
     lines.push(ChatLine {
         author: Author::System,
-        text: format!("turn error: {error}"),
+        text: format!("turn error: {}", turn_failure_message(error)),
     });
     lines
 }
@@ -722,6 +838,33 @@ mod tests {
                 .expect("messages")
                 .is_empty(),
             "the rejected ask must remain resumable instead of entering history"
+        );
+    }
+
+    #[test]
+    fn provider_retry_wrappers_are_reduced_to_the_actionable_error() {
+        let raw = serde_json::json!({
+            "error": {
+                "message": "The backend is temporarily overloaded. Please retry.",
+                "code": "service_overloaded"
+            },
+            "provider_name": "Meta"
+        })
+        .to_string();
+        let error = format!(
+            "LLM error: provider 'openrouter': OpenAI Responses API error (503 Service Unavailable): {} (after 2 retries, last error: {{\"error\":{{\"message\":\"Provider returned error\"}}}})",
+            serde_json::json!({
+                "error": {
+                    "message": "Provider returned error",
+                    "code": 503,
+                    "metadata": { "raw": raw }
+                }
+            })
+        );
+
+        assert_eq!(
+            turn_failure_message(&error),
+            "OpenRouter (503 Service Unavailable): The backend is temporarily overloaded. Please retry."
         );
     }
 

@@ -2400,7 +2400,10 @@ async fn collect_print_turn(
     if !result.success
         && let Some(err) = &result.error
     {
-        eprintln!("turn error: {err}");
+        eprintln!(
+            "turn error: {}",
+            runtime::session::turn_failure_message(err)
+        );
         for hint in runtime::session::turn_failure_hints(err, model.reasoning_effort().as_deref()) {
             eprintln!("{hint}");
         }
