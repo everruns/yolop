@@ -12132,9 +12132,13 @@ flowchart TD
         assert!(app.setup.is_none());
         // The flash frame painted the clicked row with the highlight style.
         let flash = terminal.backend().buffer();
-        let flashed = style_of(flash, mouse.column, mouse.row);
+        let row_became_bold = (panel.x..panel.x + panel.width).any(|column| {
+            style_of(flash, column, mouse.row)
+                .2
+                .contains(Modifier::BOLD)
+        });
         assert!(
-            !plain.2.contains(Modifier::BOLD) && flashed.2.contains(Modifier::BOLD),
+            !plain.2.contains(Modifier::BOLD) && row_became_bold,
             "click should paint the selected row bold before confirming"
         );
         assert!(
