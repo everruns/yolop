@@ -977,9 +977,15 @@ impl PreToolUseHook for ProgressGuardGate {
                 ToolClass::Exploration | ToolClass::Status(_) | ToolClass::Waiting
             );
         if blocked {
+            let reason = if progress.checkpoints_without_progress
+                > CHECKPOINTS_WITHOUT_PROGRESS_LIMIT
+            {
+                "progress checkpoint rejected after consecutive checkpoints without a mutation or decisive validation. Further investigation is blocked. Do not file another checkpoint: run a mutation, a decisive validation, or ask the user a question."
+            } else {
+                "progress checkpoint required: call progress_checkpoint with facts, hypothesis, missing_evidence, and next_decisive_action before more exploration"
+            };
             PreToolUseDecision::Block {
-                reason: "progress checkpoint required: call progress_checkpoint with facts, hypothesis, missing_evidence, and next_decisive_action before more exploration"
-                    .to_string(),
+                reason: reason.to_string(),
                 user_message: None,
                 tool_call,
             }
@@ -4092,21 +4098,26 @@ mod tests {
                 );
             }
         }
-        // Exploration must stay blocked until real progress lands.
+        // Exploration must stay blocked until real progress lands, and the
+        // recovery message must not ask for another checkpoint that would fail.
+        let decision = gate
+            .before_exec(
+                call(
+                    "bash",
+                    json!({ "command": "sed -n '1,50p' src/capabilities/session_coordination.rs" }),
+                ),
+                &tool_def("bash"),
+                &context,
+            )
+            .await;
+        let PreToolUseDecision::Block { reason, .. } = decision else {
+            panic!("exploration should stay gated after a rejected checkpoint");
+        };
+        assert!(reason.contains("Do not file another checkpoint"));
+        assert!(reason.contains("mutation, a decisive validation, or ask the user"));
         assert!(
-            matches!(
-                gate.before_exec(
-                    call(
-                        "bash",
-                        json!({ "command": "sed -n '1,50p' src/capabilities/session_coordination.rs" }),
-                    ),
-                    &tool_def("bash"),
-                    &context,
-                )
-                .await,
-                PreToolUseDecision::Block { .. }
-            ),
-            "exploration should stay gated after a rejected checkpoint"
+            !reason.contains("call progress_checkpoint"),
+            "rejected checkpoints must not prescribe another checkpoint: {reason}"
         );
     }
 
