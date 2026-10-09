@@ -385,13 +385,18 @@ impl SessionProgress {
         }
         let failure_recovery = self.failure_gate.is_some();
         if !self.checkpoint_recommended && !failure_recovery {
-            reject_checkpoint(result, "no progress checkpoint has been requested");
+            reject_checkpoint(
+                result,
+                "not_needed",
+                "no progress checkpoint has been requested; continue with the next useful action",
+            );
             return;
         }
         let fingerprint = checkpoint_fingerprint(&tool_call.arguments);
         if self.seen_checkpoints.contains(&fingerprint) {
             reject_checkpoint(
                 result,
+                "unchanged",
                 "this checkpoint is unchanged; add new evidence or take the stated decisive action",
             );
             return;
@@ -408,6 +413,7 @@ impl SessionProgress {
             self.warning_count += 1;
             reject_checkpoint(
                 result,
+                "no_progress",
                 "two consecutive checkpoints were already filed without a mutation or decisive validation; run a mutation, a decisive validation, or ask the user a question instead of filing another checkpoint",
             );
             return;
@@ -925,7 +931,7 @@ impl Tool for ProgressCheckpointTool {
     }
 
     fn description(&self) -> &str {
-        "Summarize a long investigation into a bounded trajectory checkpoint. Pass facts and missing_evidence as JSON arrays of strings, hypothesis as one string, and next_decisive_action as an object with kind and description. Use when a long investigation needs a concrete next action."
+        "Summarize a long investigation into a bounded trajectory checkpoint. Pass facts and missing_evidence as JSON arrays of strings, hypothesis as one string, and next_decisive_action as an object with kind and description. Use when the progress guard recommends a checkpoint or repeated failures need recovery. A result with accepted: false explains the next action; do not retry the checkpoint unchanged."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -971,8 +977,8 @@ impl Tool for ProgressCheckpointTool {
     }
 
     fn deferrable_policy(&self) -> DeferrablePolicy {
-        // The progress gate can require this tool without allowing tool_search;
-        // its authoritative schema must therefore remain callable at all times.
+        // The guard recommends this tool directly, so its authoritative schema
+        // must remain callable without a tool_search round.
         DeferrablePolicy::Never
     }
 
@@ -1060,9 +1066,14 @@ fn checkpoint_fingerprint(arguments: &Value) -> String {
         .collect()
 }
 
-fn reject_checkpoint(result: &mut ToolResult, reason: &str) {
-    result.result = None;
-    result.error = Some(format!("progress_checkpoint rejected: {reason}"));
+fn reject_checkpoint(result: &mut ToolResult, status: &str, reason: &str) {
+    // State decisions are useful feedback, not execution failures. Keep the
+    // rejection structured so clients and models can act on the same reason.
+    result.result = Some(json!({
+        "accepted": false,
+        "status": status,
+        "message": reason,
+    }));
 }
 
 #[derive(Default)]
@@ -2090,6 +2101,73 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn checkpoint_state_outcomes_are_normal_results_without_resetting_progress() {
+        let state = Arc::new(Mutex::new(ProgressGuardState::default()));
+        let hook = ProgressGuardHook {
+            state: state.clone(),
+        };
+        let context = ToolContext::new(SessionId::new());
+        let checkpoint = call(PROGRESS_CHECKPOINT_TOOL, checkpoint_arguments("notes"));
+        let mut outcome = result_value(json!({ "submitted": true }));
+        hook.after_exec(
+            &checkpoint,
+            &tool_def(PROGRESS_CHECKPOINT_TOOL),
+            &mut outcome,
+            &context,
+        )
+        .await;
+        assert!(outcome.error.is_none(), "not needed is a normal outcome");
+        let value = outcome.result.as_ref().unwrap();
+        assert_eq!(value["accepted"], false);
+        assert_eq!(value["status"], "not_needed");
+        assert!(
+            value["message"]
+                .as_str()
+                .unwrap()
+                .contains("no progress checkpoint")
+        );
+
+        // Accept once, then recommend again with the same evidence. Rejection
+        // must retain the recommendation and investigation count.
+        for round in 0..2 {
+            for i in 0..CHECKPOINT_WITHOUT_PROGRESS_THRESHOLD {
+                hook.after_exec(
+                    &call(
+                        "read_file",
+                        json!({ "path": format!("/src/{round}/{i}.rs") }),
+                    ),
+                    &tool_def("read_file"),
+                    &mut result(),
+                    &context,
+                )
+                .await;
+            }
+            let mut outcome = result_value(json!({ "submitted": true }));
+            hook.after_exec(
+                &checkpoint,
+                &tool_def(PROGRESS_CHECKPOINT_TOOL),
+                &mut outcome,
+                &context,
+            )
+            .await;
+            assert!(outcome.error.is_none());
+            let value = outcome.result.as_ref().unwrap();
+            assert_eq!(value["accepted"], round == 0);
+            if round == 1 {
+                assert_eq!(value["status"], "unchanged");
+                let guard = state.lock().unwrap();
+                let progress = guard.sessions.get(&context.session_id.to_string()).unwrap();
+                assert!(progress.checkpoint_recommended);
+                assert_eq!(progress.checkpoint_count, 1);
+                assert_eq!(
+                    progress.exploration_since_progress,
+                    CHECKPOINT_WITHOUT_PROGRESS_THRESHOLD
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn checkpoint_advises_and_accepts_a_bounded_transition() {
         let state = Arc::new(Mutex::new(ProgressGuardState::default()));
         let capability = ProgressGuardCapability {
@@ -2344,6 +2422,21 @@ mod tests {
         let mut oversized = checkpoint_arguments("large");
         oversized["hypothesis"] = json!("x".repeat(601));
         assert!(validate_checkpoint_arguments(&oversized).is_err());
+    }
+
+    #[tokio::test]
+    async fn malformed_checkpoint_keeps_its_semantic_error() {
+        let arguments = json!({ "facts": "not an array" });
+        let executed = ProgressCheckpointTool.execute(arguments.clone()).await;
+        let ToolExecutionResult::ToolError(error) = executed else {
+            panic!("malformed arguments must be a tool error");
+        };
+        assert_eq!(error, "facts must be an array");
+        let mut outcome = tool_error_result(&error);
+        SessionProgress::default()
+            .observe_checkpoint(&call(PROGRESS_CHECKPOINT_TOOL, arguments), &mut outcome);
+        assert_eq!(outcome.error.as_deref(), Some("facts must be an array"));
+        assert!(outcome.result.is_none());
     }
 
     #[test]
@@ -3939,7 +4032,14 @@ mod tests {
                 );
             } else {
                 assert!(
-                    checkpoint.error.is_some(),
+                    checkpoint.error.is_none()
+                        && checkpoint.result.as_ref().is_some_and(|value| {
+                            value["accepted"] == false
+                                && value["status"] == "no_progress"
+                                && value["message"].as_str().is_some_and(|message| {
+                                    message.contains("two consecutive checkpoints")
+                                })
+                        }),
                     "third consecutive checkpoint without progress should be rejected, got: {}",
                     serde_json::to_string_pretty(&checkpoint)
                         .unwrap_or_else(|_| "<unserializable result>".to_string())

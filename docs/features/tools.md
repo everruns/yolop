@@ -78,6 +78,10 @@ allowlist of well-known public resources.
 
 - `write_todos` keeps multi-step work on track, with loop detection stopping
   repeated failing calls.
+- `progress_checkpoint` captures facts and the next decisive action when the
+  progress guard requests it. An unneeded or unchanged checkpoint returns a
+  completed result with `accepted: false`, a `status`, and an actionable
+  `message`, so the agent can continue without retrying a failed tool call.
 - Unfinished work receives bounded automatic continuation in terminal, ACP, and
   print sessions. Failing tests remain diagnostic evidence to investigate.
 - `/btw` asks a side question without touching history.

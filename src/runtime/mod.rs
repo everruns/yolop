@@ -5784,6 +5784,104 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn real_turn_preserves_semantic_errors_and_normal_checkpoint_outcomes_for_the_model() {
+        use everruns_llmsim::{SimToolCall, SimTurn};
+
+        let workspace = tempfile::tempdir().expect("workspace");
+        let sessions = tempfile::tempdir().expect("sessions");
+        let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
+        let options = BuildOptions {
+            llmsim_override: Some(LlmSimConfig::scripted(vec![
+                SimTurn::ToolCalls(vec![SimToolCall {
+                    name: "read_file".to_string(),
+                    arguments: serde_json::json!({ "path": "missing-evidence.txt" }),
+                    id: Some("missing".to_string()),
+                }]),
+                SimTurn::ToolCalls(vec![SimToolCall {
+                    name: "progress_checkpoint".to_string(),
+                    arguments: serde_json::json!({
+                        "facts": ["The evidence file is missing."],
+                        "hypothesis": "The path is wrong.",
+                        "missing_evidence": ["The correct path."],
+                        "next_decisive_action": {
+                            "kind": "validation",
+                            "description": "Locate the evidence file."
+                        }
+                    }),
+                    id: Some("checkpoint".to_string()),
+                }]),
+                SimTurn::Assistant("Diagnostics retained.".to_string()),
+            ])),
+            ..BuildOptions::default()
+        };
+        let built = build_with_options(
+            workspace.path().to_path_buf(),
+            ProviderChoice::Sim,
+            None,
+            sessions.path().to_path_buf(),
+            settings,
+            options,
+        )
+        .await
+        .expect("build runtime");
+        let result = built
+            .handles
+            .run_checkpointed_turn(
+                "Check missing evidence.",
+                built.model.input_message("Check missing evidence."),
+            )
+            .await
+            .expect("run turn");
+        assert!(result.success, "{result:?}");
+        let messages = built
+            .handles
+            .runtime
+            .messages(built.handles.session_id)
+            .await
+            .expect("runtime messages");
+        let missing = messages
+            .iter()
+            .find(|message| message.tool_call_id() == Some("missing"))
+            .expect("failed tool message");
+        let error = missing
+            .tool_result_content()
+            .unwrap()
+            .error
+            .as_ref()
+            .unwrap();
+        assert!(error.contains("missing-evidence.txt"), "{error}");
+        let provider_message = everruns_core::llm_conversions::llm_message_from_message_with_images(
+            missing,
+            &Default::default(),
+        );
+        assert_eq!(provider_message.tool_call_id.as_deref(), Some("missing"));
+        assert_eq!(
+            provider_message.content.to_text(),
+            format!("Tool error: {error}")
+        );
+
+        let checkpoint = messages
+            .iter()
+            .find(|message| message.tool_call_id() == Some("checkpoint"))
+            .expect("checkpoint message");
+        assert!(checkpoint.tool_result_content().unwrap().error.is_none());
+        let provider_message = everruns_core::llm_conversions::llm_message_from_message_with_images(
+            checkpoint,
+            &Default::default(),
+        );
+        let outcome: serde_json::Value = serde_json::from_str(&provider_message.content.to_text())
+            .expect("structured checkpoint outcome");
+        assert_eq!(outcome["accepted"], false);
+        assert_eq!(outcome["status"], "not_needed");
+        assert!(
+            outcome["message"]
+                .as_str()
+                .unwrap()
+                .contains("no progress checkpoint")
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn real_turn_blocks_misshaped_arguments_then_accepts_one_correction() {
         use everruns_core::EventData;
         use everruns_llmsim::{SimToolCall, SimTurn};

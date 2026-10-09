@@ -228,6 +228,11 @@ impl Translator {
                     ));
                 }
                 let mut fields = ToolCallUpdateFields::new().status(status).content(content);
+                if let Some(error) = data.error.as_deref() {
+                    // ACP clients may derive the failure reason from rawOutput
+                    // separately from the human-facing summary content.
+                    fields = fields.raw_output(serde_json::json!({ "message": error }));
+                }
                 if self.replay_history {
                     fields = fields.title(title);
                 }
@@ -269,6 +274,9 @@ pub(super) fn tool_kind(name: &str) -> ToolKind {
         .map(|(_, tool)| tool)
         .unwrap_or_else(|| name.to_string());
     let normalized = name.to_ascii_lowercase();
+    if normalized == "progress_checkpoint" {
+        return ToolKind::Think;
+    }
     let tokens = normalized
         .split(|c: char| !c.is_ascii_alphanumeric())
         .filter(|token| !token.is_empty())
@@ -637,6 +645,7 @@ mod tests {
         assert_eq!(tool_kind("web_fetch"), ToolKind::Fetch);
         assert_eq!(tool_kind("edit_file"), ToolKind::Edit);
         assert_eq!(tool_kind("bash"), ToolKind::Execute);
+        assert_eq!(tool_kind("progress_checkpoint"), ToolKind::Think);
         assert_eq!(tool_kind("mcp_paseo__list_files"), ToolKind::Read);
         assert_eq!(tool_kind("mcp_paseo__search_files"), ToolKind::Search);
         assert_eq!(tool_kind("mcp_paseo__build_repo_map"), ToolKind::Search);
@@ -698,6 +707,37 @@ mod tests {
     }
 
     #[test]
+    fn checkpoint_outcome_is_completed_with_its_reason_visible() {
+        let mut translator = Translator::new();
+        let message =
+            "no progress checkpoint has been requested; continue with the next useful action";
+        let updates = translator.on_event(&event(EventData::ToolCompleted(
+            ToolCompletedData::success(
+                "checkpoint".into(),
+                "progress_checkpoint".into(),
+                vec![ContentPart::text(
+                    json!({
+                        "accepted": false,
+                        "status": "not_needed",
+                        "message": message,
+                    })
+                    .to_string(),
+                )],
+                None,
+            ),
+        )));
+        assert_eq!(updates.len(), 1);
+        let SessionUpdate::ToolCallUpdate(update) = &updates[0] else {
+            panic!("expected checkpoint completion");
+        };
+        assert_eq!(update.fields.status, Some(ToolCallStatus::Completed));
+        assert_eq!(
+            update.fields.content,
+            Some(vec![protocol::content(message)])
+        );
+    }
+
+    #[test]
     fn tool_completed_failure_with_result_payload_still_includes_error_content() {
         let mut t = Translator::new();
         let updates = t.on_event(&event(EventData::ToolCompleted(ToolCompletedData {
@@ -722,6 +762,12 @@ mod tests {
         match &updates[0] {
             SessionUpdate::ToolCallUpdate(update) => {
                 assert_eq!(update.fields.status, Some(ToolCallStatus::Failed));
+                assert_eq!(
+                    update.fields.raw_output,
+                    Some(json!({
+                        "message": "Invalid URL: must start with http:// or https://"
+                    }))
+                );
                 assert_eq!(
                     update.fields.content,
                     Some(vec![protocol::content(

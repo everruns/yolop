@@ -10,6 +10,39 @@ mechanical `### What's Changed` list of merged PRs.
 Releases are cut via [`/release`](./.agents/skills/release/SKILL.md), which
 tags the version and publishes to crates.io and the Homebrew tap.
 
+## [0.20.0] - 2026-10-09
+
+### Highlights
+
+- Prefer known CLIs for integrations, add runnable help examples, and offer opt-in model-native `apply_patch`.
+- Report live program status in the TUI and keep modals aligned with the active theme.
+- Recover unfinished work across hosts and resume interrupted ACP response bodies once.
+- Improve Codex authentication refresh, provider failure messages, and recovery from unknown tools and progress-guard rejections.
+- Upgrade the Everruns crate family to 0.44.0 and Tuika to 0.13.0.
+
+### Breaking Changes
+
+- None. The optional `native_edit_tools` capability adds model-native `apply_patch`; default file-edit tools remain available.
+
+### What's Changed
+
+* feat: prefer known CLIs, complete CLI help examples, opt-in native edit tools ([#827](https://github.com/everruns/yolop/pull/827)) by @chaliy
+* fix(evals): tolerate one stray failed tool call in the search gate ([#826](https://github.com/everruns/yolop/pull/826)) by @chaliy
+* chore(deps): bump everruns to 0.44.0 ([#825](https://github.com/everruns/yolop/pull/825)) by @chaliy
+* fix(runtime): recover unfinished work across hosts ([#824](https://github.com/everruns/yolop/pull/824)) by @chaliy
+* fix(acp): resume interrupted response bodies once ([#823](https://github.com/everruns/yolop/pull/823)) by @chaliy
+* fix(tui): respect active theme in modals ([#822](https://github.com/everruns/yolop/pull/822)) by @chaliy
+* fix(evals): give prior-session-reference budget a one-call cushion ([#821](https://github.com/everruns/yolop/pull/821)) by @chaliy
+* fix(progress-guard): guide recovery after rejection ([#820](https://github.com/everruns/yolop/pull/820)) by @chaliy
+* chore(deps): bump jsonschema from 0.56.0 to 0.58.5 ([#819](https://github.com/everruns/yolop/pull/819)) by @app/dependabot
+* feat(tui): report program status ([#818](https://github.com/everruns/yolop/pull/818)) by @chaliy
+* fix(runtime): refresh Codex auth before provider lookup ([#817](https://github.com/everruns/yolop/pull/817)) by @chaliy
+* fix(errors): simplify provider failure messages ([#816](https://github.com/everruns/yolop/pull/816)) by @chaliy
+* fix(runtime): stop repeated unknown tool failures ([#815](https://github.com/everruns/yolop/pull/815)) by @chaliy
+* chore(evals): re-pin search-efficiency baseline to current main ([#813](https://github.com/everruns/yolop/pull/813)) by @chaliy
+
+**Full Changelog**: https://github.com/everruns/yolop/compare/v0.19.0...v0.20.0
+
 ## [0.19.0] - 2026-10-04
 
 ### Highlights
