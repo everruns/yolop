@@ -3,7 +3,6 @@
 // These are host/example behavior rather than runtime primitives. Keep the
 // module boundary here small; capability implementations live in submodules.
 
-pub(crate) mod action_guard;
 pub(crate) mod agent_commands;
 // `pub` rather than `pub(crate)`: `BuiltRuntime` hands hosts the session's
 // pending soft-approval so a pause is visible in the UI.
@@ -16,7 +15,6 @@ pub(crate) mod client_commands;
 pub(crate) mod config;
 pub(crate) mod context_cost_control;
 pub(crate) mod free_search;
-pub(crate) mod goal;
 pub(crate) mod herdr;
 pub(crate) mod hooks;
 pub(crate) mod host;
@@ -41,13 +39,9 @@ pub mod skills;
 pub(crate) mod tool_approval;
 pub(crate) mod tool_argument_validation;
 pub(crate) mod tool_reveal;
-pub(crate) mod user_ask;
 pub(crate) mod worktree_cmd;
 pub(crate) mod yolop;
 
-pub(crate) use crate::session_state::goal::GOAL_CAPABILITY_ID;
-pub(crate) use crate::session_state::user_ask::USER_ASK_CAPABILITY_ID;
-pub(crate) use action_guard::{ActionGuardCapability, evaluate_actionable_promise, is_muse};
 pub(crate) use agent_commands::{
     AGENT_COMMANDS_CAPABILITY_ID, AgentCommandsCapability, CommandDispatch,
 };
@@ -64,7 +58,6 @@ pub(crate) use context_cost_control::{
     CONTEXT_COST_CONTROL_CAPABILITY_ID, ContextCostControlCapability,
 };
 pub(crate) use free_search::FreeSearchCapability;
-pub(crate) use goal::GoalCapability;
 pub(crate) use herdr::{HERDR_CAPABILITY_ID, HerdrCapability};
 pub(crate) use hooks::{HOOKS_CAPABILITY_ID, HooksCapability};
 pub(crate) use host::{
@@ -92,7 +85,6 @@ pub(crate) use tool_approval::{ApprovalDecision, ToolApprovalCapability, ToolApp
 pub(crate) use tool_argument_validation::{
     TOOL_ARGUMENT_VALIDATION_CAPABILITY_ID, ToolArgumentValidationCapability,
 };
-pub(crate) use user_ask::UserAskCapability;
 pub(crate) use worktree_cmd::WorktreeCapability;
 
 #[cfg(test)]

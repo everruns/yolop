@@ -24,22 +24,21 @@ use crate::capabilities::tool_reveal::{
 use crate::capabilities::yolop::{YOLOP_CAPABILITY_ID, YolopCapability};
 use crate::capabilities::{
     AGENT_COMMANDS_CAPABILITY_ID, AST_GREP_CAPABILITY_ID, ATTRIBUTION_CAPABILITY_ID,
-    ActionGuardCapability, AgentCommandsCapability, AstEditCapability, AstGrepCapability,
-    AttributionCapability, BACKGROUND_CAPABILITY_ID, BackgroundCapability,
-    CHECKPOINT_CAPABILITY_ID, CLIENT_COMMANDS_CAPABILITY_ID, CODING_BASH_CAPABILITY_ID,
-    CONFIG_CAPABILITY_ID, CONTEXT_COST_CONTROL_CAPABILITY_ID, CheckpointCapability,
-    ClientCommandsCapability, ClientUiContext, CodingBashCapability,
-    CodingCliEnvironmentCapability, CommandDispatch, ConfigCapability,
-    ContextCostControlCapability, CoordinationConfig, CoordinationHost, CoordinationStore,
-    ENVIRONMENT_CONTEXT_CAPABILITY_ID, EnvironmentContextRegistry, GOAL_CAPABILITY_ID,
-    GoalCapability, HERDR_CAPABILITY_ID, HOOKS_CAPABILITY_ID, HerdrCapability, HooksCapability,
-    LspCapability, MODEL_RUNTIME_CONTEXT_CAPABILITY_ID, MODELS_CAPABILITY_ID, ModelCliCapability,
+    AgentCommandsCapability, AstEditCapability, AstGrepCapability, AttributionCapability,
+    BACKGROUND_CAPABILITY_ID, BackgroundCapability, CHECKPOINT_CAPABILITY_ID,
+    CLIENT_COMMANDS_CAPABILITY_ID, CODING_BASH_CAPABILITY_ID, CONFIG_CAPABILITY_ID,
+    CONTEXT_COST_CONTROL_CAPABILITY_ID, CheckpointCapability, ClientCommandsCapability,
+    ClientUiContext, CodingBashCapability, CodingCliEnvironmentCapability, CommandDispatch,
+    ConfigCapability, ContextCostControlCapability, CoordinationConfig, CoordinationHost,
+    CoordinationStore, ENVIRONMENT_CONTEXT_CAPABILITY_ID, EnvironmentContextRegistry,
+    HERDR_CAPABILITY_ID, HOOKS_CAPABILITY_ID, HerdrCapability, HooksCapability, LspCapability,
+    MODEL_RUNTIME_CONTEXT_CAPABILITY_ID, MODELS_CAPABILITY_ID, ModelCliCapability,
     ModelRuntimeContextCapability, ModelsCapability, PROGRESS_GUARD_CAPABILITY_ID,
     ProgressGuardCapability, REPO_MAP_CAPABILITY_ID, RepoMapCapability,
     SESSION_COORDINATION_CAPABILITY_ID, SESSIONS_CAPABILITY_ID, SOFT_APPROVAL_CAPABILITY_ID,
     SessionCoordinationCapability, SessionsCapability, SetupCliCapability,
-    TOOL_ARGUMENT_VALIDATION_CAPABILITY_ID, ToolArgumentValidationCapability,
-    USER_ASK_CAPABILITY_ID, UserAskCapability, WorktreeCapability, coordination_project_id,
+    TOOL_ARGUMENT_VALIDATION_CAPABILITY_ID, ToolArgumentValidationCapability, WorktreeCapability,
+    coordination_project_id,
 };
 use crate::config::capability_settings::{CapabilityCatalog, apply_capability_settings};
 use crate::config::mcp::McpConfigStore;
@@ -51,8 +50,6 @@ use crate::connectors::{
 use crate::exec::sandbox::SandboxProvider;
 use crate::exec::tools::Workspace;
 use crate::session_state::checkpoint::CheckpointManager;
-use crate::session_state::goal::GoalStore;
-use crate::session_state::user_ask::UserAskStore;
 use crate::tui::host_ui::{HostUi, TuiHandle, UiCommand, UiRequest};
 use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
@@ -739,8 +736,13 @@ impl CodingCliSessionFileStore {
 
     // Keep project files rooted at the user's workspace, but route generated
     // tool artifacts into yolop's durable per-session folder.
-    fn session_artifact_path(path: &str) -> Option<String> {
-        let normalized = everruns_core::session_path::to_session_path(path);
+    fn session_artifact_path(&self, path: &str) -> Option<String> {
+        let relative = crate::capabilities::skills::relative_under(
+            path,
+            self.session_dir.to_string_lossy().as_ref(),
+        );
+        let normalized =
+            everruns_core::session_path::to_session_path(relative.as_deref().unwrap_or(path));
         if normalized == "/outputs"
             || normalized.starts_with("/outputs/")
             || normalized == "/.background"
@@ -862,8 +864,12 @@ impl SessionFileSystem for CodingCliSessionFileStore {
         if self.skill_route(path).is_some() {
             return path.to_string();
         }
-        if let Some(relative) = Self::session_artifact_path(path) {
-            return self.session_dir.join(relative).display().to_string();
+        if let Some(relative) = self.session_artifact_path(path) {
+            return self
+                .session_dir
+                .join(relative.trim_start_matches('/'))
+                .display()
+                .to_string();
         }
         let Ok(root) = self.workspace.active_root() else {
             return path.to_string();
@@ -885,7 +891,7 @@ impl SessionFileSystem for CodingCliSessionFileStore {
         if let Some((store, path)) = self.skill_route(path) {
             return store.read_file(session_id, &path).await;
         }
-        if let Some(path) = Self::session_artifact_path(path) {
+        if let Some(path) = self.session_artifact_path(path) {
             return match self.session_store(false)? {
                 Some(store) => store.read_file(session_id, &path).await,
                 None => Ok(None),
@@ -904,7 +910,7 @@ impl SessionFileSystem for CodingCliSessionFileStore {
         if self.skill_route(path).is_some() {
             return Err(Self::readonly_skill_error(path));
         }
-        if let Some(path) = Self::session_artifact_path(path) {
+        if let Some(path) = self.session_artifact_path(path) {
             let file = self
                 .session_store(true)?
                 .expect("created session store")
@@ -932,7 +938,7 @@ impl SessionFileSystem for CodingCliSessionFileStore {
         if self.skill_route(path).is_some() {
             return Err(Self::readonly_skill_error(path));
         }
-        if let Some(path) = Self::session_artifact_path(path) {
+        if let Some(path) = self.session_artifact_path(path) {
             return self
                 .session_store(true)?
                 .expect("created session store")
@@ -967,7 +973,7 @@ impl SessionFileSystem for CodingCliSessionFileStore {
         if self.skill_route(path).is_some() {
             return Err(Self::readonly_skill_error(path));
         }
-        if let Some(path) = Self::session_artifact_path(path) {
+        if let Some(path) = self.session_artifact_path(path) {
             return match self.session_store(false)? {
                 Some(store) => store.delete_file(session_id, &path, recursive).await,
                 None => Ok(false),
@@ -986,7 +992,7 @@ impl SessionFileSystem for CodingCliSessionFileStore {
         if let Some((store, path)) = self.skill_route(path) {
             return store.list_directory(session_id, &path).await;
         }
-        if let Some(path) = Self::session_artifact_path(path) {
+        if let Some(path) = self.session_artifact_path(path) {
             return match self.session_store(false)? {
                 Some(store) => store.list_directory(session_id, &path).await,
                 None => Ok(Vec::new()),
@@ -1005,7 +1011,7 @@ impl SessionFileSystem for CodingCliSessionFileStore {
         if let Some((store, path)) = self.skill_route(path) {
             return store.stat_file(session_id, &path).await;
         }
-        if let Some(path) = Self::session_artifact_path(path) {
+        if let Some(path) = self.session_artifact_path(path) {
             return match self.session_store(false)? {
                 Some(store) => store.stat_file(session_id, &path).await,
                 None => Ok(None),
@@ -1025,7 +1031,7 @@ impl SessionFileSystem for CodingCliSessionFileStore {
         {
             return store.grep_files(session_id, pattern, Some(&path)).await;
         }
-        match path_pattern.and_then(Self::session_artifact_path) {
+        match path_pattern.and_then(|path| self.session_artifact_path(path)) {
             Some(path) => match self.session_store(false)? {
                 Some(store) => store.grep_files(session_id, pattern, Some(&path)).await,
                 None => Ok(Vec::new()),
@@ -1055,7 +1061,7 @@ impl SessionFileSystem for CodingCliSessionFileStore {
         if let Some(path) = options
             .path_pattern
             .as_deref()
-            .and_then(Self::session_artifact_path)
+            .and_then(|path| self.session_artifact_path(path))
         {
             let Some(store) = self.session_store(false)? else {
                 return Ok(GrepSearchResult {
@@ -1086,7 +1092,7 @@ impl SessionFileSystem for CodingCliSessionFileStore {
         if self.skill_route(path).is_some() {
             return Err(Self::readonly_skill_error(path));
         }
-        if let Some(path) = Self::session_artifact_path(path) {
+        if let Some(path) = self.session_artifact_path(path) {
             return self
                 .session_store(true)?
                 .expect("created session store")
@@ -1106,7 +1112,7 @@ impl SessionFileSystem for CodingCliSessionFileStore {
         if self.skill_route(&file.path).is_some() {
             return Err(Self::readonly_skill_error(&file.path));
         }
-        if let Some(path) = Self::session_artifact_path(&file.path) {
+        if let Some(path) = self.session_artifact_path(&file.path) {
             let mut routed = file.clone();
             routed.path = path;
             return self
@@ -2776,8 +2782,6 @@ fn default_coding_harness_capabilities(client_commands: bool) -> Vec<CapabilityR
         // `/btw` — ephemeral side question, answered out-of-band with the
         // session's context (upstream `BtwCapability`).
         CapabilityRef::new(BTW_CAPABILITY_ID),
-        // `/goal` — keep working across turns until a model-evaluated condition holds.
-        CapabilityRef::new(GOAL_CAPABILITY_ID),
         // Soft approval: injects spoken-consent guidance for critical actions,
         // tuned by the central `approval_mode` setting (off contributes nothing).
         CapabilityRef::new(SOFT_APPROVAL_CAPABILITY_ID),
@@ -2922,14 +2926,10 @@ pub struct BuiltRuntime {
     pub handles: RuntimeHandles,
     pub startup: StartupInfo,
     pub model: ModelState,
-    pub goal_store: Arc<GoalStore>,
-    pub user_ask_store: Arc<UserAskStore>,
     /// The critical action the session is waiting on the user to approve, if
     /// any. Hosts read it when a turn ends so a soft-approval pause is shown
     /// as a pause rather than as a turn that stopped mid-sentence.
     pub pending_approval: crate::capabilities::approval::PendingApprovalStore,
-    /// Whether the experimental `yolop_user_ask` capability was enabled.
-    pub user_ask_enabled: bool,
     pub worktree: Arc<WorktreeManager>,
     /// Settings store shared with the runtime capabilities. The TUI uses it
     /// to resolve credentials when querying provider models APIs and to show
@@ -3609,10 +3609,6 @@ pub struct BuildOptions {
     /// context entry. Set per session by the ACP host; `None` everywhere
     /// else, which omits the entry entirely.
     pub editor_context_value: Option<String>,
-    /// Classifier model override for the Muse-only actionable-promise guard
-    /// (`--classifier-model`). `None` falls back to the `classifier_model`
-    /// setting, then the TypeSafe backend default.
-    pub classifier_model_override: Option<String>,
 }
 
 impl Default for BuildOptions {
@@ -3632,7 +3628,6 @@ impl Default for BuildOptions {
             provider_retry_config: None,
             extra_environment_context: Vec::new(),
             editor_context_value: None,
-            classifier_model_override: None,
         }
     }
 }
@@ -4466,19 +4461,6 @@ pub async fn build_with_options(
     // dispatches it like any other capability command — no bespoke executor
     // needed. yolop owns no `/btw` logic; it only registers and enables it.
     capabilities.register(BtwCapability);
-    let goal_store = Arc::new(GoalStore::open(session_dir.clone()));
-    goal_store.load_session(session_id)?;
-    capabilities.register(GoalCapability {
-        store: goal_store.clone(),
-    });
-    let user_ask_store = Arc::new(UserAskStore::open(session_dir.clone()));
-    user_ask_store.load_session(session_id)?;
-    // Registered for catalog discovery and explicit settings opt-in, but kept
-    // off the default harness while completion tracking remains experimental.
-    capabilities.register(UserAskCapability {
-        store: user_ask_store.clone(),
-        session_id,
-    });
     capabilities.register(CheckpointCapability {
         manager: checkpoints.clone(),
         workspace_only: matches!(options.client_ui, ClientUiContext::Acp),
@@ -4530,9 +4512,6 @@ pub async fn build_with_options(
         session_id,
         replayed_tool_count,
     ));
-    // Muse-only idle-promise guard: the prompt is Muse-gated and enforcement
-    // runs only on Muse sessions (see the task_completion call sites).
-    capabilities.register(ActionGuardCapability::new());
     // Soft approval — spoken-consent guidance + audit tool, gated by the
     // central `approval_mode` setting (read live each turn).
     let (soft_approval, pending_approval) =
@@ -4724,12 +4703,7 @@ pub async fn build_with_options(
     let model_driver_registry = driver_registry.clone();
 
     // 0.18 replaced PlatformDefinition with HostComposition; same shape.
-    // TypeSafe classifier for the Muse-only actionable-promise guard. Same
-    // key pattern as chat providers: TYPESAFE_API_KEY env first,
-    // tokens.typesafe in settings second. Absent key keeps the builder
-    // default (Disabled), so the guard stays dormant and turns proceed
-    // unchanged (fail open).
-    let mut platform_builder = everruns_core::host::HostComposition::builder()
+    let platform_builder = everruns_core::host::HostComposition::builder()
         .capability_registry(capabilities)
         .driver_registry(driver_registry)
         // Core's default transport is offline. Preserve the prior MCP-enabled
@@ -4747,20 +4721,6 @@ pub async fn build_with_options(
             skill_environment: skill_dirs.environment.clone(),
             extension_skills: extension_skill_scopes.clone(),
         }));
-    if let Some(api_key) = resolve_token(&settings_snapshot, "typesafe", &["TYPESAFE_API_KEY"]) {
-        // CLI wins over the setting; both fall back to the backend default.
-        let classifier_model = options
-            .classifier_model_override
-            .clone()
-            .or_else(|| settings_snapshot.classifier_model().map(str::to_string));
-        let mut service = everruns::TypeSafeAI::without_retries(api_key);
-        if let Some(model) = classifier_model.as_deref() {
-            service = service.model(model);
-        }
-        platform_builder = platform_builder.decisions(Arc::new(service));
-    } else {
-        tracing::info!("typesafe API key absent; actionable-promise guard dormant");
-    }
     let platform = platform_builder.build();
 
     // Seed harness/agent/session explicitly so Yolop can attach harness
@@ -4785,9 +4745,6 @@ pub async fn build_with_options(
             everruns_core::builtins::tool_approval::TOOL_APPROVAL_CAPABILITY_ID,
         ));
     }
-    let user_ask_enabled = harness_capabilities
-        .iter()
-        .any(|cap| cap.capability_id() == USER_ASK_CAPABILITY_ID);
     let session_mcp_servers = mcp_servers.clone();
 
     // A profile's `instructions` ride after `system.md` so a profile can give
@@ -4963,10 +4920,7 @@ pub async fn build_with_options(
         workspace_host,
         task_registry,
         task_schedule_store,
-        goal_store,
-        user_ask_store,
         pending_approval,
-        user_ask_enabled,
         worktree,
     })
 }
@@ -6209,7 +6163,7 @@ mod tests {
         assert_eq!(
             warnings
                 .iter()
-                .filter(|warning| warning.contains("checkpoint required"))
+                .filter(|warning| warning.contains("checkpoint recommended"))
                 .count(),
             1,
             "checkpoint escalation must not spam: {warnings:?}"
@@ -6367,14 +6321,11 @@ mod tests {
             .filter(|data| data.tool_name == "bash")
             .collect::<Vec<_>>();
         assert!(
-            bash_results.last().is_some_and(|data| {
-                !data.success
-                    && data
-                        .error
-                        .as_deref()
-                        .is_some_and(|error| error == "Tool definition not found: bash")
-            }),
-            "the scripted stale retry should prove bash was absent from the next model-visible surface: {bash_results:?}"
+            bash_results.last().is_some_and(|data| data.success
+                && crate::tui::transcript::result_value(data)
+                    .is_some_and(|value| value["exit_code"] == 0
+                        && value.to_string().contains("SEMANTIC_RECOVERY"))),
+            "a different diagnostic command through bash must remain available: {bash_results:?}"
         );
         assert!(completed.iter().any(|data| {
             data.tool_name == "grep_files"
@@ -7013,189 +6964,6 @@ mod tests {
             )
             .await
             .expect_err("missing question is rejected");
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn goal_command_is_registered_and_sets_active_condition() {
-        let workspace = tempfile::tempdir().expect("workspace");
-        let sessions = tempfile::tempdir().expect("sessions");
-        let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
-        let built = build_with_options(
-            workspace.path().to_path_buf(),
-            ProviderChoice::Sim,
-            None,
-            sessions.path().to_path_buf(),
-            settings,
-            BuildOptions::default(),
-        )
-        .await
-        .expect("build runtime");
-
-        let commands = built
-            .handles
-            .runtime
-            .list_commands(built.handles.session_id)
-            .await
-            .expect("commands");
-        let goal = commands
-            .iter()
-            .find(|c| c.name == "goal")
-            .expect("/goal surfaced in the command registry");
-
-        let result = built
-            .handles
-            .runtime
-            .execute_command(
-                built.handles.session_id,
-                ExecuteCommandRequest {
-                    name: "goal".to_string(),
-                    arguments: Some("cargo test exits 0".to_string()),
-                    controls: None,
-                },
-            )
-            .await
-            .expect("execute /goal");
-        assert!(result.success, "result: {}", result.message);
-        assert!(built.goal_store.is_active(built.handles.session_id));
-        assert!(built.goal_store.take_pending_turn(built.handles.session_id));
-        assert_eq!(
-            built
-                .goal_store
-                .active_condition(built.handles.session_id)
-                .as_deref(),
-            Some("cargo test exits 0")
-        );
-        assert!(
-            goal.description.contains("completion"),
-            "descriptor: {}",
-            goal.description
-        );
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn user_ask_command_is_not_registered_by_default() {
-        let workspace = tempfile::tempdir().expect("workspace");
-        let sessions = tempfile::tempdir().expect("sessions");
-        let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
-
-        let built = build_with_options(
-            workspace.path().to_path_buf(),
-            ProviderChoice::Sim,
-            None,
-            sessions.path().to_path_buf(),
-            settings,
-            BuildOptions::default(),
-        )
-        .await
-        .expect("build runtime");
-
-        assert!(!built.user_ask_enabled);
-        let commands = built
-            .handles
-            .runtime
-            .list_commands(built.handles.session_id)
-            .await
-            .expect("commands");
-        assert!(
-            commands.iter().all(|command| command.name != "ask"),
-            "/ask should require the experimental capability opt-in"
-        );
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn user_ask_command_is_registered_when_enabled_in_settings() {
-        use crate::config::capability_settings::CapabilityOverride;
-
-        let workspace = tempfile::tempdir().expect("workspace");
-        let sessions = tempfile::tempdir().expect("sessions");
-        let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
-        settings
-            .append_capability_override(CapabilityOverride {
-                capability_ref: USER_ASK_CAPABILITY_ID.to_string(),
-                enabled: Some(true),
-                append: false,
-                config: serde_json::json!({}),
-            })
-            .expect("append user ask override");
-
-        let built = build_with_options(
-            workspace.path().to_path_buf(),
-            ProviderChoice::Sim,
-            None,
-            sessions.path().to_path_buf(),
-            settings,
-            BuildOptions::default(),
-        )
-        .await
-        .expect("build runtime");
-        assert!(built.user_ask_enabled);
-
-        let commands = built
-            .handles
-            .runtime
-            .list_commands(built.handles.session_id)
-            .await
-            .expect("commands");
-        let ask = commands
-            .iter()
-            .find(|c| c.name == "ask")
-            .expect("/ask surfaced when capability is enabled");
-
-        let result = built
-            .handles
-            .runtime
-            .execute_command(
-                built.handles.session_id,
-                ExecuteCommandRequest {
-                    name: "ask".to_string(),
-                    arguments: Some("upgrade dependencies".to_string()),
-                    controls: None,
-                },
-            )
-            .await
-            .expect("execute /ask");
-        assert!(result.success, "result: {}", result.message);
-        assert!(built.user_ask_store.is_active(built.handles.session_id));
-        assert_eq!(
-            built
-                .user_ask_store
-                .active_text(built.handles.session_id)
-                .as_deref(),
-            Some("upgrade dependencies")
-        );
-        assert!(
-            ask.description.contains("tracked"),
-            "descriptor: {}",
-            ask.description
-        );
-    }
-
-    #[test]
-    fn coding_harness_does_not_enable_experimental_user_ask_by_default() {
-        let ids = coding_harness_capabilities(false, None, &Settings::default());
-        assert!(
-            !ids.iter()
-                .any(|cap| cap.capability_id() == USER_ASK_CAPABILITY_ID),
-            "experimental user ask completion tracking should require opt-in"
-        );
-    }
-
-    #[test]
-    fn harness_applies_user_ask_from_settings() {
-        use crate::config::capability_settings::CapabilityOverride;
-
-        let mut settings = Settings::default();
-        settings.capabilities.push(CapabilityOverride {
-            capability_ref: USER_ASK_CAPABILITY_ID.to_string(),
-            enabled: Some(true),
-            append: false,
-            config: serde_json::json!({}),
-        });
-        let ids = coding_harness_capabilities(false, None, &settings);
-        assert!(
-            ids.iter()
-                .any(|cap| cap.capability_id() == USER_ASK_CAPABILITY_ID)
-        );
     }
 
     /// `run_command` is not terminal-only: ACP and `--print` sessions get it
@@ -9079,7 +8847,11 @@ mod tests {
         );
         assert_eq!(
             store.display_path("/outputs/call.stdout"),
-            "/outputs/call.stdout"
+            session
+                .path()
+                .join("outputs/call.stdout")
+                .display()
+                .to_string()
         );
     }
 
@@ -11314,7 +11086,7 @@ mod tests {
     /// the sum.
     ///
     /// Only always-on blocks with no per-session state are listed; blocks that
-    /// need a live store (`config`, `memory`, `user_ask`) are reveal-gated or
+    /// need a live store (`config`, `memory`) are reveal-gated or
     /// dominated by data rather than prose. Adding a static block means adding
     /// it here, which is the point: growth becomes a deliberate edit to a cap,
     /// not a silent side effect.

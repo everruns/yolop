@@ -245,16 +245,6 @@ pub fn schema() -> &'static [ConfigField] {
             provider_scoped: false,
         },
         ConfigField {
-            key: "classifier_model",
-            aliases: &["classifier-model", "classifier.model"],
-            title: "Classifier model",
-            description: "Model for the Muse-only actionable-promise guard (Jev, TypeSafe backend).",
-            kind: ValueKind::Text,
-            default: None,
-            examples: &["\"jev-2\""],
-            provider_scoped: false,
-        },
-        ConfigField {
             key: "chatgpt_client_id",
             aliases: &["chatgpt-client-id", "codex_client_id"],
             title: "ChatGPT sign-in client ID",
@@ -347,8 +337,6 @@ pub enum KeyTarget {
     Sandbox,
     /// Interactive TUI color theme.
     Theme,
-    /// Classifier model for the Muse-only actionable-promise guard.
-    ClassifierModel,
     /// OAuth client ID for new ChatGPT (codex provider) sign-ins.
     ChatgptClientId,
     /// Which route a new ChatGPT sign-in takes.
@@ -384,7 +372,6 @@ impl KeyTarget {
             KeyTarget::Worktrees => "worktrees",
             KeyTarget::Sandbox => "sandbox_mode",
             KeyTarget::Theme => "theme",
-            KeyTarget::ClassifierModel => "classifier_model",
             KeyTarget::ChatgptClientId => "chatgpt_client_id",
             KeyTarget::ChatgptSignIn => "chatgpt_sign_in",
             KeyTarget::Speed => "speed",
@@ -445,9 +432,6 @@ pub fn parse_key(input: &str) -> Result<KeyTarget, String> {
         "worktrees" | "worktree" => scalar(KeyTarget::Worktrees),
         "sandbox_mode" | "sandbox" | "containment" => scalar(KeyTarget::Sandbox),
         "theme" => scalar(KeyTarget::Theme),
-        "classifier_model" | "classifier-model" | "classifier.model" => {
-            scalar(KeyTarget::ClassifierModel)
-        }
         "chatgpt_client_id" | "chatgpt-client-id" | "codex_client_id" => {
             scalar(KeyTarget::ChatgptClientId)
         }

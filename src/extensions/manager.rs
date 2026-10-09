@@ -493,7 +493,15 @@ mod tests {
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
 
         // Precondition: while the writer is open the kernel really refuses.
-        let busy = std::process::Command::new(&script).spawn().unwrap_err();
+        let busy = match std::process::Command::new(&script).spawn() {
+            Err(error) => error,
+            Ok(mut child) => {
+                // macOS allows this. The ETXTBSY retry contract only applies
+                // when the running kernel actually enforces that condition.
+                assert!(child.wait().unwrap().success());
+                return;
+            }
+        };
         assert!(is_text_file_busy(&busy), "expected ETXTBSY, got {busy}");
 
         let release = std::thread::spawn(move || {

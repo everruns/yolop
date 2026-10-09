@@ -11,7 +11,7 @@ use everruns_core::ToolContext;
 use everruns_core::tool_hooks::{
     PostToolExecHook, PostToolExecHookPriority, PreToolUseDecision, PreToolUseHook,
 };
-use everruns_core::{Capability, CapabilityStatus, SystemPromptContext, ToolDefinitionHook};
+use everruns_core::{Capability, CapabilityStatus};
 use everruns_core::{Tool, ToolExecutionResult};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
@@ -43,10 +43,9 @@ const SEMANTIC_HISTORY_LIMIT: usize = 512;
 // gates forever; the stuck session filed 14 of them across a 1,319-call burn.
 const CHECKPOINTS_WITHOUT_PROGRESS_LIMIT: usize = 2;
 // Warns once when a session crosses this many tool calls, then blocks further
-// exploration at SESSION_TOOL_BUDGET. A backstop for loops the classifier
+// long sessions. A diagnostic advisory for loops the classifier
 // cannot see; the stuck session burned ~$10.77 over 1,319 calls.
 const SESSION_TOOL_BUDGET_WARN: usize = 400;
-const SESSION_TOOL_BUDGET: usize = 800;
 // Workspace locations and source extensions that mark a shell command as a
 // source read (see references_workspace_path and bash_path_tokens).
 const WORKSPACE_SOURCE_DIRS: [&str; 7] = [
@@ -105,7 +104,7 @@ impl Capability for ProgressGuardCapability {
     }
 
     fn description(&self) -> &str {
-        "Compacts unchanged evidence and forces a different action or checkpoint when investigation or equivalent failures stop making progress."
+        "Compacts unchanged evidence, advises long investigations, and prevents exact retries of failed actions."
     }
 
     fn status(&self) -> CapabilityStatus {
@@ -141,17 +140,6 @@ impl Capability for ProgressGuardCapability {
     fn pre_tool_use_hooks(&self) -> Vec<Arc<dyn PreToolUseHook>> {
         vec![Arc::new(ProgressGuardGate {
             state: self.state.clone(),
-        })]
-    }
-
-    fn tool_definition_hooks_with_context(
-        &self,
-        context: &SystemPromptContext,
-        _config: &Value,
-    ) -> Vec<Arc<dyn ToolDefinitionHook>> {
-        vec![Arc::new(ProgressGuardToolGate {
-            state: self.state.clone(),
-            session_id: context.session_id.to_string(),
         })]
     }
 
@@ -196,7 +184,7 @@ struct SessionProgress {
     consecutive_zero_evidence_searches: usize,
     consecutive_truncated_exploration: usize,
     warning_count: usize,
-    checkpoint_required: bool,
+    checkpoint_recommended: bool,
     /// Mutation-plus-validation total the last accepted checkpoint observed.
     /// Compared against the live total to tell checkpoints that carry
     /// progress apart from checkpoints that only restate the loop.
@@ -254,7 +242,7 @@ impl SessionProgress {
 
         self.warning_count += 1;
         let budget_warning = format!(
-            "progress_guard: session tool budget warning ({SESSION_TOOL_BUDGET_WARN}/{SESSION_TOOL_BUDGET} calls). Summarize for the user and stop exploring; only mutations, decisive validations, and explicit user requests should continue past this point."
+            "progress_guard: session tool budget warning ({SESSION_TOOL_BUDGET_WARN} calls). Reuse existing evidence and choose the next decisive action; useful new diagnostics remain available."
         );
         Some(match warning {
             Some(warning) => format!("{warning}\n\n{budget_warning}"),
@@ -396,8 +384,8 @@ impl SessionProgress {
             return;
         }
         let failure_recovery = self.failure_gate.is_some();
-        if !self.checkpoint_required && !failure_recovery {
-            reject_checkpoint(result, "no progress checkpoint is currently required");
+        if !self.checkpoint_recommended && !failure_recovery {
+            reject_checkpoint(result, "no progress checkpoint has been requested");
             return;
         }
         let fingerprint = checkpoint_fingerprint(&tool_call.arguments);
@@ -416,7 +404,7 @@ impl SessionProgress {
             self.progress_marker_at_checkpoint = progress_marker;
         }
         if self.checkpoints_without_progress > CHECKPOINTS_WITHOUT_PROGRESS_LIMIT {
-            self.checkpoint_required = true;
+            self.checkpoint_recommended = true;
             self.warning_count += 1;
             reject_checkpoint(
                 result,
@@ -430,7 +418,7 @@ impl SessionProgress {
             fingerprint,
         );
         self.checkpoint_count += 1;
-        self.checkpoint_required = false;
+        self.checkpoint_recommended = false;
         self.failure_gate = None;
         self.reset_failure_streak();
         self.reset_activity_streaks();
@@ -466,6 +454,7 @@ impl SessionProgress {
 
         self.failure_gate = Some(FailureGate {
             source_tool: tool_call.name.clone(),
+            action: serde_json::to_string(&tool_call.arguments).unwrap_or_default(),
             fingerprint: fingerprint.clone(),
         });
         if self.warned_failures.contains(&fingerprint) {
@@ -566,7 +555,7 @@ impl SessionProgress {
         self.recent_waiting.clear();
         self.repeated_exploration_count = 0;
         self.last_exploration_signature = None;
-        self.checkpoint_required = false;
+        self.checkpoint_recommended = false;
         self.warned_repetition_signatures.clear();
         self.warned_status_commands.clear();
         self.recent_warned_status_commands.clear();
@@ -604,10 +593,10 @@ impl SessionProgress {
         }
         let calls_since_navigation = history.calls.saturating_sub(history.semantic_navigation_at);
         if calls_since_navigation >= REPEATED_FILE_READ_GATE_THRESHOLD {
-            self.checkpoint_required = true;
+            self.checkpoint_recommended = true;
             self.warning_count += 1;
             return Some(format!(
-                "progress_guard: {calls_since_navigation} reads of {path} occurred without semantic navigation. Further investigation requires progress_checkpoint; use repo_map or repo_symbols to orient, ast_grep for structural search, or explain why those tools are insufficient and name the exact next region needed."
+                "progress_guard: {calls_since_navigation} reads of {path} occurred without semantic navigation. Consider progress_checkpoint; use repo_map or repo_symbols to orient, ast_grep for structural search, or explain why those tools are insufficient and name the exact next region needed."
             ));
         }
         if overlaps
@@ -815,10 +804,10 @@ impl SessionProgress {
             ));
         }
         if self.exploration_since_progress == CHECKPOINT_WITHOUT_PROGRESS_THRESHOLD {
-            self.checkpoint_required = true;
+            self.checkpoint_recommended = true;
             self.warning_count += 1;
             return Some(format!(
-                "progress_guard: checkpoint required after {count} investigation tools without an edit or validation. Further exploration is host-blocked until you call progress_checkpoint with bounded facts, hypothesis, missing evidence, and one next decisive action (mutation, validation, or no-change diagnosis).",
+                "progress_guard: checkpoint recommended after {count} investigation tools without an edit or validation. Use bounded facts, hypothesis, missing evidence, and one next decisive action (mutation, validation, or no-change diagnosis).",
                 count = self.exploration_since_progress
             ));
         }
@@ -889,46 +878,6 @@ struct ProgressGuardGate {
     state: Arc<Mutex<ProgressGuardState>>,
 }
 
-struct ProgressGuardToolGate {
-    state: Arc<Mutex<ProgressGuardState>>,
-    session_id: String,
-}
-
-impl ToolDefinitionHook for ProgressGuardToolGate {
-    fn transform(&self, tools: Vec<ToolDefinition>) -> Vec<ToolDefinition> {
-        let (checkpoint_required, failed_tool) = self
-            .state
-            .lock()
-            .expect("progress guard state poisoned")
-            .sessions
-            .get(&self.session_id)
-            .map(|progress| {
-                (
-                    progress.checkpoint_required,
-                    progress
-                        .failure_gate
-                        .as_ref()
-                        .map(|gate| gate.source_tool.clone()),
-                )
-            })
-            .unwrap_or_default();
-        if !checkpoint_required && failed_tool.is_none() {
-            return tools;
-        }
-        tools
-            .into_iter()
-            .filter(|tool| {
-                failed_tool.as_deref() != Some(tool.name())
-                    && (!checkpoint_required
-                        || !matches!(
-                            static_tool_class(tool.name()),
-                            Some(ToolClass::Exploration | ToolClass::Waiting)
-                        ))
-            })
-            .collect()
-    }
-}
-
 #[async_trait]
 impl PreToolUseHook for ProgressGuardGate {
     async fn before_exec(
@@ -945,7 +894,10 @@ impl PreToolUseHook for ProgressGuardGate {
             return PreToolUseDecision::Continue(tool_call);
         };
         if let Some(failure_gate) = &progress.failure_gate {
-            if failure_gate.source_tool == tool_call.name {
+            if failure_gate.source_tool == tool_call.name
+                && failure_gate.action
+                    == serde_json::to_string(&tool_call.arguments).unwrap_or_default()
+            {
                 return PreToolUseDecision::Block {
                     reason: format!(
                         "equivalent {} failure repeated on unchanged state: use a different tool/action or call progress_checkpoint before retrying {}",
@@ -958,40 +910,9 @@ impl PreToolUseHook for ProgressGuardGate {
             }
             progress.failure_gate = None;
         }
-        if progress.tool_count >= SESSION_TOOL_BUDGET
-            && matches!(classify_tool_call(&tool_call), ToolClass::Exploration)
-        {
-            progress.warning_count += 1;
-            return PreToolUseDecision::Block {
-                reason: format!(
-                    "progress_guard: session tool budget exhausted ({} calls). Summarize for the user; exploration stays blocked for this session, verify with mutations and validations or start a fresh session with a summary.",
-                    progress.tool_count
-                ),
-                user_message: None,
-                tool_call,
-            };
-        }
-        let blocked = progress.checkpoint_required
-            && matches!(
-                classify_tool_call(&tool_call),
-                ToolClass::Exploration | ToolClass::Status(_) | ToolClass::Waiting
-            );
-        if blocked {
-            let reason = if progress.checkpoints_without_progress
-                > CHECKPOINTS_WITHOUT_PROGRESS_LIMIT
-            {
-                "progress checkpoint rejected after consecutive checkpoints without a mutation or decisive validation. Further investigation is blocked. Do not file another checkpoint: run a mutation, a decisive validation, or ask the user a question."
-            } else {
-                "progress checkpoint required: call progress_checkpoint with facts, hypothesis, missing_evidence, and next_decisive_action before more exploration"
-            };
-            PreToolUseDecision::Block {
-                reason: reason.to_string(),
-                user_message: None,
-                tool_call,
-            }
-        } else {
-            PreToolUseDecision::Continue(tool_call)
-        }
+        // Counts and checkpoints advise the model. They must not make a new
+        // diagnostic action unreachable just because investigation was long.
+        PreToolUseDecision::Continue(tool_call)
     }
 }
 
@@ -1004,7 +925,7 @@ impl Tool for ProgressCheckpointTool {
     }
 
     fn description(&self) -> &str {
-        "Submit the bounded trajectory checkpoint required by progress_guard before further exploration. Pass facts and missing_evidence as JSON arrays of strings, hypothesis as one string, and next_decisive_action as an object with kind and description. Use only when progress_guard requires it."
+        "Summarize a long investigation into a bounded trajectory checkpoint. Pass facts and missing_evidence as JSON arrays of strings, hypothesis as one string, and next_decisive_action as an object with kind and description. Use when a long investigation needs a concrete next action."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -1293,6 +1214,8 @@ struct FailureFingerprint {
 struct FailureGate {
     source_tool: String,
     fingerprint: FailureFingerprint,
+    #[serde(default)]
+    action: String,
 }
 
 fn classify_semantic_failure(result: &ToolResult) -> Option<SemanticFailureClass> {
@@ -1974,6 +1897,7 @@ mod tests {
     use super::*;
     use everruns_contracts::typed_id::SessionId;
     use everruns_contracts::{BuiltinTool, DeferrablePolicy, ToolHints, ToolPolicy, ToolResult};
+    use everruns_core::SystemPromptContext;
 
     fn call(name: &str, arguments: Value) -> ToolCall {
         ToolCall {
@@ -2164,7 +2088,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn checkpoint_gate_blocks_exploration_then_accepts_a_bounded_transition() {
+    async fn checkpoint_advises_and_accepts_a_bounded_transition() {
         let state = Arc::new(Mutex::new(ProgressGuardState::default()));
         let capability = ProgressGuardCapability {
             state: state.clone(),
@@ -2194,7 +2118,7 @@ mod tests {
                 &context,
             )
             .await;
-        assert!(matches!(blocked, PreToolUseDecision::Block { .. }));
+        assert!(matches!(blocked, PreToolUseDecision::Continue(_)));
 
         let arguments = checkpoint_arguments("owner");
         let executed = ProgressCheckpointTool.execute(arguments.clone()).await;
@@ -2219,11 +2143,13 @@ mod tests {
         assert!(matches!(resumed, PreToolUseDecision::Continue(_)));
 
         let prompt_context = SystemPromptContext::without_file_store(context.session_id);
-        let visible = capability.tool_definition_hooks_with_context(&prompt_context, &json!({}))[0]
-            .transform(vec![
-                tool_def("read_file"),
-                tool_def(PROGRESS_CHECKPOINT_TOOL),
-            ]);
+        let visible = capability
+            .tool_definition_hooks_with_context(&prompt_context, &json!({}))
+            .into_iter()
+            .fold(
+                vec![tool_def("read_file"), tool_def(PROGRESS_CHECKPOINT_TOOL)],
+                |tools, hook| hook.transform(tools),
+            );
         assert_eq!(
             visible.iter().map(|tool| tool.name()).collect::<Vec<_>>(),
             vec!["read_file", PROGRESS_CHECKPOINT_TOOL],
@@ -2245,8 +2171,10 @@ mod tests {
             tool_def(PROGRESS_CHECKPOINT_TOOL),
         ];
 
-        let visible = capability.tool_definition_hooks_with_context(&prompt_context, &json!({}))[0]
-            .transform(tools.clone());
+        let visible = capability
+            .tool_definition_hooks_with_context(&prompt_context, &json!({}))
+            .into_iter()
+            .fold(tools.clone(), |tools, hook| hook.transform(tools));
 
         assert_eq!(
             visible.iter().map(|tool| tool.name()).collect::<Vec<_>>(),
@@ -2255,7 +2183,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn checkpoint_gate_removes_blocked_paths_from_the_next_model_round() {
+    async fn long_investigation_keeps_diagnostic_tools_visible() {
         let state = Arc::new(Mutex::new(ProgressGuardState::default()));
         let capability = ProgressGuardCapability {
             state: state.clone(),
@@ -2290,21 +2218,27 @@ mod tests {
         let visible = capability
             .tool_definition_hooks_with_context(&prompt_context, &json!({}))
             .into_iter()
-            .fold(tools, |tools, hook| hook.transform(tools))
+            .fold(tools.clone(), |tools, hook| hook.transform(tools))
             .into_iter()
             .map(|tool| tool.name().to_string())
             .collect::<Vec<_>>();
 
         assert_eq!(
             visible,
-            vec!["bash", "edit_file", PROGRESS_CHECKPOINT_TOOL, "write_todos"],
-            "the gated model round should not advertise paths the pre-tool hook will reject"
+            tools
+                .iter()
+                .map(|tool| tool.name().to_string())
+                .collect::<Vec<_>>(),
+            "investigation must retain all diagnostic tools"
         );
 
         let other_session = SystemPromptContext::without_file_store(SessionId::new());
-        let other_visible =
-            capability.tool_definition_hooks_with_context(&other_session, &json!({}))[0].transform(
+        let other_visible = capability
+            .tool_definition_hooks_with_context(&other_session, &json!({}))
+            .into_iter()
+            .fold(
                 vec![tool_def("read_file"), tool_def(PROGRESS_CHECKPOINT_TOOL)],
+                |tools, hook| hook.transform(tools),
             );
         assert_eq!(
             other_visible
@@ -2348,7 +2282,7 @@ mod tests {
                 &context,
             )
             .await,
-            PreToolUseDecision::Block { .. }
+            PreToolUseDecision::Continue(_)
         ));
 
         let arguments = checkpoint_arguments("resume");
@@ -2400,86 +2334,6 @@ mod tests {
             "do not overwrite"
         );
         assert!(std::fs::symlink_metadata(state_path).unwrap().is_file());
-    }
-
-    #[tokio::test]
-    async fn deterministic_baseline_candidate_trajectory_study() {
-        #[derive(Default)]
-        struct Metrics {
-            calls: usize,
-            result_bytes: usize,
-            complete: bool,
-        }
-
-        async fn run(advisory_only: bool) -> Metrics {
-            let state = Arc::new(Mutex::new(ProgressGuardState::default()));
-            let hook = ProgressGuardHook {
-                state: state.clone(),
-            };
-            let gate = ProgressGuardGate { state };
-            let context = ToolContext::new(SessionId::new());
-            let mut metrics = Metrics::default();
-
-            for index in 0..160 {
-                let read = call(
-                    "read_file",
-                    json!({ "path": format!("/src/{}.rs", index.min(40)) }),
-                );
-                if !advisory_only
-                    && matches!(
-                        gate.before_exec(read.clone(), &tool_def("read_file"), &context)
-                            .await,
-                        PreToolUseDecision::Block { .. }
-                    )
-                {
-                    let arguments = checkpoint_arguments("no-change diagnosis");
-                    let mut checkpoint = result_value(json!({ "submitted": true }));
-                    hook.after_exec(
-                        &call(PROGRESS_CHECKPOINT_TOOL, arguments),
-                        &tool_def(PROGRESS_CHECKPOINT_TOOL),
-                        &mut checkpoint,
-                        &context,
-                    )
-                    .await;
-                    metrics.calls += 1;
-                    metrics.result_bytes += serde_json::to_vec(&checkpoint.result).unwrap().len();
-                    break;
-                }
-
-                let payload = if index < 40 {
-                    json!({ "content": format!("scope {index}") })
-                } else {
-                    json!({ "content": "root-cause evidence\n".repeat(35) })
-                };
-                let mut out = result_value(payload);
-                hook.after_exec(&read, &tool_def("read_file"), &mut out, &context)
-                    .await;
-                metrics.calls += 1;
-                metrics.result_bytes += serde_json::to_vec(&out.result).unwrap().len();
-                metrics.complete |= index >= 40;
-            }
-            metrics
-        }
-
-        // The baseline is deliberately conservative: it has the same compact
-        // cache as the candidate, but checkpoint prose remains advisory and is
-        // ignored. The candidate follows the host-enforced transition and ends
-        // with the already-complete no-change diagnosis.
-        let baseline = run(true).await;
-        let candidate = run(false).await;
-        assert!(baseline.complete && candidate.complete);
-        assert!(
-            candidate.calls * 2 <= baseline.calls,
-            "success criterion: at least 50% fewer calls ({} -> {})",
-            baseline.calls,
-            candidate.calls
-        );
-        assert!(
-            candidate.result_bytes * 2 <= baseline.result_bytes,
-            "success criterion: at least 50% fewer result bytes ({} -> {})",
-            baseline.result_bytes,
-            candidate.result_bytes
-        );
     }
 
     #[test]
@@ -2609,10 +2463,6 @@ mod tests {
             state: state.clone(),
         };
         let context = ToolContext::new(SessionId::new());
-        let tool_gate = ProgressGuardToolGate {
-            state,
-            session_id: context.session_id.to_string(),
-        };
 
         for (command, executable) in [("rg needle .", "rg"), ("ag needle .", "ag")] {
             let mut failed = result_value(json!({
@@ -2645,27 +2495,23 @@ mod tests {
             }
         }
 
-        let visible_tools = tool_gate.transform(vec![
-            tool_def("bash"),
-            tool_def("grep_files"),
-            tool_def(PROGRESS_CHECKPOINT_TOOL),
-        ]);
-        assert_eq!(
-            visible_tools
-                .iter()
-                .map(|tool| tool.name())
-                .collect::<Vec<_>>(),
-            ["grep_files", PROGRESS_CHECKPOINT_TOOL],
-            "the next model round should expose recovery paths but not the failed tool"
-        );
         assert!(matches!(
             gate.before_exec(
-                call("bash", json!({ "command": "grep -R needle ." })),
+                call("bash", json!({ "command": "ag needle ." })),
                 &tool_def("bash"),
                 &context,
             )
             .await,
             PreToolUseDecision::Block { .. }
+        ));
+        assert!(matches!(
+            gate.before_exec(
+                call("bash", json!({"command":"grep -R needle ."})),
+                &tool_def("bash"),
+                &context
+            )
+            .await,
+            PreToolUseDecision::Continue(_)
         ));
         assert!(matches!(
             gate.before_exec(
@@ -2916,7 +2762,7 @@ mod tests {
         }
         assert!(matches!(
             gate.before_exec(
-                call("read_file", json!({ "path": "src/third.rs" })),
+                call("read_file", json!({ "path": "lib/old.rs" })),
                 &tool_def("read_file"),
                 &context,
             )
@@ -2995,7 +2841,7 @@ mod tests {
                 .as_ref()
                 .and_then(|value| value.get("progress_guard_warning"))
                 .and_then(Value::as_str)
-                .is_some_and(|warning| warning.contains("checkpoint required"))
+                .is_some_and(|warning| warning.contains("checkpoint recommended"))
         );
     }
 
@@ -3023,7 +2869,7 @@ mod tests {
                 .as_ref()
                 .and_then(|value| value.get("progress_guard_warning"))
                 .and_then(Value::as_str)
-                .filter(|warning| warning.contains("checkpoint required"))
+                .filter(|warning| warning.contains("checkpoint recommended"))
             {
                 warning_count += 1;
                 checkpoint_warning = warning.to_string();
@@ -3041,7 +2887,7 @@ mod tests {
                 .unwrap()
                 .sessions
                 .get(&context.session_id.to_string())
-                .is_some_and(|progress| progress.checkpoint_required)
+                .is_some_and(|progress| progress.checkpoint_recommended)
         );
     }
 
@@ -3158,7 +3004,7 @@ mod tests {
                 .unwrap()
                 .sessions
                 .get(&context.session_id.to_string())
-                .is_some_and(|progress| progress.checkpoint_required),
+                .is_some_and(|progress| progress.checkpoint_recommended),
             "an unchanged validation is not decisive progress"
         );
     }
@@ -3759,7 +3605,7 @@ mod tests {
         assert!(
             warnings
                 .iter()
-                .any(|warning| warning.contains("checkpoint required")),
+                .any(|warning| warning.contains("checkpoint recommended")),
             "checkpoint escalation should trigger by 48 read/search calls: {warnings:?}"
         );
 
@@ -4046,7 +3892,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stuck_session_checkpoints_without_progress_stay_gated() {
+    async fn rejected_checkpoint_does_not_block_new_diagnostics() {
         let state = Arc::new(Mutex::new(ProgressGuardState::default()));
         let hook = ProgressGuardHook {
             state: state.clone(),
@@ -4098,27 +3944,16 @@ mod tests {
                 );
             }
         }
-        // Exploration must stay blocked until real progress lands, and the
-        // recovery message must not ask for another checkpoint that would fail.
-        let decision = gate
-            .before_exec(
-                call(
-                    "bash",
-                    json!({ "command": "sed -n '1,50p' src/capabilities/session_coordination.rs" }),
-                ),
+        // A rejected checkpoint must not trap useful diagnostics.
+        assert!(matches!(
+            gate.before_exec(
+                call("bash", json!({"command":"grep -R failure src"})),
                 &tool_def("bash"),
-                &context,
+                &context
             )
-            .await;
-        let PreToolUseDecision::Block { reason, .. } = decision else {
-            panic!("exploration should stay gated after a rejected checkpoint");
-        };
-        assert!(reason.contains("Do not file another checkpoint"));
-        assert!(reason.contains("mutation, a decisive validation, or ask the user"));
-        assert!(
-            !reason.contains("call progress_checkpoint"),
-            "rejected checkpoints must not prescribe another checkpoint: {reason}"
-        );
+            .await,
+            PreToolUseDecision::Continue(_)
+        ));
     }
 
     #[tokio::test]
@@ -4171,9 +4006,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stuck_session_tool_budget_warns_then_blocks_exploration() {
+    async fn long_session_warns_and_keeps_new_diagnostics_available() {
         // Literals must match SESSION_TOOL_BUDGET_WARN (400) and
-        // SESSION_TOOL_BUDGET (800) defined with the fix.
+        // new diagnostics remain available even after 800 calls.
         let state = Arc::new(Mutex::new(ProgressGuardState::default()));
         let hook = ProgressGuardHook {
             state: state.clone(),
@@ -4212,13 +4047,13 @@ mod tests {
                     &context,
                 )
                 .await,
-                PreToolUseDecision::Block { .. }
+                PreToolUseDecision::Continue(_)
             ),
-            "exploration should be blocked once the session budget is exhausted"
+            "new diagnostics stay available beyond the advisory threshold"
         );
         // Recovery stays possible: mutations are still allowed past the budget.
         assert!(
-            !matches!(
+            matches!(
                 gate.before_exec(
                     call(
                         "write_file",
@@ -4228,7 +4063,7 @@ mod tests {
                     &context,
                 )
                 .await,
-                PreToolUseDecision::Block { .. }
+                PreToolUseDecision::Continue(_)
             ),
             "mutations must stay allowed past the budget so the agent can land progress"
         );

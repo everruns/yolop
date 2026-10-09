@@ -29,7 +29,7 @@ The model must expose structured values for:
 3. **Stream previews**: assistant and tool delta previews while a turn is
    active.
 4. **Session status**: every value shown in the status bar, including provider
-   and model, active configuration profile, approval mode, goal state, background-task counts, token counts,
+   and model, active configuration profile, approval mode, background-task counts, token counts,
    current session, worktree state, and busy/idle state when present.
 5. **Startup empty state**: immediate workspace readiness plus optional
    repository name, branch, worktree cleanliness, and latest commit context.

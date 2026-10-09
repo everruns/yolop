@@ -7,7 +7,8 @@ description: Defines when retained command output becomes a model-visible recove
 # Tool-output retention and recovery
 
 Status: implemented by the Everruns built-in output-persistence capability and
-installed in Yolop's default coding harness.
+installed in Yolop's default coding harness, with a bounded structured-result
+recovery hook.
 
 ## Contract
 
@@ -27,8 +28,19 @@ it with a redundant read.
 
 The distinction between internal retention and model-visible recovery belongs
 to `everruns-core::builtins::PersistOutputHook`. Yolop owns composition, regression
-coverage at the installed hook boundary, and agent-loop evaluation. It does not
-rewrite the hook result locally.
+coverage at the installed hook boundary, and agent-loop evaluation. Oversized structured results are persisted before the runtime's final text
+limit. Yolop returns a valid bounded JSON envelope with `full_output`,
+`output_files`, a preview, and command outcome fields, rather than allowing the
+provider to receive JSON cut in the middle. Both foreground and background
+artifact references use the session filesystem display contract.
+
+Shell timeouts retain the stdout and stderr collected before the deadline,
+`success: false`, and `timed_out: true`. On Unix, timeout, output-limit
+termination, and cancellation stop the command process group, preventing a
+repair from overlapping orphaned pipeline children. Normal completion preserves
+deliberately launched services. Nonzero detached commands retain bounded
+diagnostics in their failure result and stream complete retained evidence to
+`output.log`. The model receives command failures as evidence to diagnose.
 
 ## Evidence
 

@@ -1,5 +1,15 @@
 # Knowledge Log
 
+## 2026-10-08, Shared task completion and recoverable diagnostics
+
+ACP, TUI, and print share bounded completion review. Removed the opt-in ask
+tracker, `/goal`, and Muse promise guard. Background wakes retain conversation
+context; command timeouts keep collected output and stop orphaned process groups.
+Oversized results keep valid
+JSON with durable recovery paths. Progress warnings no longer remove diagnostic
+tools or block different commands through the same tool. See
+[task completion](specs/task-completion.md).
+
 ## 2026-10-03, Shared Everruns provider drivers
 
 Yolop consumes `everruns-drivers` for ChatGPT plan, legacy Codex, and vendor
@@ -118,7 +128,7 @@ shell and git specific examples. See [Approval](specs/approval.md).
 
 ## 2026-09-22, Muse-only actionable-promise guard
 
-- [Action guard](specs/action-guard.md): new capability plus Jev Classifier
+- [Action guard](specs/task-completion.md): new capability plus Jev Classifier
   wiring (TypeSafe key, CLI-accessible model) that continues the turn when a
   Muse reply promises action but makes no tool call. Fail open without a key.
 
@@ -1083,7 +1093,7 @@ wording, formatting, and link fixes do not need entries.
 
 ## 2026-08-12, User-ask tracking becomes experimental opt-in
 
-- [User ask](specs/user-ask.md) is no longer part of the default harness. The
+- [User ask](specs/task-completion.md) is no longer part of the default harness. The
   registered `yolop_user_ask` capability remains available through an explicit
   `[[capabilities]]` settings override while the completion behavior is
   experimental.
@@ -1174,7 +1184,7 @@ wording, formatting, and link fixes do not need entries.
 - [Checkpointing](specs/checkpointing.md) now records that Yolop installs a
   stall liveness window with an elapsed recovery budget large enough for full
   stall retries (upstream's default elapsed budget is shorter than one window).
-- [User ask](specs/user-ask.md) now classifies provider/runtime failures as
+- [User ask](specs/task-completion.md) now classifies provider/runtime failures as
   failed before charging the continuation budget, so a stall never surfaces as
   "budget exhausted".
 
@@ -1190,7 +1200,7 @@ wording, formatting, and link fixes do not need entries.
 
 ## 2026-08-07, Shared completion and host wake routing
 
-- [User ask](specs/user-ask.md) now delegates deterministic turn completion and
+- [User ask](specs/task-completion.md) now delegates deterministic turn completion and
   continuation budgets to `everruns-core`; Yolop retains ask-specific tagging,
   prompts, evaluation projection, and host streaming.
 - [Background execution](specs/background.md) now delegates live-session route
@@ -1233,7 +1243,7 @@ wording, formatting, and link fixes do not need entries.
   install before the turn closes without weakening rewind lineage.
 ## 2026-08-05, Default bounded task completion
 
-- [User ask](specs/user-ask.md) is now the default host completion safety net
+- [User ask](specs/task-completion.md) is now the default host completion safety net
   across TUI, `--print`, and ACP. Cheap deterministic evidence closes trivial,
   failed, blocked, and background-waiting turns; only ambiguous tool-using
   candidate finals pay for semantic evaluation. In-progress work continues from

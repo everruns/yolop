@@ -39,7 +39,6 @@ use crossterm::event::{
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use crossterm::{execute, queue};
 use everruns_contracts::typed_id::SessionId;
-use everruns_core::command::ExecuteCommandRequest;
 use everruns_core::{ContentPart, RuntimeMessageRole};
 use runtime::{
     BuiltRuntime, DEFAULT_LOCAL_MODEL, ProviderChoice, ResolvedProviderChoice, resolve_for_settings,
@@ -238,12 +237,6 @@ struct Cli {
     /// comes from settings when unset.
     #[arg(long, value_name = "NAME")]
     theme: Option<String>,
-
-    /// Classifier model for the Muse-only actionable-promise guard (Jev,
-    /// TypeSafe backend). Overrides the `classifier_model` setting for this
-    /// run. Deliberately a flag, not TUI sidebar state.
-    #[arg(long, value_name = "MODEL")]
-    classifier_model: Option<String>,
 
     /// Enable shell sandboxing for this run. Commands may write only in the
     /// workspace and temporary directories, and network access is blocked.
@@ -936,9 +929,6 @@ async fn async_main(crash_reporter: &crash_report::CrashReporter) -> Result<()> 
             initial_prompt: cli.print.clone(),
             sandbox_mode_override,
             extra_environment_context,
-            // The `--classifier-model` flag wins; the setting and the
-            // backend default are resolved at composition time.
-            classifier_model_override: cli.classifier_model.clone(),
             ..Default::default()
         },
     )
@@ -2099,164 +2089,124 @@ async fn run_print_mode(
         handles,
         startup,
         model,
-        goal_store,
-        user_ask_store,
-        user_ask_enabled,
         task_registry,
-        worktree,
+        mut background_wake,
+        schedule_runner: _schedule_runner,
+        settings,
         ..
     } = runtime;
-    let color = io::stdout().is_terminal();
     let _ = (&startup.session_dir, &startup.session_log_path);
-
-    let trimmed = prompt.trim();
-    if let Some(goal_args) = trimmed.strip_prefix("/goal") {
-        // `run_print_goal` reports failure as a flag (not `process::exit`)
-        // so the trajectory export still runs on failed goal runs.
-        let success = run_print_goal(
-            &handles,
-            &worktree,
-            &model,
-            &goal_store,
-            goal_args.trim(),
-            color,
-        )
-        .await?;
-        write_trajectory_if_requested(&handles, &model, trajectory_out.as_deref()).await;
-        if !success {
-            std::process::exit(1);
-        }
-        return Ok(());
-    }
-
-    if user_ask_enabled
-        && let Err(err) = user_ask_store.record_user_prompt(handles.session_id, trimmed)
-    {
-        eprintln!("user ask: {err}");
-    }
-
-    let mut prompt = trimmed.to_string();
-    let mut turn_images = images;
-    let mut automatic = false;
-    let mut budget = session_state::task_completion::CompletionBudget::default();
+    let mut prompt = prompt.trim().to_string();
+    let mut input = model.input_message_with_images(&prompt, images);
+    let mut background_deadline = None;
+    let mut completion = session_state::task_completion::CompletionController::default();
     loop {
-        let turn =
-            match collect_print_turn(&handles, &worktree, &model, &prompt, turn_images, automatic)
-                .await
-            {
-                Ok(turn) => turn,
-                Err(err) => {
-                    if user_ask_enabled && user_ask_store.is_active(handles.session_id) {
-                        let evaluation = session_state::task_completion::evaluation_for_state(
-                            session_state::task_completion::CompletionState::Failed,
-                        );
-                        user_ask_store.record_evaluation(handles.session_id, &evaluation)?;
-                    }
-                    return Err(err);
-                }
-            };
-        print_final_output(&turn.output);
-        if !turn.result.success {
-            if user_ask_enabled && user_ask_store.is_active(handles.session_id) {
-                let evaluation = session_state::task_completion::evaluation_for_state(
-                    session_state::task_completion::CompletionState::Failed,
-                );
-                user_ask_store.record_evaluation(handles.session_id, &evaluation)?;
-                if let Some(message) =
-                    session_state::user_ask::evaluation_status_message(&evaluation)
-                {
-                    eprintln!("{message}");
-                }
+        let turn = tokio::select! {
+            biased;
+            _ = tokio::signal::ctrl_c() => {
+                write_trajectory_if_requested(&handles, &model, trajectory_out.as_deref()).await;
+                handles.flush_trace_exporters().await;
+                anyhow::bail!("turn canceled");
             }
-            write_trajectory_if_requested(&handles, &model, trajectory_out.as_deref()).await;
-            std::process::exit(1);
-        }
-        if !user_ask_enabled || !user_ask_store.is_active(handles.session_id) {
-            break;
-        }
-
-        let tokens = handles.turn_tokens(turn.result.turn_id).await;
-        if !budget.observe_turn(tokens) {
-            eprintln!("user ask budget exhausted; use --session to resume");
-            break;
-        }
-        let has_background = task_registry
+            turn = collect_print_turn(&handles, &model, &prompt, input) => turn?,
+        };
+        let background = task_registry
             .list(handles.session_id, None)
             .await
-            .unwrap_or_default()
+            .context("cannot inspect pending background work")?
             .iter()
             .any(|task| !task.state.is_terminal());
-        let (outcome, reason) = match session_state::task_completion::gate_turn(
-            &turn.result,
-            has_background,
-        ) {
-            session_state::task_completion::GateDecision::Conclusive(state) => {
-                let mut evaluation = session_state::task_completion::evaluation_for_state(state);
-                // Muse-only idle-promise guard: the sync gate treats any
-                // tool-free text as Achieved, so a promised action with
-                // zero tool calls would end the turn. Ask the Jev
-                // classifier; a hit continues the turn instead of
-                // presenting the promise. Misses, errors, and a missing
-                // key keep Achieved (fail open).
-                if evaluation.outcome == session_state::user_ask::AskOutcome::Achieved
-                    && turn.result.tool_calls_count == 0
-                    && crate::capabilities::is_muse(Some(model.model_id().as_str()))
-                    && let Some(classifier) =
-                        everruns_core::host::RuntimeHostAdapter::decisions(handles.runtime.as_ref())
-                    && crate::capabilities::evaluate_actionable_promise(
-                        &turn.result.response,
-                        turn.result.tool_calls_count,
-                        &classifier,
-                        None,
-                    )
-                    .await
-                {
-                    evaluation = session_state::user_ask::UserAskEvaluation {
-                        outcome: session_state::user_ask::AskOutcome::InProgress,
-                        reason: "promised action but made no tool call".to_string(),
-                    };
-                }
-                user_ask_store.record_evaluation(handles.session_id, &evaluation)?;
-                (evaluation.outcome, evaluation.reason)
+        let decision = tokio::select! {
+            biased;
+            _ = tokio::signal::ctrl_c() => {
+                print_final_output(&turn.output);
+                write_trajectory_if_requested(&handles, &model, trajectory_out.as_deref()).await;
+                handles.flush_trace_exporters().await;
+                anyhow::bail!("completion review canceled");
             }
-            session_state::task_completion::GateDecision::Evaluate => {
-                let evaluation = handles
-                    .runtime
-                    .execute_command(
-                        handles.session_id,
-                        ExecuteCommandRequest {
-                            name: "ask".to_string(),
-                            arguments: Some(
-                                session_state::user_ask::USER_ASK_EVALUATE_ARG.to_string(),
-                            ),
-                            controls: None,
-                        },
-                    )
-                    .await?;
-                if !evaluation.success {
-                    eprintln!("user ask evaluation failed: {}", evaluation.message);
-                    break;
-                }
-                let parsed =
-                    session_state::user_ask::parse_evaluation_response(&evaluation.message)?;
-                (parsed.outcome, parsed.reason)
-            }
+            decision = completion.after_turn(&handles, &turn.result, background) => decision,
         };
-
-        match outcome {
-            session_state::user_ask::AskOutcome::InProgress => {
-                prompt = session_state::task_completion::continuation_prompt(&reason);
-                turn_images = Vec::new();
-                automatic = true;
+        let mut completion_error = None;
+        match decision {
+            Ok(decision) => {
+                if let Some(notice) = decision.notice {
+                    eprintln!("{notice}");
+                    completion_error = Some(anyhow::anyhow!(notice));
+                }
+                if decision.state
+                    == session_state::task_completion::CompletionState::WaitingOnBackground
+                {
+                    let deadline = *background_deadline.get_or_insert_with(|| {
+                        tokio::time::Instant::now() + std::time::Duration::from_secs(600)
+                    });
+                    let next = if settings.snapshot().proactive_wake_enabled() {
+                        tokio::select! {
+                            _ = tokio::signal::ctrl_c() => Err(anyhow::anyhow!("background wait canceled")),
+                            next = tokio::time::timeout_at(deadline, wait_for_print_background(
+                                &handles, task_registry.as_ref(), &mut background_wake,
+                            )) => next.context("background work is still pending after ten minutes").and_then(|next| next),
+                        }
+                    } else {
+                        Err(anyhow::anyhow!(
+                            "background work is pending and proactive wake is disabled"
+                        ))
+                    };
+                    match next {
+                        Ok(next) => {
+                            prompt = next
+                                .content
+                                .iter()
+                                .filter_map(ContentPart::as_text)
+                                .collect::<Vec<_>>()
+                                .join("\n");
+                            input = next;
+                            continue;
+                        }
+                        Err(error) => {
+                            print_final_output(&turn.output);
+                            write_trajectory_if_requested(
+                                &handles,
+                                &model,
+                                trajectory_out.as_deref(),
+                            )
+                            .await;
+                            handles.flush_trace_exporters().await;
+                            return Err(error);
+                        }
+                    }
+                }
+                if let Some(next) = decision.followup {
+                    prompt = next;
+                    input = session_state::task_completion::tag_continuation(
+                        model.input_message(&prompt),
+                    );
+                    continue;
+                }
+                if decision.state == session_state::task_completion::CompletionState::Blocked {
+                    completion_error = Some(anyhow::anyhow!(
+                        "work needs required outside input before it can finish"
+                    ));
+                }
             }
-            session_state::user_ask::AskOutcome::Blocked => {
-                handles.report_herdr_state(capabilities::herdr::HerdrState::Blocked);
-                break;
-            }
-            session_state::user_ask::AskOutcome::Achieved
-            | session_state::user_ask::AskOutcome::Failed
-            | session_state::user_ask::AskOutcome::WaitingOnBackground => break,
+            Err(err) => eprintln!("Completion review unavailable: {err}"),
         }
+        print_final_output(&turn.output);
+        if let Some(error) = completion_error {
+            write_trajectory_if_requested(&handles, &model, trajectory_out.as_deref()).await;
+            handles.flush_trace_exporters().await;
+            return Err(error);
+        }
+        if !turn.result.success {
+            write_trajectory_if_requested(&handles, &model, trajectory_out.as_deref()).await;
+            handles.flush_trace_exporters().await;
+            anyhow::bail!(
+                "{}",
+                turn.result
+                    .error
+                    .unwrap_or_else(|| "turn failed".to_string())
+            );
+        }
+        break;
     }
     write_trajectory_if_requested(&handles, &model, trajectory_out.as_deref()).await;
     // Let the trace extensions export the turn's final events before the
@@ -2265,78 +2215,44 @@ async fn run_print_mode(
     Ok(())
 }
 
-/// Returns `Ok(false)` on goal/turn failure instead of exiting so the caller
-/// can finish end-of-run work (trajectory export) before setting the exit code.
-async fn run_print_goal(
+// The host waits without spending model turns polling. Wakes use the same
+// provenance and artifact mapping as interactive hosts; signal-disabled tasks
+// still become visible when their durable registry state turns terminal.
+async fn wait_for_print_background(
     handles: &runtime::RuntimeHandles,
-    worktree: &crate::exec::worktree::WorktreeManager,
-    model: &runtime::ModelState,
-    goal_store: &session_state::goal::GoalStore,
-    arguments: &str,
-    color: bool,
-) -> Result<bool> {
-    let session_id = handles.session_id;
-    let request = ExecuteCommandRequest {
-        name: "goal".to_string(),
-        arguments: if arguments.is_empty() {
-            None
-        } else {
-            Some(arguments.to_string())
-        },
-        controls: None,
-    };
-    let result = handles.runtime.execute_command(session_id, request).await?;
-    if !result.success {
-        eprintln!("goal command failed: {}", result.message);
-        return Ok(false);
-    }
-
-    if !goal_store.take_pending_turn(session_id) {
-        if !result.message.is_empty() {
-            println!("{}", paint(color, "90", &result.message));
-        }
-        return Ok(true);
-    }
-
-    let Some(mut turn_prompt) = goal_store.active_condition(session_id) else {
-        return Ok(true);
-    };
-
+    registry: &dyn everruns_core::SessionTaskRegistry,
+    receiver: &mut runtime::background_wake::WakeReceiver,
+) -> Result<everruns_core::message_retriever::InputMessage> {
+    use everruns_core::host::RuntimeHostAdapter;
+    let mut poll = tokio::time::interval(std::time::Duration::from_secs(1));
     loop {
-        let turn =
-            collect_print_turn(handles, worktree, model, &turn_prompt, vec![], false).await?;
-        if !turn.result.success {
-            print_final_output(&turn.output);
-            return Ok(false);
-        }
-        if !goal_store.is_active(session_id) {
-            print_final_output(&turn.output);
-            return Ok(true);
-        }
-
-        let evaluation = handles
-            .runtime
-            .execute_command(
-                session_id,
-                ExecuteCommandRequest {
-                    name: "goal".to_string(),
-                    arguments: Some(session_state::goal::GOAL_EVALUATE_ARG.to_string()),
-                    controls: None,
-                },
-            )
-            .await?;
-        if !evaluation.success {
-            eprintln!("goal evaluation failed: {}", evaluation.message);
-            return Ok(false);
-        }
-        let parsed = session_state::goal::parse_evaluation_response(&evaluation.message)?;
-        if parsed.met {
-            print_final_output(&turn.output);
-            return Ok(true);
-        }
-        turn_prompt = goal_store
-            .continuation_prompt(session_id)
-            .unwrap_or_else(|| turn_prompt.clone());
+        let message = tokio::select! {
+            message = receiver.recv() => message.context("background wake channel closed")?,
+            _ = poll.tick() => {
+                if registry.list(handles.session_id, None).await?
+                    .iter().any(|task| !task.state.is_terminal()) {
+                    continue;
+                }
+                match receiver.try_recv() {
+                    Ok(message) => message,
+                    Err(_) => return Ok(session_state::task_completion::tag_continuation(
+                        everruns_core::message_retriever::InputMessage::user(
+                            "[automatic] Previously pending background tasks are now terminal. Inspect their durable results with list_tasks/get_task and continue the user's authorized work."
+                        ),
+                    )),
+                }
+            }
+        };
+        let message = runtime::background_wake::coalesce_pending_wakes(message, receiver)
+            .resolve_artifacts(
+                handles
+                    .runtime
+                    .file_store(everruns_core::host::in_process_internal_org_id(
+                        everruns_core::DEFAULT_ORG_PUBLIC_ID,
+                    ))
+                    .as_ref(),
+            );
+        return Ok(runtime::background_wake::input_for_wake(&message));
     }
 }
 
@@ -2347,11 +2263,9 @@ struct PrintTurn {
 
 async fn collect_print_turn(
     handles: &runtime::RuntimeHandles,
-    _worktree: &crate::exec::worktree::WorktreeManager,
     model: &runtime::ModelState,
     prompt: &str,
-    images: Vec<ContentPart>,
-    automatic: bool,
+    input: everruns_core::message_retriever::InputMessage,
 ) -> Result<PrintTurn> {
     let before_msgs = handles
         .runtime
@@ -2360,10 +2274,6 @@ async fn collect_print_turn(
         .map(|m| m.len())
         .unwrap_or(0);
 
-    let mut input = model.input_message_with_images(prompt, images);
-    if automatic {
-        input = session_state::task_completion::tag_continuation(input);
-    }
     let retried = std::sync::atomic::AtomicBool::new(false);
     let notice = |notice: String| {
         retried.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -2417,14 +2327,6 @@ fn print_final_output(output: &[String]) {
             println!();
         }
         println!("{text}");
-    }
-}
-
-fn paint(enabled: bool, code: &str, text: &str) -> String {
-    if enabled {
-        format!("\x1b[{code}m{text}\x1b[0m")
-    } else {
-        text.to_string()
     }
 }
 
@@ -2814,7 +2716,6 @@ mod tests {
             compact_work: true,
             force_compact_work: false,
             theme: None,
-            classifier_model: None,
             sandbox: false,
         }
     }
@@ -2929,7 +2830,6 @@ mod tests {
             compact_work: false,
             force_compact_work: false,
             theme: None,
-            classifier_model: None,
             sandbox: false,
         };
 

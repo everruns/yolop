@@ -529,3 +529,93 @@ async fn scripted_on_exhausted_error_fails_second_call() {
         "OnExhausted::Error must surface as a failed turn after the script is consumed"
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn print_waits_for_failed_background_work_and_continues_with_or_without_signal() {
+    for signal in [true, false] {
+        let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let config = LlmSimConfig::scripted(vec![
+            SimTurn::ToolCalls(vec![SimToolCall {
+                name: "spawn_background".into(),
+                arguments: json!({"tool":"bash", "args":{"command":"sleep 0.3; printf FAILED_VALIDATION; exit 101"}, "title":"validate", "signal_on_completion":signal}),
+                id: None,
+            }]),
+            SimTurn::Assistant("Validation is running. I will finish the repair afterward.".into()),
+            SimTurn::ToolCalls(vec![SimToolCall {
+                name: "bash".into(),
+                arguments: json!({"command":"printf verified > repair.marker"}),
+                id: None,
+            }]),
+            SimTurn::Assistant("Repair verified.".into()),
+            SimTurn::Assistant(r#"{"state":"achieved","reason":"repair verified"}"#.into()),
+        ]).with_on_exhausted(OnExhausted::Error).with_message_capture(captured.clone());
+        let (runtime, workspace) = build_scripted_runtime(config).await;
+        tokio::time::timeout(
+            TURN_TIMEOUT,
+            crate::run_print_mode(
+                runtime,
+                "Fix and verify the failing validation. ORIGINAL_PRINT_TASK".into(),
+                vec![],
+                None,
+            ),
+        )
+        .await
+        .expect("print must resume after background work")
+        .expect("print succeeded");
+        assert_eq!(
+            tokio::fs::read_to_string(workspace.join("repair.marker"))
+                .await
+                .unwrap(),
+            "verified"
+        );
+        let requests = captured.lock().unwrap();
+        assert_eq!(
+            requests.len(),
+            5,
+            "background waiting must not spend model calls polling"
+        );
+        assert!(
+            requests[2]
+                .iter()
+                .any(|message| message.content_as_text().contains("ORIGINAL_PRINT_TASK"))
+        );
+        if signal {
+            assert!(
+                requests[2]
+                    .iter()
+                    .any(|message| message.content_as_text().contains("FAILED_VALIDATION"))
+            );
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn print_does_not_report_success_for_known_unfinished_work() {
+    for (review, expected) in [
+        (
+            r#"{"state":"in_progress","reason":"validation still needs repair"}"#,
+            "Automatic continuation budget exhausted",
+        ),
+        (
+            r#"{"state":"blocked","reason":"required credentials are missing"}"#,
+            "required outside input",
+        ),
+    ] {
+        let turns = (0..4)
+            .flat_map(|_| {
+                [
+                    SimTurn::Assistant("Validation still needs repair.".into()),
+                    SimTurn::Assistant(review.into()),
+                ]
+            })
+            .collect();
+        let (runtime, _workspace) = build_scripted_runtime(
+            LlmSimConfig::scripted(turns).with_on_exhausted(OnExhausted::Error),
+        )
+        .await;
+        let error = crate::run_print_mode(runtime, "Fix validation".into(), vec![], None)
+            .await
+            .expect_err("unfinished print work must exit unsuccessfully");
+        assert!(error.to_string().contains(expected), "{error}");
+    }
+}
