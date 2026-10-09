@@ -1,5 +1,14 @@
 # Knowledge Log
 
+## 2026-10-09, Checkpoint outcomes and semantic tool diagnostics
+
+Progress checkpoint state decisions return structured outcomes with a concrete
+reason. Malformed calls remain errors. Semantic tool errors retain their reason
+in model-visible output and ACP tool content. See
+[progress guard](specs/progress-guard.md) and [tool output](specs/tool-output.md).
+ACP also exposes the complete semantic diagnostic as `rawOutput.message` and
+classifies progress checkpoints as thinking instead of shell execution.
+
 ## 2026-10-09, Opt-in model-native edit tools
 
 `native_edit_tools` gives OpenAI GPT and Codex models Codex's `apply_patch`
@@ -18,6 +27,7 @@ tools already in their weights. Every `yolop` subcommand now has a one-line
 description, and every leaf an `Examples:` block that a test parses against
 the real grammar. See [system prompt](specs/system-prompt.md) and
 [Yolop framing](specs/yolop.md).
+
 
 ## 2026-10-08, Shared task completion and recoverable diagnostics
 

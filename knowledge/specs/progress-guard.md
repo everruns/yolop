@@ -53,6 +53,12 @@ decisive action make it useful for breaking an investigation loop. It remains
 fully visible, and malformed or repeated checkpoint submissions receive bounded
 corrections. A checkpoint does not gate other tools.
 
+Checkpoint state decisions are normal structured tool results: `accepted: false`,
+a `status` of `not_needed`, `unchanged`, or `no_progress`, and a concrete `message`
+that tells the model what to do next. They preserve the pending recommendation,
+failure gate, and exploration counters. Only an accepted checkpoint resets that
+trajectory. Malformed arguments remain tool errors with bounded corrections.
+
 Counts, overlapping reads, and repeated validation produce advisory warnings.
 Neither the checkpoint threshold nor the session tool count removes tools from
 the provider-visible list or blocks a new diagnostic action. The host warns once

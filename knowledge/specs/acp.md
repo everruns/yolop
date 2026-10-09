@@ -212,13 +212,18 @@ notifications. The mapping is a pure, per-turn state machine
 | provider-curated reasoning summary | `agent_thought_chunk` (displayable reasoning; segments separated by blank lines) |
 | completed assistant commentary with tool calls, when no deltas streamed | `agent_message_chunk` before the tool activity |
 | tool started | `tool_call` (`status: in_progress`, `rawInput`, semantic `kind`) |
-| tool completed | `tool_call_update` (`status: completed`/`failed`, summary `content`) |
+| tool completed | `tool_call_update` (`status: completed`/`failed`, summary `content`, semantic failures include the full diagnostic as `rawOutput.message`) |
 | `write_todos` tool | `plan` (entries with status) instead of a raw tool call |
 | session title updated | `session_info_update` with the new title |
 
 Yolop classifies runtime tools into ACP's semantic kinds (for example `read`,
 `search`, `fetch`, `edit`, or `execute`). This gives clients a stable tool label
 that is distinct from Yolop's narrated title.
+
+`progress_checkpoint` is a `think` activity. Its state outcomes complete normally
+with a visible reason instead of appearing as failed shell commands. Actual tool
+errors expose the same diagnostic in display content and `rawOutput.message`,
+so clients do not have to substitute a generic failure label.
 
 To avoid duplicating streamed text, a completed assistant message is only
 emitted as a chunk when no deltas streamed for it during the turn.
