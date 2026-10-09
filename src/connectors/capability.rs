@@ -219,16 +219,20 @@ impl CliCapability for ConnectorsCapability {
             .subcommand_required(true)
             .arg_required_else_help(true)
             .subcommand(
-                Command::new("list").about("List connector providers with connection status"),
+                Command::new("list")
+                    .about("List connector providers with connection status")
+                    .after_help("Examples:\n  See which sandbox providers are connected:\n    yolop connectors list"),
             )
             .subcommand(
                 Command::new("get")
                     .about("Show setup instructions and form fields for one provider")
+                    .after_help("Examples:\n  Find out which fields Daytona needs:\n    yolop connectors get daytona")
                     .arg(Arg::new("provider").required(true)),
             )
             .subcommand(
                 Command::new("connect")
                     .about("Validate and store credentials for one provider")
+                    .after_help("Examples:\n  Store a Daytona API key:\n    yolop connectors connect daytona --field api_key=$DAYTONA_API_KEY")
                     .arg(Arg::new("provider").required(true))
                     .arg(
                         Arg::new("field")
@@ -241,6 +245,7 @@ impl CliCapability for ConnectorsCapability {
             .subcommand(
                 Command::new("disconnect")
                     .about("Remove stored credentials for one provider")
+                    .after_help("Examples:\n  Forget the stored Daytona credentials:\n    yolop connectors disconnect daytona")
                     .arg(Arg::new("provider").required(true)),
             )
     }

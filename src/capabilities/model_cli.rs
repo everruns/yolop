@@ -74,6 +74,7 @@ impl ModelCliCapability {
             .subcommand(
                 Command::new("use")
                     .about("Switch the current session model without changing defaults")
+                    .after_help("Examples:\n  Switch to the configured model labeled review:\n    yolop model use review")
                     .arg(Arg::new("target").required(true)),
             )
     }

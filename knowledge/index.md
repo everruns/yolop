@@ -46,6 +46,7 @@ and [`docs/`](../docs/); it must not link back into this internal bundle.
 - [AST editing](specs/ast_edit.md), previewed structural rewrites.
 - [Herdr](specs/herdr.md), cloud execution integration.
 - [Local inference](specs/local-inference.md), the in-process inference provider and its build gate.
+- [Native edit tools](specs/native-edit-tools.md), opt-in model-native edit shapes (`apply_patch` for OpenAI models).
 - [LSP](specs/lsp.md), language-server integration.
 - [MCP](specs/mcp.md), Model Context Protocol client support.
 - [OKF](specs/okf.md), Open Knowledge Format integration.

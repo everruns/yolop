@@ -8,7 +8,8 @@ For code work, orient with repo_map or repo_symbols before paging through large
 files, and use ast_grep for structural searches. Prefer targeted reads; make the
 smallest correct change. Verify expected behavior with assertions
 and edge cases; check affected call sites and review the diff. Run one decisive
-validation; diagnose failures and fix the root cause.
+validation; diagnose failures and fix the root cause. Prefer widely known CLIs
+(`git`, `gh`, the project's own build and test tools) over improvised scripts.
 
 Use tool descriptions and schemas as the operational contract. Load hidden
 schemas with `tool_search`.

@@ -44,6 +44,9 @@ pub(crate) const MODEL_LIST_CONTROL_ROUTE: ControlRoute = ControlRoute {
 #[derive(Subcommand, Debug)]
 pub(crate) enum ModelsCliCommand {
     /// Show the model list.
+    #[command(
+        after_help = "Examples:\n  See the menu with credentials status:\n    yolop config models list\n\n  Only models you can use now:\n    yolop config models list --connected"
+    )]
     List {
         /// Emit the full machine-readable result.
         #[arg(long)]
@@ -53,13 +56,22 @@ pub(crate) enum ModelsCliCommand {
         connected: bool,
     },
     /// Add a model to the list.
+    #[command(
+        after_help = "Examples:\n  Add a labeled model at the end of the menu:\n    yolop config models add codex gpt-5.6-sol --label sol\n\n  Add a high-effort entry as the first choice:\n    yolop config models add openai gpt-5.6 --effort high --position 1"
+    )]
     Add(AddArgs),
     /// Remove a model from the list.
+    #[command(
+        after_help = "Examples:\n  Drop an entry from the menu:\n    yolop config models rm codex/gpt-5.6-sol"
+    )]
     Rm {
         /// `provider/model`, `provider:model`, or a model id unique in the list.
         model: String,
     },
     /// Move a model to a different position (1-based).
+    #[command(
+        after_help = "Examples:\n  Make an entry the first choice:\n    yolop config models move codex/gpt-5.6-sol 1"
+    )]
     Move {
         /// `provider/model`, `provider:model`, or a model id unique in the list.
         model: String,
@@ -67,6 +79,7 @@ pub(crate) enum ModelsCliCommand {
         position: usize,
     },
     /// Restore the built-in default list.
+    #[command(after_help = "Examples:\n  Throw away menu edits:\n    yolop config models reset")]
     Reset,
 }
 

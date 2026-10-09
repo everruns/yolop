@@ -151,6 +151,9 @@ struct SessionsCommandLine {
 #[derive(clap::Subcommand)]
 enum SessionsCommand {
     /// Search user-visible messages and recorded failures in prior sessions.
+    #[command(
+        after_help = "Examples:\n  Find the session that hit a specific error:\n    yolop sessions search --query QUASAR-9182"
+    )]
     Search {
         /// Case-insensitive text to find; omit to list recent sessions.
         #[arg(long)]
@@ -163,6 +166,9 @@ enum SessionsCommand {
         include_current: bool,
     },
     /// List recent local sessions newest first.
+    #[command(
+        after_help = "Examples:\n  Show the last five sessions:\n    yolop sessions list --limit 5"
+    )]
     List {
         /// Maximum sessions to return (default 10, max 50).
         #[arg(long)]
@@ -197,7 +203,9 @@ impl SessionsCommandLine {
 impl CliCapability for SessionsCapability {
     fn cli_command(&self) -> clap::Command {
         use clap::Args;
-        SessionsCommandLine::augment_args(clap::Command::new("sessions")).after_help(
+        SessionsCommandLine::augment_args(clap::Command::new("sessions"))
+            .about("Find earlier yolop sessions and what happened in them")
+            .after_help(
             "Examples:\n  Search prior sessions for an exact marker:\n    yolop sessions search --query QUASAR-9182\n\n  List recent sessions:\n    yolop sessions list --limit 5",
         )
     }

@@ -551,13 +551,23 @@ struct SkillsCommandLine {
 }
 #[derive(clap::Subcommand)]
 enum SkillsCommand {
+    /// List skills from every scope.
+    #[command(after_help = "Examples:\n  See which skills are available:\n    yolop skills list")]
     List,
-    Read {
-        name: String,
-    },
-    Activate {
-        name: String,
-    },
+    /// Print a skill's SKILL.md.
+    #[command(
+        after_help = "Examples:\n  Read a skill before using it:\n    yolop skills read release-checklist"
+    )]
+    Read { name: String },
+    /// Load a skill's instructions for use now.
+    #[command(
+        after_help = "Examples:\n  Follow the release checklist skill:\n    yolop skills activate release-checklist"
+    )]
+    Activate { name: String },
+    /// Create or replace a skill.
+    #[command(
+        after_help = "Examples:\n  Save a reviewed SKILL.md as a workspace skill:\n    yolop skills write release-checklist --file ./SKILL.md --scope workspace"
+    )]
     Write {
         name: String,
         /// Read SKILL.md from this path. Use `-` for stdin.
@@ -574,14 +584,24 @@ enum SkillsCommand {
         #[arg(long, value_parser = ["workspace", "global"])]
         scope: Option<String>,
     },
+    /// Delete a skill.
+    #[command(
+        after_help = "Examples:\n  Remove a workspace skill:\n    yolop skills delete release-checklist --scope workspace"
+    )]
     Delete {
         name: String,
         #[arg(long, value_parser = ["workspace", "global"])]
         scope: Option<String>,
     },
-    Search {
-        query: String,
-    },
+    /// Search the skill registry.
+    #[command(
+        after_help = "Examples:\n  Find registry skills about Cloudflare:\n    yolop skills search cloudflare"
+    )]
+    Search { query: String },
+    /// Install a skill from the registry.
+    #[command(
+        after_help = "Examples:\n  Install a registry skill for this repository only:\n    yolop skills install cloudflare/skills/cloudflare --scope workspace"
+    )]
     Install {
         source: String,
         #[arg(long, value_parser = ["workspace", "global"])]
@@ -617,7 +637,9 @@ impl SkillsCommandLine {
 impl CliCapability for SkillManagementCapability {
     fn cli_command(&self) -> clap::Command {
         use clap::Args;
-        SkillsCommandLine::augment_args(clap::Command::new("skills")).after_help(
+        SkillsCommandLine::augment_args(clap::Command::new("skills"))
+            .about("Manage skills: reusable instruction packs")
+            .after_help(
             "Examples:\n  Install a registry skill only for this repository:\n    yolop skills install cloudflare/skills/cloudflare --scope workspace\n\n  Replace a substantial global skill from a reviewed local file:\n    yolop skills write release-checklist --file ./SKILL.md --scope global",
         )
     }

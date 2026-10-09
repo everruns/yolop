@@ -246,6 +246,7 @@ struct Cli {
 #[derive(Subcommand, Debug)]
 enum Commands {
     /// Print version information.
+    #[command(after_help = "Examples:\n  Print the version and build details:\n    yolop version")]
     Version,
     /// Add yolop into supported editors.
     Into(IntoCommand),
@@ -287,16 +288,25 @@ struct WeightsArgs {
 #[derive(Subcommand, Debug)]
 enum WeightsCommand {
     /// List downloaded models and the disk they use.
+    #[command(
+        after_help = "Examples:\n  See which local models are downloaded:\n    yolop weights list"
+    )]
     List,
     /// Download a model into the store.
     ///
     /// Specs are Hugging Face repos (`Qwen/Qwen3-8B`) or a GGUF file inside one
     /// (`unsloth/Qwen3-8B-GGUF::Qwen3-8B-Q4_K_M.gguf`).
+    #[command(
+        after_help = "Examples:\n  Download one GGUF file from a repo:\n    yolop weights pull unsloth/Qwen3-8B-GGUF::Qwen3-8B-Q4_K_M.gguf"
+    )]
     Pull {
         /// Model spec to download.
         spec: String,
     },
     /// Delete a downloaded model and reclaim its disk.
+    #[command(
+        after_help = "Examples:\n  Free the disk used by a downloaded repo:\n    yolop weights rm Qwen/Qwen3-8B"
+    )]
     Rm {
         /// Hugging Face repo to remove.
         repo: String,
@@ -306,6 +316,9 @@ enum WeightsCommand {
 #[derive(Subcommand, Debug)]
 enum McpCommand {
     /// List configured MCP servers.
+    #[command(
+        after_help = "Examples:\n  See every server this workspace would load:\n    yolop mcp list\n\n  See only global servers:\n    yolop mcp list --scope global"
+    )]
     List {
         /// Scope to inspect (`global`, `workspace`, or `effective`).
         #[arg(long, default_value = "effective")]
@@ -315,6 +328,9 @@ enum McpCommand {
         cwd: Option<PathBuf>,
     },
     /// Show one configured MCP server.
+    #[command(
+        after_help = "Examples:\n  Inspect the effective entry for a server:\n    yolop mcp show github"
+    )]
     Show {
         /// Server name.
         name: String,
@@ -326,6 +342,9 @@ enum McpCommand {
         cwd: Option<PathBuf>,
     },
     /// Log in to a remote MCP server with the OAuth browser flow.
+    #[command(
+        after_help = "Examples:\n  Sign in to an OAuth-protected server:\n    yolop mcp login linear"
+    )]
     Login {
         /// Server name.
         name: String,
@@ -334,6 +353,9 @@ enum McpCommand {
         cwd: Option<PathBuf>,
     },
     /// Add or replace an MCP server.
+    #[command(
+        after_help = "Examples:\n  Add a local stdio server:\n    yolop mcp add git --type stdio --command uvx --args mcp-server-git\n\n  Add a remote server for this workspace and sign in:\n    yolop mcp add linear --type http --url https://mcp.linear.app/mcp --scope workspace --login"
+    )]
     Add {
         /// Scope to write (`global` or `workspace`).
         #[arg(long, default_value = "global")]
@@ -377,6 +399,7 @@ enum McpCommand {
         cwd: Option<PathBuf>,
     },
     /// Remove an MCP server.
+    #[command(after_help = "Examples:\n  Delete a global server entry:\n    yolop mcp remove git")]
     Remove {
         /// Scope to write (`global` or `workspace`).
         #[arg(long, default_value = "global")]
@@ -388,6 +411,9 @@ enum McpCommand {
         cwd: Option<PathBuf>,
     },
     /// Enable an MCP server.
+    #[command(
+        after_help = "Examples:\n  Turn a disabled server back on:\n    yolop mcp enable git"
+    )]
     Enable {
         /// Scope to write (`global` or `workspace`).
         #[arg(long, default_value = "global")]
@@ -399,6 +425,9 @@ enum McpCommand {
         cwd: Option<PathBuf>,
     },
     /// Disable an MCP server without deleting it.
+    #[command(
+        after_help = "Examples:\n  Stop loading a server but keep its entry:\n    yolop mcp disable git"
+    )]
     Disable {
         /// Scope to write (`global` or `workspace`).
         #[arg(long, default_value = "global")]
@@ -437,10 +466,17 @@ struct IntoCommand {
 #[derive(Subcommand, Debug)]
 enum IntoTarget {
     /// Configure Buzz Desktop to launch yolop as a custom ACP harness.
+    #[command(after_help = "Examples:\n  Register yolop in Buzz Desktop:\n    yolop into buzz")]
     Buzz(BuzzIntoArgs),
     /// Configure Paseo to launch yolop as a custom ACP provider.
+    #[command(
+        after_help = "Examples:\n  Register yolop in Paseo:\n    yolop into paseo\n\n  Overwrite an existing entry:\n    yolop into paseo --force"
+    )]
     Paseo(PaseoIntoArgs),
     /// Configure Zed to launch yolop as a custom ACP agent.
+    #[command(
+        after_help = "Examples:\n  Register yolop as a Zed agent server:\n    yolop into zed"
+    )]
     Zed(ZedIntoArgs),
 }
 
@@ -2335,6 +2371,112 @@ mod tests {
     use super::*;
     use std::ffi::OsString;
     use std::process::Command;
+
+    /// Agents that have never seen yolop learn its spelling from `--help`, so
+    /// help is a contract (knowledge/specs/yolop.md): every visible command
+    /// has a one-line description, every leaf has an `Examples:` block with at
+    /// least one invocation of that exact leaf, and every example parses. A
+    /// wrong example is worse than none: the model copies it verbatim.
+    #[test]
+    fn every_cli_leaf_has_about_and_examples() {
+        /// Minimal shell-word splitting for example lines: whitespace,
+        /// single quotes, and double quotes. Enough for help text.
+        fn shell_words(line: &str) -> Vec<String> {
+            let mut words = Vec::new();
+            let mut word = String::new();
+            let mut in_word = false;
+            let mut quote: Option<char> = None;
+            for c in line.chars() {
+                match (quote, c) {
+                    (Some(q), c) if c == q => quote = None,
+                    (Some(_), c) => word.push(c),
+                    (None, '\'' | '"') => {
+                        quote = Some(c);
+                        in_word = true;
+                    }
+                    (None, c) if c.is_whitespace() => {
+                        if in_word {
+                            words.push(std::mem::take(&mut word));
+                            in_word = false;
+                        }
+                    }
+                    (None, c) => {
+                        word.push(c);
+                        in_word = true;
+                    }
+                }
+            }
+            if in_word {
+                words.push(word);
+            }
+            words
+        }
+
+        fn walk(
+            command: &clap::Command,
+            path: &mut Vec<String>,
+            problems: &mut Vec<String>,
+            examples: &mut Vec<String>,
+        ) {
+            for sub in command
+                .get_subcommands()
+                .filter(|sub| !sub.is_hide_set() && sub.get_name() != "help")
+            {
+                path.push(sub.get_name().to_string());
+                let full = path.join(" ");
+                let about = sub.get_about().map(|about| about.to_string());
+                if about.as_deref().is_none_or(|about| about.trim().is_empty()) {
+                    problems.push(format!("`{full}` has no one-line description"));
+                }
+                let after_help = sub
+                    .get_after_help()
+                    .map(|help| help.to_string())
+                    .unwrap_or_default();
+                examples.extend(
+                    after_help
+                        .lines()
+                        .map(str::trim)
+                        .filter(|line| line.starts_with("yolop "))
+                        .map(str::to_string),
+                );
+                if !sub.has_subcommands()
+                    && (!after_help.contains("Examples:") || !after_help.contains(&full))
+                {
+                    problems.push(format!(
+                        "`{full}` has no `Examples:` block invoking `{full}`"
+                    ));
+                }
+                walk(sub, path, problems, examples);
+                path.pop();
+            }
+        }
+
+        let registry = detached_cli_registry().expect("build detached CLI registry");
+        let root = registry
+            .augment(Cli::command())
+            .expect("augment root command");
+        let mut problems = Vec::new();
+        let mut examples = Vec::new();
+        walk(
+            &root,
+            &mut vec!["yolop".to_string()],
+            &mut problems,
+            &mut examples,
+        );
+        assert!(!examples.is_empty(), "no examples were collected");
+        // `<placeholder>` lines are templates, not commands; they are left to
+        // the reader to fill in.
+        for example in examples.iter().filter(|line| !line.contains('<')) {
+            if let Err(error) = root.clone().try_get_matches_from(shell_words(example)) {
+                problems.push(format!("example `{example}` does not parse: {error}"));
+            }
+        }
+        assert!(
+            problems.is_empty(),
+            "CLI help gaps:\n{}",
+            problems.join("\n")
+        );
+    }
 
     #[test]
     fn trace_routing_follows_terminal_ownership() {

@@ -84,6 +84,14 @@ const HARNESS_VARIANTS: &[HarnessVariant] = &[
         name: "no-tool-reveal",
         settings: "[[capabilities]]\nref = \"tool_reveal\"\nenabled = false\n",
     },
+    // Model-native edit shapes: OpenAI models additionally get Codex's
+    // `apply_patch`; Claude models are unchanged (edit_file already has the
+    // str_replace contract). The A/B for whether a trained-in shape needs
+    // fewer edit retries. See knowledge/specs/native-edit-tools.md.
+    HarnessVariant {
+        name: "native-edit-tools",
+        settings: "[[capabilities]]\nref = \"native_edit_tools\"\n",
+    },
 ];
 
 /// Study plumbing, not a variant under test: every case runs in a plain temp
@@ -1797,6 +1805,7 @@ fn dataset() -> Dataset {
         .file("src/lib.rs", "// Library entry point.\n")
         .tag("smoke")
         .tag("capability-disclosure")
+        .tag("edit-tools")
         .meta("kind", "edit")
         .meta(
             "checks",
@@ -1815,6 +1824,7 @@ fn dataset() -> Dataset {
                  xs.iter().take(xs.len().saturating_sub(1)).sum()\n\
              }\n",
         )
+        .tag("edit-tools")
         .meta("kind", "edit")
         .meta(
             "checks",
@@ -1838,6 +1848,7 @@ fn dataset() -> Dataset {
             "report.py",
             "import fetcher\n\n\ndef count(path):\n    return len(fetcher.fetch_records(path))\n",
         )
+        .tag("edit-tools")
         .meta("kind", "refactor")
         .meta(
             "checks",
@@ -1874,6 +1885,7 @@ fn dataset() -> Dataset {
              function clamp(value, min, max) {\n  throw new Error(\"not implemented\");\n}\n\n\
              module.exports = { clamp };\n",
         )
+        .tag("edit-tools")
         .meta("kind", "edit")
         .meta(
             "checks",
@@ -1892,6 +1904,7 @@ fn dataset() -> Dataset {
         )
         .file("Cargo.toml", cargo_toml)
         .file("src/lib.rs", "pub fn existing() -> i32 {\n    1\n}\n")
+        .tag("edit-tools")
         .meta("kind", "edit")
         .meta(
             "checks",
@@ -2516,6 +2529,11 @@ struct Mined {
     blocked_equivalent_failures: u64,
     ast_edit_tool_calls: u64,
     ast_edit_tool_calls_failed: u64,
+    /// Calls to any file-edit tool (`edit_file`, `write_file`, `apply_patch`)
+    /// and how many failed: the retry cost the `native-edit-tools` A/B reads.
+    edit_tool_calls: u64,
+    edit_tool_calls_failed: u64,
+    apply_patch_tool_calls: u64,
     max_tool_result_bytes: u64,
     total_tool_result_bytes: u64,
     bash_result_bytes: u64,
@@ -2857,7 +2875,7 @@ fn classify_tool(data: &Value) -> ToolKind {
         "read_file" | "grep_files" | "repo_map" | "ast_grep" | "list_directory" | "stat_file" => {
             return ToolKind::Exploration;
         }
-        "write_file" | "edit_file" | "delete_file" | "ast_edit" | "edit" => {
+        "write_file" | "edit_file" | "delete_file" | "ast_edit" | "apply_patch" | "edit" => {
             return ToolKind::Mutation;
         }
         "bash" => {}
@@ -3288,6 +3306,15 @@ fn parse_events(jsonl: &str) -> Mined {
                     m.ast_edit_tool_calls += 1;
                     if data.get("success") == Some(&Value::Bool(false)) {
                         m.ast_edit_tool_calls_failed += 1;
+                    }
+                }
+                if matches!(name, "edit_file" | "write_file" | "apply_patch") {
+                    m.edit_tool_calls += 1;
+                    if data.get("success") == Some(&Value::Bool(false)) {
+                        m.edit_tool_calls_failed += 1;
+                    }
+                    if name == "apply_patch" {
+                        m.apply_patch_tool_calls += 1;
                     }
                 }
                 match classify_tool(&data) {
@@ -3943,6 +3970,16 @@ async fn run_yolop(sample: Sample, cx: RunCx) -> Transcript {
         "ast_edit_tool_calls_failed".into(),
         mined.ast_edit_tool_calls_failed as f64,
     );
+    t.metrics
+        .insert("edit_tool_calls".into(), mined.edit_tool_calls as f64);
+    t.metrics.insert(
+        "edit_tool_calls_failed".into(),
+        mined.edit_tool_calls_failed as f64,
+    );
+    t.metrics.insert(
+        "apply_patch_tool_calls".into(),
+        mined.apply_patch_tool_calls as f64,
+    );
     t.metrics.insert(
         "max_tool_result_bytes".into(),
         mined.max_tool_result_bytes as f64,
@@ -4324,6 +4361,26 @@ mod tests {
         assert_eq!(m.background_wake_llm_calls, 1);
         assert_eq!(m.background_wake_tool_calls, 0);
         assert_eq!(m.final_response, "BACKGROUND_FAILED");
+    }
+
+    #[test]
+    fn parse_events_counts_edit_tool_retries() {
+        let jsonl = r#"
+{"type":"tool.completed","data":{"tool_name":"apply_patch","success":false}}
+{"type":"tool.completed","data":{"tool_name":"apply_patch","success":true}}
+{"type":"tool.completed","data":{"tool_name":"edit_file","success":true}}
+{"type":"tool.completed","data":{"tool_name":"read_file","success":true}}
+"#;
+        let m = parse_events(jsonl);
+        assert_eq!(m.edit_tool_calls, 3);
+        assert_eq!(m.edit_tool_calls_failed, 1);
+        assert_eq!(m.apply_patch_tool_calls, 2);
+    }
+
+    #[test]
+    fn native_edit_tools_variant_enables_the_capability() {
+        let settings = settings_for_variant("native-edit-tools").expect("variant exists");
+        assert!(settings.contains("ref = \"native_edit_tools\""));
     }
 
     #[test]
@@ -5158,6 +5215,7 @@ mod tests {
             "with-ast-edit",
             "no-progress-guard",
             "no-ast-grep",
+            "native-edit-tools",
         ] {
             let mut cx = RunCx::new(Target::new("llmsim", "llmsim", "llmsim-yolop"));
             cx.params.insert("harness".into(), harness.into());

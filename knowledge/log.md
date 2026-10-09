@@ -1,5 +1,24 @@
 # Knowledge Log
 
+## 2026-10-09, Opt-in model-native edit tools
+
+`native_edit_tools` gives OpenAI GPT and Codex models Codex's `apply_patch`
+beside `edit_file`, chosen per turn from the model; Claude stays unchanged
+because `edit_file` already has the `str_replace` contract. Patches plan
+atomically, write through the session file store, and deletions take the
+destructive approval tier. Off by default until the `edit-tools-compare` A/B
+in `evals/harness_basic` shows fewer edit retries. See
+[native edit tools](specs/native-edit-tools.md).
+
+## 2026-10-09, Known CLIs and help that agents can copy
+
+The stable prompt prefers widely known CLIs (`git`, `gh`, the project's own
+build and test tools) over improvised scripts, since models finish faster with
+tools already in their weights. Every `yolop` subcommand now has a one-line
+description, and every leaf an `Examples:` block that a test parses against
+the real grammar. See [system prompt](specs/system-prompt.md) and
+[Yolop framing](specs/yolop.md).
+
 ## 2026-10-08, Shared task completion and recoverable diagnostics
 
 ACP, TUI, and print share bounded completion review. Removed the opt-in ask

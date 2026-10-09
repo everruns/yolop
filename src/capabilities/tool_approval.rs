@@ -16,6 +16,7 @@ use everruns_core::builtins::tool_approval::ToolApprovalCapability as UpstreamTo
 use everruns_core::tool_hooks::{PreToolUseDecision, PreToolUseHook};
 use everruns_core::{Capability, CapabilityStatus};
 
+use crate::capabilities::apply_patch::{APPLY_PATCH_TOOL_NAME, patch_deletes_files};
 use crate::config::ApprovalMode;
 use crate::config::service::ConfigService;
 use crate::exec::shell_policy::requires_destructive_approval;
@@ -154,6 +155,24 @@ impl PreToolUseHook for LiveApprovalHook {
             };
         }
 
+        // `apply_patch` declares edit_file's hints, but a patch can also delete
+        // files. A deleting patch is gated like `delete_file` (destructive), so
+        // the native edit shape never weakens approval for deletions.
+        let escalated = (tool_call.name == APPLY_PATCH_TOOL_NAME
+            && tool_call
+                .arguments
+                .get("input")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(patch_deletes_files))
+        .then(|| {
+            let mut tool_def = tool_def.clone();
+            match &mut tool_def {
+                ToolDefinition::Builtin(tool) => tool.hints.destructive = Some(true),
+                ToolDefinition::ClientSide(tool) => tool.hints.destructive = Some(true),
+            }
+            tool_def
+        });
+
         let config = serde_json::json!({ "mode": mode.as_str() });
         let hook = self
             .upstream
@@ -161,7 +180,8 @@ impl PreToolUseHook for LiveApprovalHook {
             .into_iter()
             .next()
             .expect("upstream tool approval capability always contributes one hook");
-        hook.before_exec(tool_call, tool_def, context).await
+        hook.before_exec(tool_call, escalated.as_ref().unwrap_or(tool_def), context)
+            .await
     }
 }
 
@@ -288,6 +308,55 @@ mod tests {
             hints: ToolHints::default(),
             full_parameters: None,
         })
+    }
+
+    fn apply_patch_call(id: &str, input: &str) -> ToolCall {
+        ToolCall {
+            id: id.to_string(),
+            name: APPLY_PATCH_TOOL_NAME.to_string(),
+            arguments: json!({ "input": input }),
+        }
+    }
+
+    fn apply_patch_tool() -> ToolDefinition {
+        use crate::capabilities::apply_patch::ApplyPatchTool;
+        use everruns_core::Tool as _;
+        ApplyPatchTool.to_definition()
+    }
+
+    /// A patch that deletes files asks like `delete_file` does; an editing
+    /// patch keeps edit_file's no-prompt behavior in normal mode.
+    #[tokio::test]
+    async fn deleting_apply_patch_is_gated_like_delete_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let settings = Arc::new(SettingsStore::open(temp.path().join("settings.toml")));
+        let approver = Arc::new(RejectingApprover {
+            asked: AtomicUsize::new(0),
+        });
+        let capability = ToolApprovalCapability::new(approver.clone(), settings);
+        let hook = capability.pre_tool_use_hooks().pop().unwrap();
+        let context = ToolContext::new(SessionId::new());
+
+        let edit = apply_patch_call(
+            "edit",
+            "*** Begin Patch\n*** Update File: a.txt\n-a\n+b\n*** End Patch",
+        );
+        assert!(matches!(
+            hook.before_exec(edit, &apply_patch_tool(), &context).await,
+            PreToolUseDecision::Continue(_)
+        ));
+        assert_eq!(approver.asked.load(Ordering::Relaxed), 0);
+
+        let delete = apply_patch_call(
+            "delete",
+            "*** Begin Patch\n*** Delete File: a.txt\n*** End Patch",
+        );
+        assert!(matches!(
+            hook.before_exec(delete, &apply_patch_tool(), &context)
+                .await,
+            PreToolUseDecision::Block { .. }
+        ));
+        assert_eq!(approver.asked.load(Ordering::Relaxed), 1);
     }
 
     #[tokio::test]

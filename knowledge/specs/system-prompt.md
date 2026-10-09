@@ -193,6 +193,17 @@ looks redundant against one model's judgement can be essential for another's,
 which is why composition changes get A/B'd on both providers rather than
 reasoned about.
 
+### Known CLIs beat improvised workflows
+
+Models finish tasks in fewer calls with tools that are already in their
+training data. `git`, `gh`, and a project's own build and test commands are
+used correctly on the first try; a hand-rolled script or an unfamiliar
+wrapper costs exploration and retries. `system.md` therefore carries one
+sentence preferring widely known CLIs over improvised scripts. It is a
+preference, not a ban: when the task or the environment rules a CLI out, the
+model uses what works. `system_prompt_prefers_widely_known_clis` keeps the
+sentence from being trimmed silently.
+
 ### Parallelism follows data dependencies
 
 Yolop asks providers for parallel tool calling and tells the agent to emit

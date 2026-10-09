@@ -4,6 +4,7 @@
 // module boundary here small; capability implementations live in submodules.
 
 pub(crate) mod agent_commands;
+pub(crate) mod apply_patch;
 // `pub` rather than `pub(crate)`: `BuiltRuntime` hands hosts the session's
 // pending soft-approval so a pause is visible in the UI.
 pub mod approval;
@@ -45,6 +46,7 @@ pub(crate) mod yolop;
 pub(crate) use agent_commands::{
     AGENT_COMMANDS_CAPABILITY_ID, AgentCommandsCapability, CommandDispatch,
 };
+pub(crate) use apply_patch::NativeEditToolsCapability;
 pub(crate) use approval::{SOFT_APPROVAL_CAPABILITY_ID, soft_approval_capability};
 pub(crate) use ast_grep::{AST_GREP_CAPABILITY_ID, AstEditCapability, AstGrepCapability};
 pub(crate) use attribution::{ATTRIBUTION_CAPABILITY_ID, AttributionCapability};
