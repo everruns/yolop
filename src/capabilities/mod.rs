@@ -1,3 +1,4 @@
+pub mod ask_user;
 // CLI-owned capabilities for yolop.
 //
 // These are host/example behavior rather than runtime primitives. Keep the

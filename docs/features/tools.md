@@ -116,3 +116,17 @@ approvals (`/setup approval <protective|normal|off>`), providers (`/setup`,
 - [Session coordination](../session-coordination.md)
 - [Conversation Control Plane](conversation-control-plane/conversation-control-plane.md)
 - [Extensions](../extensions.md)
+
+## Structured questions
+
+`ask_user` lets the agent ask choice, multiple-choice, or text questions.
+The terminal presents questions one at a time. Closed single-choice questions
+use arrow keys and Enter. Multiple choices accept comma-separated option
+numbers; open choices accept `other:` followed by text. Escape cancels.
+Secret questions are declined because encrypted session-secret storage is not
+available, so credentials are never collected by this tool.
+
+In `-p` mode, choice questions use declared defaults or the first option.
+Text and secret questions are declined without reading stdin. ACP declines
+structured questions because its current protocol has no question-response
+method; ordinary conversational clarification remains available.

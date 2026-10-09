@@ -1,5 +1,12 @@
 # Knowledge Log
 
+## 2026-10-09, Structured user questions
+
+Registered upstream `ask_user` in the coding harness. TUI questions reuse the
+host prompt channel, print mode resolves unattended defaults, and ACP declines
+without permission-request misuse. Secret questions require credential storage
+and are not collected. Updated presentation and ACP contracts.
+
 ## 2026-10-09, Opt-in model-native edit tools
 
 `native_edit_tools` gives OpenAI GPT and Codex models Codex's `apply_patch`

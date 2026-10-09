@@ -425,3 +425,12 @@ same way.
   receive the runtime's cooperative `ToolContext` cancellation token; Yolop
   awaits task teardown before returning ACP's `cancelled` stop reason so
   detached child work observes cancellation before the client continues.
+
+## Structured questions
+
+The shared runtime exposes `ask_user`, but ACP declines structured questions
+because the current protocol has no question-response method. It never reports
+an invented answer as user input. The agent can ask for clarification in ordinary
+conversation and receive it in a later prompt. `session/request_permission`
+remains an action-consent mechanism, not a substitute for preference or
+credential questions. Secret questions are declined without collecting input.

@@ -1944,7 +1944,18 @@ impl App {
         }
         // Extension `ui/ask` prompts. One at a time; a request arriving while a
         // prompt is open is answered "cancelled" rather than stacking overlays.
+        if self
+            .pending_ask
+            .as_ref()
+            .is_some_and(|ask| ask.reply.as_ref().is_some_and(|reply| reply.is_closed()))
+        {
+            self.pending_ask = None;
+            applied_ui_command = true;
+        }
         while let Ok(request) = self.ask_rx.try_recv() {
+            if request.reply.is_closed() {
+                continue;
+            }
             if self.pending_ask.is_some() {
                 let _ = request.reply.send(crate::tui::host_ui::AskAnswer {
                     answer: String::new(),
@@ -1952,7 +1963,7 @@ impl App {
                 });
                 continue;
             }
-            self.push_system(format!("extension asks: {}", request.prompt));
+            self.push_system(format!("question: {}", request.prompt));
             self.pending_ask = Some(PendingAsk {
                 prompt: request.prompt,
                 placeholder: request.placeholder,
