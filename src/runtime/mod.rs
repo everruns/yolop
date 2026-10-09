@@ -10122,6 +10122,19 @@ mod tests {
         assert!(workflow.contains("fix the root cause"));
     }
 
+    /// Models finish faster with CLIs already in their weights than with
+    /// workflows they improvise, so the stable prompt names the preference.
+    #[test]
+    fn system_prompt_prefers_widely_known_clis() {
+        let prompt = SYSTEM_PROMPT
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        assert!(prompt.contains("Prefer widely known CLIs (`git`, `gh`"));
+        assert!(prompt.contains("the project's own build and test tools"));
+    }
+
     #[test]
     fn system_prompt_balances_parallel_calls_and_coherent_shell_phases() {
         let prompt = include_str!("system.md")

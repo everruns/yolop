@@ -37,12 +37,24 @@ struct WorktreeCommandLine {
 #[derive(Debug, Clone, Subcommand)]
 enum WorktreeCliCommand {
     /// Ensure this session has a Yolop-owned worktree and make it active.
+    #[command(
+        after_help = "Examples:\n  Move this session into an isolated worktree:\n    yolop worktree init"
+    )]
     Init,
     /// Show this session's worktree policy and active workspace.
+    #[command(
+        after_help = "Examples:\n  Check which directory this session edits:\n    yolop worktree status"
+    )]
     Status,
     /// List Yolop worktree directories on disk.
+    #[command(
+        after_help = "Examples:\n  See every worktree yolop created:\n    yolop worktree list"
+    )]
     List,
     /// Remove worktrees no longer referenced by saved sessions.
+    #[command(
+        after_help = "Examples:\n  Preview what would be removed:\n    yolop worktree prune --dry-run"
+    )]
     Prune {
         /// Preview removals without deleting anything.
         #[arg(long)]

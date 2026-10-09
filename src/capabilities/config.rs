@@ -49,18 +49,27 @@ fn profile_target(action: &Value) -> Option<String> {
 
 #[derive(Debug, Subcommand)]
 enum ConfigCommand {
-    Get {
-        key: Option<String>,
-    },
+    /// Show settings with their schema, or one key when given.
+    #[command(
+        after_help = "Examples:\n  List every setting and its current value:\n    yolop config get\n\n  Check the approval policy:\n    yolop config get approval_mode"
+    )]
+    Get { key: Option<String> },
+    /// Set a setting to a scalar value or a JSON object.
+    #[command(
+        after_help = "Examples:\n  Turn off proactive wakes:\n    yolop config set proactive_wake false\n\n  Disable one capability:\n    yolop config set capabilities --json '{\"ref\":\"web_fetch\",\"enabled\":false}'"
+    )]
     Set {
         key: String,
         value: Option<String>,
         #[arg(long, value_name = "OBJECT", conflicts_with = "value")]
         json: Option<String>,
     },
-    Clear {
-        key: String,
-    },
+    /// Reset a setting to its default.
+    #[command(
+        after_help = "Examples:\n  Return the theme to the default:\n    yolop config clear theme"
+    )]
+    Clear { key: String },
+    /// Show or change the default model for new sessions.
     Model {
         #[command(subcommand)]
         command: ConfigModelCommand,
@@ -74,12 +83,14 @@ enum ConfigCommand {
 
   Remove a model:
     yolop config models rm codex/gpt-5.6-sol")]
+    /// Manage the model menu offered by /model and ACP clients.
     Models {
         #[command(subcommand)]
         command: Option<ModelsCliCommand>,
     },
+    /// Manage lifecycle hooks in global or workspace settings.
     #[command(
-        after_help = "Examples:\n  Reject edits to environment files before a write tool runs:\n    yolop config hooks set protect-env PreToolUse --matcher 'write_file|edit_file' --command ./scripts/reject-env-edits.sh --timeout-secs 5 --scope workspace\n\n  Disable a global hook for this workspace without deleting its global definition:\n    yolop config hooks set release-check PreToolUse --command true --scope workspace --disabled"
+        after_help = "Examples:\n  Run a check script before every tool call in this workspace:\n    yolop config hooks set protect-env PreToolUse --command ./scripts/reject-env-edits.sh --scope workspace\n\n  Disable a global hook for this workspace without deleting its global definition:\n    yolop config hooks set release-check PreToolUse --command true --scope workspace --disabled"
     )]
     Hooks {
         #[command(subcommand)]
@@ -102,12 +113,22 @@ impl From<HookScopeArg> for HookScope {
 }
 #[derive(Debug, Serialize, Deserialize, Subcommand)]
 enum HooksCommand {
+    /// List hooks from global and workspace settings.
+    #[command(after_help = "Examples:\n  See every configured hook:\n    yolop config hooks list")]
     List,
+    /// Show one hook definition.
+    #[command(
+        after_help = "Examples:\n  Inspect the workspace copy of a hook:\n    yolop config hooks get protect-env --scope workspace"
+    )]
     Get {
         id: String,
         #[arg(long, value_enum)]
         scope: Option<HookScopeArg>,
     },
+    /// Add or replace a hook that runs a command on a lifecycle event.
+    #[command(
+        after_help = "Examples:\n  Run a script before every tool call:\n    yolop config hooks set protect-env PreToolUse --command ./scripts/check.sh"
+    )]
     Set {
         id: String,
         event: String,
@@ -118,6 +139,10 @@ enum HooksCommand {
         #[arg(long)]
         disabled: bool,
     },
+    /// Delete a hook definition.
+    #[command(
+        after_help = "Examples:\n  Remove a workspace hook:\n    yolop config hooks remove protect-env --scope workspace"
+    )]
     Remove {
         id: String,
         #[arg(long, value_enum, default_value = "global")]
@@ -127,8 +152,18 @@ enum HooksCommand {
 
 #[derive(Debug, Subcommand)]
 enum ConfigModelCommand {
+    /// Show the configured default model.
+    #[command(
+        after_help = "Examples:\n  Check which model new sessions start with:\n    yolop config model show"
+    )]
     Show,
+    /// Set the default model for new sessions.
+    #[command(
+        after_help = "Examples:\n  Start new sessions on GPT-5.6:\n    yolop config model set openai/gpt-5.6"
+    )]
     Set { model: String },
+    /// Forget the configured default model.
+    #[command(after_help = "Examples:\n  Clear the default model:\n    yolop config model clear")]
     Clear,
 }
 
@@ -256,9 +291,11 @@ impl ControlCapability for ConfigCapability {
 #[async_trait]
 impl CliCapability for ConfigCapability {
     fn cli_command(&self) -> clap::Command {
-        ConfigCommandLine::augment_args(Command::new("config")).after_help(
-            "Examples:\n  Inspect one capability override and its effective schema:\n    yolop config get capabilities.web_fetch\n\n  Add a labeled fallback immediately after the default model:\n    yolop config models add anthropic claude-sonnet-4-6 --label fallback --after default",
-        )
+        ConfigCommandLine::augment_args(Command::new("config"))
+            .about("Read and change yolop settings, models, and hooks")
+            .after_help(
+                "Examples:\n  Inspect one capability override and its effective schema:\n    yolop config get capabilities.web_fetch\n\n  Add a labeled fallback as the second model:\n    yolop config models add anthropic claude-sonnet-4-6 --label fallback --position 2",
+            )
     }
 
     fn control_request_from_cli(

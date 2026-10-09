@@ -50,12 +50,18 @@ pub(crate) const EXTENSIONS_CONTROL_ROUTE: ControlRoute = ControlRoute {
 #[derive(Subcommand, Debug)]
 enum ExtensionCommand {
     /// List installed extensions.
+    #[command(
+        after_help = "Examples:\n  See installed extensions and whether they are enabled:\n    yolop extensions list"
+    )]
     List {
         /// Emit the full machine-readable result.
         #[arg(long)]
         json: bool,
     },
     /// Install an extension without enabling it.
+    #[command(
+        after_help = "Examples:\n  Install a local extension package:\n    yolop extensions install ./extensions/release-notes"
+    )]
     Install { source: String },
     /// Remove an installed extension and its persisted enablement/secrets.
     ///
@@ -64,20 +70,38 @@ enum ExtensionCommand {
     /// subcommand" and suggested `install`, the one command that does the
     /// opposite of what was asked.
     #[command(alias = "uninstall")]
+    #[command(
+        after_help = "Examples:\n  Uninstall an extension and its stored secrets:\n    yolop extensions remove release-notes"
+    )]
     Remove { name: String },
     /// Persist enablement and apply it to the attached session when present.
+    #[command(
+        after_help = "Examples:\n  Turn an installed extension on:\n    yolop extensions enable release-notes"
+    )]
     Enable { name: String },
     /// Persist disablement and apply it to the attached session when present.
+    #[command(
+        after_help = "Examples:\n  Turn an extension off without removing it:\n    yolop extensions disable release-notes"
+    )]
     Disable { name: String },
     /// Restart an extension server in the attached session.
+    #[command(
+        after_help = "Examples:\n  Pick up edits to an extension without restarting yolop:\n    yolop extensions reload release-notes"
+    )]
     Reload { name: String },
     /// Probe an installed extension's YEP conformance.
+    #[command(
+        after_help = "Examples:\n  Check that an extension speaks the protocol correctly:\n    yolop extensions doctor release-notes"
+    )]
     Doctor { name: String },
     /// Show or set an extension's configuration.
     Config(ExtensionConfigArgs),
     /// Prompt for and store an extension secret.
     Secret(ExtensionSecretArgs),
     /// Create a new extension package skeleton.
+    #[command(
+        after_help = "Examples:\n  Start a Python extension with one tool:\n    yolop extensions scaffold release-notes --tool changelog --dir ./extensions"
+    )]
     Scaffold {
         name: String,
         #[arg(long, default_value = "")]
@@ -109,10 +133,16 @@ pub struct ExtensionConfigArgs {
 enum ExtensionConfigCommand {
     /// Show an extension's configuration: which fields are set, the values of
     /// the non-secret ones, and the files they are stored in.
+    #[command(
+        after_help = "Examples:\n  See which fields an extension has set:\n    yolop extensions config show release-notes"
+    )]
     Show { name: String },
     /// Set a non-secret field. Secrets are refused here and keep their
     /// prompt-only path, so a value never lands in a shell history or a
     /// tool-call argument.
+    #[command(
+        after_help = "Examples:\n  Point an extension at a different endpoint:\n    yolop extensions config set release-notes endpoint https://example.com/api"
+    )]
     Set {
         name: String,
         field: String,
@@ -129,6 +159,9 @@ pub struct ExtensionSecretArgs {
 #[derive(Subcommand, Debug)]
 enum ExtensionSecretCommand {
     /// Prompt for a secret field; the value is never accepted as an argument.
+    #[command(
+        after_help = "Examples:\n  Store an API token without putting it on the command line:\n    yolop extensions secret set release-notes api_token"
+    )]
     Set { name: String, field: String },
 }
 

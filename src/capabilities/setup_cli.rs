@@ -64,11 +64,16 @@ impl SetupCliCapability {
     fn command() -> Command {
         Command::new(SETUP_CONTROL_ROUTE)
             .about("Set up provider authentication")
-            .after_help("Examples:\n  Replace an expired OpenAI credential:\n    yolop setup reauthenticate openai\n\n  Authenticate Codex using its device-code flow:\n    yolop setup login codex --device\n  yolop setup login openai --api-key $OPENAI_API_KEY\n  yolop setup reauthenticate anthropic")
-            .subcommand(Command::new("status").about("Show setup status"))
+            .after_help("Examples:\n  Replace an expired OpenAI credential:\n    yolop setup reauthenticate openai\n\n  Authenticate Codex using its device-code flow:\n    yolop setup login codex --device")
+            .subcommand(
+                Command::new("status")
+                    .about("Show setup status")
+                    .after_help("Examples:\n  See which providers have credentials:\n    yolop setup status"),
+            )
             .subcommand(
                 Command::new("login")
                     .about("Authenticate a provider in the terminal (no setup screen)")
+                    .after_help("Examples:\n  Save an OpenAI API key without a prompt:\n    yolop setup login openai --api-key $OPENAI_API_KEY\n\n  Sign in to Codex from a headless machine:\n    yolop setup login codex --device")
                     .arg(
                         Arg::new("provider")
                             .help("Provider to authenticate (codex, openai, anthropic, openrouter, ...)")
@@ -90,6 +95,7 @@ impl SetupCliCapability {
             .subcommand(
                 Command::new("reauthenticate")
                     .about("Replace the saved credential for a provider in the terminal")
+                    .after_help("Examples:\n  Replace an expired Anthropic key:\n    yolop setup reauthenticate anthropic")
                     .arg(Arg::new("provider").help("Provider to reauthenticate").required(true))
                     .arg(
                         Arg::new("device")

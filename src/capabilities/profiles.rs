@@ -46,13 +46,20 @@ struct ProfileCommandLine {
 #[derive(Subcommand, Debug)]
 enum ProfileCommand {
     /// List profiles (default when no subcommand is given).
+    #[command(after_help = "Examples:\n  See which profiles exist:\n    yolop profiles list")]
     List,
     /// Print a profile's sparse TOML overlay.
+    #[command(
+        after_help = "Examples:\n  See what a profile overrides:\n    yolop profiles show review"
+    )]
     Show {
         /// Profile name.
         name: String,
     },
     /// Create a profile, optionally copying another profile's overlay.
+    #[command(
+        after_help = "Examples:\n  Start a profile from an existing one:\n    yolop profiles create triage --from review"
+    )]
     Create {
         /// Profile name.
         name: String,
@@ -61,6 +68,9 @@ enum ProfileCommand {
         from: Option<String>,
     },
     /// Delete a profile file.
+    #[command(
+        after_help = "Examples:\n  Delete a profile you no longer use:\n    yolop profiles delete triage --yes"
+    )]
     Delete {
         /// Profile name.
         name: String,

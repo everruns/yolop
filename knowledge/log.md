@@ -1,5 +1,14 @@
 # Knowledge Log
 
+## 2026-10-09, Known CLIs and help that agents can copy
+
+The stable prompt prefers widely known CLIs (`git`, `gh`, the project's own
+build and test tools) over improvised scripts, since models finish faster with
+tools already in their weights. Every `yolop` subcommand now has a one-line
+description, and every leaf an `Examples:` block that a test parses against
+the real grammar. See [system prompt](specs/system-prompt.md) and
+[Yolop framing](specs/yolop.md).
+
 ## 2026-10-08, Shared task completion and recoverable diagnostics
 
 ACP, TUI, and print share bounded completion review. Removed the opt-in ask

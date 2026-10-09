@@ -1618,13 +1618,22 @@ impl CoordinationAction {
 #[derive(Subcommand, Debug)]
 enum CoordinationCliCommand {
     /// List live sessions. Attached calls are scoped to the current project.
+    #[command(
+        after_help = "Examples:\n  See which sessions can take work:\n    yolop coordination list"
+    )]
     List {
         #[arg(long)]
         json: bool,
     },
     /// Show the attached session's role, availability, and assignment.
+    #[command(
+        after_help = "Examples:\n  Check whether this session has an assignment:\n    yolop coordination status"
+    )]
     Status,
     /// Assign work to an eligible worker in the attached coordinator's project.
+    #[command(
+        after_help = "Examples:\n  Hand a test task to any idle worker:\n    yolop coordination dispatch --title 'Add parser tests' --request 'Cover malformed frontmatter'"
+    )]
     Dispatch {
         #[arg(long, num_args = 1.., required = true)]
         title: Vec<String>,
@@ -1634,6 +1643,9 @@ enum CoordinationCliCommand {
         target_session_id: Option<SessionId>,
     },
     /// Settle the attached worker's active assignment and notify its coordinator.
+    #[command(
+        after_help = "Examples:\n  Report finished work with its validation:\n    yolop coordination complete --status succeeded --summary 'Fixed parser' --validation 'cargo test' --artifact src/parser.rs"
+    )]
     Complete {
         #[arg(long, value_parser = ["succeeded", "failed"])]
         status: String,
@@ -1645,6 +1657,9 @@ enum CoordinationCliCommand {
         artifacts: Vec<String>,
     },
     /// Cancel a running assignment owned by the attached coordinator and notify its worker.
+    #[command(
+        after_help = "Examples:\n  Withdraw an assignment that is no longer needed:\n    yolop coordination cancel --task-id task_42 --reason 'Superseded by newer plan'"
+    )]
     Cancel {
         #[arg(long)]
         task_id: String,
@@ -1652,10 +1667,19 @@ enum CoordinationCliCommand {
         reason: Vec<String>,
     },
     /// Allow the attached worker to receive new assignments.
+    #[command(
+        after_help = "Examples:\n  Make this worker available again:\n    yolop coordination accept"
+    )]
     Accept,
     /// Stop the attached worker from receiving new assignments.
+    #[command(
+        after_help = "Examples:\n  Finish the current task and take no more:\n    yolop coordination drain"
+    )]
     Drain,
     /// Plan worker sessions for a coordinator: prints one `yolop` launch command per worker.
+    #[command(
+        after_help = "Examples:\n  Plan three review workers with a shared profile:\n    yolop coordination spawn-workers --count 3 --profile review-worker"
+    )]
     SpawnWorkers {
         /// Number of workers to plan (1-10).
         #[arg(long, default_value_t = 1)]
