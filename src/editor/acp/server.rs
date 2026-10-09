@@ -1669,7 +1669,7 @@ async fn run_prompt(
     mut prompt: String,
     mut input: InputMessage,
 ) -> StopReason {
-    let mut provider_stall_followups = 0usize;
+    let mut provider_interruption_followups = 0usize;
     let mut cancel_rx = session.arm_cancel();
     loop {
         let (stop, result) =
@@ -1680,8 +1680,10 @@ async fn run_prompt(
         let Some(result) = result else {
             return stop;
         };
-        let next = if let Some(next) = provider_stall_followup(&result, provider_stall_followups) {
-            provider_stall_followups = provider_stall_followups.saturating_add(1);
+        let next = if let Some(next) =
+            provider_interruption_followup(&result, provider_interruption_followups)
+        {
+            provider_interruption_followups = provider_interruption_followups.saturating_add(1);
             next
         } else {
             let followup = tokio::select! {
@@ -1829,9 +1831,9 @@ async fn run_prompt_once(
     }
 }
 
-const PROVIDER_STALL_CONTINUATION: &str = "The provider stopped responding during the previous model step. Continue the current task from the durable conversation state. Do not repeat completed tool calls or settled work.";
+const PROVIDER_INTERRUPTION_CONTINUATION: &str = "The provider connection was interrupted during the previous model step. Continue the current task from the durable conversation state. Do not repeat completed tool calls or settled work.";
 
-fn provider_stall_followup(
+fn provider_interruption_followup(
     turn_result: &everruns_core::host::TurnResult,
     followups: usize,
 ) -> Option<String> {
@@ -1840,9 +1842,16 @@ fn provider_stall_followup(
         && turn_result
             .error
             .as_deref()
-            .is_some_and(|error| error.contains("provider stream stall"))
+            .is_some_and(|error| {
+                let error = error.to_ascii_lowercase();
+                error.contains("provider stream stall")
+                    // A body failure can arrive after harmless SSE metadata, beyond
+                    // the shared driver's pre-first-event reconnect boundary.
+                    // Resume the durable turn, never replay settled tool actions.
+                    || error.ends_with("stream error: transport error: error decoding response body")
+            })
     {
-        Some(PROVIDER_STALL_CONTINUATION.to_string())
+        Some(PROVIDER_INTERRUPTION_CONTINUATION.to_string())
     } else {
         None
     }
@@ -2080,19 +2089,32 @@ mod tests {
         );
 
         assert_eq!(
-            provider_stall_followup(&stalled, 0).as_deref(),
-            Some(PROVIDER_STALL_CONTINUATION)
+            provider_interruption_followup(&stalled, 0).as_deref(),
+            Some(PROVIDER_INTERRUPTION_CONTINUATION)
         );
-        assert_eq!(provider_stall_followup(&stalled, 1), None);
+        assert_eq!(provider_interruption_followup(&stalled, 1), None);
     }
 
     #[test]
-    fn provider_stall_followup_ignores_other_turn_results() {
-        assert_eq!(provider_stall_followup(&turn_result(true, None), 0), None);
+    fn provider_interruption_followup_ignores_other_turn_results() {
         assert_eq!(
-            provider_stall_followup(&turn_result(false, Some("permanent provider error")), 0),
+            provider_interruption_followup(&turn_result(true, None), 0),
             None
         );
+        for error in [
+            "permanent provider error",
+            "Stream error: Parser error: invalid SSE frame",
+            "Failed to parse event: error decoding response body",
+            "Stream error: Utf8 error",
+            "Invalid provider credentials",
+            "Provider quota exhausted",
+        ] {
+            assert_eq!(
+                provider_interruption_followup(&turn_result(false, Some(error)), 0),
+                None,
+                "{error}"
+            );
+        }
     }
 
     #[test]

@@ -2112,6 +2112,75 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn body_transport_failure_resumes_without_repeating_completed_tools() {
+        use everruns_llmsim::{OnExhausted, SimError};
+
+        let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let config = LlmSimConfig::scripted(vec![
+            SimTurn::ToolCalls(vec![SimToolCall {
+                name: "bash".to_string(),
+                arguments: json!({ "command": "printf 'once\\n' >> marker" }),
+                id: None,
+            }]),
+            SimTurn::Error(SimError::Other(
+                "Codex stream error: Transport error: error decoding response body".to_string(),
+            )),
+            SimTurn::Assistant("recovered verdict".to_string()),
+        ])
+        .with_message_capture(captured.clone())
+        .with_on_exhausted(OnExhausted::Error);
+        let (run, marker) = with_sdk_client(config, |client| async move {
+            let cwd = tempfile::tempdir().expect("workspace");
+            let mut session = client.new_session_at(cwd.path().to_path_buf()).await?;
+            let _ = collect_available_commands(&mut session).await?;
+            let run = SdkClient::prompt(&mut session, "write the marker once and report").await?;
+            Ok((
+                run,
+                std::fs::read_to_string(cwd.path().join("marker")).unwrap(),
+            ))
+        })
+        .await;
+
+        assert_eq!(run.stop_reason, StopReason::EndTurn);
+        assert!(run.assistant_text().contains("recovered verdict"));
+        assert_eq!(marker, "once\n", "settled shell work must not repeat");
+        let messages = captured.lock().unwrap();
+        assert_eq!(messages.len(), 3, "one fresh continuation, no retry loop");
+        assert!(
+            messages[2]
+                .iter()
+                .any(|message| message.role == everruns_contracts::MessageRole::Tool),
+            "the continuation must retain the completed tool result"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn persistent_body_transport_failure_stops_after_one_continuation() {
+        use everruns_llmsim::{OnExhausted, SimError};
+
+        let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let failure = SimTurn::Error(SimError::Other(
+            "Stream error: Transport error: error decoding response body".to_string(),
+        ));
+        let config = LlmSimConfig::scripted(vec![failure.clone(), failure])
+            .with_message_capture(captured.clone())
+            .with_on_exhausted(OnExhausted::Error);
+        let run = with_sdk_client(config, |client| async move {
+            let mut session = client.new_session().await?;
+            let _ = collect_available_commands(&mut session).await?;
+            SdkClient::prompt(&mut session, "do the work").await
+        })
+        .await;
+
+        assert_eq!(run.stop_reason, StopReason::EndTurn);
+        assert!(
+            run.assistant_text()
+                .contains("error decoding response body")
+        );
+        assert_eq!(captured.lock().unwrap().len(), 2);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn permanent_provider_failure_is_failed_without_continuation() {
         use everruns_llmsim::{OnExhausted, SimError};
 

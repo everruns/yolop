@@ -10,6 +10,13 @@ JSON with durable recovery paths. Progress warnings no longer remove diagnostic
 tools or block different commands through the same tool. See
 [task completion](specs/task-completion.md).
 
+## 2026-10-08, ACP resumes interrupted provider bodies
+
+ACP uses its existing one-continuation recovery budget for response-body
+transport failures as well as silent stalls. It resumes from durable tool
+results after the shared driver reconnect boundary, preserving settled work
+and surfacing persistent failures. See [ACP](specs/acp.md).
+
 ## 2026-10-03, Shared Everruns provider drivers
 
 Yolop consumes `everruns-drivers` for ChatGPT plan, legacy Codex, and vendor
