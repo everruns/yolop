@@ -2906,11 +2906,14 @@ mod tests {
                 id: None,
             }]),
             SimTurn::Assistant("scheduled background bash".to_string()),
+            SimTurn::Assistant(
+                r#"{"state":"achieved","reason":"requested schedule is configured"}"#.into(),
+            ),
             SimTurn::ToolCalls(vec![SimToolCall {
                 name: "spawn_background".to_string(),
                 arguments: json!({
                     "tool": "bash",
-                    "args": { "command": "true" },
+                    "args": { "command": "sleep 1" },
                     "title": "scheduled ACP wake regression",
                     "signal_on_completion": true,
                 }),
@@ -2918,6 +2921,9 @@ mod tests {
             }]),
             SimTurn::Assistant("scheduled monitor fired and started run".to_string()),
             SimTurn::Assistant("scheduled run completed".to_string()),
+            SimTurn::Assistant(
+                r#"{"state":"achieved","reason":"scheduled validation completed"}"#.into(),
+            ),
         ]);
 
         let sessions = tempfile::tempdir().expect("sessions tempdir").keep();
