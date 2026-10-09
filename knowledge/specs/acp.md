@@ -223,11 +223,14 @@ that is distinct from Yolop's narrated title.
 To avoid duplicating streamed text, a completed assistant message is only
 emitted as a chunk when no deltas streamed for it during the turn.
 
-When the provider exhausts its transparent stream-stall retries, the ACP prompt
-loop submits one fresh continuation against the durable session transcript. The
-continuation tells the model not to repeat completed tools or settled work. It
-is bounded to one attempt per client prompt, so a persistently stalled provider
-still terminates instead of entering an automatic recovery loop.
+When a provider stream stalls or fails to decode its transport body, the ACP
+prompt loop submits one fresh continuation against the durable session
+transcript after the shared driver's recovery ends. Body failures can occur
+after SSE metadata has already passed the driver's safe reconnect boundary.
+The continuation retains completed tool results and tells the model not to
+repeat settled work. Stalls and body failures share one attempt per client
+prompt, so persistent interruptions terminate instead of entering a recovery
+loop. Authentication, quota, JSON and SSE parser errors remain terminal.
 
 After `session/new`, yolop sends `available_commands_update` with
 capability-sourced slash commands such as `/setup` and user-invocable skill
