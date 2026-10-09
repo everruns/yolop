@@ -159,6 +159,7 @@ mod tests {
                 answers,
                 usage: DecisionUsage::default(),
                 calibrated: true,
+                attribution: None,
             })
         }
     }

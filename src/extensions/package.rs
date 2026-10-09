@@ -583,7 +583,7 @@ mod tests {
     #[test]
     fn relative_server_commands_resolve_from_the_package() {
         let tmp = tempfile::tempdir().unwrap();
-        let package = tmp.path().join("echo");
+        let package = tmp.path().canonicalize().unwrap().join("echo");
         std::fs::create_dir_all(package.join("bin")).unwrap();
         std::fs::write(package.join("bin/server"), "fixture").unwrap();
         assert_eq!(

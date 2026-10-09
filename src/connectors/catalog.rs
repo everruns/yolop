@@ -4,7 +4,7 @@
 //! catalog is the single place new sandbox backends (E2B, etc.) plug in.
 
 use everruns_capabilities::{Connector, ConnectorRegistry, ConnectorValidation};
-use everruns_integrations_daytona::connection::DaytonaConnector;
+use everruns_integrations::daytona::connection::DaytonaConnector;
 use std::collections::HashMap;
 use std::sync::Arc;
 

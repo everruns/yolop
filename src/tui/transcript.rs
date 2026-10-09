@@ -779,6 +779,13 @@ pub(crate) fn shell_result_lines(result: ToolExecutionResult) -> Vec<ChatLine> {
             author: Author::System,
             text: format!("shell failed: {message}"),
         }],
+        ToolExecutionResult::PolicyOutcome(result) => match result.error {
+            Some(message) => vec![ChatLine {
+                author: Author::System,
+                text: format!("shell failed: {message}"),
+            }],
+            None => shell_success_lines(&result.result.unwrap_or_default()),
+        },
         ToolExecutionResult::InternalError(_) => vec![ChatLine {
             author: Author::System,
             text: "shell failed: internal error".into(),
@@ -794,6 +801,9 @@ pub(crate) fn shell_result_succeeded(result: &ToolExecutionResult) -> bool {
     match result {
         ToolExecutionResult::Success(value) => shell_value_succeeded(value),
         ToolExecutionResult::SuccessWithImages { result, .. } => shell_value_succeeded(result),
+        ToolExecutionResult::PolicyOutcome(result) => {
+            result.result.as_ref().is_some_and(shell_value_succeeded) && result.error.is_none()
+        }
         ToolExecutionResult::ToolError(_)
         | ToolExecutionResult::InternalError(_)
         | ToolExecutionResult::ConnectionRequired { .. } => false,
@@ -896,6 +906,9 @@ mod tests {
             capability_id: None,
             capability_name: None,
             narration: None,
+            acted_as: None,
+            executed_arguments: None,
+            executed_arguments_truncated: false,
         };
         let summary = summarize_tool_result(&data);
         assert!(
@@ -933,6 +946,9 @@ mod tests {
             capability_id: None,
             capability_name: None,
             narration: None,
+            acted_as: None,
+            executed_arguments: None,
+            executed_arguments_truncated: false,
         };
         let summary = summarize_tool_result(&data);
         assert!(
@@ -962,6 +978,9 @@ mod tests {
             capability_id: None,
             capability_name: None,
             narration: None,
+            acted_as: None,
+            executed_arguments: None,
+            executed_arguments_truncated: false,
         };
         assert!(summarize_tool_result(&data).contains("pre_tool_use hook"));
     }
@@ -1090,6 +1109,9 @@ mod tests {
             capability_id: None,
             capability_name: None,
             narration: None,
+            acted_as: None,
+            executed_arguments: None,
+            executed_arguments_truncated: false,
         };
 
         assert_eq!(

@@ -676,6 +676,9 @@ mod tests {
             capability_id: None,
             capability_name: None,
             narration: None,
+            acted_as: None,
+            executed_arguments: None,
+            executed_arguments_truncated: false,
         })));
         assert_eq!(updates.len(), 1);
         match &updates[0] {
@@ -708,6 +711,9 @@ mod tests {
             capability_id: None,
             capability_name: None,
             narration: None,
+            acted_as: None,
+            executed_arguments: None,
+            executed_arguments_truncated: false,
         })));
         assert_eq!(updates.len(), 1);
         match &updates[0] {
@@ -869,6 +875,9 @@ mod tests {
             capability_id: None,
             capability_name: None,
             narration: Some("Listed files".into()),
+            acted_as: None,
+            executed_arguments: None,
+            executed_arguments_truncated: false,
         })));
 
         assert_eq!(updates.len(), 2);
