@@ -21,7 +21,7 @@ yolop run feed those tools without a bespoke converter per consumer.
 `--trajectory-out <path>` writes the whole session, including events replayed
 on `--session` resume, as a single ATIF-v1.7 JSON document when the run ends.
 It works in the interactive TUI and in headless `-p/--print` mode (including
-failed turns and `/goal` runs); `--acp` ignores it because the editor owns the
+failed turns and automatic repairs); `--acp` ignores it because the editor owns the
 session lifecycle there.
 
 `src/session_state/atif.rs` owns the serializer: it folds the runtime event log into steps

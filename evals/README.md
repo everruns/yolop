@@ -70,3 +70,8 @@ reports later with `mira report <run_id>`. Analysis-ready exports come from
 per case × score).
 
 See each study's own `README.md` for its matrix, agents, suites, and details.
+
+## Regression evidence
+
+[Task completion](evidence/task-completion/) records the failing background wake
+reproduction, TUI captures, and the limited autonomy-prompt A/B result.

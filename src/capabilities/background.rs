@@ -41,14 +41,14 @@ pub(crate) const BACKGROUND_CAPABILITY_ID: &str = "background";
 // zero turns, so steer the model to detach the wait and rely on the
 // completion wake instead of foreground watches or poll-sleep turns.
 pub(crate) const BACKGROUND_SYSTEM_PROMPT: &str = "<capability id=\"background\">\n\
-    Waiting on an external event — a CI run, a PR review window, a deploy, a long \
-    build — must not consume turns. Do not run watch commands in the foreground and \
+    Waiting on an external event, a CI run, a PR review window, a deploy, a long \
+    build, must not consume turns. Do not run watch commands in the foreground and \
     do not poll status across turns. Start one blocking watch detached via \
     `spawn_background` (e.g. `gh pr checks --watch`, `gh run watch --exit-status`, \
     or `until <check>; do sleep 30; done`), say what you are waiting for, and end \
     the turn: completion wakes you with the result. You can keep working on other \
-    steps while it runs. In one-shot (`-p`) runs there is no wake — block on the \
-    spawned task with `wait_task` instead of ending the turn. To inspect background \
+    steps while it runs. Print (`-p`) also waits for completion and resumes with \
+    the result; `wait_task` is available for an explicit wait. To inspect background \
     state, call `list_tasks` once without kind or state filters; scheduled work is a \
     `monitor`, not a `background_tool`. Scheduled monitors are obligations you own: \
     before finishing work, cancel any monitor whose purpose is satisfied, superseded, \

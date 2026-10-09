@@ -58,14 +58,59 @@ pub struct BashTool {
     max_output_bytes: usize,
 }
 
+#[cfg(unix)]
+struct CommandProcessGroup(Option<i32>);
+#[cfg(unix)]
+impl CommandProcessGroup {
+    fn kill(&mut self) {
+        if let Some(group) = self.0.take() {
+            // The spawned command owns this group. A shell-only kill leaves
+            // pipeline children and build workers running during recovery.
+            unsafe {
+                libc::kill(-group, libc::SIGKILL);
+            }
+        }
+    }
+}
+#[cfg(unix)]
+impl Drop for CommandProcessGroup {
+    fn drop(&mut self) {
+        self.kill();
+    }
+}
+
 struct BashRunOutput {
     stdout_text: String,
     stderr_text: String,
     exit_code: i32,
+    timed_out: bool,
     out_truncated: bool,
     err_truncated: bool,
     duration: Duration,
     sandbox_mode: SandboxMode,
+}
+
+// Bound the encoded result, not just raw text: JSON escaping can multiply
+// its size. Retain complete cleaned output for the existing persistence hook.
+fn bounded_exec_payload(output: &BashRunOutput, mode: &str) -> ExecToolResultPayload {
+    let mut payload = ExecToolResultPayload::new(
+        &output.stdout_text,
+        &output.stderr_text,
+        output.exit_code,
+        mode,
+    );
+    let encoded = serde_json::to_string(&(&payload.stdout, &payload.stderr))
+        .unwrap_or_default()
+        .len();
+    if encoded > 24 * 1024 {
+        payload = ExecToolResultPayload::new(
+            &output.stdout_text,
+            &output.stderr_text,
+            output.exit_code,
+            "concise",
+        );
+    }
+    payload
 }
 
 fn likely_sandbox_denial(mode: SandboxMode, exit_code: i32, stderr: &str) -> bool {
@@ -189,20 +234,24 @@ impl BashTool {
             endpoint.apply_to(&mut process);
         }
         crate::exec::sandbox::configure_stdio(&mut process);
+        #[cfg(unix)]
+        process.process_group(0);
         let mut child = process
             .spawn()
             .map_err(|e| ToolExecutionResult::tool_error(format!("spawn failed: {e}")))?;
+        #[cfg(unix)]
+        let mut group = CommandProcessGroup(child.id().map(|id| id as i32));
         let mut stdout = child.stdout.take().unwrap();
         let mut stderr = child.stderr.take().unwrap();
 
         let start = Instant::now();
+        let mut out_buf = Vec::with_capacity(4096);
+        let mut err_buf = Vec::with_capacity(4096);
+        let mut out_truncated = false;
+        let mut err_truncated = false;
         let run = async {
-            let mut out_buf = Vec::with_capacity(4096);
-            let mut err_buf = Vec::with_capacity(4096);
             let mut o = vec![0u8; 4096];
             let mut e = vec![0u8; 4096];
-            let mut out_truncated = false;
-            let mut err_truncated = false;
             let mut out_done = false;
             let mut err_done = false;
             while !(out_done && err_done) {
@@ -247,30 +296,34 @@ impl BashTool {
                     },
                 }
             }
-            let status = child.wait().await;
-            (status, out_buf, err_buf, out_truncated, err_truncated)
+            child.wait().await
         };
 
-        let (status, out_buf, err_buf, out_truncated, err_truncated) =
-            match tokio::time::timeout(timeout, run).await {
-                Ok(r) => r,
-                Err(_) => {
-                    // The timeout is where poll loops are born: a foreground
-                    // watch dies here and the model falls back to
-                    // sleep-and-recheck turns. Name the escape hatch instead.
-                    return Err(ToolExecutionResult::tool_error(format!(
-                        "command timed out after {}s. If it was waiting on an external \
-                         event (CI run, deploy, long build), re-run it detached via \
-                         spawn_background and end the turn — completion wakes the agent \
-                         (in one-shot mode, block on the task with wait_task instead).",
-                        timeout_secs
-                    )));
-                }
-            };
+        let (status, timed_out) = match tokio::time::timeout(timeout, run).await {
+            Ok(status) => (status.ok(), false),
+            Err(_) => {
+                // Keep already-read output outside the canceled future. It is
+                // often the only evidence needed to diagnose a failing build.
+                #[cfg(unix)]
+                group.kill();
+                let _ = child.start_kill();
+                let _ = child.wait().await;
+                (None, true)
+            }
+        };
+        #[cfg(unix)]
+        if timed_out || out_truncated || err_truncated {
+            group.kill();
+        } else {
+            // A normally finished command may deliberately launch a service.
+            // Only an interrupted owning future kills the process group.
+            group.0 = None;
+        }
         Ok(BashRunOutput {
             stdout_text: String::from_utf8_lossy(&out_buf).to_string(),
             stderr_text: String::from_utf8_lossy(&err_buf).to_string(),
-            exit_code: status.ok().and_then(|s| s.code()).unwrap_or(-1),
+            exit_code: status.and_then(|s| s.code()).unwrap_or(-1),
+            timed_out,
             out_truncated,
             err_truncated,
             duration: start.elapsed(),
@@ -504,12 +557,7 @@ impl Tool for BashTool {
             Ok(output) => output,
             Err(err) => return err,
         };
-        let payload = ExecToolResultPayload::new(
-            &output.stdout_text,
-            &output.stderr_text,
-            output.exit_code,
-            output_mode,
-        );
+        let payload = bounded_exec_payload(&output, output_mode);
         let ExecToolResultPayload {
             stdout,
             stderr,
@@ -524,6 +572,7 @@ impl Tool for BashTool {
             "command": command,
             "exit_code": exit_code,
             "success": success,
+            "timed_out": output.timed_out,
             "stdout": stdout,
             "stderr": stderr,
             "truncated": truncated || output.out_truncated || output.err_truncated,
@@ -531,6 +580,12 @@ impl Tool for BashTool {
             "output_limited": output.out_truncated || output.err_truncated,
             "sandbox": output.sandbox_mode.as_str(),
         });
+        if output.timed_out {
+            result["error"] = json!(format!(
+                "command timed out after {}s; partial stdout and stderr are preserved. For long work use spawn_background, then review its completion; in one-shot mode wait_task waits for it.",
+                self.foreground_timeout_secs
+            ));
+        }
         if likely_sandbox_denial(output.sandbox_mode, exit_code, &output.stderr_text) {
             result["sandbox_denial"] = json!("likely");
         }
@@ -572,12 +627,7 @@ impl BackgroundExecutableTool for BashTool {
                 justification,
             )
             .await?;
-        let payload = ExecToolResultPayload::new(
-            &output.stdout_text,
-            &output.stderr_text,
-            output.exit_code,
-            output_mode,
-        );
+        let payload = bounded_exec_payload(&output, output_mode);
         let ExecToolResultPayload {
             stdout,
             stderr,
@@ -602,6 +652,7 @@ impl BackgroundExecutableTool for BashTool {
             "command": command,
             "exit_code": exit_code,
             "success": success,
+            "timed_out": output.timed_out,
             "stdout": stdout,
             "stderr": stderr,
             "truncated": truncated || output_limited,
@@ -628,8 +679,14 @@ impl BackgroundExecutableTool for BashTool {
                 ""
             };
             Err(ToolExecutionResult::tool_error(format!(
-                "Bash command exited with code {exit_code} after {} ms.{sandbox_hint}{hint}",
+                "Bash command {} after {} ms.{sandbox_hint}{hint} Diagnostic result: {}. Complete output is in the task output.log artifact.",
+                if output.timed_out {
+                    "timed out".to_string()
+                } else {
+                    format!("exited with code {exit_code}")
+                },
                 output.duration.as_millis(),
+                result,
             )))
         }
     }
@@ -1303,6 +1360,99 @@ mod tests {
             .map(|(_, chunk)| chunk.as_str())
             .collect();
         assert_eq!(streamed_stdout, "12345");
+    }
+
+    #[tokio::test]
+    async fn bash_timeout_preserves_diagnostic_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut tool = BashTool::new(Workspace::from_path(dir.path().to_path_buf()));
+        tool.foreground_timeout_secs = 1;
+        let result = tool.execute(json!({"command": "printf 'test failure stdout'; printf 'assertion failed stderr' >&2; sleep 2"})).await;
+        let ToolExecutionResult::Success(value) = result else {
+            panic!("timeout must retain a structured diagnostic result: {result:?}");
+        };
+        assert_eq!(value["success"], false);
+        assert_eq!(value["timed_out"], true);
+        assert!(
+            value["stdout"]
+                .as_str()
+                .unwrap()
+                .contains("test failure stdout")
+        );
+        assert!(
+            value["stderr"]
+                .as_str()
+                .unwrap()
+                .contains("assertion failed stderr")
+        );
+        assert!(
+            value["_raw_output"]
+                .as_str()
+                .unwrap()
+                .contains("assertion failed stderr")
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn bash_timeout_stops_child_processes_before_retry() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut tool = BashTool::new(Workspace::from_path(dir.path().to_path_buf()));
+        tool.foreground_timeout_secs = 1;
+        let result = tool
+            .execute(json!({"command":"(sleep 2; printf orphan > orphan.marker) & wait"}))
+            .await;
+        assert!(
+            matches!(result, ToolExecutionResult::Success(ref value) if value["timed_out"] == true)
+        );
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        assert!(
+            !dir.path().join("orphan.marker").exists(),
+            "timed-out shell left its child running, so a recovery could overlap the original work"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn bash_cancellation_stops_child_processes() {
+        let dir = tempfile::tempdir().unwrap();
+        let tool = BashTool::new(Workspace::from_path(dir.path().to_path_buf()));
+        let worker = tokio::spawn(async move {
+            tool.execute(json!({"command":"printf started > started.marker; (sleep 2; printf orphan > orphan.marker) & wait"})).await
+        });
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !dir.path().join("started.marker").exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        worker.abort();
+        assert!(worker.await.unwrap_err().is_cancelled());
+        tokio::time::sleep(Duration::from_millis(2100)).await;
+        assert!(!dir.path().join("orphan.marker").exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn normally_completed_shell_can_keep_a_deliberately_launched_process() {
+        let dir = tempfile::tempdir().unwrap();
+        let tool = BashTool::new(Workspace::from_path(dir.path().to_path_buf()));
+        let result = tool
+            .execute(
+                json!({"command":"(sleep 0.2; printf service > service.marker) >/dev/null 2>&1 &"}),
+            )
+            .await;
+        assert!(
+            matches!(result, ToolExecutionResult::Success(ref value) if value["success"] == true)
+        );
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !dir.path().join("service.marker").exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("intentional background process survives normal completion");
     }
 
     #[tokio::test]

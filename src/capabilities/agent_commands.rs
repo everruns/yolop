@@ -34,7 +34,7 @@ pub(crate) const AGENT_COMMANDS_CAPABILITY_ID: &str = "agent_commands";
 
 /// Raw text on purpose: the host wraps `system_prompt_addition` in `<capability>`
 /// tags once, so tags here would render twice.
-pub(crate) const AGENT_COMMANDS_PROMPT: &str = r#"Use `run_command` for slash-only actions such as `/goal` and `/background`.
+pub(crate) const AGENT_COMMANDS_PROMPT: &str = r#"Use `run_command` for slash-only actions such as `/background`.
 Use `manage_checkpoint` for undo, redo, and rewind. Use Bash and `yolop` for
 administration; authentication is `yolop setup login|reauthenticate <provider>`,
 never `/setup`. Act instead of asking the user to type. `help` privately lists
@@ -247,7 +247,7 @@ impl Tool for RunCommandTool {
         // them here prompts a doomed run_command that fails with unknown command.
         if self.ui.is_some() {
             "Execute a session slash command that has no dedicated tool or CLI equivalent, on behalf of a natural-language user \
-             request: `background`, `goal`, and in the terminal also `help`, `tools`, \
+             request: `background`, and in the terminal also `help`, `tools`, \
              `mcp`, `cwd`, `status`, `model`, `effort`, `clear`, and `quit`. `command: help` privately lists the live \
              command set; use it only for a user's help request. An unknown name returns the available ones. Accepts command names with or \
              without the leading slash; `exit` is an alias for `quit`. Use Bash with `yolop setup \
@@ -255,7 +255,7 @@ impl Tool for RunCommandTool {
              prompt and `shell` is typed-only, so neither runs here."
         } else {
             "Execute a session slash command that has no dedicated tool or CLI equivalent, on behalf of a natural-language user \
-             request: `background`, `goal`, and whatever else this session registers. \
+             request: `background`, and whatever else this session registers. \
              `command: help` privately lists the live command set; use it only for a user's help request. An unknown name returns the available \
              ones. Accepts command names with or without the leading slash. Use Bash with `yolop setup \
              login|reauthenticate <provider>` for authentication. Skill commands activate \
@@ -386,12 +386,12 @@ mod tests {
             })
         }
 
-        /// A registry shaped like a non-terminal host: `/setup` and `/goal` are
+        /// A registry shaped like a non-terminal host: `/setup` and an extension command are
         /// runtime commands, `/ship` is a skill.
         fn registry() -> Arc<Self> {
             Self::new(vec![
                 descriptor("setup", &[optional("action")]),
-                descriptor("goal", &[required("condition")]),
+                descriptor("custom", &[required("condition")]),
                 descriptor("quit", &[]),
                 CommandDescriptor {
                     source: CommandSource::Skill,
@@ -581,7 +581,7 @@ mod tests {
 
         let result = tool
             .execute(json!({
-                "command": "/goal",
+                "command": "/custom",
                 "args": ["tests pass"]
             }))
             .await;
@@ -589,9 +589,9 @@ mod tests {
         assert!(result.is_success(), "tool result: {result:?}");
         assert_eq!(
             dispatch.executed(),
-            vec![("goal".to_string(), Some("tests pass".to_string()))]
+            vec![("custom".to_string(), Some("tests pass".to_string()))]
         );
-        assert_eq!(message(&result), "/goal ran with tests pass");
+        assert_eq!(message(&result), "/custom ran with tests pass");
     }
 
     /// ACP and `--print` have no `HostUi`, so every command, including a
@@ -618,7 +618,7 @@ mod tests {
         assert!(result.is_success(), "tool result: {result:?}");
         let message = message(&result);
         assert!(message.contains("setup"), "message: {message}");
-        assert!(message.contains("goal"), "message: {message}");
+        assert!(message.contains("custom"), "message: {message}");
     }
 
     #[tokio::test]
@@ -667,7 +667,7 @@ mod tests {
         let dispatch = RecordingDispatch::registry();
         let tool = headless_tool(dispatch.clone());
 
-        let result = tool.execute(json!({ "command": "goal" })).await;
+        let result = tool.execute(json!({ "command": "custom" })).await;
 
         assert!(result.is_error(), "tool result: {result:?}");
         assert!(dispatch.executed().is_empty());

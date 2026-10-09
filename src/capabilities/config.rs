@@ -942,20 +942,6 @@ impl SetConfigTool {
                     "theme = {value}; applies to new interactive sessions"
                 )))
             }
-            // Classifier model for the Muse-only actionable-promise guard
-            // (no validation: any Jev model id is accepted, empty clears).
-            KeyTarget::ClassifierModel => {
-                if value.trim().is_empty() {
-                    self.settings.set_classifier_model(None).map_err(map_err)?;
-                    return Ok(saved("cleared classifier_model (default: backend default)".to_string()));
-                }
-                self.settings
-                    .set_classifier_model(Some(value.to_string()))
-                    .map_err(map_err)?;
-                Ok(saved(format!(
-                    "classifier_model = {value}; applies to new sessions"
-                )))
-            }
             // Service tier for every turn; `default` or empty clears it.
             KeyTarget::Speed => {
                 let speed = crate::runtime::speed::parse_speed(value)

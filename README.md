@@ -118,7 +118,7 @@ The same agent, hosted where your code already is.
 
 The flagship: a full screen chat with a scrolling transcript, syntax highlighted code, a multiline composer, and a live status bar showing model, worktree, and what the agent is doing.
 
-Type a task and watch it read, edit, and run commands. Ask side questions with `/btw` without touching history, hand it a standing objective with `/goal` (it loops until a separate evaluator confirms the condition, `/goal clear` stops early), and track long work in the `Ctrl+B` activity rail.
+Type a task and watch it read, edit, and run commands. Ask side questions with `/btw` without touching history, recover unfinished work through bounded automatic continuation, and track long work in the `Ctrl+B` activity rail.
 
 | Key | Action |
 | --- | ------ |
@@ -129,7 +129,7 @@ Type a task and watch it read, edit, and run commands. Ask side questions with `
 | `Ctrl+V` | Paste image |
 | `Ctrl+O` | Expand or collapse retained work details |
 
-The composer takes `!<command>` for direct shell runs, `@` for file path completion, and slash commands: `/setup`, `/model`, `/effort`, `/goal`, `/shell`, `/background`, `/tools`, `/mcp`, `/cwd`, `/status`, `/clear`, plus `/rewind`, `/undo`, `/checkpoint`, `/coordinator`, and `/extensions`. Plans run through `write_todos`, with loop detection stopping repeated failing calls.
+The composer takes `!<command>` for direct shell runs, `@` for file path completion, and slash commands: `/setup`, `/model`, `/effort`, `/shell`, `/background`, `/tools`, `/mcp`, `/cwd`, `/status`, `/clear`, plus `/rewind`, `/undo`, `/checkpoint`, `/coordinator`, and `/extensions`. Plans run through `write_todos`, with loop detection stopping repeated failing calls.
 
 Prefer a compact layout? `yolop --inline` runs the TUI inline instead of the alternate screen, handy in short terminals and tmux panes.
 
@@ -157,7 +157,7 @@ Inside the TUI:
 
 - `/undo` previews the restore and asks for a confirm token, then rolls files and history back one checkpoint.
 - `/rewind` lists checkpoints to restore; the undone work stays available for `/redo` with a fresh token.
-- `/goal resume` (alias `continue`) picks a previous standing objective back up.
+- Send another message to resume work after a continuation limit.
 
 Handoffs between agents use `/checkpoint` and `/coordinator`: see [docs/session-coordination.md](docs/session-coordination.md).
 
@@ -291,7 +291,6 @@ Environment: `EVERRUNS_CLI_MODEL` overrides the model; provider keys are `OPENAI
 | ------- | ------- |
 | `/setup` | Guided provider, key, approval, and attribution setup |
 | `/model`, `/effort` | Switch model or reasoning effort |
-| `/goal` | Set a standing objective, `resume` picks a previous one back up |
 | `/btw` | Side question without touching history |
 | `/shell` | Run a shell command, with tab completion |
 | `/background` | Manage background tasks |

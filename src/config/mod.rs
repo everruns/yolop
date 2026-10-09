@@ -255,10 +255,6 @@ pub struct Settings {
     /// tuika preset name. `None` means the default (yolop's palette). The
     /// `--theme` flag overrides this for a single run.
     pub theme: Option<String>,
-    /// Classifier model for the Muse-only actionable-promise guard (Jev,
-    /// TypeSafe backend). `None` means the backend default. The
-    /// `--classifier-model` flag overrides this for a single run.
-    pub classifier_model: Option<String>,
     /// OAuth client ID for new ChatGPT (Codex) sign-ins. `None` means the
     /// borrowed Codex CLI client; `YOLOP_CHATGPT_CLIENT_ID` overrides this.
     /// See `crate::auth::codex::configured_client_id`.
@@ -307,7 +303,6 @@ impl Default for Settings {
             worktrees: WorktreesMode::Auto,
             sandbox: SandboxMode::DangerFullAccess,
             theme: None,
-            classifier_model: None,
             chatgpt_client_id: None,
             chatgpt_sign_in: None,
             chatgpt_host_id: None,
@@ -365,10 +360,6 @@ impl Settings {
             .unwrap_or_default();
         let theme = table
             .get("theme")
-            .and_then(Value::as_str)
-            .map(str::to_string);
-        let classifier_model = table
-            .get("classifier_model")
             .and_then(Value::as_str)
             .map(str::to_string);
         let chatgpt_client_id = table
@@ -433,7 +424,6 @@ impl Settings {
             worktrees,
             sandbox,
             theme,
-            classifier_model,
             chatgpt_client_id,
             chatgpt_sign_in,
             chatgpt_host_id,
@@ -495,12 +485,7 @@ impl Settings {
         {
             table.insert("theme".to_string(), Value::String(theme.to_string()));
         }
-        if let Some(classifier_model) = self.classifier_model.as_deref() {
-            table.insert(
-                "classifier_model".to_string(),
-                Value::String(classifier_model.to_string()),
-            );
-        }
+
         if let Some(client_id) = self.chatgpt_client_id.as_deref() {
             table.insert(
                 "chatgpt_client_id".to_string(),
@@ -639,10 +624,6 @@ impl Settings {
         self.theme
             .as_deref()
             .filter(|t| !t.eq_ignore_ascii_case("yolop"))
-    }
-
-    pub fn classifier_model(&self) -> Option<&str> {
-        self.classifier_model.as_deref()
     }
 
     pub fn chatgpt_client_id(&self) -> Option<&str> {
@@ -1182,12 +1163,6 @@ impl SettingsStore {
     pub fn set_theme(&self, theme: Option<String>) -> Result<()> {
         let mut guard = self.lock_fresh_for_update()?;
         guard.base.theme = theme;
-        self.save_base_locked(&mut guard)
-    }
-
-    pub fn set_classifier_model(&self, classifier_model: Option<String>) -> Result<()> {
-        let mut guard = self.lock_fresh_for_update()?;
-        guard.base.classifier_model = classifier_model;
         self.save_base_locked(&mut guard)
     }
 

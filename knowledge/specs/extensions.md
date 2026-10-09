@@ -643,7 +643,7 @@ verbatim when unrecognized): `tools`, `streaming`, `hooks`, `prompt`,
 | →server | `trace/event` | ntf | forward one agentic-lifecycle event (turn/reason/act/tool/llm) to a `trace`-declaring extension; observe-only, never awaited |
 | →server | `config/changed` | req | new validated config → `ok` \| `restart-required` |
 | →server | `workspace/changed` | ntf | active worktree/root repointed |
-| ←server | `ui/ask` | req | user question/form, bridged to the `user_ask` capability |
+| ←server | `ui/ask` | req | user question/form, bridged to the host UI question handler |
 | ←server | `status/changed` | ntf | capability status (e.g. `degraded: rust-analyzer not found`) surfaced in `/extensions list` |
 | ←server | `log` | ntf | structured logs → yolop's tracing layer (`RUST_LOG` honored) |
 | →server | `shutdown` / `exit` | req/ntf | graceful stop before `kill_on_drop` |
@@ -874,7 +874,7 @@ the protocol and the SDK.
   `codex_driver`'s `DriverId::external` shows the driver-side boundary). Native
   drivers stay compiled in.
 - **UI features.** Extensions never run TUI code. `ui/ask` bridges to
-  `user_ask` forms now; if richer needs appear, handshake-declared component
+  host UI forms now; if richer needs appear, handshake-declared component
   *trees* (upstream `a2ui`/`openui` precedent) rendered by yolop's own
   widgets.
 - **everruns plugins.** A package without the `yolop` facet *is* an everruns

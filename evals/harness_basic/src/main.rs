@@ -157,7 +157,7 @@ fn local_target() -> Target {
 /// {"response_contains": ["7321"]}
 /// {"tool_call": {"name": "run_command", "arguments": {"command": "help"}}}
 /// {"tool_call": {"name": "bash", "argument_contains": {"command": ["yolop config get"]}}}
-/// {"tool_call": {"name": "run_command", "argument_joined": {"args": "goal complete"}, "success": true}}
+/// {"tool_call": {"name": "run_command", "argument_joined": {"args": "custom complete"}, "success": true}}
 /// ```
 fn progress_guard_probe_sample() -> Sample {
     let mut sample = Sample::new(
@@ -201,11 +201,9 @@ fn progress_guard_checkpoint_sample() -> Sample {
             {
                 "when_binary": "candidate",
                 "metric_equals": {
-                    "checkpoint_required_warnings": 1.0,
-                    "successful_progress_checkpoints": 1.0,
+                    "checkpoint_recommended_warnings": 1.0,
                     "tool_calls_failed": 0.0
-                },
-                "metric_at_most": {"calls_after_checkpoint_required": 2.0}
+                }
             }
         ]),
     );
@@ -1749,14 +1747,6 @@ fn management_samples() -> Vec<Sample> {
             ]),
         ),
         management_sample(
-            "management-command-goal",
-            "Set the live Yolop session goal to: management eval complete. Do it directly instead of asking me to type a slash command.",
-            json!([
-                {"tool_call": {"name": "run_command", "argument_contains": {"command": ["goal"]}, "argument_joined": {"args": "management eval complete"}, "success": true}},
-                {"tool_not_called": ["bash"]}
-            ]),
-        ),
-        management_sample(
             "management-command-background",
             "Show me the current Yolop background task tree. Do it directly instead of asking me to type a slash command.",
             json!([
@@ -2520,7 +2510,7 @@ struct Mined {
     exploration_tools_before_first_mutation: u64,
     max_exploration_tools_without_progress: u64,
     progress_guard_warnings: u64,
-    checkpoint_required_warnings: u64,
+    checkpoint_recommended_warnings: u64,
     successful_progress_checkpoints: u64,
     equivalent_failure_warnings: u64,
     blocked_equivalent_failures: u64,
@@ -2542,7 +2532,7 @@ struct Mined {
     sessions_search_first_exploration: u64,
     duplicate_exploration_calls: u64,
     calls_after_progress_warning: u64,
-    calls_after_checkpoint_required: u64,
+    calls_after_checkpoint_recommended: u64,
     bash_tool_calls: u64,
     read_file_tool_calls: u64,
     grep_files_tool_calls: u64,
@@ -2949,7 +2939,7 @@ fn parse_events(jsonl: &str) -> Mined {
     let mut saw_mutation = false;
     let mut saw_exploration = false;
     let mut saw_progress_warning = false;
-    let mut saw_checkpoint_required = false;
+    let mut saw_checkpoint_recommended = false;
     let mut saw_truncated_repo_map = false;
     let mut saw_background_wake = false;
     let mut repo_map_recovery_pending = false;
@@ -3155,8 +3145,8 @@ fn parse_events(jsonl: &str) -> Mined {
                 if saw_progress_warning && !is_bookkeeping_tool(name) {
                     m.calls_after_progress_warning += 1;
                 }
-                if saw_checkpoint_required && !is_bookkeeping_tool(name) {
-                    m.calls_after_checkpoint_required += 1;
+                if saw_checkpoint_recommended && !is_bookkeeping_tool(name) {
+                    m.calls_after_checkpoint_recommended += 1;
                 }
                 let result_bytes = data
                     .get("result")
@@ -3272,9 +3262,9 @@ fn parse_events(jsonl: &str) -> Mined {
                 if let Some(progress_warning) = progress_guard_warning(&data) {
                     m.progress_guard_warnings += 1;
                     saw_progress_warning = true;
-                    if progress_warning.contains("checkpoint required") {
-                        m.checkpoint_required_warnings += 1;
-                        saw_checkpoint_required = true;
+                    if progress_warning.contains("checkpoint recommended") {
+                        m.checkpoint_recommended_warnings += 1;
+                        saw_checkpoint_recommended = true;
                     }
                 }
                 if tool_result_value(&data).is_some_and(|value| {
@@ -3930,8 +3920,8 @@ async fn run_yolop(sample: Sample, cx: RunCx) -> Transcript {
         mined.progress_guard_warnings as f64,
     );
     t.metrics.insert(
-        "checkpoint_required_warnings".into(),
-        mined.checkpoint_required_warnings as f64,
+        "checkpoint_recommended_warnings".into(),
+        mined.checkpoint_recommended_warnings as f64,
     );
     t.metrics.insert(
         "successful_progress_checkpoints".into(),
@@ -4016,8 +4006,8 @@ async fn run_yolop(sample: Sample, cx: RunCx) -> Transcript {
         mined.calls_after_progress_warning as f64,
     );
     t.metrics.insert(
-        "calls_after_checkpoint_required".into(),
-        mined.calls_after_checkpoint_required as f64,
+        "calls_after_checkpoint_recommended".into(),
+        mined.calls_after_checkpoint_recommended as f64,
     );
     t.metrics
         .insert("bash_tool_calls".into(), mined.bash_tool_calls as f64);
@@ -4261,7 +4251,7 @@ mod tests {
 {"type":"input.message","data":{"message":{"role":"user","content":[{"type":"text","text":"do it"}]}}}
 {"type":"tool.completed","data":{"tool_name":"grep_files","success":true}}
 {"type":"tool.completed","data":{"tool_name":"bash","success":true,"result":[{"type":"text","text":"{\"command\":\"git status --short\",\"progress_guard_warning\":\"progress_guard: repeated status\"}"}]}}
-{"type":"tool.completed","data":{"tool_name":"read_file","success":true,"result":[{"type":"text","text":"{\"progress_guard_warning\":\"progress_guard: checkpoint required\"}"}]}}
+{"type":"tool.completed","data":{"tool_name":"read_file","success":true,"result":[{"type":"text","text":"{\"progress_guard_warning\":\"progress_guard: checkpoint recommended\"}"}]}}
 {"type":"tool.completed","data":{"tool_name":"bash","success":true,"result":[{"type":"text","text":"{\"command\":\"cargo test --all-features\"}"}]}}
 {"type":"tool.completed","data":{"tool_name":"edit_file","success":false}}
 {"type":"output.message.completed","data":{"message":{"role":"agent","content":[{"type":"tool_call","name":"write_session_title","arguments":{},"id":"title"},{"type":"tool_call","name":"read_file","arguments":{},"id":"read-a"},{"type":"tool_call","name":"read_many_files","arguments":{"paths":["a.txt","b.txt"]},"id":"read-b"}],"metadata":{"reasoning_effort":"high"}},"usage":{"input_tokens":100,"output_tokens":10,"cache_read_tokens":40,"cache_creation_tokens":5,"estimated_cost_usd":0.02}}}
@@ -4297,8 +4287,8 @@ mod tests {
         assert_eq!(m.exploration_tools_before_first_mutation, 3);
         assert_eq!(m.max_exploration_tools_without_progress, 3);
         assert_eq!(m.progress_guard_warnings, 2);
-        assert_eq!(m.checkpoint_required_warnings, 1);
-        assert_eq!(m.calls_after_checkpoint_required, 2);
+        assert_eq!(m.checkpoint_recommended_warnings, 1);
+        assert_eq!(m.calls_after_checkpoint_recommended, 2);
         assert_eq!(m.successful_progress_checkpoints, 0);
         assert_eq!(m.tool_emitting_model_calls, 2);
         assert_eq!(m.single_tool_model_calls, 1);
@@ -4388,7 +4378,7 @@ mod tests {
     #[test]
     fn parse_events_measures_the_required_checkpoint_transition() {
         let jsonl = r#"
-{"type":"tool.completed","data":{"tool_name":"read_file","success":true,"result":[{"type":"text","text":"{\"progress_guard_warning\":\"progress_guard: checkpoint required\"}"}]}}
+{"type":"tool.completed","data":{"tool_name":"read_file","success":true,"result":[{"type":"text","text":"{\"progress_guard_warning\":\"progress_guard: checkpoint recommended\"}"}]}}
 {"type":"tool.completed","data":{"tool_name":"progress_checkpoint","success":true,"result":[{"type":"text","text":"{\"accepted\":true,\"exploration_resumed\":true}"}]}}
 {"type":"tool.completed","data":{"tool_name":"read_file","success":true}}
 {"type":"tool.completed","data":{"tool_name":"read_file","success":true}}
@@ -4396,9 +4386,9 @@ mod tests {
 
         let mined = parse_events(jsonl);
 
-        assert_eq!(mined.checkpoint_required_warnings, 1);
+        assert_eq!(mined.checkpoint_recommended_warnings, 1);
         assert_eq!(mined.successful_progress_checkpoints, 1);
-        assert_eq!(mined.calls_after_checkpoint_required, 2);
+        assert_eq!(mined.calls_after_checkpoint_recommended, 2);
     }
 
     #[test]
@@ -4628,7 +4618,7 @@ mod tests {
             "tool_invocations".into(),
             json!([
                 {"name": "bash", "arguments": {"command": "yolop config get approval_policy | sed -n '1p'"}, "success": true},
-                {"name": "run_command", "arguments": {"command": "goal", "args": ["tests", "pass"]}, "success": true}
+                {"name": "run_command", "arguments": {"command": "custom", "args": ["tests", "pass"]}, "success": true}
             ]),
         );
         let passing = Sample::new("structured", "x").meta(
@@ -4637,9 +4627,9 @@ mod tests {
                 {"tool_call": {"name": "bash", "argument_contains": {"command": ["yolop config get", "approval_policy"]}}},
                 {"tool_call_any": [
                     {"name": "list_tasks", "success": true},
-                    {"name": "run_command", "arguments": {"command": "goal"}, "success": true}
+                    {"name": "run_command", "arguments": {"command": "custom"}, "success": true}
                 ]},
-                {"tool_call": {"name": "run_command", "arguments": {"command": "goal"}, "argument_joined": {"args": "tests pass"}, "success": true}},
+                {"tool_call": {"name": "run_command", "arguments": {"command": "custom"}, "argument_joined": {"args": "tests pass"}, "success": true}},
                 {"tool_call_absent": {"name": "bash", "argument_contains": {"command": ["settings.toml"]}}}
             ]),
         );
@@ -4701,7 +4691,7 @@ mod tests {
     #[test]
     fn management_suite_covers_attached_and_registry_surfaces() {
         let samples = management_samples();
-        assert_eq!(samples.len(), 21);
+        assert_eq!(samples.len(), 22);
         assert!(samples.iter().all(|sample| {
             sample
                 .metadata
@@ -4736,7 +4726,6 @@ mod tests {
             "management-coordination-backcall",
             "management-worktree-inventory",
             "management-command-help",
-            "management-command-goal",
             "management-command-background",
             "management-command-checkpoint",
             "management-command-redo",

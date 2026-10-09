@@ -22,7 +22,9 @@ use everruns_core::EventData;
 use everruns_core::ExecutionSession;
 use everruns_core::InputMessage;
 use everruns_core::RuntimeMessageRole;
-use everruns_core::host::{InProcessRuntime, RuntimeSessionStore, SessionBuilder};
+use everruns_core::host::{
+    InProcessRuntime, RuntimeHostAdapter, RuntimeSessionStore, SessionBuilder,
+};
 use everruns_core::{PlatformCreateSessionRequest, PlatformMessage};
 use everruns_core::{SessionTask, SessionTaskRegistry};
 use everruns_core::{TaskTransition, wake_text_for};
@@ -97,10 +99,6 @@ pub(crate) struct TaskHandoff {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub(crate) struct WakeHandoff {
     pub version: u8,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub active_ask: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub active_goal: Option<String>,
     pub tasks: Vec<TaskHandoff>,
     #[serde(default, skip_serializing_if = "is_zero")]
     pub omitted_tasks: usize,
@@ -174,6 +172,24 @@ impl WakeMessage {
         lines.join("\n")
     }
 
+    pub(crate) fn resolve_artifacts(
+        mut self,
+        file_store: &dyn everruns_core::SessionFileSystem,
+    ) -> Self {
+        if let Some(handoff) = self.handoff.as_mut() {
+            for task in &mut handoff.tasks {
+                for path in &mut task.changed_state_references {
+                    if path.starts_with("/.background/") || path.starts_with("/outputs/") {
+                        let displayed = file_store.display_path(path);
+                        self.raw = self.raw.replace(path.as_str(), &displayed);
+                        *path = displayed;
+                    }
+                }
+            }
+        }
+        self
+    }
+
     /// Task ids carried by this message's handoff, if any.
     pub(crate) fn task_ids(&self) -> Vec<String> {
         self.handoff
@@ -188,20 +204,6 @@ impl WakeMessage {
             handoff: Some(handoff),
             kind: WakeKind::Background,
         }
-    }
-
-    pub(crate) fn with_active_goal(mut self, goal: Option<String>) -> Self {
-        if let Some(handoff) = self.handoff.as_mut() {
-            handoff.active_goal = goal.map(|value| truncate_field(&value));
-        }
-        self
-    }
-
-    pub(crate) fn with_active_ask(mut self, ask: Option<String>) -> Self {
-        if let Some(handoff) = self.handoff.as_mut() {
-            handoff.active_ask = ask.map(|value| truncate_field(&value));
-        }
-        self
     }
 }
 
@@ -235,8 +237,7 @@ pub(crate) fn coalesce_pending_wakes(
     let mut task_bytes = 0usize;
     let mut omitted_tasks = 0usize;
     let mut compact = true;
-    let mut active_ask = None;
-    let mut active_goal = None;
+
     for (index, item) in messages.into_iter().enumerate() {
         let section = format!("\n\n--- task {} ---\n{}", index + 1, item.raw);
         if raw.len() + section.len() <= MAX_WAKE_BATCH_BYTES {
@@ -246,8 +247,6 @@ pub(crate) fn coalesce_pending_wakes(
         }
         match item.handoff {
             Some(handoff) => {
-                active_ask = active_ask.or(handoff.active_ask);
-                active_goal = active_goal.or(handoff.active_goal);
                 omitted_tasks = omitted_tasks.saturating_add(handoff.omitted_tasks);
                 for task in handoff.tasks {
                     let bytes = serde_json::to_vec(&task).map_or(MAX_WAKE_BATCH_BYTES, |v| v.len());
@@ -271,8 +270,7 @@ pub(crate) fn coalesce_pending_wakes(
         raw,
         handoff: compact.then_some(WakeHandoff {
             version: 1,
-            active_ask,
-            active_goal,
+
             tasks,
             omitted_tasks,
         }),
@@ -375,20 +373,11 @@ impl WakeRunner {
         } else {
             None
         };
-        let active_goal = self
-            .sessions
-            .get_session(session_id)
-            .await
-            .ok()
-            .flatten()
-            .and_then(|session| session.goal)
-            .map(|goal| truncate_field(&goal));
         WakeMessage {
             raw: truncate_bytes(content, MAX_WAKE_BATCH_BYTES),
             handoff: task.and_then(task_handoff).map(|task| WakeHandoff {
                 version: 1,
-                active_ask: None,
-                active_goal,
+
                 tasks: vec![task],
                 omitted_tasks: 0,
             }),
@@ -444,11 +433,7 @@ pub fn frame_wake_prompt(message: &WakeMessage) -> String {
         return message.raw.clone();
     }
     format!(
-        "[automatic] Background work you started has finished:\n\n{}\n\nThis is not a \
-         user message. Treat the terminal summary as authoritative. Read its `result_path` or \
-         `log_path` only when the summary lacks detail required for the active ask. Do not update \
-         the session title. Do not retry or replace failed work unchanged. Continue the work it \
-         was for or report the result. End your turn with a one- or two-sentence text verdict stating what finished and its outcome, even when no further action is needed.",
+        "[automatic] Background work you started has finished:\n\n{}\n\nThis is a host observation, not a new user request. Continue the original authorized work with subsequent user steering. Read result_path or log_path with read_file or grep_files when the summary lacks diagnostic evidence. Paths are resolved through the session filesystem. A failed test is recoverable work: diagnose it and take the next useful action. Do not update the session title or retry failed work unchanged. Finish when the user's work is complete or required outside input prevents progress.",
         message.raw
     )
 }
@@ -512,8 +497,8 @@ fn remove_observed_task(pending: &mut HashSet<(&str, &str)>, snapshot: &serde_js
     }
 }
 
-/// Persist the raw wake exactly as received while attaching a host-only marker
-/// used to select a compact provider view. User/model text cannot forge this
+/// Attach host provenance to the wake while retaining conversation context.
+/// User/model text cannot forge this
 /// provenance because hosts call this constructor only for routed wakes.
 pub fn input_for_wake(message: &WakeMessage) -> InputMessage {
     let mut input = InputMessage::user(frame_wake_prompt(message));
@@ -647,10 +632,20 @@ impl LocalSessionRunner for WakeRunner {
     }
 
     async fn send_message(&self, session_id: SessionId, content: &str) -> Result<()> {
-        let wake = self.wake_message(session_id, content).await;
         if self.sessions.get_session(session_id).await?.is_none() {
             return Err(AgentLoopError::session_not_found(session_id));
         }
+        let runtime = self.runtime()?;
+        let wake = self
+            .wake_message(session_id, content)
+            .await
+            .resolve_artifacts(
+                runtime
+                    .file_store(everruns_core::host::in_process_internal_org_id(
+                        everruns_core::DEFAULT_ORG_PUBLIC_ID,
+                    ))
+                    .as_ref(),
+            );
         let turn_lock = self.child_turn_lock(session_id);
         let _guard = turn_lock.lock().await;
         let mut input = input_for_wake(&wake);
@@ -983,8 +978,7 @@ mod tests {
             raw: "Background run failed.\n- run_id: task_failed".to_string(),
             handoff: Some(WakeHandoff {
                 version: 1,
-                active_ask: None,
-                active_goal: None,
+
                 tasks: vec![task],
                 omitted_tasks: 0,
             }),
@@ -1005,13 +999,13 @@ mod tests {
                 .content
                 .first()
                 .and_then(|part| part.as_text())
-                .is_some_and(|text| text.contains("Continue the work it was for")),
+                .is_some_and(|text| text.contains("Continue the original authorized work")),
             "this is the production framing that the ACP eval exercises"
         );
         let text = input.content[0].as_text().expect("wake text");
-        assert!(text.contains("terminal summary as authoritative"));
+        assert!(text.contains("host observation, not a new user request"));
         assert!(text.contains("Do not update the session title"));
-        assert!(text.contains("Do not retry or replace failed work unchanged"));
+        assert!(text.contains("retry failed work unchanged"));
     }
 
     #[test]
@@ -1026,8 +1020,7 @@ mod tests {
             raw: "Background run failed.\n- run_id: task_failed".to_string(),
             handoff: Some(WakeHandoff {
                 version: 1,
-                active_ask: None,
-                active_goal: None,
+
                 tasks: vec![task],
                 omitted_tasks: 0,
             }),
@@ -1103,8 +1096,7 @@ mod tests {
             raw: "completion".to_string(),
             handoff: Some(WakeHandoff {
                 version: 1,
-                active_ask: None,
-                active_goal: None,
+
                 tasks: vec![task],
                 omitted_tasks: 0,
             }),

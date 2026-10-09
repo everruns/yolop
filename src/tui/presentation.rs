@@ -104,8 +104,7 @@ pub(crate) struct PresentationState {
     pub hooks_summary: String,
     pub approval_mode: String,
     pub background: Option<BackgroundCounts>,
-    pub goal_indicator: Option<String>,
-    pub ask_indicator: Option<String>,
+
     pub worktree_compact: Option<String>,
     pub worktree_expanded: Option<(String, String)>,
     /// Live status pushed by extensions over `status/changed`, as
@@ -301,8 +300,6 @@ impl PresentationState {
                 StatusAction::OpenBackground,
             ));
         }
-        session.push(status_field("goal", goal_label(self)));
-        session.push(status_field("ask", ask_label(self)));
         if let Some(status) = self.activity_text().filter(|status| !status.is_empty()) {
             session.push(status_field("agent", status));
         }
@@ -434,8 +431,6 @@ fn expanded_status_lines(state: &PresentationState) -> Vec<StatusLine> {
                 status_field_action("effort", effort_label(state), StatusAction::OpenEffort),
                 status_field("approval", state.approval_mode.clone()),
                 status_field("hooks", state.hooks_summary.clone()),
-                status_field("goal", goal_label(state)),
-                status_field("ask", ask_label(state)),
             ],
         },
         StatusLine { fields: counts },
@@ -486,10 +481,7 @@ fn status_contributions(state: &PresentationState) -> Vec<Vec<StatusField>> {
             status_field_action("effort", effort_label(state), StatusAction::OpenEffort),
             status_field("approval", state.approval_mode.clone()),
         ],
-        vec![
-            status_field("goal", goal_label(state)),
-            status_field("ask", ask_label(state)),
-        ],
+        vec![],
         counts,
     ];
     let ext = extension_status_fields(state);
@@ -507,14 +499,6 @@ fn extension_status_fields(state: &PresentationState) -> Vec<StatusField> {
         .iter()
         .map(|(name, status)| status_value(format!("{name}: {status}")))
         .collect()
-}
-
-fn goal_label(state: &PresentationState) -> String {
-    state.goal_indicator.clone().unwrap_or_else(|| "—".into())
-}
-
-fn ask_label(state: &PresentationState) -> String {
-    state.ask_indicator.clone().unwrap_or_else(|| "—".into())
 }
 
 fn background_label(counts: Option<BackgroundCounts>, compact: bool) -> Option<String> {
@@ -688,8 +672,7 @@ mod tests {
             hooks_summary: "none".to_string(),
             approval_mode: "normal".to_string(),
             background: None,
-            goal_indicator: None,
-            ask_indicator: None,
+
             worktree_compact: None,
             worktree_expanded: None,
             extension_status: Vec::new(),
@@ -1021,7 +1004,6 @@ mod tests {
         assert!(values.contains(&(None, "gpt-5.5")));
         assert!(values.contains(&(Some("effort"), "medium")));
         assert!(values.contains(&(Some("approval"), "normal")));
-        assert!(values.contains(&(Some("goal"), "—")));
         assert!(values.contains(&(None, "3 msgs")));
     }
 

@@ -74,13 +74,12 @@ all working without an API key. Set
 `EVERRUNS_SYSTEM_ALLOWLIST_ENABLED=true` to restrict `web_fetch` to a curated
 allowlist of well-known public resources.
 
-## Plans and goals
+## Plans and completion
 
 - `write_todos` keeps multi-step work on track, with loop detection stopping
   repeated failing calls.
-- `/goal` hands the agent a standing objective; it loops under a token budget
-  until a separate evaluator confirms the completion condition
-  (`/goal clear` stops early, `/goal resume` picks a previous one back up).
+- Unfinished work receives bounded automatic continuation in terminal, ACP, and
+  print sessions. Failing tests remain diagnostic evidence to investigate.
 - `/btw` asks a side question without touching history.
 
 ## Conversation control plane

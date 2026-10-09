@@ -201,7 +201,10 @@ impl Translator {
                         .map(|entries| vec![SessionUpdate::Plan(Plan::new(entries))])
                         .unwrap_or_default();
                 }
-                let status = if data.success {
+                let command_failed = result_value(data).is_some_and(|value| {
+                    value.get("success").and_then(Value::as_bool) == Some(false)
+                });
+                let status = if data.success && !command_failed {
                     ToolCallStatus::Completed
                 } else {
                     ToolCallStatus::Failed

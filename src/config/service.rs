@@ -76,10 +76,6 @@ pub(crate) fn current_value(settings: &Settings, target: &KeyTarget) -> Value {
             .theme()
             .map(|t| Value::String(t.to_string()))
             .unwrap_or(Value::Null),
-        KeyTarget::ClassifierModel => settings
-            .classifier_model()
-            .map(|m| Value::String(m.to_string()))
-            .unwrap_or(Value::Null),
         KeyTarget::Speed => Value::String(settings.speed().unwrap_or("default").to_string()),
         KeyTarget::ChatgptSignIn => Value::String(
             settings

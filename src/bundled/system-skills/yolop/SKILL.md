@@ -54,7 +54,6 @@ path as `/shell` (handy for quick one-offs).
 | `/setup status` | Show provider authentication status |
 | `/setup login <provider>` | Start authentication for a provider |
 | `/setup reauthenticate <provider>` | Replace a provider credential |
-| `/goal [condition]` | Set a completion condition and keep working until met; `pause`/`resume`, `clear`, or omit for status |
 | `/background` | Show the task tree and branch usage |
 | `/btw <question>` | Ask a side question with session context, no tools, not added to history |
 | `/worktree [off]` | Show worktree status, or `off` to disable auto worktree activation |
@@ -157,7 +156,6 @@ yolop is an autonomous coding agent for the workspace it was started in.
   find/install from skills.sh via `yolop skills search` / `yolop skills install`
 - **MCP**: extra tools from `.mcp.json` / global `mcp.json`
 - **Hooks**: block, allow, or audit tool calls (see `yolop-hooks` skill)
-- **Goal loops**: `/goal` keeps working until an evaluator confirms the condition
 - **Soft approval**: optional spoken consent before destructive steps (`/setup approval`)
 - **Sessions**: resume with `--session <id>`; every run logs to `events.jsonl`
 

@@ -1,3 +1,4 @@
+use everruns_core::host::RuntimeHostAdapter;
 // TUI app state and event loop.
 // Decision: keep the TUI surface tiny. Transcript output is published into the
 // native terminal scrollback; the renderer owns only a short footer at the
@@ -6,11 +7,6 @@
 use crate::exec::worktree::WorktreeManager;
 use crate::runtime::session::Session;
 use crate::runtime::{BuiltRuntime, ModelState, StartupInfo};
-use crate::session_state::goal::{GOAL_EVALUATE_ARG, GoalStore, parse_evaluation_response};
-use crate::session_state::user_ask::{
-    AskOutcome, USER_ASK_EVALUATE_ARG, UserAskStore, evaluation_status_message,
-    parse_evaluation_response as parse_user_ask_evaluation,
-};
 use crate::tui::host_ui::{UiCommand, UiRequest};
 use anyhow::Result;
 use crossterm::event::{
@@ -73,6 +69,18 @@ pub(crate) use crate::tui::transcript::*;
 pub(crate) struct CommandSuggestion {
     completion: String,
     label: String,
+}
+
+struct CompletionReviewTask {
+    worker: tokio::task::JoinHandle<(
+        crate::session_state::task_completion::CompletionController,
+        Result<crate::session_state::task_completion::CompletionDecision>,
+    )>,
+}
+impl Drop for CompletionReviewTask {
+    fn drop(&mut self) {
+        self.worker.abort();
+    }
 }
 
 pub const COMPOSER_VIEWPORT_HEIGHT: u16 = 18;
@@ -319,16 +327,14 @@ pub struct App {
     activity_scroll: ScrollState,
     /// Last (content_height, viewport_height) painted by either renderer.
     activity_scroll_metrics: (usize, usize),
-    goal_store: Arc<GoalStore>,
-    user_ask_store: Arc<UserAskStore>,
     /// The critical action soft approval has stopped in front of, if any. Read
     /// when a turn ends so the pause is shown as a pause.
     pending_approval: crate::capabilities::approval::PendingApprovalStore,
     /// The pause already announced, so a turn that ends without resolving it
     /// does not repeat the notice.
     awaiting_approval: Option<crate::capabilities::approval::PendingApproval>,
-    user_ask_enabled: bool,
-    completion_budget: crate::session_state::task_completion::CompletionBudget,
+    completion: crate::session_state::task_completion::CompletionController,
+    completion_review: Option<CompletionReviewTask>,
     worktree: Arc<WorktreeManager>,
     workspace_host: Arc<crate::exec::workspace_host::WorkspaceHost>,
     /// Images from `--image` / `-i` on the CLI, consumed on the first turn.
@@ -717,11 +723,7 @@ impl App {
         work_display: WorkDisplayMode,
     ) -> Self {
         let should_setup = runtime.startup.setup_recommended;
-        let goal_store = runtime.goal_store.clone();
-        let user_ask_store = runtime.user_ask_store.clone();
         let pending_approval = runtime.pending_approval.clone();
-        let user_ask_enabled = runtime.user_ask_enabled;
-        let session_id = runtime.handles.session_id;
         let session_store = runtime.handles.session_store.clone();
         let session = Session::new(runtime.handles, runtime.model.clone());
         let (models_tx, models_rx) = mpsc::unbounded_channel::<ModelDiscovery>();
@@ -801,12 +803,10 @@ impl App {
             background_selected: 0,
             activity_scroll: ScrollState::new(),
             activity_scroll_metrics: (0, 0),
-            goal_store,
-            user_ask_store,
             pending_approval,
             awaiting_approval: None,
-            user_ask_enabled,
-            completion_budget: Default::default(),
+            completion: Default::default(),
+            completion_review: None,
             worktree: runtime.worktree,
             workspace_host: runtime.workspace_host,
             pending_images,
@@ -839,18 +839,6 @@ impl App {
         };
         if should_setup {
             app.start_first_run_setup();
-        } else if app.goal_store.is_paused(session_id)
-            && let Some(condition) = app.goal_store.active_condition(session_id)
-        {
-            app.push_system(format!(
-                "restored paused goal: {condition} (run /goal resume to continue)"
-            ));
-        } else if app.goal_store.take_pending_turn(session_id)
-            && let Some(condition) = app.goal_store.active_condition(session_id)
-        {
-            app.push_system(format!("restored active goal: {condition}"));
-            app.push_user(condition.clone());
-            app.start_turn(condition);
         }
         app
     }
@@ -1283,8 +1271,6 @@ impl App {
             hooks_summary: self.startup.hook_summary(),
             approval_mode,
             background: self.background_counts(),
-            goal_indicator: self.goal_indicator(),
-            ask_indicator: self.ask_indicator(),
             worktree_compact: self.worktree.status_bar_compact(),
             worktree_expanded: self.worktree.status_bar_expanded(),
             extension_status: self
@@ -1297,22 +1283,6 @@ impl App {
                 })
                 .collect(),
         }
-    }
-
-    fn ask_indicator(&self) -> Option<String> {
-        if !self.user_ask_enabled {
-            return None;
-        }
-        if !self.user_ask_store.is_active(self.session.session_id()) {
-            return None;
-        }
-        let turns = self
-            .user_ask_store
-            .status(self.session.session_id())
-            .active
-            .map(|active| active.evaluated_turns)
-            .unwrap_or(0);
-        Some(format!("? ask ({turns})"))
     }
 
     fn background_counts(&self) -> Option<crate::tui::session_tasks_view::BackgroundCounts> {
@@ -1391,23 +1361,6 @@ impl App {
             crate::tui::session_tasks_view::load_task_tree(session_id, &*registry, &*sessions).await
         }));
         self.last_session_tasks_refresh = Some(Instant::now());
-    }
-
-    fn goal_indicator(&self) -> Option<String> {
-        if !self.goal_store.is_active(self.session.session_id()) {
-            return None;
-        }
-        let turns = self
-            .goal_store
-            .status(self.session.session_id(), self.session_tokens)
-            .active
-            .map(|active| (active.evaluated_turns, active.paused))
-            .unwrap_or((0, false));
-        if turns.1 {
-            Some(format!("◎ goal paused ({})", turns.0))
-        } else {
-            Some(format!("◎ goal ({})", turns.0))
-        }
     }
 
     fn push_user(&mut self, text: String) {
@@ -1620,15 +1573,6 @@ impl App {
         self.compact_turns.clear();
         self.compact_detail_count = 0;
         self.active_compact_turn = None;
-    }
-
-    fn push_evaluation_status(
-        &mut self,
-        evaluation: &crate::session_state::user_ask::UserAskEvaluation,
-    ) {
-        if let Some(message) = evaluation_status_message(evaluation) {
-            self.push_system(message);
-        }
     }
 
     /// Refresh the memoized full-screen transcript wrapping for `width` and
@@ -1890,6 +1834,10 @@ impl App {
         self.trim_transcript();
         terminal.draw(|f| draw(f, self))?;
 
+        if self.poll_completion_review().await {
+            return Ok(());
+        }
+
         // 1) drain background turn events
         if let Some(rx) = self.rx.as_mut() {
             match rx.try_recv() {
@@ -1955,9 +1903,8 @@ impl App {
                         return Ok(());
                     }
                     self.announce_pending_approval();
-                    self.after_turn_goal_check().await;
                     if !self.busy {
-                        self.after_turn_user_ask_check(result).await;
+                        self.start_completion_review(result);
                     }
                     return Ok(());
                 }
@@ -1968,9 +1915,6 @@ impl App {
                         status.error();
                     }
                     self.push_system(format!("turn failed: {err}"));
-                    self.record_completion_state(
-                        crate::session_state::task_completion::CompletionState::Failed,
-                    );
                     self.start_next_queued_turn();
                     return Ok(());
                 }
@@ -3047,6 +2991,13 @@ impl App {
         // shell-style Up/Down recall. Uses the pre-expansion display text so
         // paste placeholders recall as the user saw them.
         self.history.record(&display_text);
+        if (!text.is_empty() || !self.pending_images.is_empty())
+            && self.completion_review.take().is_some()
+        {
+            // A human command or steering message supersedes this review.
+            // Dispatch it normally, including host slash and shell commands.
+            self.finish_busy();
+        }
         if !self.busy {
             if let Some(command) = parse_bang_shell_command(&text) {
                 if command.is_empty() {
@@ -3261,8 +3212,15 @@ impl App {
             message,
             &mut self.background_wake,
         )
-        .with_active_goal(self.goal_store.active_condition(self.session.session_id()))
-        .with_active_ask(self.user_ask_store.active_text(self.session.session_id()));
+        .resolve_artifacts(
+            self.session
+                .handles()
+                .runtime
+                .file_store(everruns_core::host::in_process_internal_org_id(
+                    everruns_core::DEFAULT_ORG_PUBLIC_ID,
+                ))
+                .as_ref(),
+        );
         if !message.is_coordination() && self.session.completion_already_observed(&message).await {
             self.push_system("✓ background task completion already handled".to_string());
             return false;
@@ -3352,8 +3310,6 @@ impl App {
                 self.printed_lines = 0;
                 self.printed_rows = 0;
                 self.transcript_generation = self.transcript_generation.wrapping_add(1);
-                self.goal_store.clear_active(self.session.session_id());
-                self.user_ask_store.clear_active(self.session.session_id());
             }
             UiCommand::RunShell { command } => self.start_shell_command(command),
             UiCommand::Quit => self.should_quit = true,
@@ -4032,7 +3988,7 @@ impl App {
     fn handle_busy_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Esc if self.esc_pending_cancel => self.cancel_current_turn(),
-            KeyCode::Esc if self.turn_cancel.is_some() => {
+            KeyCode::Esc if self.turn_cancel.is_some() || self.completion_review.is_some() => {
                 self.esc_pending_cancel = true;
                 self.push_system("Press Esc again to cancel current turn".into());
             }
@@ -4044,11 +4000,11 @@ impl App {
 
     fn cancel_current_turn(&mut self) {
         self.esc_pending_cancel = false;
-        if self.goal_store.is_active(self.session.session_id()) {
-            match self.goal_store.pause_active(self.session.session_id()) {
-                Ok(message) => self.push_system(message),
-                Err(err) => self.push_system(format!("goal pause failed: {err}")),
-            }
+        if self.completion_review.take().is_some() {
+            self.finish_busy();
+            self.push_system("Task completion review canceled".into());
+            self.start_next_queued_turn();
+            return;
         }
         if let Some(cancel) = self.turn_cancel.take() {
             let _ = cancel.send(());
@@ -4086,214 +4042,78 @@ impl App {
         true
     }
 
-    fn begin_user_request(&mut self, prompt: &str) {
-        self.completion_budget.reset();
-        if self.user_ask_enabled
-            && let Err(err) = self
-                .user_ask_store
-                .record_user_prompt(self.session.session_id(), prompt)
-        {
-            self.push_system(format!("user ask: {err}"));
-        }
+    fn begin_user_request(&mut self, _prompt: &str) {
+        self.completion.reset();
     }
-
-    fn record_completion_state(
-        &mut self,
-        state: crate::session_state::task_completion::CompletionState,
-    ) {
-        let session_id = self.session.session_id();
-        if !self.user_ask_enabled || !self.user_ask_store.is_active(session_id) {
-            return;
-        }
-        let evaluation = crate::session_state::task_completion::evaluation_for_state(state);
-        if let Err(err) = self
-            .user_ask_store
-            .record_evaluation(session_id, &evaluation)
-        {
-            self.push_system(format!("user ask: {err}"));
-            return;
-        }
-        self.push_evaluation_status(&evaluation);
-    }
-
-    fn maybe_start_goal_turn(&mut self) {
-        let session_id = self.session.session_id();
-        if !self.goal_store.take_pending_turn(session_id) {
-            return;
-        }
-        let Some(condition) = self.goal_store.active_condition(session_id) else {
-            return;
-        };
-        self.push_user(condition.clone());
-        self.start_turn(condition);
-    }
-
-    async fn after_turn_goal_check(&mut self) {
-        let session_id = self.session.session_id();
-        if !self.goal_store.is_active(session_id) {
-            return;
-        }
-        if self.goal_store.is_paused(session_id) {
-            return;
-        }
-        let result = match self
-            .session
-            .execute_command("goal", Some(GOAL_EVALUATE_ARG.to_string()))
-            .await
-        {
-            Ok(result) => result,
-            Err(err) => {
-                self.push_system(format!("goal evaluation failed: {err}"));
-                return;
-            }
-        };
-        if !result.success {
-            self.push_system(format!("goal evaluation failed: {}", result.message));
-            return;
-        }
-        let evaluation = match parse_evaluation_response(&result.message) {
-            Ok(evaluation) => evaluation,
-            Err(err) => {
-                self.push_system(format!("goal evaluation failed: {err}"));
-                return;
-            }
-        };
-        if evaluation.met {
-            self.push_system(format!("goal achieved: {}", evaluation.reason));
-            return;
-        }
-        self.push_system(format!("goal: {}", evaluation.reason));
-        let Some(prompt) = self.goal_store.continuation_prompt(session_id) else {
-            return;
-        };
-        self.push_user(prompt.clone());
-        self.start_turn(prompt);
-    }
-
-    async fn after_turn_user_ask_check(&mut self, result: Option<everruns_core::host::TurnResult>) {
-        if !self.user_ask_enabled {
-            return;
-        }
-        let session_id = self.session.session_id();
-        if !self.user_ask_store.is_active(session_id) {
-            return;
-        }
+    fn start_completion_review(&mut self, result: Option<everruns_core::host::TurnResult>) {
         let Some(result) = result else { return };
-        if let Some(evaluation) =
-            crate::session_state::task_completion::failed_turn_evaluation(&result)
-        {
-            if let Err(err) = self
-                .user_ask_store
-                .record_evaluation(session_id, &evaluation)
-            {
-                self.push_system(format!("user ask: {err}"));
-                return;
-            }
-            self.push_evaluation_status(&evaluation);
+        if result.stop_reason == everruns_core::turn::TurnStopReason::Cancelled {
             return;
         }
-        let tokens = self.session.turn_tokens(result.turn_id).await;
-        if !self.completion_budget.observe_turn(tokens) {
-            self.push_system("user ask budget exhausted; send a message to resume".into());
-            return;
-        }
-        let has_background = self
-            .task_registry
-            .list(session_id, None)
-            .await
-            .unwrap_or_default()
-            .iter()
-            .any(|task| !task.state.is_terminal());
-        if let crate::session_state::task_completion::GateDecision::Conclusive(state) =
-            crate::session_state::task_completion::gate_turn(&result, has_background)
-        {
-            let mut evaluation = crate::session_state::task_completion::evaluation_for_state(state);
-            // Muse-only idle-promise guard: the sync gate treats any
-            // tool-free text as Achieved, so a promised action with zero
-            // tool calls would end the turn. Ask the Jev classifier; a hit
-            // continues the turn instead of presenting the promise. Misses,
-            // errors, and a missing key keep Achieved (fail open).
-            if evaluation.outcome == AskOutcome::Achieved
-                && result.tool_calls_count == 0
-                && crate::capabilities::is_muse(Some(self.model.model_id().as_str()))
-                && let Some(classifier) = everruns_core::host::RuntimeHostAdapter::decisions(
-                    self.session.runtime().as_ref(),
-                )
-                && crate::capabilities::evaluate_actionable_promise(
-                    &result.response,
-                    result.tool_calls_count,
-                    &classifier,
-                    None,
-                )
-                .await
-            {
-                evaluation = crate::session_state::user_ask::UserAskEvaluation {
-                    outcome: AskOutcome::InProgress,
-                    reason: "promised action but made no tool call".to_string(),
-                };
-            }
-            let outcome = evaluation.outcome;
-            let reason = evaluation.reason.clone();
-            if let Err(err) = self
-                .user_ask_store
-                .record_evaluation(session_id, &evaluation)
-            {
-                self.push_system(format!("user ask: {err}"));
-                return;
-            }
-            self.push_evaluation_status(&evaluation);
-            match outcome {
-                AskOutcome::InProgress => {
-                    let prompt =
-                        crate::session_state::task_completion::continuation_prompt(&reason);
-                    self.start_continuation_turn(prompt);
+        let handles = self.session.handles().clone();
+        let registry = self.task_registry.clone();
+        let mut controller = std::mem::take(&mut self.completion);
+        self.busy = true;
+        self.turn_activity = Some("checking task completion".into());
+        self.turn_started_at = Some(Instant::now());
+        self.completion_review = Some(CompletionReviewTask {
+            worker: tokio::spawn(async move {
+                let outcome = async {
+                    let background = crate::session_state::task_completion::has_pending_execution(
+                        &registry.list(handles.session_id, None).await?,
+                    );
+                    controller.after_turn(&handles, &result, background).await
                 }
-                AskOutcome::Blocked => {
+                .await;
+                (controller, outcome)
+            }),
+        });
+    }
+
+    async fn poll_completion_review(&mut self) -> bool {
+        if !self
+            .completion_review
+            .as_ref()
+            .is_some_and(|task| task.worker.is_finished())
+        {
+            return false;
+        }
+        let mut task = self.completion_review.take().expect("finished review");
+        let outcome = (&mut task.worker).await;
+        self.finish_busy();
+        let (controller, decision) = match outcome {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                self.push_system(format!("Completion review unavailable: {error}"));
+                self.start_next_queued_turn();
+                return true;
+            }
+        };
+        self.completion = controller;
+        // Human steering received during review wins over a stale repair decision.
+        if self.start_next_queued_turn() {
+            return true;
+        }
+        match decision {
+            Ok(decision) => {
+                if decision.state == crate::session_state::task_completion::CompletionState::Blocked
+                {
                     if let Some(status) = self.program_status.as_mut() {
                         status.blocked_question();
                     }
                     self.session
                         .report_herdr_state(crate::capabilities::herdr::HerdrState::Blocked);
                 }
-                AskOutcome::Achieved | AskOutcome::Failed | AskOutcome::WaitingOnBackground => {}
+                if let Some(notice) = decision.notice {
+                    self.push_system(notice);
+                }
+                if let Some(prompt) = decision.followup {
+                    self.start_continuation_turn(prompt);
+                }
             }
-            return;
+            Err(error) => self.push_system(format!("Completion review unavailable: {error}")),
         }
-        let result = match self
-            .session
-            .execute_command("ask", Some(USER_ASK_EVALUATE_ARG.to_string()))
-            .await
-        {
-            Ok(result) => result,
-            Err(err) => {
-                self.push_system(format!("user ask evaluation failed: {err}"));
-                return;
-            }
-        };
-        if !result.success {
-            self.push_system(format!("user ask evaluation failed: {}", result.message));
-            return;
-        }
-        let evaluation = match parse_user_ask_evaluation(&result.message) {
-            Ok(evaluation) => evaluation,
-            Err(err) => {
-                self.push_system(format!("user ask evaluation failed: {err}"));
-                return;
-            }
-        };
-        if evaluation.outcome == AskOutcome::Blocked {
-            if let Some(status) = self.program_status.as_mut() {
-                status.blocked_question();
-            }
-            self.session
-                .report_herdr_state(crate::capabilities::herdr::HerdrState::Blocked);
-        }
-        self.push_evaluation_status(&evaluation);
-        if evaluation.outcome == AskOutcome::InProgress {
-            let prompt =
-                crate::session_state::task_completion::continuation_prompt(&evaluation.reason);
-            self.start_continuation_turn(prompt);
-        }
+        true
     }
 
     /// Dispatch a capability-provided slash command.
@@ -4349,9 +4169,6 @@ impl App {
                         } else if !result.message.is_empty() {
                             let prefix = if result.success { "" } else { "error: " };
                             self.push_system(format!("{prefix}{}", result.message));
-                        }
-                        if descriptor.name == "goal" && result.success {
-                            self.maybe_start_goal_turn();
                         }
                     }
                     Err(err) => self.push_system(format!("/{} failed: {err}", descriptor.name)),
@@ -6601,8 +6418,6 @@ flowchart TD
             hooks_summary: "none".to_string(),
             approval_mode: "normal".to_string(),
             background: None,
-            goal_indicator: None,
-            ask_indicator: None,
             worktree_compact: None,
             worktree_expanded: None,
             extension_status: Vec::new(),
@@ -7628,41 +7443,6 @@ flowchart TD
     }
 
     #[tokio::test]
-    async fn blocked_completion_state_stops_without_presentation_status() {
-        use everruns_contracts::typed_id::TurnId;
-        use everruns_core::turn::TurnStopReason;
-
-        let mut test = app_with_llmsim_and_user_ask().await;
-        let session_id = test.app.session.session_id();
-        test.app
-            .user_ask_store
-            .record_user_prompt(session_id, "edit the file")
-            .expect("record ask");
-        test.app
-            .after_turn_user_ask_check(Some(everruns_core::host::TurnResult {
-                response: "I need the path. Which file should I edit?".to_string(),
-                iterations: 1,
-                tool_calls_count: 0,
-                success: true,
-                error: None,
-                stop_reason: TurnStopReason::EndTurn,
-                turn_id: TurnId::new(),
-            }))
-            .await;
-
-        assert!(
-            test.app.lines.is_empty(),
-            "blocked completion must not add host status to the presentation transcript: {:?}",
-            test.app.lines
-        );
-        assert!(
-            !test.app.user_ask_store.is_active(session_id),
-            "blocked completion must remain persisted as terminal"
-        );
-        assert!(!test.app.busy, "blocked state must not auto-continue");
-    }
-
-    #[tokio::test]
     async fn completed_session_task_refresh_is_applied_without_panicking() {
         let mut test = app_with_llmsim().await;
         let mut expected = crate::tui::session_tasks_view::TaskTree::default();
@@ -7686,27 +7466,11 @@ flowchart TD
     }
 
     async fn app_with_llmsim() -> TestApp {
-        app_with_llmsim_capabilities(false).await
-    }
-
-    async fn app_with_llmsim_and_user_ask() -> TestApp {
-        app_with_llmsim_capabilities(true).await
-    }
-
-    async fn app_with_llmsim_capabilities(user_ask: bool) -> TestApp {
         let workspace = tempfile::tempdir().expect("workspace tempdir");
         let sessions = tempfile::tempdir().expect("sessions tempdir");
         let settings = std::sync::Arc::new(crate::config::SettingsStore::open(
             sessions.path().join("settings.toml"),
         ));
-        if user_ask {
-            settings
-                .set_capability_enabled(
-                    crate::session_state::user_ask::USER_ASK_CAPABILITY_ID,
-                    true,
-                )
-                .expect("enable user ask for TUI fixture");
-        }
         let runtime = crate::runtime::build_with_options(
             workspace.path().to_path_buf(),
             crate::runtime::ProviderChoice::Sim,
@@ -9902,8 +9666,70 @@ flowchart TD
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn completion_review_keeps_input_responsive_and_can_be_canceled() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+        app.busy = true;
+        let worker = tokio::spawn(std::future::pending());
+        let aborted = worker.abort_handle();
+        app.completion_review = Some(CompletionReviewTask { worker });
+        tokio::time::timeout(
+            Duration::from_millis(100),
+            app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::empty())),
+        )
+        .await
+        .expect("review must not block typing");
+        assert_eq!(app.input_text(), "a");
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()))
+            .await;
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()))
+            .await;
+        assert!(app.completion_review.is_none());
+        assert!(!app.busy);
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !aborted.is_finished() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("review worker canceled");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn shell_command_during_review_runs_as_a_host_command() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+        app.busy = true;
+        app.completion_review = Some(CompletionReviewTask {
+            worker: tokio::spawn(std::future::pending()),
+        });
+        app.set_input_text("!shell printf review-interrupted > review.marker".into());
+        app.submit_input().await;
+        app.pump_ui_commands_for_test().await;
+        assert!(app.completion_review.is_none());
+        assert!(
+            app.rx.is_some(),
+            "shell command must run instead of going to the model"
+        );
+        assert!(app.queued_messages.is_empty());
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while !fixture._workspace.path().join("review.marker").exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("host shell command executed");
+        assert_eq!(
+            std::fs::read_to_string(fixture._workspace.path().join("review.marker")).unwrap(),
+            "review-interrupted"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn busy_composer_queues_messages_for_fifo_delivery() {
-        let mut fixture = app_with_llmsim_and_user_ask().await;
+        let mut fixture = app_with_llmsim().await;
         let app = &mut fixture.app;
         app.setup = None;
         app.lines.clear();
@@ -9922,13 +9748,6 @@ flowchart TD
         app.submit_input().await;
 
         assert_eq!(app.queued_messages.len(), 2);
-        assert_eq!(
-            app.user_ask_store
-                .active_text(app.session.session_id())
-                .as_deref(),
-            Some("first turn"),
-            "queued pivots must not replace the ask before their turn starts"
-        );
         assert!(app.input_text().is_empty());
         assert!(app.busy, "queueing must not interrupt the active turn");
 
@@ -10001,46 +9820,6 @@ flowchart TD
         assert!(app.busy);
         assert!(cancel_rx.try_recv().is_err());
         assert!(!app.should_quit);
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn second_esc_while_goal_active_pauses_goal_continuation() {
-        let mut fixture = app_with_llmsim().await;
-        let app = &mut fixture.app;
-        let session_id = app.session.session_id();
-        let (cancel_tx, cancel_rx) = oneshot::channel::<()>();
-        app.setup = None;
-        app.goal_store
-            .set_active(session_id, "ship the change".into())
-            .expect("set active goal");
-        assert!(
-            app.goal_store.take_pending_turn(session_id),
-            "test starts from an in-progress goal turn"
-        );
-        app.busy = true;
-        app.turn_cancel = Some(cancel_tx);
-
-        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()))
-            .await;
-        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()))
-            .await;
-
-        assert!(cancel_rx.await.is_ok(), "second Esc should cancel the turn");
-        assert!(
-            app.goal_store.is_paused(session_id),
-            "cancelled goal turn should pause auto-continuation"
-        );
-        assert!(
-            !app.goal_store.take_pending_turn(session_id),
-            "paused goal should not keep a pending continuation"
-        );
-        assert!(
-            app.lines
-                .iter()
-                .any(|line| line.text.contains("goal paused")),
-            "cancellation should explain how to resume the goal: {:?}",
-            app.lines
-        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -12607,9 +12386,8 @@ flowchart TD
         assert!(
             rows[4].contains("effort high")
                 && rows[4].contains("approval normal")
-                && rows[4].contains("hooks none")
-                && rows[4].contains("goal"),
-            "expanded controls row should include effort, approval, hooks, and goal: {:?}",
+                && rows[4].contains("hooks none"),
+            "expanded controls row should include effort, approval, and hooks: {:?}",
             rows[4]
         );
         assert!(
