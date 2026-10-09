@@ -42,6 +42,11 @@ deliberately launched services. Nonzero detached commands retain bounded
 diagnostics in their failure result and stream complete retained evidence to
 `output.log`. The model receives command failures as evidence to diagnose.
 
+Semantic tool errors retain their specific reason in the stored tool-result
+message and the provider-visible `Tool error: <reason>` text. ACP also includes
+the reason in tool content when marking a call failed. A client's generic
+failure label does not replace that diagnostic in the model transcript.
+
 ## Evidence
 
 The dependency-isolated `output-persistence` study checks leading-evidence

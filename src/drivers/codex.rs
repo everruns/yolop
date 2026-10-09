@@ -203,6 +203,17 @@ mod tests {
                 assert_eq!(body["store"], false);
                 assert_eq!(body["stream"], true);
                 assert_eq!(body["instructions"], "instructions");
+                let output = body["input"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|item| item["type"] == "function_call_output")
+                    .expect("model receives tool error output");
+                assert_eq!(output["call_id"], "semantic-error");
+                assert_eq!(
+                    output["output"],
+                    "Tool error: progress_checkpoint rejected: no progress checkpoint is currently required"
+                );
                 let sse = "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"shared-ok\"}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"completed\",\"output\":[]}}\n\n";
                 request
                     .respond(tiny_http::Response::from_string(sse).with_header(
@@ -216,6 +227,25 @@ mod tests {
                     vec![
                         Message::text(MessageRole::System, "instructions"),
                         Message::text(MessageRole::User, "hi"),
+                        everruns_core::llm_conversions::llm_message_from_message_with_images(
+                            &everruns_core::RuntimeMessage::assistant_with_tools(
+                                "",
+                                vec![everruns_contracts::ToolCall {
+                                    id: "semantic-error".into(),
+                                    name: "progress_checkpoint".into(),
+                                    arguments: json!({}),
+                                }],
+                            ),
+                            &Default::default(),
+                        ),
+                        everruns_core::llm_conversions::llm_message_from_message_with_images(
+                            &everruns_core::RuntimeMessage::tool_result(
+                                "semantic-error",
+                                None,
+                                Some("progress_checkpoint rejected: no progress checkpoint is currently required".into()),
+                            ),
+                            &Default::default(),
+                        ),
                     ],
                     &LlmCallConfig::new("test-model"),
                 )

@@ -682,6 +682,11 @@ pub fn summarize_tool_result(data: &ToolCompletedData) -> String {
     // Field names match the built-in `session_file_system` capability's
     // result shapes. See crates/core/src/capabilities/file_system.rs.
     match data.tool_name.as_str() {
+        "progress_checkpoint" => v
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
         "write_todos" => {
             let completed = v.get("completed").and_then(Value::as_u64).unwrap_or(0);
             let total = v.get("total_tasks").and_then(Value::as_u64).unwrap_or(0);
