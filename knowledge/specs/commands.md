@@ -35,8 +35,7 @@ top of the runtime's two, not a separate `CommandSource` variant.
    Example: `/setup` opens guided setup, while the attached CLI owns
    `yolop setup status|login|reauthenticate` for provider authentication;
    `/shell <command>` runs the existing bounded bash tool; `/undo`, `/redo`, and
-   `/rewind` preview and confirm durable session restores; `/goal <condition>`
-   starts an autonomous completion loop (see [`goal.md`](./goal.md)).
+   `/rewind` preview and confirm durable session restores.
 
 2. **Skill**: the **LLM** executes it. The literal `/name args` text is
    forwarded as a chat turn so the model activates the skill. Skill commands are
@@ -88,7 +87,7 @@ portable case ever arises.
 4. **Natural-language dispatch.** The `agent_commands` capability exposes a
    model-facing `run_command` tool and a prompt contribution describing it.
    When the user asks for a slash-only command in ordinary prose (for example,
-   "exit" or "set a goal"), the model invokes that tool instead of telling the
+   "exit" or "inspect background tasks"), the model invokes that tool instead of telling the
    user to type the slash command. Administrative operations, including provider
    authentication, use the attached `yolop` CLI through Bash. `run_command` covers the
    **whole registry** of the host it runs on, not a curated subset, and holds no

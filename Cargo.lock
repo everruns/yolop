@@ -2231,7 +2231,6 @@ dependencies = [
  "everruns-contracts",
  "everruns-core",
  "everruns-durable",
- "everruns-integrations-typesafe",
  "everruns-llmsim",
  "futures",
  "libc",
@@ -2453,23 +2452,6 @@ dependencies = [
  "reqwest 0.13.5",
  "serde",
  "serde_json",
-]
-
-[[package]]
-name = "everruns-integrations-typesafe"
-version = "0.41.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "35378d19f948412021c75bfcbec473b65b211c32c8e991b54b1ebf57925f1152"
-dependencies = [
- "async-trait",
- "everruns-contracts",
- "everruns-core",
- "reqwest 0.13.5",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
- "tokio",
- "tracing",
 ]
 
 [[package]]

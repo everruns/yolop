@@ -29,6 +29,7 @@ use everruns_contracts::tool_types::{
 use everruns_contracts::typed_id::SessionId as RuntimeSessionId;
 use everruns_core::ContentPart;
 use everruns_core::command::{CommandDescriptor, CommandSource, ExecuteCommandRequest};
+use everruns_core::host::RuntimeHostAdapter;
 use everruns_core::{InputMessage, ScopedMcpServers};
 use everruns_core::{McpServerTransportType, ScopedMcpServer};
 use futures::{AsyncBufReadExt, AsyncWriteExt, StreamExt};
@@ -44,8 +45,7 @@ use crate::runtime::background_wake::{
     WakeHandoff, WakeMessage, WakeReceiver, coalesce_pending_wakes, frame_wake_prompt,
 };
 use crate::runtime::{BuiltRuntime, ModelState, RuntimeHandles};
-use crate::session_state::task_completion::{CompletionBudget, GateDecision};
-use crate::session_state::user_ask::{AskOutcome, UserAskStore};
+use crate::session_state::task_completion::CompletionController;
 use crate::tui::input::image_input::{MAX_IMAGE_BYTES, image_part_from_base64};
 
 use super::bridge::{Translator, tool_kind};
@@ -314,7 +314,6 @@ struct Session {
     /// Settings source, read for the `proactive_wake` opt-out and the
     /// approval-level ↔ session-mode mapping.
     settings: Arc<SettingsStore>,
-    goal_store: Arc<crate::session_state::goal::GoalStore>,
     /// Last approval level reported to the client as the current session mode.
     /// Compared after each turn so a level changed out of band (the
     /// `set_approval_mode` tool, `/setup approval`) surfaces as a
@@ -322,10 +321,8 @@ struct Session {
     last_mode: StdMutex<ApprovalMode>,
     /// Retained for the ACP session lifetime so due local schedules keep polling.
     _schedule_runner: everruns::local::LocalScheduleRunnerHandle,
-    user_ask_store: Arc<UserAskStore>,
-    user_ask_enabled: bool,
     task_registry: Arc<dyn everruns_core::session_task::SessionTaskRegistry>,
-    completion_budget: StdMutex<CompletionBudget>,
+    completion: tokio::sync::Mutex<CompletionController>,
     /// Serializes turns for this session. Both a client prompt and a background
     /// wake turn take it, so two `run_turn`s never overlap.
     turn_lock: tokio::sync::Mutex<()>,
@@ -752,8 +749,6 @@ fn register_session<F: RuntimeFactory>(
     let mut commands = built.startup.capability_commands.clone();
     let skill_commands = built.startup.skill_commands;
     commands.extend(skill_commands.clone());
-    let user_ask_store = built.user_ask_store.clone();
-    let user_ask_enabled = built.user_ask_enabled;
     let task_registry = built.task_registry.clone();
     let session = Arc::new(Session {
         acp_id: acp_id.clone(),
@@ -764,12 +759,9 @@ fn register_session<F: RuntimeFactory>(
         cancel: StdMutex::new(None),
         last_mode: StdMutex::new(built.settings.snapshot().approval_mode()),
         settings: built.settings,
-        goal_store: built.goal_store,
         _schedule_runner: built.schedule_runner,
-        user_ask_store,
-        user_ask_enabled,
         task_registry,
-        completion_budget: StdMutex::new(CompletionBudget::default()),
+        completion: tokio::sync::Mutex::new(CompletionController::default()),
         turn_lock: tokio::sync::Mutex::new(()),
         reported_background_tasks: StdMutex::new(HashSet::new()),
     });
@@ -847,8 +839,7 @@ async fn reconcile_finished_background_tasks(session: &Arc<Session>) -> Vec<Stri
                 format!("background task {} finished", single.task_id),
                 WakeHandoff {
                     version: 1,
-                    active_ask: None,
-                    active_goal: None,
+
                     tasks: vec![single],
                     omitted_tasks: 0,
                 },
@@ -894,17 +885,15 @@ fn spawn_background_wake_drain(
             let _turn = session.turn_lock.lock().await;
             // Completions that accumulated while the foreground turn held the
             // lock are one observation point, not separate model obligations.
-            let message = coalesce_pending_wakes(message, &mut wake_rx)
-                .with_active_goal(
-                    session
-                        .goal_store
-                        .active_condition(session.handles.session_id),
-                )
-                .with_active_ask(
-                    session
-                        .user_ask_store
-                        .active_text(session.handles.session_id),
-                );
+            let message = coalesce_pending_wakes(message, &mut wake_rx).resolve_artifacts(
+                session
+                    .handles
+                    .runtime
+                    .file_store(everruns_core::host::in_process_internal_org_id(
+                        everruns_core::DEFAULT_ORG_PUBLIC_ID,
+                    ))
+                    .as_ref(),
+            );
             if !message.is_coordination()
                 && session.handles.runtime.events().await.is_ok_and(|events| {
                     crate::runtime::background_wake::completion_already_observed(&message, &events)
@@ -1077,14 +1066,8 @@ async fn handle_prompt<F: RuntimeFactory>(
     } else {
         None
     };
-    if parsed_command.is_none() && session.user_ask_enabled {
-        if let Err(err) = session
-            .user_ask_store
-            .record_user_prompt(session.handles.session_id, &prompt)
-        {
-            tracing::warn!(%err, "acp: record user ask failed");
-        }
-        session.completion_budget.lock().unwrap().reset();
+    if parsed_command.is_none() {
+        session.completion.lock().await.reset();
     }
     let stop_reason = match parsed_command {
         Some(command) => run_slash_command(server, peer, session.clone(), command).await,
@@ -1687,26 +1670,14 @@ async fn run_prompt(
     mut input: InputMessage,
 ) -> StopReason {
     let mut provider_interruption_followups = 0usize;
+    let mut cancel_rx = session.arm_cancel();
     loop {
-        let (stop, result) = run_prompt_once(peer.clone(), session.clone(), prompt, input).await;
+        let (stop, result) =
+            run_prompt_once(peer.clone(), session.clone(), prompt, input, &mut cancel_rx).await;
         if stop == StopReason::Cancelled {
             return stop;
         }
         let Some(result) = result else {
-            if session.user_ask_enabled
-                && session.user_ask_store.is_active(session.handles.session_id)
-            {
-                let evaluation = crate::session_state::task_completion::evaluation_for_state(
-                    crate::session_state::task_completion::CompletionState::Failed,
-                );
-                let _ = session
-                    .user_ask_store
-                    .record_evaluation(session.handles.session_id, &evaluation);
-                peer.session_update(
-                    &session.acp_id,
-                    SessionUpdate::AgentMessageChunk(protocol::text_chunk("task failed")),
-                );
-            }
             return stop;
         };
         let next = if let Some(next) =
@@ -1715,9 +1686,12 @@ async fn run_prompt(
             provider_interruption_followups = provider_interruption_followups.saturating_add(1);
             next
         } else {
-            let Some(next) = completion_followup(&peer, &session, &result).await else {
-                return stop;
+            let followup = tokio::select! {
+                biased;
+                _ = &mut cancel_rx => return StopReason::Cancelled,
+                followup = completion_followup(&peer, &session, &result) => followup,
             };
+            let Some(next) = followup else { return stop };
             next
         };
         prompt = next;
@@ -1732,6 +1706,7 @@ async fn run_prompt_once(
     session: Arc<Session>,
     prompt: String,
     input: InputMessage,
+    cancel_rx: &mut oneshot::Receiver<()>,
 ) -> (StopReason, Option<everruns_core::host::TurnResult>) {
     let handles = session.handles.clone();
     let session_id = handles.session_id;
@@ -1763,13 +1738,12 @@ async fn run_prompt_once(
     });
 
     let mut translator = Translator::new();
-    let mut cancel_rx = session.arm_cancel();
     let mut cancelled = false;
 
     loop {
         tokio::select! {
             biased;
-            _ = &mut cancel_rx => {
+            _ = &mut *cancel_rx => {
                 cancelled = true;
                 break;
             }
@@ -1888,131 +1862,52 @@ async fn completion_followup(
     session: &Arc<Session>,
     result: &everruns_core::host::TurnResult,
 ) -> Option<String> {
-    let session_id = session.handles.session_id;
-    if !session.user_ask_enabled || !session.user_ask_store.is_active(session_id) {
-        return None;
-    }
-    if let Some(evaluation) = crate::session_state::task_completion::failed_turn_evaluation(result)
-    {
-        let _ = session
-            .user_ask_store
-            .record_evaluation(session_id, &evaluation);
-        peer.session_update(
-            &session.acp_id,
-            SessionUpdate::AgentMessageChunk(protocol::text_chunk("task failed")),
-        );
-        return None;
-    }
-    let tokens = session.handles.turn_tokens(result.turn_id).await;
-    if !session
-        .completion_budget
-        .lock()
-        .unwrap()
-        .observe_turn(tokens)
-    {
-        peer.session_update(
-            &session.acp_id,
-            SessionUpdate::AgentMessageChunk(protocol::text_chunk(
-                "user ask budget exhausted; send another prompt to resume",
-            )),
-        );
-        return None;
-    }
-    let has_background = session
+    let background = match session
         .task_registry
-        .list(session_id, None)
+        .list(session.handles.session_id, None)
         .await
-        .unwrap_or_default()
-        .iter()
-        .any(|task| !task.state.is_terminal());
-
-    let evaluation = match crate::session_state::task_completion::gate_turn(result, has_background)
     {
-        GateDecision::Evaluate => {
-            let command = session
-                .handles
-                .runtime
-                .execute_command(
-                    session_id,
-                    ExecuteCommandRequest {
-                        name: "ask".to_string(),
-                        arguments: Some(
-                            crate::session_state::user_ask::USER_ASK_EVALUATE_ARG.to_string(),
-                        ),
-                        controls: None,
-                    },
-                )
-                .await
-                .ok()?;
-            if !command.success {
-                return None;
-            }
-            crate::session_state::user_ask::parse_evaluation_response(&command.message).ok()?
-        }
-        GateDecision::Conclusive(state) => {
-            let mut evaluation = crate::session_state::task_completion::evaluation_for_state(state);
-            // Muse-only idle-promise guard: the sync gate treats any
-            // tool-free text as Achieved, so a promised action with zero
-            // tool calls would end the turn. Ask the Jev classifier; a hit
-            // continues the turn instead of presenting the promise. Misses,
-            // errors, and a missing key keep Achieved (fail open).
-            if evaluation.outcome == AskOutcome::Achieved
-                && result.tool_calls_count == 0
-                && crate::capabilities::is_muse(Some(session.model.model_id().as_str()))
-                && let Some(classifier) = everruns_core::host::RuntimeHostAdapter::decisions(
-                    session.handles.runtime.as_ref(),
-                )
-                && crate::capabilities::evaluate_actionable_promise(
-                    &result.response,
-                    result.tool_calls_count,
-                    &classifier,
-                    None,
-                )
-                .await
-            {
-                evaluation = crate::session_state::user_ask::UserAskEvaluation {
-                    outcome: AskOutcome::InProgress,
-                    reason: "promised action but made no tool call".to_string(),
-                };
-            }
-            if session
-                .user_ask_store
-                .record_evaluation(session_id, &evaluation)
-                .is_err()
-            {
-                return None;
-            }
-            evaluation
+        Ok(tasks) => crate::session_state::task_completion::has_pending_execution(&tasks),
+        Err(error) => {
+            peer.session_update(
+                &session.acp_id,
+                SessionUpdate::AgentMessageChunk(protocol::text_chunk(format!(
+                    "Task completion unavailable: cannot inspect background work: {error}"
+                ))),
+            );
+            return None;
         }
     };
-
-    match evaluation.outcome {
-        AskOutcome::InProgress => Some(crate::session_state::task_completion::continuation_prompt(
-            &evaluation.reason,
-        )),
-        AskOutcome::Blocked => {
-            session
-                .handles
-                .report_herdr_state(crate::capabilities::herdr::HerdrState::Blocked);
-            None
+    match session
+        .completion
+        .lock()
+        .await
+        .after_turn(&session.handles, result, background)
+        .await
+    {
+        Ok(decision) => {
+            if decision.state == crate::session_state::task_completion::CompletionState::Blocked {
+                session
+                    .handles
+                    .report_herdr_state(crate::capabilities::herdr::HerdrState::Blocked);
+            }
+            if let Some(notice) = decision.notice {
+                peer.session_update(
+                    &session.acp_id,
+                    SessionUpdate::AgentMessageChunk(protocol::text_chunk(notice)),
+                );
+            }
+            decision.followup
         }
-        AskOutcome::Failed => {
+        Err(err) => {
             peer.session_update(
                 &session.acp_id,
-                SessionUpdate::AgentMessageChunk(protocol::text_chunk("task failed")),
+                SessionUpdate::AgentMessageChunk(protocol::text_chunk(format!(
+                    "Completion review unavailable: {err}"
+                ))),
             );
             None
         }
-        AskOutcome::WaitingOnBackground => {
-            peer.session_update(
-                &session.acp_id,
-                SessionUpdate::AgentMessageChunk(protocol::text_chunk(
-                    "task waiting on background",
-                )),
-            );
-            None
-        }
-        AskOutcome::Achieved => None,
     }
 }
 

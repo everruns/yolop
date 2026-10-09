@@ -17,7 +17,8 @@ crosses its budget without mutation or validation, or external-event probes
 become polling. It also classifies bounded command and tool diagnostics for
 invocation, missing-command, wrong-path, and usage failures. Two consecutive
 equivalent failures on unchanged workspace state trigger a transition away from
-the same tool path, even when the command text or target path was rewritten.
+the exact failed action. A different command through the same tool remains
+available.
 
 Repeated file paging is tracked separately by normalized path and line interval,
 so changing offsets does not disguise overlapping reads as new investigations.
@@ -27,7 +28,7 @@ parsed into path intervals, and interpreter one-liners that read files (or any
 other shell command referencing workspace source) count as exploration rather
 than falling through as unclassified shell use. Four overlapping reads without
 semantic navigation warn and redirect toward `read_file` with offset and limit,
-`repo_map`, `repo_symbols`, `ast_grep`, or targeted grep. Eight reads require a
+`repo_map`, `repo_symbols`, `ast_grep`, or targeted grep. Eight reads recommend a
 checkpoint. This resource history survives mutations, while relevant semantic
 navigation resets its pressure, and retained intervals are bounded.
 
@@ -47,52 +48,21 @@ workspace mutation breaks the consecutive-failure streak.
 ## Checkpoint transition
 
 After 48 exploration tools without mutation or decisive validation, the host
-requires `progress_checkpoint` before another exploration, status, or waiting
-tool can execute. The checkpoint is bounded and structured:
+recommends `progress_checkpoint`. Facts, hypothesis, missing evidence, and a next
+decisive action make it useful for breaking an investigation loop. It remains
+fully visible, and malformed or repeated checkpoint submissions receive bounded
+corrections. A checkpoint does not gate other tools.
 
-- one to eight established facts;
-- one current hypothesis;
-- up to six missing pieces of evidence;
-- one next decisive action, classified as mutation, validation, or no-change
-  diagnosis.
+Counts, overlapping reads, and repeated validation produce advisory warnings.
+Neither the checkpoint threshold nor the session tool count removes tools from
+the provider-visible list or blocks a new diagnostic action. The host warns once
+at 400 calls; the shared completion controller bounds automatic repair turns.
 
-Because the gate can make this tool the only permitted exploration transition,
-`progress_checkpoint` is never deferred: its full schema remains in the
-provider-visible tool set. Container descriptions explicitly require JSON
-arrays for `facts` and `missing_evidence`. Calls that still misshape a field are
-blocked before the checkpoint executor and receive the structured correction
-defined by [tool-call shape enforcement](tool-calling.md).
-
-An accepted checkpoint resets the exploration tranche and re-enables exploration.
-Acceptance also requires progress across checkpoints: the host remembers the
-mutation-plus-validation total each accepted checkpoint observed, and rejects
-the third consecutive checkpoint filed without a mutation or decisive validation
-in between. A rejected checkpoint leaves the gate closed, so restated
-checkpoints cannot reset the counters forever; the agent must run a mutation, a
-decisive validation, or ask the user a question instead.
-Submitting the same checkpoint again on unchanged state is rejected. Mutation
-or validation clears the gate directly, so the guard cannot trap a decisive
-action behind its own checkpoint. On the next reasoning step, the host removes
-the statically blocked exploration and waiting tools from the provider-visible
-list, including `tool_search`. `progress_checkpoint` remains fully visible,
-while mutation tools and argument-dependent `bash` remain available for a
-decisive mutation or validation. The pre-tool hook remains the enforcement
-backstop for a stale or provider-invented call. A final answer needs no tool, so
-the agent can still report a complete read-only diagnosis instead of
-manufacturing a change.
-
-After an equivalent failure warning, the pre-tool gate rejects another call
-through the same tool, and the next provider-visible tool list omits that tool,
-until the agent takes a different tool/action or submits `progress_checkpoint`.
-A failure-recovery checkpoint is accepted even when the long-exploration
-checkpoint is not active. This makes the transition enforceable without
-replaying, suppressing, or changing the failed invocation.
-
-Session tool budget. The host warns once at 400 tool calls and blocks further
-exploration at 800. Mutations and decisive validations stay allowed past the
-budget, so recovery is never deadlocked; read-only work past that point belongs
-in a fresh session opened with a summary. The budget is a backstop behind the
-tranche and overlap gates, sized so ordinary sessions never notice it.
+After equivalent invocation, missing-command, wrong-path, or usage failures,
+the pre-tool gate rejects only an exact repeat of the latest failed action on
+unchanged state. A different tool or different arguments can recover directly.
+Mutation or an accepted recovery checkpoint clears that failure gate. No model
+family receives a different tool list.
 
 ## State and reset boundaries
 

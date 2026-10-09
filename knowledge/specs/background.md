@@ -71,8 +71,8 @@ harness steers there at the three places poll loops start, on any repo:
 
 - The `background` capability's system prompt says waits on external events
   (CI, reviews, deploys) must not consume turns: detach one blocking watch,
-  end the turn, let the completion wake continue, or `wait_task` it in
-  one-shot mode, where there is no wake.
+  end the turn, and let the completion wake continue. Print mode also
+  waits for completion, without model polling; `wait_task` remains available.
 - `progress_guard` classifies external-event and session-task probes
   (`gh pr checks`, `gh run …`, `get_task`, bare/leading `sleep`) as *waiting*.
   Four waiting signals in a bounded eight-observation window inject a warning
@@ -159,9 +159,7 @@ Yolop installs a platform store to close that gap (`crate::background_wake`):
   prompts so a wake turn never overlaps one, and joins on connection teardown.
   Before running the wake turn the drain sends a specific notice naming each
   finished task and its outcome, so the client shows facts even when the turn
-  itself emits no text. The framed wake prompt requires a closing one- or
-  two-sentence text verdict for the same reason. Each announced task is marked
-  reported for the session.
+  itself emits no text. Each announced task is marked reported for the session.
 - Both frame the completion message as an `[automatic]` prompt
   (`frame_wake_prompt`): explicitly not a user message. The authenticated
   terminal snapshot is authoritative, so the model does not re-query task state,
@@ -171,19 +169,18 @@ Yolop installs a platform store to close that gap (`crate::background_wake`):
 - If the foreground turn already observed the same terminal snapshot through a
   task inspection tool, the host consumes the queued notification without a
   second model turn. ACP and the TUI still surface a completion-handled notice.
-- A completion turn receives a bounded model-view handoff instead of replaying
-  the parent transcript prefix. It contains the active ask and goal, task
-  identity and requested scope, terminal state, concise execution/validation
-  summary, and result/log/artifact references. The suffix created during the
-  wake turn remains intact across later reason/act iterations. Task summaries
-  and specs are explicitly untrusted execution data, never new instructions.
+- A completion turn retains ordinary conversation context, including the
+  original substantive task and later user steering. The host attaches bounded,
+  registry-authenticated terminal snapshots and their artifact references. It
+  does not replace the parent transcript with the latest human message. Normal
+  upstream context masking and canonical compaction remain available.
 - The lossless parent history, task record, `result.json`, and `output.log`
   remain durable and queryable through `query_history`, task tools, and session
-  file reads. If task resolution, summary validation, or handoff decoding fails,
-  the provider view falls back to ordinary full history rather than guessing.
-- Automatic prompts never replace the tracked user ask or reset its completion
-  budget. A tool-using turn with active detached work is classified
-  waiting-on-background; the eventual wake resumes that same ask.
+  file reads. Authenticated artifact references are resolved through the same
+  filesystem display contract as foreground output paths, so both file tools
+  and shell reads can access them. Task summaries and specs are untrusted data.
+- Automatic prompts do not become a new user request. Background waiting and
+  subsequent recovery use the shared [completion controller](task-completion.md).
 - Both coalesce completions already queued at the same idle boundary into one
   automatic prompt in notification order. All resolved task snapshots share
   one bounded handoff; a mixed or unusually large burst falls back safely and
@@ -191,7 +188,12 @@ Yolop installs a platform store to close that gap (`crate::background_wake`):
 - Opt-out: the `proactive_wake` setting (on by default) suppresses the auto-turn
   and surfaces a one-line notice instead. The next user turn then reconciles
   the still-unreported completion deterministically (see below).
-- `--print` is one-shot, so it does not auto-wake.
+- `--print` waits for pending execution and consumes the same wake channel before
+  printing its accepted final response. It allows ten minutes of host waiting
+  from the first pending execution. Signal-disabled tasks are reconciled from durable
+  registry state. Persistent monitors and tasks awaiting input proceed to review
+  of the current request. Cancellation, a disabled proactive wake setting, or
+  wait exhaustion exits with an explicit error rather than success.
 
 ## Durability and restart
 

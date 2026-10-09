@@ -18,7 +18,6 @@ use everruns_core::Event;
 use everruns_core::InputMessage;
 use everruns_core::Tool;
 use everruns_core::command::ExecuteCommandRequest;
-use everruns_core::host::InProcessRuntime;
 use serde_json::Value;
 use tokio::sync::{broadcast, mpsc, oneshot};
 
@@ -60,21 +59,16 @@ impl Session {
         Self { handles, model }
     }
 
+    pub(crate) fn handles(&self) -> &RuntimeHandles {
+        &self.handles
+    }
+
     pub fn session_id(&self) -> SessionId {
         self.handles.session_id
     }
 
-    /// Runtime handle for host-owned services (classifier guard checks).
-    pub(crate) fn runtime(&self) -> &Arc<InProcessRuntime> {
-        &self.handles.runtime
-    }
-
     pub(crate) fn report_herdr_state(&self, state: crate::capabilities::herdr::HerdrState) {
         self.handles.report_herdr_state(state);
-    }
-
-    pub(crate) async fn turn_tokens(&self, turn_id: everruns_contracts::typed_id::TurnId) -> u64 {
-        self.handles.turn_tokens(turn_id).await
     }
 
     /// Re-read the merged MCP server config and swap it into the live session

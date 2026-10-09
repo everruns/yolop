@@ -76,7 +76,7 @@ command, an overlay confirmation, or a next-run-only settings write fail this ba
 | Hooks, configuration | `yolop config hooks` (attached CLI) | hooks control route |
 | Model selection and model-list edits | `yolop config model` / `yolop config models` | `/setup`, `yolop-config` skill |
 | Checkpoint restore | `manage_checkpoint` | `/undo`, `/redo`, `/rewind` |
-| Any slash command without a dedicated tool or CLI (`/background`, `/goal`, plus the terminal ones in the TUI) | `run_command` (every host) | the slash commands themselves |
+| Any slash command without a dedicated tool or CLI (`/background`, plus the terminal ones in the TUI) | `run_command` (every host) | the slash commands themselves |
 
 Notes:
 
@@ -118,7 +118,7 @@ Notes:
 The `management` preset in `evals/harness_basic` exercises natural-language
 configuration and administration requests. It covers schema-backed configuration,
 model catalogs, profiles, live model selection, authentication, attached resource
-inventory, registry-only help, goal, and background actions, plus direct checkpoint
+inventory, registry-only help and background actions, plus direct checkpoint
 management.
 Checks match structured tool names and arguments, so invoking Bash or
 `run_command` with the wrong operation does not count as adoption. Mutating cases

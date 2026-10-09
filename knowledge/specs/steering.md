@@ -24,8 +24,8 @@ add context or redirect the agent without first cancelling useful work.
   the local-runtime equivalent of Everruns consuming queued user messages at a
   safe iteration boundary; messages are never injected into an in-flight model
   call or tool execution.
-- Queued steering takes priority over `/goal` continuation and user-ask
-  evaluation. Those post-turn actions run only after the steering queue drains,
+- Queued steering takes priority over automatic continuation and completion
+  review. Those post-turn actions run only after the steering queue drains,
   so a new instruction is never evaluated against the preceding response.
 - Pressing `Esc` twice cancels only the active turn. Queued messages remain and
   begin delivery when cancellation settles.
