@@ -12137,6 +12137,12 @@ flowchart TD
             selected_style,
             "click should paint the selected row before confirming"
         );
+        let theme = fullscreen::yolop_theme();
+        assert_eq!(selected_style.0, theme.accent);
+        assert_eq!(selected_style.1, theme.surface);
+        assert!(selected_style.2.contains(Modifier::BOLD));
+        assert_eq!(clicked_style.0, theme.muted);
+        assert_eq!(clicked_style.1, theme.surface);
         assert!(
             app.lines
                 .iter()
