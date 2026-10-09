@@ -2126,6 +2126,9 @@ mod tests {
                 "Codex stream error: Transport error: error decoding response body".to_string(),
             )),
             SimTurn::Assistant("recovered verdict".to_string()),
+            SimTurn::Assistant(
+                r#"{"state":"achieved","reason":"marker written once and reported"}"#.into(),
+            ),
         ])
         .with_message_capture(captured.clone())
         .with_on_exhausted(OnExhausted::Error);
@@ -2145,7 +2148,11 @@ mod tests {
         assert!(run.assistant_text().contains("recovered verdict"));
         assert_eq!(marker, "once\n", "settled shell work must not repeat");
         let messages = captured.lock().unwrap();
-        assert_eq!(messages.len(), 3, "one fresh continuation, no retry loop");
+        assert_eq!(
+            messages.len(),
+            4,
+            "one fresh continuation and one completion review, no retry loop"
+        );
         assert!(
             messages[2]
                 .iter()
