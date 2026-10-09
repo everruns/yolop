@@ -143,6 +143,27 @@ class AnalyzeTests(unittest.TestCase):
         self.assertTrue(any("correctness regressed" in failure for failure in failures))
         self.assertTrue(any("input_tokens regressed" in failure for failure in failures))
 
+    def _focused_with_failures(self, base, cand):
+        cases = control_cases()
+        sample = sorted(analyzer.FOCUSED)[0]
+        for base_failed, cand_failed in zip(base, cand):
+            cases += [
+                case(sample, "baseline", False, tools=4, failures=base_failed),
+                case(sample, "candidate", True, tools=2, failures=cand_failed),
+            ]
+        return cases
+
+    def test_stray_failed_tool_call_is_sampling_noise(self):
+        # Baseline 0,0,1 vs candidate 1,1,0: medians differ, behavior does not.
+        cases = self._focused_with_failures([0, 0, 1], [1, 1, 0])
+        _, failures, _ = analyzer.analyze({"cases": cases})
+        self.assertFalse(any("command/tool failures" in f for f in failures))
+
+    def test_systematic_tool_failures_still_regress(self):
+        cases = self._focused_with_failures([0, 0, 0], [1, 1, 1])
+        _, failures, _ = analyzer.analyze({"cases": cases})
+        self.assertTrue(any("command/tool failures" in f for f in failures))
+
     def test_rejects_equivalent_failure_warning_on_control(self):
         cases = focused_cases() + control_cases()
         for item in cases:
