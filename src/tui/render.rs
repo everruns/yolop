@@ -544,7 +544,13 @@ pub(crate) fn draw_setup_overlay(f: &mut Frame<'_>, area: Rect, app: &App) {
     }
     clear_rect(f.buffer_mut(), area);
     clear_rect(f.buffer_mut(), panel);
-    draw_panel_box(f, panel, Style::default().bg(PANEL_BG).fg(TEXT_PRIMARY));
+    draw_panel_box(
+        f,
+        panel,
+        Style::default()
+            .bg(super::fullscreen::yolop_theme().surface)
+            .fg(super::fullscreen::yolop_theme().text),
+    );
     let inner = Rect {
         x: panel.x.saturating_add(2),
         y: panel.y.saturating_add(1),
@@ -552,7 +558,12 @@ pub(crate) fn draw_setup_overlay(f: &mut Frame<'_>, area: Rect, app: &App) {
         height: panel.height.saturating_sub(2),
     };
     let (lines, cursor) = setup_overlay_content(app);
-    paint_panel_body(f, inner, lines, Style::default().bg(PANEL_BG));
+    paint_panel_body(
+        f,
+        inner,
+        lines,
+        Style::default().bg(super::fullscreen::yolop_theme().surface),
+    );
     if let Some((row, col)) = cursor
         && inner.height > 0
         && inner.width > 0
@@ -577,7 +588,7 @@ pub(crate) fn ask_overlay_content(ask: &PendingAsk) -> (Vec<Line<'static>>, (usi
         Line::from(Span::styled(
             "An extension is asking:",
             Style::default()
-                .fg(TEXT_PRIMARY)
+                .fg(super::fullscreen::yolop_theme().text)
                 .add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
@@ -591,7 +602,7 @@ pub(crate) fn ask_overlay_content(ask: &PendingAsk) -> (Vec<Line<'static>>, (usi
             let marker = if selected { "▶ " } else { "  " };
             let style = if selected {
                 Style::default()
-                    .fg(TEXT_PRIMARY)
+                    .fg(super::fullscreen::yolop_theme().text)
                     .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().add_modifier(Modifier::DIM)
@@ -646,7 +657,13 @@ pub(crate) fn draw_ask_overlay(f: &mut Frame<'_>, area: Rect, app: &App) {
     }
     clear_rect(f.buffer_mut(), area);
     clear_rect(f.buffer_mut(), panel);
-    draw_panel_box(f, panel, Style::default().bg(PANEL_BG).fg(TEXT_PRIMARY));
+    draw_panel_box(
+        f,
+        panel,
+        Style::default()
+            .bg(super::fullscreen::yolop_theme().surface)
+            .fg(super::fullscreen::yolop_theme().text),
+    );
     let inner = Rect {
         x: panel.x.saturating_add(2),
         y: panel.y.saturating_add(1),
@@ -654,7 +671,12 @@ pub(crate) fn draw_ask_overlay(f: &mut Frame<'_>, area: Rect, app: &App) {
         height: panel.height.saturating_sub(2),
     };
     let (lines, (cursor_row, cursor_col)) = ask_overlay_content(ask);
-    paint_panel_body(f, inner, lines, Style::default().bg(PANEL_BG));
+    paint_panel_body(
+        f,
+        inner,
+        lines,
+        Style::default().bg(super::fullscreen::yolop_theme().surface),
+    );
     // Park the cursor after the typed value.
     if inner.width > 0 && inner.height > cursor_row as u16 {
         f.set_cursor_position((
@@ -1008,10 +1030,13 @@ pub(crate) fn setup_overlay_content(app: &App) -> (Vec<Line<'static>>, Option<(u
                 Span::styled(
                     "› ",
                     Style::default()
-                        .fg(ACCENT_BLUE)
+                        .fg(super::fullscreen::yolop_theme().accent)
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(value.clone(), Style::default().fg(TEXT_PRIMARY)),
+                Span::styled(
+                    value.clone(),
+                    Style::default().fg(super::fullscreen::yolop_theme().text),
+                ),
             ]));
             push_setup_error(&mut lines, error.as_deref());
             lines.push(setup_footer("Enter save · Esc back"));
@@ -1112,10 +1137,13 @@ pub(crate) fn setup_overlay_content(app: &App) -> (Vec<Line<'static>>, Option<(u
                 Span::styled(
                     "› ",
                     Style::default()
-                        .fg(ACCENT_BLUE)
+                        .fg(super::fullscreen::yolop_theme().accent)
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(masked, Style::default().fg(TEXT_PRIMARY)),
+                Span::styled(
+                    masked,
+                    Style::default().fg(super::fullscreen::yolop_theme().text),
+                ),
             ]));
             push_setup_error(&mut lines, error.as_deref());
             lines.push(setup_footer("Enter save · Esc back"));
@@ -1145,10 +1173,13 @@ pub(crate) fn setup_overlay_content(app: &App) -> (Vec<Line<'static>>, Option<(u
                     Span::styled(
                         "› ",
                         Style::default()
-                            .fg(ACCENT_BLUE)
+                            .fg(super::fullscreen::yolop_theme().accent)
                             .add_modifier(Modifier::BOLD),
                     ),
-                    Span::styled(value.clone(), Style::default().fg(TEXT_PRIMARY)),
+                    Span::styled(
+                        value.clone(),
+                        Style::default().fg(super::fullscreen::yolop_theme().text),
+                    ),
                 ]));
             } else {
                 if app.is_fetching_models(provider) {
@@ -1451,15 +1482,21 @@ pub(crate) fn setup_option_line(index: usize, label: &str, hint: &str) -> Line<'
     Line::from(vec![
         Span::styled(
             format!("{index}. "),
-            Style::default().fg(TEXT_MUTED).bg(PANEL_BG),
+            Style::default()
+                .fg(super::fullscreen::yolop_theme().muted)
+                .bg(super::fullscreen::yolop_theme().surface),
         ),
         Span::styled(
             format!("{label}{}", " ".repeat(pad)),
-            Style::default().fg(TEXT_PRIMARY).bg(PANEL_BG),
+            Style::default()
+                .fg(super::fullscreen::yolop_theme().text)
+                .bg(super::fullscreen::yolop_theme().surface),
         ),
         Span::styled(
             hint.to_string(),
-            Style::default().fg(TEXT_MUTED).bg(PANEL_BG),
+            Style::default()
+                .fg(super::fullscreen::yolop_theme().muted)
+                .bg(super::fullscreen::yolop_theme().surface),
         ),
     ])
 }
@@ -1468,8 +1505,8 @@ pub(crate) fn setup_title(text: &str) -> Line<'static> {
     Line::from(Span::styled(
         text.to_string(),
         Style::default()
-            .fg(TEXT_PRIMARY)
-            .bg(PANEL_BG)
+            .fg(super::fullscreen::yolop_theme().text)
+            .bg(super::fullscreen::yolop_theme().surface)
             .add_modifier(Modifier::BOLD),
     ))
 }
@@ -1477,21 +1514,27 @@ pub(crate) fn setup_title(text: &str) -> Line<'static> {
 pub(crate) fn setup_hint(text: &str) -> Line<'static> {
     Line::from(Span::styled(
         text.to_string(),
-        Style::default().fg(TEXT_MUTED).bg(PANEL_BG),
+        Style::default()
+            .fg(super::fullscreen::yolop_theme().muted)
+            .bg(super::fullscreen::yolop_theme().surface),
     ))
 }
 
 pub(crate) fn setup_divider(text: &str) -> Line<'static> {
     Line::from(Span::styled(
         text.to_string(),
-        Style::default().fg(ACCENT_BLUE).bg(PANEL_BG),
+        Style::default()
+            .fg(super::fullscreen::yolop_theme().accent)
+            .bg(super::fullscreen::yolop_theme().surface),
     ))
 }
 
 pub(crate) fn setup_footer(text: &str) -> Line<'static> {
     Line::from(Span::styled(
         text.to_string(),
-        Style::default().fg(TEXT_MUTED).bg(PANEL_BG),
+        Style::default()
+            .fg(super::fullscreen::yolop_theme().muted)
+            .bg(super::fullscreen::yolop_theme().surface),
     ))
 }
 
@@ -1499,25 +1542,31 @@ pub(crate) fn setup_row(selected: bool, index: usize, label: &str, hint: &str) -
     let marker = if selected { "›" } else { " " };
     let marker_style = if selected {
         Style::default()
-            .fg(ACCENT_BLUE)
-            .bg(PANEL_BG)
+            .fg(super::fullscreen::yolop_theme().accent)
+            .bg(super::fullscreen::yolop_theme().surface)
             .add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(TEXT_DIM).bg(PANEL_BG)
+        Style::default()
+            .fg(super::fullscreen::yolop_theme().muted)
+            .bg(super::fullscreen::yolop_theme().surface)
     };
     let label_style = if selected {
         Style::default()
-            .fg(Color::Rgb(135, 220, 205))
-            .bg(PANEL_BG)
+            .fg(super::fullscreen::yolop_theme().accent)
+            .bg(super::fullscreen::yolop_theme().surface)
             .add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(TEXT_PRIMARY).bg(PANEL_BG)
+        Style::default()
+            .fg(super::fullscreen::yolop_theme().text)
+            .bg(super::fullscreen::yolop_theme().surface)
     };
     Line::from(vec![
         Span::styled(format!("{marker} "), marker_style),
         Span::styled(
             format!("{index}. "),
-            Style::default().fg(TEXT_MUTED).bg(PANEL_BG),
+            Style::default()
+                .fg(super::fullscreen::yolop_theme().muted)
+                .bg(super::fullscreen::yolop_theme().surface),
         ),
         // Pad to a 28-col label column so hints align, but always keep at
         // least a 2-space gap: labels like "Use OPENAI_API_KEY from
@@ -1532,7 +1581,9 @@ pub(crate) fn setup_row(selected: bool, index: usize, label: &str, hint: &str) -
         ),
         Span::styled(
             hint.to_string(),
-            Style::default().fg(TEXT_MUTED).bg(PANEL_BG),
+            Style::default()
+                .fg(super::fullscreen::yolop_theme().muted)
+                .bg(super::fullscreen::yolop_theme().surface),
         ),
     ])
 }
@@ -1542,7 +1593,10 @@ pub(crate) fn push_setup_error(lines: &mut Vec<Line<'static>>, error: Option<&st
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             format!("error: {error}"),
-            Style::default().fg(Color::Rgb(220, 120, 90)).bg(PANEL_BG),
+            Style::default()
+                .fg(super::fullscreen::yolop_theme()
+                    .semantic_color(tuika::style::SemanticRole::Danger))
+                .bg(super::fullscreen::yolop_theme().surface),
         )));
     } else {
         lines.push(Line::from(""));

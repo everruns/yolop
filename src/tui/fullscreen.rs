@@ -427,8 +427,8 @@ fn panel_overlay(f: &mut Frame, area: Rect, content: Element, cursor: Option<(us
     if panel.width == 0 || panel.height == 0 {
         return;
     }
-    let boxed = Boxed::new(content).background(Style::default().bg(PANEL_BG).fg(TEXT_PRIMARY));
     let theme = yolop_theme();
+    let boxed = Boxed::new(content).background(Style::default().bg(theme.surface).fg(theme.text));
     let overlay = Overlay {
         area: panel,
         view: &boxed,
@@ -508,6 +508,30 @@ fn draw_ask_overlay(f: &mut Frame, area: Rect, app: &App) {
 #[cfg(test)]
 mod theme_tests {
     use super::*;
+
+    #[test]
+    fn modal_content_uses_active_palette() {
+        let theme = yolop_theme();
+        let title = render::setup_title("Models");
+        assert_eq!(title.spans[0].style.fg, Some(theme.text));
+        assert_eq!(title.spans[0].style.bg, Some(theme.surface));
+        let hint = render::setup_hint("Choose a model");
+        assert_eq!(hint.spans[0].style.fg, Some(theme.muted));
+        let option = render::setup_option_line(1, "model", "provider");
+        assert_eq!(option.spans[1].style.fg, Some(theme.text));
+        for span in &option.spans {
+            assert_eq!(span.style.bg, Some(theme.surface));
+        }
+        let selected = render::setup_row(true, 1, "model", "provider");
+        assert_eq!(selected.spans[0].style.fg, Some(theme.accent));
+        assert_eq!(selected.spans[2].style.fg, Some(theme.accent));
+        let mut errors = Vec::new();
+        render::push_setup_error(&mut errors, Some("failure"));
+        assert_eq!(
+            errors[1].spans[0].style.fg,
+            Some(theme.semantic_color(tuika::style::SemanticRole::Danger))
+        );
+    }
 
     #[test]
     fn resolve_theme_maps_yolop_and_presets() {
