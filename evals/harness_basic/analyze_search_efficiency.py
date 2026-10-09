@@ -265,9 +265,12 @@ def analyze_reports(reports: list[dict]) -> tuple[list[str], list[str], list[str
             medians[("candidate", metric)] = statistics.median(
                 value(case, metric) for case in candidate
             )
-        if medians[("candidate", "tool_calls_failed")] > medians[
-            ("baseline", "tool_calls_failed")
-        ]:
+        # Three live trials make a median of 0/1 failures a coin flip: one
+        # stray failed call in two trials flips it with identical behavior.
+        # Compare totals and tolerate one extra failed call as sampling noise.
+        base_failed = sum(value(case, "tool_calls_failed") for case in baseline)
+        cand_failed = sum(value(case, "tool_calls_failed") for case in candidate)
+        if cand_failed > base_failed + 1:
             failures.append(f"{sample}: candidate introduced command/tool failures")
         if sample in CONTROLS:
             if base_pass < 1 or cand_pass < 1:
