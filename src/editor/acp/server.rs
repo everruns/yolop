@@ -1858,7 +1858,7 @@ async fn completion_followup(
         .list(session.handles.session_id, None)
         .await
     {
-        Ok(tasks) => tasks.iter().any(|task| !task.state.is_terminal()),
+        Ok(tasks) => crate::session_state::task_completion::has_pending_execution(&tasks),
         Err(error) => {
             peer.session_update(
                 &session.acp_id,

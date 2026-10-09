@@ -21,8 +21,10 @@ as cancellable background work so input stays responsive. A new human submission
 supersedes a TUI review and dispatches host commands normally. ACP keeps cancellation
 armed through the review and all repair turns.
 
-Cancellation and provider failure stop automatic repairs. Any active detached
-task means waiting, including a tool-free status response. Other candidate final
+Cancellation and provider failure stop automatic repairs. Queued or running detached
+execution means waiting, including a tool-free status response. Persistent monitors
+and tasks awaiting outside input proceed to review of the current request, rather
+than forcing a wait for future events. Other candidate final
 answers receive a tool-free review by the session model, even when no tools ran.
 The review sees the original request, recent steering, transcript outcomes, and
 candidate final. It must respect authorized scope and completed analysis work;

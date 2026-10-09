@@ -4059,11 +4059,9 @@ impl App {
         self.completion_review = Some(CompletionReviewTask {
             worker: tokio::spawn(async move {
                 let outcome = async {
-                    let background = registry
-                        .list(handles.session_id, None)
-                        .await?
-                        .iter()
-                        .any(|task| !task.state.is_terminal());
+                    let background = crate::session_state::task_completion::has_pending_execution(
+                        &registry.list(handles.session_id, None).await?,
+                    );
                     controller.after_turn(&handles, &result, background).await
                 }
                 .await;

@@ -7,6 +7,19 @@ use everruns_core::{RuntimeMessage, RuntimeMessageRole};
 use std::time::{Duration, Instant};
 pub(crate) const CONTINUATION_TAG: &str = "automatic_task_continuation";
 pub(crate) const CONTINUATION_METADATA_KEY: &str = "yolop.task_continuation";
+
+pub(crate) fn has_pending_execution(tasks: &[everruns_core::SessionTask]) -> bool {
+    use everruns_core::session_task::{SessionTaskState, TASK_KIND_MONITOR};
+    // Monitors remain running between future checks. AwaitingInput requires
+    // outside action. Neither should prevent review of the current request.
+    tasks.iter().any(|task| {
+        task.kind != TASK_KIND_MONITOR
+            && matches!(
+                task.state,
+                SessionTaskState::Queued | SessionTaskState::Running
+            )
+    })
+}
 const MAX_REPAIR_TURNS: u32 = 3;
 const MAX_REPAIR_TOKENS: u64 = 256_000;
 const MAX_REPAIR_ELAPSED: Duration = Duration::from_secs(600);

@@ -2110,12 +2110,12 @@ async fn run_print_mode(
             }
             turn = collect_print_turn(&handles, &model, &prompt, input) => turn?,
         };
-        let background = task_registry
-            .list(handles.session_id, None)
-            .await
-            .context("cannot inspect pending background work")?
-            .iter()
-            .any(|task| !task.state.is_terminal());
+        let background = session_state::task_completion::has_pending_execution(
+            &task_registry
+                .list(handles.session_id, None)
+                .await
+                .context("cannot inspect pending background work")?,
+        );
         let decision = tokio::select! {
             biased;
             _ = tokio::signal::ctrl_c() => {
@@ -2229,15 +2229,16 @@ async fn wait_for_print_background(
         let message = tokio::select! {
             message = receiver.recv() => message.context("background wake channel closed")?,
             _ = poll.tick() => {
-                if registry.list(handles.session_id, None).await?
-                    .iter().any(|task| !task.state.is_terminal()) {
+                if session_state::task_completion::has_pending_execution(
+                    &registry.list(handles.session_id, None).await?,
+                ) {
                     continue;
                 }
                 match receiver.try_recv() {
                     Ok(message) => message,
                     Err(_) => return Ok(session_state::task_completion::tag_continuation(
                         everruns_core::message_retriever::InputMessage::user(
-                            "[automatic] Previously pending background tasks are now terminal. Inspect their durable results with list_tasks/get_task and continue the user's authorized work."
+                            "[automatic] Previously pending execution is no longer queued or running. Inspect durable task states and results with list_tasks/get_task and continue the user's authorized work. A task awaiting input may require outside action."
                         ),
                     )),
                 }

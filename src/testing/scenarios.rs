@@ -619,3 +619,61 @@ async fn print_does_not_report_success_for_known_unfinished_work() {
         assert!(error.to_string().contains(expected), "{error}");
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn print_reviews_monitors_and_input_requests_without_waiting_for_execution() {
+    use everruns_core::session_task::{CreateSessionTask, TASK_KIND_MONITOR, TaskWakePolicy};
+    for (kind, state, review, success) in [
+        (
+            TASK_KIND_MONITOR,
+            SessionTaskState::Running,
+            "achieved",
+            true,
+        ),
+        (
+            "subagent",
+            SessionTaskState::AwaitingInput,
+            "blocked",
+            false,
+        ),
+    ] {
+        let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (runtime, _workspace) = build_scripted_runtime(
+            LlmSimConfig::scripted(vec![
+                SimTurn::Assistant("Task setup is complete; its state is reported above.".into()),
+                SimTurn::Assistant(
+                    json!({"state":review,"reason":"task state reviewed"}).to_string(),
+                ),
+            ])
+            .with_on_exhausted(OnExhausted::Error)
+            .with_message_capture(captured.clone()),
+        )
+        .await;
+        runtime
+            .task_registry
+            .create(CreateSessionTask {
+                session_id: runtime.handles.session_id,
+                id: None,
+                kind: kind.into(),
+                display_name: "existing session task".into(),
+                spec: json!({}),
+                state,
+                links: Default::default(),
+                wake_policy: TaskWakePolicy::Silent,
+            })
+            .await
+            .unwrap();
+        let result = tokio::time::timeout(
+            Duration::from_secs(3),
+            crate::run_print_mode(runtime, "Report the configured task".into(), vec![], None),
+        )
+        .await
+        .expect("monitors and outside input must not cause an execution wait");
+        assert_eq!(result.is_ok(), success);
+        assert_eq!(
+            captured.lock().unwrap().len(),
+            2,
+            "candidate must be reviewed"
+        );
+    }
+}
