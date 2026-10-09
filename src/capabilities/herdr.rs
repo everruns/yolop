@@ -397,7 +397,7 @@ impl Capability for HerdrCapability {
     }
 
     fn dependencies(&self) -> Vec<&'static str> {
-        vec![everruns_integrations_filesystem::SESSION_FILE_SYSTEM_CAPABILITY_ID]
+        vec![everruns_integrations::filesystem::SESSION_FILE_SYSTEM_CAPABILITY_ID]
     }
 }
 
@@ -615,6 +615,7 @@ mod tests {
                     tool_call_count: Some(0),
                     llm_call_count: Some(1),
                     status: Some("completed".to_string()),
+                    stop_reason: None,
                 },
             ))
             .expect("send turn completed");

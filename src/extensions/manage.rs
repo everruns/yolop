@@ -2234,12 +2234,13 @@ mod tests {
     #[tokio::test]
     async fn scaffold_then_install_flow() {
         let tmp = tempfile::tempdir().unwrap();
-        let (cap, _settings, _ext_dir) = capability(tmp.path());
+        let workspace = tmp.path().canonicalize().unwrap();
+        let (cap, _settings, _ext_dir) = capability(&workspace);
         let tools = cap.management_tools();
         let get = |name: &str| tools.iter().find(|t| t.name() == name).unwrap();
 
         // Scaffold a hook extension into an explicit parent dir.
-        let parent = tmp.path().join("authored");
+        let parent = workspace.join("authored");
         let dir = match get("scaffold_extension")
             .execute(json!({
                 "name": "git-guard",

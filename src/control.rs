@@ -204,6 +204,10 @@ impl ControlResponse {
             ToolExecutionResult::Success(value)
             | ToolExecutionResult::SuccessWithImages { result: value, .. } => Self::success(value),
             ToolExecutionResult::ToolError(error) => Self::error(error),
+            ToolExecutionResult::PolicyOutcome(result) => match result.error {
+                Some(error) => Self::error(error),
+                None => Self::success(result.result.unwrap_or_default()),
+            },
             ToolExecutionResult::InternalError(_) => {
                 Self::error("administration failed internally")
             }

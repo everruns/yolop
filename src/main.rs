@@ -27,8 +27,7 @@ use anyhow::{Context, Result};
 
 // Force-link integration crates whose inventory registrations must survive
 // LTO/dead-code elimination when we register capabilities explicitly.
-extern crate everruns_integrations_daytona;
-extern crate everruns_integrations_parallel;
+extern crate everruns_integrations;
 use clap::{ArgAction, Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 use config::SettingsStore;
 use config::mcp::{McpConfigScope, McpConfigStore};

@@ -105,10 +105,10 @@ use everruns_core::{ContentPart, RuntimeMessageRole};
 use everruns_core::{
     FileInfo, FileStat, GrepMatch, GrepOptions, GrepSearchResult, InitialFile, SessionFile,
 };
-use everruns_integrations_daytona::DaytonaCapability;
-use everruns_integrations_duckduckgo::DuckDuckGoCapability;
-use everruns_integrations_filesystem::{FileSystemCapability, SESSION_FILE_SYSTEM_CAPABILITY_ID};
-use everruns_integrations_web_fetch::{WEB_FETCH_CAPABILITY_ID, WebFetchCapability};
+use everruns_integrations::daytona::DaytonaCapability;
+use everruns_integrations::duckduckgo::DuckDuckGoCapability;
+use everruns_integrations::filesystem::{FileSystemCapability, SESSION_FILE_SYSTEM_CAPABILITY_ID};
+use everruns_integrations::web_fetch::{WEB_FETCH_CAPABILITY_ID, WebFetchCapability};
 use everruns_llmsim::LlmSimConfig;
 use everruns_llmsim::LlmSimRuntimeExt;
 use ignore::WalkBuilder;
@@ -255,6 +255,8 @@ fn mcp_connection_for(
         // from a secure store. Yolop is local-only and configures MCP servers
         // from its own config, so there is never a binding to inject.
         secret_bindings: Default::default(),
+        acted_as: Default::default(),
+        connect_in_chat: Default::default(),
     })
 }
 
@@ -8941,7 +8943,13 @@ mod tests {
         let workspace = tempfile::tempdir().expect("workspace");
         let session = tempfile::tempdir().expect("session");
         let global = tempfile::tempdir().expect("global");
-        let global_skill = global.path().join("release");
+        let workspace_root = workspace
+            .path()
+            .canonicalize()
+            .expect("canonical workspace");
+        let session_root = session.path().canonicalize().expect("canonical session");
+        let global_root = global.path().canonicalize().expect("canonical global");
+        let global_skill = global_root.join("release");
         std::fs::create_dir_all(&global_skill).expect("create global skill");
         std::fs::write(
             global_skill.join("SKILL.md"),
@@ -8950,27 +8958,22 @@ mod tests {
         .expect("write global skill");
 
         let dirs = SkillDirs {
-            workspace: workspace.path().join(".agents/skills"),
-            global: Some(global.path().to_path_buf()),
+            workspace: workspace_root.join(".agents/skills"),
+            global: Some(global_root.clone()),
             profile: None,
             system: None,
             environment: None,
         };
         let host = Arc::new(
             WorkspaceHost::new(
-                Arc::new(RwLock::new(workspace.path().to_path_buf())),
-                workspace.path().to_path_buf(),
+                Arc::new(RwLock::new(workspace_root.clone())),
+                workspace_root.clone(),
             )
             .expect("host"),
         );
-        let store = CodingCliSessionFileStore::new(
-            host,
-            session.path().to_path_buf(),
-            Some(global.path().to_path_buf()),
-            None,
-            None,
-        )
-        .expect("store");
+        let store =
+            CodingCliSessionFileStore::new(host, session_root, Some(global_root), None, None)
+                .expect("store");
         let session_id = SessionId::from_seed(71);
 
         let commands = user_invocable_commands(&dirs, &[], &store, session_id).await;

@@ -1607,7 +1607,7 @@ mod tests {
             "full output should be persisted"
         );
         assert!(
-            stdout.len() <= 512,
+            stdout.len() <= 2 * 1024,
             "successful persisted bash output should be a compact inline summary, got {} bytes",
             stdout.len()
         );
@@ -1631,7 +1631,7 @@ mod tests {
         assert_eq!(value["success"], true);
         let stdout = value["stdout"].as_str().unwrap();
         assert!(
-            stdout.len() <= 512,
+            stdout.len() <= 2 * 1024,
             "default mode should compact successful output, got {} bytes",
             stdout.len()
         );

@@ -613,6 +613,23 @@ fn shell_command_result(result: ToolExecutionResult) -> CommandResult {
             error_code: None,
             error_fields: None,
         },
+        ToolExecutionResult::PolicyOutcome(result) => match result.error {
+            Some(message) => CommandResult {
+                success: false,
+                message,
+                error_code: None,
+                error_fields: None,
+            },
+            None => {
+                let value = result.result.unwrap_or_default();
+                CommandResult {
+                    success: value["success"].as_bool().unwrap_or(true),
+                    message: format_shell_output(&value),
+                    error_code: None,
+                    error_fields: None,
+                }
+            }
+        },
         ToolExecutionResult::InternalError(_) => CommandResult {
             success: false,
             message: "shell command failed internally".to_string(),

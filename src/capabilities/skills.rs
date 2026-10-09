@@ -1281,14 +1281,15 @@ mod tests {
     #[tokio::test]
     async fn delete_skill_removes_workspace_skill() {
         let ws = tempfile::tempdir().unwrap();
-        install_skill(ws.path(), "ship");
-        let tool = delete_tool_with_dirs(ws.path(), None);
+        let scope = ws.path().canonicalize().unwrap();
+        install_skill(&scope, "ship");
+        let tool = delete_tool_with_dirs(&scope, None);
 
         let result = tool.execute(json!({ "name": "ship" })).await;
 
         assert!(result.is_success(), "result: {result:?}");
         assert!(
-            !ws.path().join("ship").exists(),
+            !scope.join("ship").exists(),
             "skill directory should be gone"
         );
     }
@@ -1297,14 +1298,16 @@ mod tests {
     async fn delete_skill_defaults_to_workspace_and_uninstalls_global_when_asked() {
         let ws = tempfile::tempdir().unwrap();
         let global = tempfile::tempdir().unwrap();
-        install_skill(ws.path(), "dup");
-        install_skill(global.path(), "dup");
-        let tool = delete_tool_with_dirs(ws.path(), Some(global.path()));
+        let workspace_scope = ws.path().canonicalize().unwrap();
+        let global_scope = global.path().canonicalize().unwrap();
+        install_skill(&workspace_scope, "dup");
+        install_skill(&global_scope, "dup");
+        let tool = delete_tool_with_dirs(&workspace_scope, Some(&global_scope));
 
         // Default scope is workspace.
         assert!(tool.execute(json!({ "name": "dup" })).await.is_success());
-        assert!(!ws.path().join("dup").exists());
-        assert!(global.path().join("dup").exists(), "global untouched");
+        assert!(!workspace_scope.join("dup").exists());
+        assert!(global_scope.join("dup").exists(), "global untouched");
 
         // Explicit global scope removes the global copy.
         assert!(
@@ -1312,7 +1315,7 @@ mod tests {
                 .await
                 .is_success()
         );
-        assert!(!global.path().join("dup").exists());
+        assert!(!global_scope.join("dup").exists());
     }
 
     #[tokio::test]

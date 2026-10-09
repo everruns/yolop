@@ -1,5 +1,5 @@
 use everruns_core::IntegrationPlugin;
-use everruns_integrations_parallel::CAPABILITY_PLUGINS;
+use everruns_integrations::parallel::CAPABILITY_PLUGINS;
 
 #[test]
 fn parallel_search_plugin_is_published() {

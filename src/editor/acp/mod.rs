@@ -1529,8 +1529,8 @@ mod tests {
         assert!(prompt_response.get("result").is_some());
         assert!(
             update_texts(&first_updates, "agent_message_chunk")
-                .iter()
-                .any(|text| text.contains("first answer")),
+                .concat()
+                .contains("first answer"),
             "expected first prompt response in updates: {first_updates:?}"
         );
 
@@ -1572,8 +1572,8 @@ mod tests {
         );
         assert!(
             update_texts(&replay_updates, "agent_message_chunk")
-                .iter()
-                .any(|text| text.contains("first answer")),
+                .concat()
+                .contains("first answer"),
             "expected replayed agent message, got: {replay_updates:?}"
         );
         let replayed_tool_updates = |kind: &str| {
@@ -1615,8 +1615,8 @@ mod tests {
         assert!(second_prompt.get("result").is_some());
         assert!(
             update_texts(&second_updates, "agent_message_chunk")
-                .iter()
-                .any(|text| text.contains("second answer")),
+                .concat()
+                .contains("second answer"),
             "expected loaded session to accept a new prompt, got: {second_updates:?}"
         );
 
@@ -2580,26 +2580,29 @@ mod tests {
         let (_prompt_response, prompt_updates) = collect_until_response_id(&mut reader, 3).await;
         assert!(
             update_texts(&prompt_updates, "agent_message_chunk")
-                .iter()
-                .any(|t| t.contains("spawned background bash")),
+                .concat()
+                .contains("spawned background bash"),
             "expected the user turn to run spawn_background, got: {prompt_updates:?}"
         );
 
         let woke = tokio::time::timeout(Duration::from_secs(20), async {
+            let mut text = String::new();
             loop {
                 let msg = next_json(&mut reader).await;
                 if msg.get("method").and_then(Value::as_str) != Some("session/update") {
                     continue;
                 }
-                if let Some(text) = msg
+                if let Some(chunk) = msg
                     .get("params")
                     .and_then(|p| p.get("update"))
                     .and_then(|u| u.get("content"))
                     .and_then(|c| c.get("text"))
                     .and_then(Value::as_str)
-                    && text.contains("reviewed spawn_background result")
                 {
-                    return true;
+                    text.push_str(chunk);
+                    if text.contains("reviewed spawn_background result") {
+                        return true;
+                    }
                 }
             }
         })
@@ -2623,10 +2626,11 @@ mod tests {
             .expect("one background run")
             .expect("read background run entry")
             .path();
+        let result = std::fs::read_to_string(run_dir.join("result.json"))
+            .expect("retrieve durable background result on demand");
         assert!(
-            std::fs::read_to_string(run_dir.join("output.log"))
-                .expect("retrieve full raw background log on demand")
-                .contains("decisive-validation")
+            result.contains("decisive-validation"),
+            "background result must retain the command output: {result}"
         );
         assert!(run_dir.join("result.json").is_file());
 
@@ -2741,9 +2745,11 @@ mod tests {
                 if msg.get("method").and_then(Value::as_str) != Some("session/update") {
                     continue;
                 }
-                let done = msg.to_string().contains("reviewed spawn_background result");
                 seen.push(msg);
-                if done {
+                if update_texts(&seen, "agent_message_chunk")
+                    .concat()
+                    .contains("reviewed spawn_background result")
+                {
                     return true;
                 }
             }
@@ -2753,7 +2759,7 @@ mod tests {
             woke.unwrap_or(false),
             "expected a proactive wake turn after spawn_background finished"
         );
-        let texts = update_texts(&seen, "agent_message_chunk").join("\n");
+        let texts = update_texts(&seen, "agent_message_chunk").concat();
         assert!(
             texts.contains("spawned background bash"),
             "expected the spawn turn text, got: {texts}"
@@ -2817,7 +2823,7 @@ mod tests {
         )
         .await;
         let (_, spawn_updates) = collect_until_response_id(&mut reader, 2).await;
-        let spawn_texts = update_texts(&spawn_updates, "agent_message_chunk").join("\n");
+        let spawn_texts = update_texts(&spawn_updates, "agent_message_chunk").concat();
         assert!(
             spawn_texts.contains("spawned background task"),
             "expected the spawn turn text, got: {spawn_texts}"
@@ -2858,7 +2864,7 @@ mod tests {
         )
         .await;
         let (_, second_updates) = collect_until_response_id(&mut reader, 3).await;
-        let second_texts = update_texts(&second_updates, "agent_message_chunk").join("\n");
+        let second_texts = update_texts(&second_updates, "agent_message_chunk").concat();
         assert!(
             second_texts.contains("nothing new"),
             "expected the second turn text, got: {second_texts}"
@@ -3037,17 +3043,14 @@ mod tests {
         let (_prompt_response, prompt_updates) = collect_until_response_id(&mut reader, 2).await;
         assert!(
             update_texts(&prompt_updates, "agent_message_chunk")
-                .iter()
-                .any(|text| text.contains("scheduled background bash")),
+                .concat()
+                .contains("scheduled background bash"),
             "expected the foreground turn to create the schedule, got: {prompt_updates:?}"
         );
 
         let messages = tokio::time::timeout(Duration::from_secs(25), async {
-            let mut messages = Vec::new();
-            while !messages
-                .iter()
-                .any(|text: &String| text.contains("scheduled run completed"))
-            {
+            let mut messages: Vec<String> = Vec::new();
+            while !messages.concat().contains("scheduled run completed") {
                 let msg = next_json(&mut reader).await;
                 if msg.get("method").and_then(Value::as_str) != Some("session/update") {
                     continue;
@@ -3067,16 +3070,13 @@ mod tests {
         .await
         .expect("scheduled run and its completion wake must arrive");
 
+        let messages = messages.concat();
         assert!(
-            messages
-                .iter()
-                .any(|text| text.contains("scheduled monitor fired and started run")),
+            messages.contains("scheduled monitor fired and started run"),
             "expected the due schedule to start a wake turn, got: {messages:?}"
         );
         assert!(
-            messages
-                .iter()
-                .any(|text| text.contains("scheduled run completed")),
+            messages.contains("scheduled run completed"),
             "expected the scheduled run completion to wake the session, got: {messages:?}"
         );
     }
