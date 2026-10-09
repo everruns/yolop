@@ -586,7 +586,7 @@ pub(crate) fn draw_setup_overlay(f: &mut Frame<'_>, area: Rect, app: &App) {
 pub(crate) fn ask_overlay_content(ask: &PendingAsk) -> (Vec<Line<'static>>, (usize, usize)) {
     let mut lines = vec![
         Line::from(Span::styled(
-            "An extension is asking:",
+            "A question needs your answer:",
             Style::default()
                 .fg(super::fullscreen::yolop_theme().text)
                 .add_modifier(Modifier::BOLD),
