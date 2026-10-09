@@ -223,6 +223,17 @@ tag = "ast-edit"
 targets = ["anthropic/claude-sonnet-5-5"]
 axes = { binary = ["candidate"], effort = ["default"], harness = ["default", "with-ast-edit"] }
 
+# EDIT-TOOLS-COMPARE: model-native edit shapes, default harness vs
+# native_edit_tools (Codex `apply_patch` for OpenAI models) on the edit samples.
+# Read pass rate next to `edit_tool_calls_failed` (retries) and
+# `apply_patch_tool_calls` (adoption). Claude is the control: the variant leaves
+# its tools unchanged, so its numbers should not move.
+#   doppler run -- mira run --preset edit-tools-compare --group-by harness
+[presets.edit-tools-compare]
+tag = "edit-tools"
+targets = ["openai/gpt-5.5", "anthropic/claude-sonnet-5-5"]
+axes = { binary = ["candidate"], effort = ["default"], harness = ["default", "native-edit-tools"] }
+
 # EFFORT-COMPARE — one model, out-of-the-box harness, across reasoning efforts.
 #   doppler run -- mira run --preset effort-compare --group-by effort
 [presets.effort-compare]

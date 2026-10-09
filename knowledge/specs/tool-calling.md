@@ -44,6 +44,13 @@ An invalid trusted schema is logged and skips the pre-execution layer for that
 tool rather than disabling execution globally; the executor remains the final
 boundary. This is a configuration defect, not a model-repair opportunity.
 
+## Tool shapes per model
+
+Validation and repair make a wrong call cheaper; a familiar tool shape makes it
+rarer. The opt-in [native edit tools](native-edit-tools.md) capability offers
+OpenAI models Codex's `apply_patch` beside `edit_file`, chosen per turn from the
+model, and is the A/B for whether a trained-in shape reduces edit retries.
+
 ## Provider boundary
 
 Yolop owns the Codex OAuth Responses driver and can emit its strictness flag

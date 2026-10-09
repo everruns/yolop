@@ -33,12 +33,12 @@ use crate::capabilities::{
     CoordinationStore, ENVIRONMENT_CONTEXT_CAPABILITY_ID, EnvironmentContextRegistry,
     HERDR_CAPABILITY_ID, HOOKS_CAPABILITY_ID, HerdrCapability, HooksCapability, LspCapability,
     MODEL_RUNTIME_CONTEXT_CAPABILITY_ID, MODELS_CAPABILITY_ID, ModelCliCapability,
-    ModelRuntimeContextCapability, ModelsCapability, PROGRESS_GUARD_CAPABILITY_ID,
-    ProgressGuardCapability, REPO_MAP_CAPABILITY_ID, RepoMapCapability,
-    SESSION_COORDINATION_CAPABILITY_ID, SESSIONS_CAPABILITY_ID, SOFT_APPROVAL_CAPABILITY_ID,
-    SessionCoordinationCapability, SessionsCapability, SetupCliCapability,
-    TOOL_ARGUMENT_VALIDATION_CAPABILITY_ID, ToolArgumentValidationCapability, WorktreeCapability,
-    coordination_project_id,
+    ModelRuntimeContextCapability, ModelsCapability, NativeEditToolsCapability,
+    PROGRESS_GUARD_CAPABILITY_ID, ProgressGuardCapability, REPO_MAP_CAPABILITY_ID,
+    RepoMapCapability, SESSION_COORDINATION_CAPABILITY_ID, SESSIONS_CAPABILITY_ID,
+    SOFT_APPROVAL_CAPABILITY_ID, SessionCoordinationCapability, SessionsCapability,
+    SetupCliCapability, TOOL_ARGUMENT_VALIDATION_CAPABILITY_ID, ToolArgumentValidationCapability,
+    WorktreeCapability, coordination_project_id,
 };
 use crate::config::capability_settings::{CapabilityCatalog, apply_capability_settings};
 use crate::config::mcp::McpConfigStore;
@@ -1188,6 +1188,10 @@ const YOLOP_NEVER_DEFER_TOOLS: &[&str] = &[
     "ast_grep",
     "write_todos",
     "write_session_title",
+    // Only present when `native_edit_tools` is enabled for an OpenAI model.
+    // The point of that capability is a shape the model already knows; a
+    // deferred stub would hide even its single `input` parameter.
+    "apply_patch",
     // Skill discovery and activation are core prompt-routing operations. Keep
     // their complete schemas eager even though the CLI duplicates them.
     "list_skills",
@@ -4122,6 +4126,7 @@ pub async fn build_with_options(
     //   * repo_map            - on-demand multi-language symbol map for broad codebase orientation
     //   * ast_grep            - read-only structural code search
     //   * ast_edit            - previewed ast-grep rewrites (opt-in)
+    //   * native_edit_tools   - model-native edit tools, apply_patch (opt-in)
     //   * infinity_context     — bounds the live context and adds query_history
     //   * compaction           — durable native replacement with safe fallbacks
     //   * stateless_todo_list  — write_todos tool for multi-step tasks
@@ -4178,6 +4183,11 @@ pub async fn build_with_options(
     // for the catalog but intentionally NOT part of the default harness; enable
     // with `[[capabilities]] ref = "ast_edit"` in settings.toml.
     capabilities.register(AstEditCapability::new(workspace_host.clone()));
+    // `native_edit_tools`: the edit-tool shape each model family was trained
+    // on (`apply_patch` for OpenAI GPT/Codex). Catalog-only like `ast_edit`:
+    // enable with `[[capabilities]] ref = "native_edit_tools"`. See
+    // knowledge/specs/native-edit-tools.md.
+    capabilities.register(NativeEditToolsCapability::new());
     // `lsp` — real language servers (diagnostics, go-to-def, references,
     // rename, symbols, code actions). Registered so it appears in the catalog
     // and can be switched on, but intentionally NOT part of the default
@@ -10354,6 +10364,37 @@ mod tests {
             ids.iter()
                 .any(|cap| cap.capability_id() == AST_EDIT_CAPABILITY_ID),
             "a [[capabilities]] override should enable ast_edit"
+        );
+    }
+
+    /// `native_edit_tools` is an A/B surface: catalog-registered, off by
+    /// default, and enabled by the same `[[capabilities]]` override as other
+    /// opt-in capabilities.
+    #[test]
+    fn coding_harness_does_not_enable_native_edit_tools_by_default() {
+        use crate::capabilities::apply_patch::NATIVE_EDIT_TOOLS_CAPABILITY_ID;
+
+        let ids = coding_harness_capabilities(false, None, &Settings::default());
+        assert!(
+            !ids.iter()
+                .any(|cap| cap.capability_id() == NATIVE_EDIT_TOOLS_CAPABILITY_ID),
+            "native_edit_tools must remain opt-in"
+        );
+
+        let mut settings = Settings::default();
+        settings
+            .capabilities
+            .push(crate::config::capability_settings::CapabilityOverride {
+                capability_ref: NATIVE_EDIT_TOOLS_CAPABILITY_ID.to_string(),
+                enabled: Some(true),
+                append: false,
+                config: serde_json::Value::Null,
+            });
+        let ids = coding_harness_capabilities(false, None, &settings);
+        assert!(
+            ids.iter()
+                .any(|cap| cap.capability_id() == NATIVE_EDIT_TOOLS_CAPABILITY_ID),
+            "a [[capabilities]] override should enable native_edit_tools"
         );
     }
 

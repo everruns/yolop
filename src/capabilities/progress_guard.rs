@@ -1352,7 +1352,9 @@ fn static_tool_class(name: &str) -> Option<ToolClass> {
     match name {
         "read_file" | "read_many_files" | "grep_files" | "repo_map" | "ast_grep"
         | "list_directory" | "stat_file" | "tool_search" => Some(ToolClass::Exploration),
-        "write_file" | "edit_file" | "delete_file" | "ast_edit" => Some(ToolClass::Mutation),
+        "write_file" | "edit_file" | "delete_file" | "ast_edit" | "apply_patch" => {
+            Some(ToolClass::Mutation)
+        }
         "get_task" | "list_tasks" => Some(ToolClass::Waiting),
         _ => None,
     }

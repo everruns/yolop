@@ -25,7 +25,7 @@ structural-rewrite tasks:
 | **binary** | `candidate` · `baseline` · `parallel-only` · `policy-only` · `dependency-baseline` | `BINARIES`; configured by the matching `HARNESS_BASIC_*_BIN` variable |
 | **target** (model) | Anthropic Sonnet 5.5, Opus 4.8, Sonnet 5; OpenAI GPT-5.5 and GPT-5.6 Terra; OpenRouter GLM 5.2 and Muse 1.3 Contributor; optional local model | `targets()` in `src/main.rs` |
 | **effort** | `default` (yolop's per-model default; no flag) · `low` · `high` | `EFFORTS` |
-| **harness** | `default` (out-of-the-box yolop) · `with-ast-edit` (opt-in `ast_edit` capability) · `no-progress-guard` · `no-ast-grep` · `no-tool-reveal` | `HARNESS_VARIANTS` |
+| **harness** | `default` (out-of-the-box yolop) · `with-ast-edit` (opt-in `ast_edit` capability) · `no-progress-guard` · `no-ast-grep` · `no-tool-reveal` · `native-edit-tools` (opt-in model-native edit tools) | `HARNESS_VARIANTS` |
 
 Every target gates on its provider key env var (`ANTHROPIC_API_KEY`,
 `OPENAI_API_KEY`, `OPENROUTER_API_KEY`) and is *skipped* (not failed) when the
@@ -40,12 +40,12 @@ search/refactor, and read-only code navigation.
 
 | Sample | Seed | Task | Passes when | Exercises |
 |--------|------|------|-------------|-----------|
-| `add-fn` [smoke] | Rust lib with empty `src/lib.rs` | Add `pub fn greet()` returning `"hello, yolop"` | `src/lib.rs` contains `fn greet` and `hello, yolop` | basic read → edit loop |
-| `fix-off-by-one` | `sum()` that drops the last element via `take(len-1)` | Fix it to sum every element | `src/lib.rs` keeps `fn sum`, no longer contains `take(` | bug comprehension, minimal in-place fix |
-| `rename-across-files` | Python: `fetcher.py` defines `fetch_records`; `app.py`/`report.py` import + call it | Rename to `load_records` everywhere | all 3 files contain the new name, none contains the old | project-wide search + consistent multi-file edit (where ast-grep/grep should shine) |
+| `add-fn` [smoke] [`edit-tools`] | Rust lib with empty `src/lib.rs` | Add `pub fn greet()` returning `"hello, yolop"` | `src/lib.rs` contains `fn greet` and `hello, yolop` | basic read → edit loop |
+| `fix-off-by-one` [`edit-tools`] | `sum()` that drops the last element via `take(len-1)` | Fix it to sum every element | `src/lib.rs` keeps `fn sum`, no longer contains `take(` | bug comprehension, minimal in-place fix |
+| `rename-across-files` [`edit-tools`] | Python: `fetcher.py` defines `fetch_records`; `app.py`/`report.py` import + call it | Rename to `load_records` everywhere | all 3 files contain the new name, none contains the old | project-wide search + consistent multi-file edit (where ast-grep/grep should shine) |
 | `find-constant` [smoke] | 3 Python files; `MAGIC_TIMEOUT_MS = 7321` buried in `settings/defaults.py` | Answer its value, number only | final response contains `7321` | read-only navigation/search, no edits |
-| `implement-todo` | JS `clamp()` stub that throws, with a TODO spec comment | Implement per the TODO, remove the comment | `utils.js` has `function clamp` + `module.exports`, no `TODO`/`not implemented` | spec-comment comprehension, stub completion |
-| `add-module` | Rust lib with one existing fn | Create `src/util.rs` with `pub fn double`, wire `pub mod util;` into lib.rs | both files contain the required items | new-file creation + wiring across files |
+| `implement-todo` [`edit-tools`] | JS `clamp()` stub that throws, with a TODO spec comment | Implement per the TODO, remove the comment | `utils.js` has `function clamp` + `module.exports`, no `TODO`/`not implemented` | spec-comment comprehension, stub completion |
+| `add-module` [`edit-tools`] | Rust lib with one existing fn | Create `src/util.rs` with `pub fn double`, wire `pub mod util;` into lib.rs | both files contain the required items | new-file creation + wiring across files |
 | `capability-disclosure-exact-reply` [`capability-disclosure`] | empty workdir | Return one exact token without tools | exact response and one model call | trivial first-request baseline |
 | `capability-disclosure-release-control` [`capability-disclosure`] | repository-local release skill | Activate release instructions without mutation | exact response, `activate_skill` called, no mutation tool called | deferred release/control discovery |
 | `progress-guard-sequential-read` [`progress-guard`] | 24 numbered notes; answer in `notes/24.txt` | Read notes sequentially and answer the final code | final response contains `KITE-7429` | long exploration streak that should trigger `progress_guard` |
@@ -104,7 +104,11 @@ so guardrail changes can be compared against the same binary with that
 capability removed. `no-tool-reveal` disables reveal gating, restoring the
 always-on `config` and `memory` prompt prose that the gate otherwise withholds
 until `tool_search` loads one of those tools, the A/B for whether deferring
-that prose costs task success.
+that prose costs task success. `native-edit-tools` enables the opt-in
+`native_edit_tools` capability, which gives OpenAI models Codex's
+`apply_patch` and leaves Claude models unchanged; the `edit-tools-compare`
+preset runs it on the `edit-tools` samples and reads `edit_tool_calls_failed`
+(edit retries) and `apply_patch_tool_calls` (adoption) next to pass rate.
 
 A lean-vs-verbose *prompt* comparison is not a harness variant: the verbose
 prompt is an earlier revision of yolop, so it is the `baseline` binary arm.
