@@ -188,10 +188,11 @@ Yolop installs a platform store to close that gap (`crate::background_wake`):
 - Opt-out: the `proactive_wake` setting (on by default) suppresses the auto-turn
   and surfaces a one-line notice instead. The next user turn then reconciles
   the still-unreported completion deterministically (see below).
-- `--print` waits for pending tasks and consumes the same wake channel before
+- `--print` waits for pending execution and consumes the same wake channel before
   printing its accepted final response. It allows ten minutes of host waiting
-  from the first pending task. Signal-disabled tasks are reconciled from durable
-  terminal registry state. Cancellation, a disabled proactive wake setting, or
+  from the first pending execution. Signal-disabled tasks are reconciled from durable
+  registry state. Persistent monitors and tasks awaiting input proceed to review
+  of the current request. Cancellation, a disabled proactive wake setting, or
   wait exhaustion exits with an explicit error rather than success.
 
 ## Durability and restart
