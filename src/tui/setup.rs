@@ -439,143 +439,88 @@ impl App {
         let mut models = match provider {
             "openai" => vec![
                 ModelOption {
-                    spec: Some("gpt-5.6-terra".to_string()),
-                    label: "gpt-5.6-terra".to_string(),
+                    spec: Some("gpt-6.1-sol".to_string()),
+                    label: "gpt-6.1-sol".to_string(),
                     hint: "frontier model for complex coding".to_string(),
                 },
                 ModelOption {
-                    spec: Some("gpt-5.6-luna".to_string()),
-                    label: "gpt-5.6-luna".to_string(),
-                    hint: "frontier model for complex coding".to_string(),
-                },
-                ModelOption {
-                    spec: Some("gpt-5.6-sol".to_string()),
-                    label: "gpt-5.6-sol".to_string(),
-                    hint: "frontier model for complex coding".to_string(),
-                },
-                ModelOption {
-                    spec: Some("gpt-5.5".to_string()),
-                    label: "gpt-5.5".to_string(),
+                    spec: Some("gpt-6-sol".to_string()),
+                    label: "gpt-6-sol".to_string(),
                     hint: "previous frontier model".to_string(),
                 },
                 ModelOption {
-                    spec: Some("gpt-5.4".to_string()),
-                    label: "gpt-5.4".to_string(),
-                    hint: "strong everyday model".to_string(),
-                },
-                ModelOption {
-                    spec: Some("gpt-5.4-mini".to_string()),
-                    label: "gpt-5.4-mini".to_string(),
+                    spec: Some("gpt-6-luna".to_string()),
+                    label: "gpt-6-luna".to_string(),
                     hint: "fast and cost-efficient".to_string(),
                 },
                 ModelOption {
-                    spec: Some("gpt-5.3-codex".to_string()),
-                    label: "gpt-5.3-codex".to_string(),
-                    hint: "coding-optimized model".to_string(),
-                },
-                ModelOption {
-                    spec: Some("gpt-5.2".to_string()),
-                    label: "gpt-5.2".to_string(),
-                    hint: "optimized for long-running agents".to_string(),
+                    spec: Some("gpt-6-astra".to_string()),
+                    label: "gpt-6-astra".to_string(),
+                    hint: "smallest, cheapest GPT-6".to_string(),
                 },
             ],
             "codex" => vec![
                 ModelOption {
-                    spec: Some("gpt-5.6-terra".to_string()),
-                    label: "gpt-5.6-terra".to_string(),
+                    spec: Some("gpt-6.1-sol".to_string()),
+                    label: "gpt-6.1-sol".to_string(),
                     hint: "frontier Codex model".to_string(),
-                },
-                ModelOption {
-                    spec: Some("gpt-5.6-luna".to_string()),
-                    label: "gpt-5.6-luna".to_string(),
-                    hint: "frontier Codex model".to_string(),
-                },
-                ModelOption {
-                    spec: Some("gpt-5.6-sol".to_string()),
-                    label: "gpt-5.6-sol".to_string(),
-                    hint: "frontier Codex model".to_string(),
-                },
-                ModelOption {
-                    spec: Some("gpt-5.5".to_string()),
-                    label: "gpt-5.5".to_string(),
-                    hint: "previous frontier Codex model".to_string(),
-                },
-                ModelOption {
-                    spec: Some("gpt-5.4".to_string()),
-                    label: "gpt-5.4".to_string(),
-                    hint: "strong everyday Codex model".to_string(),
-                },
-                ModelOption {
-                    spec: Some("gpt-5.4-mini".to_string()),
-                    label: "gpt-5.4-mini".to_string(),
-                    hint: "fast Codex model".to_string(),
-                },
-                ModelOption {
-                    spec: Some("gpt-5.3-codex".to_string()),
-                    label: "gpt-5.3-codex".to_string(),
-                    hint: "coding-optimized model".to_string(),
-                },
-                ModelOption {
-                    spec: Some("gpt-5.3-codex-spark".to_string()),
-                    label: "gpt-5.3-codex-spark".to_string(),
-                    hint: "fast coding-optimized model".to_string(),
                 },
             ],
             "anthropic" => vec![
                 ModelOption {
-                    spec: Some("claude-opus-4-8".to_string()),
-                    label: "claude-opus-4-8".to_string(),
+                    spec: Some("claude-opus-5-5".to_string()),
+                    label: "claude-opus-5-5".to_string(),
                     hint: "best default Claude model".to_string(),
                 },
                 ModelOption {
-                    spec: Some("claude-sonnet-4-6".to_string()),
-                    label: "claude-sonnet-4-6".to_string(),
+                    spec: Some("claude-sonnet-5-5".to_string()),
+                    label: "claude-sonnet-5-5".to_string(),
                     hint: "faster everyday Sonnet".to_string(),
                 },
                 ModelOption {
-                    spec: Some("claude-haiku-4-5".to_string()),
-                    label: "claude-haiku-4-5".to_string(),
+                    spec: Some("claude-haiku-5-5".to_string()),
+                    label: "claude-haiku-5-5".to_string(),
                     hint: "fast answers".to_string(),
                 },
                 ModelOption {
-                    spec: Some("claude-fable-5".to_string()),
-                    label: "claude-fable-5".to_string(),
+                    spec: Some("claude-fable-5-1".to_string()),
+                    label: "claude-fable-5-1".to_string(),
                     hint: "most powerful Claude model".to_string(),
                 },
             ],
             "meta" => vec![
                 ModelOption {
-                    spec: Some("muse-spark-1.2".to_string()),
-                    label: "muse-spark-1.2".to_string(),
+                    spec: Some("muse-spark-1.3".to_string()),
+                    label: "muse-spark-1.3".to_string(),
                     hint: "full Muse Spark model".to_string(),
                 },
                 ModelOption {
-                    spec: Some("muse-spark-1.2-contributor".to_string()),
-                    label: "muse-spark-1.2-contributor".to_string(),
+                    spec: Some("muse-spark-1.3-contributor".to_string()),
+                    label: "muse-spark-1.3-contributor".to_string(),
                     hint: "lower-cost contributor model".to_string(),
                 },
             ],
             "google" => vec![
                 ModelOption {
-                    spec: Some("gemini-2.5-flash".to_string()),
-                    label: "gemini-2.5-flash".to_string(),
+                    spec: Some("gemini-3.8-flash".to_string()),
+                    label: "gemini-3.8-flash".to_string(),
                     hint: "fast Gemini default".to_string(),
                 },
                 ModelOption {
-                    spec: Some("gemini-2.5-pro".to_string()),
-                    label: "gemini-2.5-pro".to_string(),
+                    spec: Some("gemini-3.1-pro-preview".to_string()),
+                    label: "gemini-3.1-pro-preview".to_string(),
                     hint: "more capable Gemini model".to_string(),
                 },
             ],
             "openrouter" => vec![
                 ModelOption {
-                    spec: Some("openai/gpt-5.6-sol".to_string()),
-                    label: "openai/gpt-5.6-sol".to_string(),
+                    spec: Some("openai/gpt-6.1-sol".to_string()),
+                    label: "openai/gpt-6.1-sol".to_string(),
                     hint: "frontier OpenAI model through OpenRouter".to_string(),
                 },
                 ModelOption {
-                    spec: Some("anthropic/claude-opus-4-8".to_string()),
-                    label: "anthropic/claude-opus-4-8".to_string(),
+                    spec: Some("anthropic/claude-opus-5-5".to_string()),
+                    label: "anthropic/claude-opus-5-5".to_string(),
                     hint: "most capable Claude through OpenRouter".to_string(),
                 },
                 ModelOption {
@@ -1967,16 +1912,16 @@ mod tests {
     use crate::config::{CodexAuth, Settings};
 
     #[test]
-    fn openai_and_codex_fallback_models_include_gpt_5_6_variants() {
+    fn openai_and_codex_fallback_models_lead_with_gpt_6_1_sol() {
         for provider in ["openai", "codex"] {
             let specs = App::fallback_model_options(provider)
                 .into_iter()
                 .filter_map(|model| model.spec)
                 .collect::<Vec<_>>();
             assert_eq!(
-                &specs[..3],
-                &["gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.6-sol"],
-                "{provider} selector should lead with all GPT-5.6 variants"
+                specs.first().map(String::as_str),
+                Some("gpt-6.1-sol"),
+                "{provider} selector should lead with GPT-6.1 Sol"
             );
         }
     }

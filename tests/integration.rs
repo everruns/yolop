@@ -2287,11 +2287,11 @@ fn tui_setup_selects_model_for_connected_provider_in_real_pty() {
         "credential step should be skipped for a connected provider: {before_pick}"
     );
 
-    // Quick-select the fifth preset (gpt-5.4).
-    tui.write_input(b"5");
+    // Quick-select the third preset (gpt-6-luna).
+    tui.write_input(b"3");
     assert!(
         tui.wait_for_output(
-            "setup complete: openai/gpt-5.4 none",
+            "setup complete: openai/gpt-6-luna medium",
             Duration::from_secs(3)
         ),
         "model selection should complete with the picked model: {}",
@@ -2305,7 +2305,7 @@ fn tui_setup_selects_model_for_connected_provider_in_real_pty() {
         "provider switch should persist: {settings}"
     );
     assert!(
-        !settings.contains("openai = \"gpt-5.4 none\""),
+        !settings.contains("openai = \"gpt-6-luna medium\""),
         "picked model should not persist before a successful turn: {settings}"
     );
 
@@ -3730,7 +3730,7 @@ fn config_model_entry_point_persists_show_set_and_clear() {
         String::from_utf8_lossy(&output.stdout)
     );
 
-    let output = run(&["config", "model", "set", "openai/gpt-5.6-luna"]);
+    let output = run(&["config", "model", "set", "openai/gpt-6-luna"]);
     assert!(
         output.status.success(),
         "stderr={}",
@@ -3744,7 +3744,7 @@ fn config_model_entry_point_persists_show_set_and_clear() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(
-        String::from_utf8_lossy(&output.stdout).contains("openai/gpt-5.6-luna"),
+        String::from_utf8_lossy(&output.stdout).contains("openai/gpt-6-luna"),
         "unexpected stdout: {}",
         String::from_utf8_lossy(&output.stdout)
     );
@@ -3752,7 +3752,7 @@ fn config_model_entry_point_persists_show_set_and_clear() {
     let settings =
         fs::read_to_string(config_dir.join("settings.toml")).expect("read persisted settings");
     assert!(settings.contains("default_provider = \"openai\""));
-    assert!(settings.contains("gpt-5.6-luna"));
+    assert!(settings.contains("gpt-6-luna"));
 
     let output = run(&["config", "models", "add", "custom", "qualified-model"]);
     assert!(

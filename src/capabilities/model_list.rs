@@ -703,7 +703,7 @@ mod tests {
         let message = error(
             &capability,
             ModelListAction::Move {
-                model: "openai/gpt-5.6-sol".to_string(),
+                model: "openai/gpt-6.1-sol".to_string(),
                 position: 99,
             },
         )
@@ -783,7 +783,7 @@ mod tests {
         let message = error(
             &capability,
             ModelListAction::Use {
-                model: "openai/gpt-5.6-sol".to_string(),
+                model: "openai/gpt-6.1-sol".to_string(),
             },
         )
         .await;
