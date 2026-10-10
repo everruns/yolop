@@ -10694,7 +10694,9 @@ mod tests {
     async fn cold_start_prompt_composition_is_measured_by_component() {
         // Auto mode teaches the model to initialize its session worktree before mutation.
         // Skill scopes now advertise physical directories instead of synthetic roots.
-        const BASELINE_PROMPT_BYTES: usize = 14_776;
+        // The +28 buys the repo_map truncation fix (add query and narrow path, do not
+        // just raise limit) for the repo-map-bounded duplicate_exploration gate.
+        const BASELINE_PROMPT_BYTES: usize = 14_804;
         // The +188 over the previous baseline buys control-route discovery for the
         // `mcp` and `connectors` capabilities (summaries plus read-only operations),
         // the CLI-only replacements for their removed model-facing tools.

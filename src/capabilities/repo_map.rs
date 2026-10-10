@@ -89,7 +89,7 @@ impl Capability for RepoMapCapability {
         Some(
             "<capability id=\"repo_map\">\n\
              If a `repo_map` or `repo_symbols` result is truncated, do not repeat the same \
-             call: add `query` or narrow `path`.\n\
+             call: add `query` and narrow `path`; do not just raise `limit`.\n\
              </capability>"
                 .to_string(),
         )
@@ -138,9 +138,9 @@ impl Tool for RepoMapTool {
     // map first, then read the targeted regions.
     fn description(&self) -> &str {
         "Build a compact, grouped multi-language symbol map for the workspace or a subpath. \
-         All arguments are optional; omit unused fields and omit `limit` for compact output. \
-         The limit defaults to 50 without `query` and 200 with it; `max_file_bytes` defaults \
-         to 524288. Use this for broad orientation before targeted grep/read. \
+         Prefer a queried map narrowed to a subpath for orientation; an unqueried workspace-root \
+         map truncates alphabetically on large workspaces. The limit defaults to 50 without `query` \
+         and 200 with it; `max_file_bytes` defaults to 524288. Use this for broad orientation before targeted grep/read. \
          Start here for unfamiliar code instead of paging through large files or \
          shelling out for a first look."
     }
@@ -363,7 +363,7 @@ fn truncation_metadata(report: &SymbolScanReport) -> Option<Value> {
     report.truncated.then(|| {
         json!({
             "reason": "symbol_limit",
-            "suggestion": "Do not repeat this call unchanged. Narrow with `query` or `path`; set an explicit `limit` only when the broader output is necessary."
+            "suggestion": "Do not repeat this call unchanged. Add `query` and narrow `path`; do not just raise `limit`."
         })
     })
 }
@@ -1505,8 +1505,8 @@ mod tests {
         };
         let description = tool.description();
 
-        assert!(description.contains("All arguments are optional"));
-        assert!(description.contains("omit `limit`"));
+        assert!(description.contains("Prefer a queried map narrowed"));
+        assert!(description.contains("truncates alphabetically"));
         assert!(description.contains("defaults to 50"));
     }
 
