@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
   "baseline": {
-    "git_commit": "3ad038fe3ee558b87e3e1a40a829a96e6d496b81",
-    "everruns_runtime_version": "0.41.0",
-    "description": "Re-pinned 2026-10-05 to green main commit 3ad038f (Everruns 0.41 migration, #811). The prior pin (4916488d, 2026-09-19) predated the Everruns 0.29 to 0.41 runtime moves and the shared-driver and tool-surface growth since, so the ordinary controls (add-fn, expected-diagnostic-failure-control) regressed tool calls, llm calls, input tokens and cost by more than 10% against an outdated architecture, failing the nightly on 2026-10-04 and 2026-10-05 with no correctness regression. Earlier history: the 2026-09-19 re-pin and the #643 grep_files path_pattern fix (a real bug caught by this monitor, fixed in code with runtime::tests::grep_tool_matches_directory_anchored_nested_glob_path_pattern) are recorded in git history of this file. Re-pin periodically to keep the ordinary-control gates comparing against current architecture; the focused search-efficiency cases this baseline also anchors remain valid regardless of the pin date."
+    "git_commit": "66f4e9ae340378871eca4c91e81dd836bed9f16b",
+    "everruns_runtime_version": "0.46.0",
+    "description": "Re-pinned 2026-10-10 to green main commit 66f4e9a (Everruns 0.46, #831). The prior pin (3ad038f, 2026-10-05) predated the structured ask_user tool (#830), the task-completion controller (#824) and the Everruns 0.41 to 0.46 moves, so every ordinary control grew input tokens and cost by more than 10% (find-constant 8520 to 10977) and the nightly failed on correctness-neutral drift. Earlier history: the 2026-10-05 and 2026-09-19 re-pins and the #643 grep_files path_pattern fix (a real bug caught by this monitor, fixed in code with runtime::tests::grep_tool_matches_directory_anchored_nested_glob_path_pattern) are recorded in git history of this file. Re-pin periodically to keep the ordinary-control gates comparing against current architecture; the focused search-efficiency cases this baseline also anchors remain valid regardless of the pin date."
   },
   "monitor": {
     "focused_preset": "search-efficiency",
