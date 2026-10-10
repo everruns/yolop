@@ -163,6 +163,13 @@ mod tests {
             // The driver must reload disk, rather than retaining its creation snapshot.
             auth.access_token = "current-settings-token".into();
             settings.set_codex_auth(auth).unwrap();
+            let mut call = LlmCallConfig::new("test-model");
+            // Real runtime calls always carry session and harness metadata.
+            call.metadata
+                .insert("session_id".into(), "session_test".into());
+            call.metadata.insert("app".into(), "yolop".into());
+            call.metadata
+                .insert("yolop_version".into(), env!("CARGO_PKG_VERSION").into());
             let request = std::thread::spawn(move || {
                 let mut request = server
                     .recv_timeout(std::time::Duration::from_secs(10))
@@ -186,6 +193,16 @@ mod tests {
                     assert!(account.is_none());
                 } else {
                     assert_eq!(account.unwrap().value.as_str(), "account_test");
+                    assert_eq!(
+                        request
+                            .headers()
+                            .iter()
+                            .find(|h| h.field.equiv("session_id"))
+                            .unwrap()
+                            .value
+                            .as_str(),
+                        "session_test"
+                    );
                     assert_eq!(
                         request
                             .headers()
@@ -215,11 +232,17 @@ mod tests {
                     "Tool error: progress_checkpoint rejected: no progress checkpoint is currently required"
                 );
                 let sse = "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"shared-ok\"}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"completed\",\"output\":[]}}\n\n";
-                request
-                    .respond(tiny_http::Response::from_string(sse).with_header(
+                let response = if body.get("metadata").is_some() {
+                    tiny_http::Response::from_string(
+                        r#"{"detail":"Unsupported parameter: metadata"}"#,
+                    )
+                    .with_status_code(400)
+                } else {
+                    tiny_http::Response::from_string(sse).with_header(
                         tiny_http::Header::from_bytes("Content-Type", "text/event-stream").unwrap(),
-                    ))
-                    .unwrap();
+                    )
+                };
+                request.respond(response).unwrap();
             });
             let events: Vec<_> = driver
                 .chat_completion_stream(
@@ -247,7 +270,7 @@ mod tests {
                             &Default::default(),
                         ),
                     ],
-                    &LlmCallConfig::new("test-model"),
+                    &call,
                 )
                 .await
                 .unwrap()

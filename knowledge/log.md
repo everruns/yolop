@@ -36,6 +36,12 @@ coordinator fails assignments whose worker vanished. Sessions re-exec through
 guidance toward the worker pool. See
 [session coordination](specs/session-coordination.md).
 
+## 2026-10-09, ChatGPT request-contract coverage
+
+ChatGPT route verification exercises the driver registry with real host
+metadata and strict Responses mocks. API-key live smoke does not establish
+ChatGPT sign-in coverage. See [ChatGPT sign-in](specs/chatgpt-sign-in.md).
+
 ## 2026-10-09, Structured user questions
 
 Registered upstream `ask_user` in the coding harness. TUI questions reuse the
