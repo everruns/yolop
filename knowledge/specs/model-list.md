@@ -38,7 +38,7 @@ Stored as `[[models]]` in `settings.toml` (`crate::config::model_list`):
 ```toml
 [[models]]
 provider = "openai"
-model = "gpt-5.6-sol"
+model = "gpt-6.1-sol"
 effort = "high"
 ```
 
@@ -100,7 +100,7 @@ providers is what the list is for.
 ### Service tiers are a setting, not entries
 
 GPT-6.1 Sol (everruns 0.33) leads the default menu and the OpenAI, Codex, and
-OpenRouter suggestions; the per-provider default model stays `gpt-5.6-sol`.
+OpenRouter suggestions; each provider defaults to its latest model (`gpt-6.1-sol` for OpenAI and Codex).
 Its faster tiers are not separate menu entries. OpenAI sells them as a
 `service_tier` on the same model id, and which tiers a model offers is upstream
 profile data that changes without a model rename: 6.1 Sol lists Flex, Standard,

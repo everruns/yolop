@@ -83,15 +83,15 @@ Manage the persistent model catalog and future-session default from a shell:
 yolop config models
 yolop config models add openrouter anthropic/claude-opus-4-8 --label "Opus (OpenRouter)"
 yolop config models move claude-opus-4-8 1
-yolop config models rm gpt-5.4-mini
+yolop config models rm gpt-6-astra
 yolop config model show
-yolop config model set gpt-5.6-sol
+yolop config model set gpt-6.1-sol
 yolop config model clear
 yolop config models reset          # back to the built-in default list
 ```
 
 It is stored as `[[models]]` in `settings.toml`, so it can also be edited by
-hand. Unset means the built-in default list, led by `gpt-5.6-sol`.
+hand. Unset means the built-in default list, led by `gpt-6.1-sol`.
 
 ## Keyboard shortcuts
 

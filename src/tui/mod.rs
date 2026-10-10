@@ -11497,7 +11497,7 @@ flowchart TD
         ));
         // The curated list must remain usable after a failed fetch.
         let options = app.model_options("openai");
-        assert_eq!(options[0].spec.as_deref(), Some("gpt-5.6-terra"));
+        assert_eq!(options[0].spec.as_deref(), Some("gpt-6.1-sol"));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -11521,7 +11521,7 @@ flowchart TD
             "connected provider should skip the credential step: {:?}",
             app.setup
         );
-        assert_eq!(app.model.provider_label(), "openai/gpt-5.6-sol medium");
+        assert_eq!(app.model.provider_label(), "openai/gpt-6.1-sol medium");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -11545,7 +11545,7 @@ flowchart TD
             app.setup
         );
 
-        // Navigate to the third preset (gpt-5.4) and confirm it.
+        // Navigate to the third preset (gpt-6-luna) and confirm it.
         app.handle_setup_key(KeyEvent::new(KeyCode::Down, KeyModifiers::empty()))
             .await;
         app.handle_setup_key(KeyEvent::new(KeyCode::Down, KeyModifiers::empty()))
@@ -11554,11 +11554,11 @@ flowchart TD
             .await;
 
         assert!(app.setup.is_none(), "wizard should finish: {:?}", app.setup);
-        assert_eq!(app.model.provider_label(), "openai/gpt-5.4 none");
+        assert_eq!(app.model.provider_label(), "openai/gpt-6-luna medium");
         assert!(
             app.lines
                 .iter()
-                .any(|line| line.text == "setup complete: openai/gpt-5.4 none"),
+                .any(|line| line.text == "setup complete: openai/gpt-6-luna medium"),
             "completion line should report the picked model: {:?}",
             app.lines
         );
@@ -11822,7 +11822,7 @@ flowchart TD
         app.lines.clear();
         app.dispatch_command_for_test("model gpt-5.4 high").await;
 
-        assert_eq!(app.model.provider_label(), "openai/gpt-5.6-sol medium");
+        assert_eq!(app.model.provider_label(), "openai/gpt-6.1-sol medium");
         assert!(matches!(
             app.setup,
             Some(SetupStep::PickModel {

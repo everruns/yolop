@@ -1131,16 +1131,16 @@ impl SessionFileSystem for CodingCliSessionFileStore {
 
 // ---------- provider selection ----------
 
-const DEFAULT_OPENAI_MODEL: &str = "gpt-5.6-sol";
-const DEFAULT_CODEX_MODEL: &str = "gpt-5.6-sol";
-const DEFAULT_ANTHROPIC_MODEL: &str = "claude-opus-5";
-const DEFAULT_META_MODEL: &str = "muse-spark-1.2";
-const DEFAULT_GOOGLE_MODEL: &str = "gemini-2.5-flash";
+const DEFAULT_OPENAI_MODEL: &str = "gpt-6.1-sol";
+const DEFAULT_CODEX_MODEL: &str = "gpt-6.1-sol";
+const DEFAULT_ANTHROPIC_MODEL: &str = "claude-opus-5-5";
+const DEFAULT_META_MODEL: &str = "muse-spark-1.3";
+const DEFAULT_GOOGLE_MODEL: &str = "gemini-3.8-flash";
 // Gemini exposes an OpenAI-compatible surface at this base URL, driven through
 // `everruns_drivers::openai`. (OpenRouter has its own first-class driver since
 // everruns 0.10 — see `model_with_provider`.)
 const DEFAULT_GOOGLE_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta/openai";
-const DEFAULT_OPENROUTER_MODEL: &str = "openai/gpt-5.6-sol";
+const DEFAULT_OPENROUTER_MODEL: &str = "openai/gpt-6.1-sol";
 const DEFAULT_OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
 const DEFAULT_OLLAMA_MODEL: &str = "llama3.2";
 const DEFAULT_OLLAMA_BASE_URL: &str = "http://127.0.0.1:11434/v1";
@@ -1887,8 +1887,19 @@ impl ProviderChoice {
                 "claude-opus-5-5[1m]",
                 "claude-opus-4-8[1m]",
             ],
-            "meta" => &["muse-spark-1.2", "muse-spark-1.2-contributor"],
-            "google" => &["gemini-2.5-flash", "gemini-2.5-pro"],
+            "meta" => &[
+                "muse-spark-1.3",
+                "muse-spark-1.3-contributor",
+                "muse-spark-1.2",
+                "muse-spark-1.2-contributor",
+            ],
+            "google" => &[
+                "gemini-3.8-flash",
+                "gemini-3.7-flash",
+                "gemini-3.1-pro-preview",
+                "gemini-2.5-flash",
+                "gemini-2.5-pro",
+            ],
             "openrouter" => &[
                 "openai/gpt-6.1-sol",
                 "openai/gpt-6-sol",
@@ -7858,19 +7869,19 @@ mod tests {
     #[test]
     fn default_for_provider_name_returns_provider_default_model() {
         let openai = ProviderChoice::default_for_provider_name("openai").unwrap();
-        assert!(openai.label().starts_with("openai/gpt-5.6-sol"));
+        assert!(openai.label().starts_with("openai/gpt-6.1-sol"));
 
         let codex = ProviderChoice::default_for_provider_name("codex").unwrap();
-        assert!(codex.label().starts_with("codex/gpt-5.6-sol"));
+        assert!(codex.label().starts_with("codex/gpt-6.1-sol"));
 
         let anthropic = ProviderChoice::default_for_provider_name("anthropic").unwrap();
-        assert_eq!(anthropic.label(), "anthropic/claude-opus-5 high");
+        assert_eq!(anthropic.label(), "anthropic/claude-opus-5-5 high");
 
         let meta = ProviderChoice::default_for_provider_name("meta").unwrap();
-        assert_eq!(meta.label(), "meta/muse-spark-1.2");
+        assert_eq!(meta.label(), "meta/muse-spark-1.3");
 
         let google = ProviderChoice::default_for_provider_name("google").unwrap();
-        assert_eq!(google.label(), "google/gemini-2.5-flash");
+        assert_eq!(google.label(), "google/gemini-3.8-flash");
 
         let sim = ProviderChoice::default_for_provider_name("llmsim").unwrap();
         assert_eq!(sim.label(), "llmsim/llmsim-yolop");
@@ -8309,7 +8320,7 @@ mod tests {
             std::env::remove_var("MODEL_API_KEY");
         }
 
-        assert_eq!(model.model, "muse-spark-1.2");
+        assert_eq!(model.model, "muse-spark-1.3");
         assert_eq!(model.provider_type, DriverId::Meta);
         assert_eq!(model.api_key.as_deref(), Some("test-meta-key"));
         assert_eq!(
@@ -8323,7 +8334,12 @@ mod tests {
         let suggestions = ProviderChoice::model_suggestions_for_provider("meta");
         assert_eq!(
             suggestions,
-            &["muse-spark-1.2", "muse-spark-1.2-contributor"]
+            &[
+                "muse-spark-1.3",
+                "muse-spark-1.3-contributor",
+                "muse-spark-1.2",
+                "muse-spark-1.2-contributor"
+            ]
         );
 
         for model in suggestions {
