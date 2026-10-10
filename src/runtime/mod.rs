@@ -2709,6 +2709,7 @@ fn default_coding_harness_capabilities(client_commands: bool) -> Vec<CapabilityR
     // `run_command` reaches whatever this host's registry holds, so it is on for
     // every host, not just the terminal.
     caps.push(CapabilityRef::new(AGENT_COMMANDS_CAPABILITY_ID));
+    caps.push(CapabilityRef::new("ask_user"));
     caps.extend([
         CapabilityRef::with_config(
             SESSION_COORDINATION_CAPABILITY_ID,
@@ -3595,6 +3596,8 @@ pub struct BuildOptions {
     /// registered and enforces the current approval level; hosts without an
     /// interactive prompt (the TUI, `--print`) leave it `None`.
     pub tool_approver: Option<Arc<dyn crate::capabilities::ToolApprover>>,
+    /// Override structured questions for a host with its own answer transport.
+    pub ask_user_responder: Option<Arc<dyn everruns_core::builtins::ask_user::AskUser>>,
     /// Override the global extensions directory for this build. Tests inject a
     /// temp dir instead of setting `YOLOP_EXTENSIONS_DIR`, which is process-wide
     /// and would hand another concurrently building session these packages.
@@ -3630,6 +3633,7 @@ impl Default for BuildOptions {
             acp_allow_hosted_provider_fallback: true,
             client_mcp_servers: ScopedMcpServers::new(),
             tool_approver: None,
+            ask_user_responder: None,
             provider_stall_timeout: None,
             provider_retry_config: None,
             extra_environment_context: Vec::new(),
@@ -4226,6 +4230,18 @@ pub async fn build_with_options(
     // App, which prompts the user and answers via a per-request oneshot. Only
     // wired for the TUI; `None` elsewhere refuses `ui/ask`.
     let (ask_tx, ask_rx) = mpsc::unbounded_channel::<crate::tui::host_ui::AskRequest>();
+    let responder: Arc<dyn everruns_core::builtins::ask_user::AskUser> = options
+        .ask_user_responder
+        .clone()
+        .unwrap_or_else(|| match options.client_ui {
+            ClientUiContext::Acp => Arc::new(crate::capabilities::ask_user::AcpResponder),
+            _ => Arc::new(crate::capabilities::ask_user::HostResponder(
+                matches!(options.client_ui, ClientUiContext::Tui).then(|| ask_tx.clone()),
+            )),
+        });
+    capabilities.register(everruns_core::builtins::ask_user::AskUserCapability::new(
+        responder,
+    ));
     let ask_sink: Option<crate::extensions::AskSink> =
         matches!(options.client_ui, ClientUiContext::Tui).then(|| {
             let ask_tx = ask_tx.clone();
@@ -5223,6 +5239,19 @@ mod tests {
             CodingCliSessionFileStore::new(host, session.to_path_buf(), None, None, None)
                 .expect("store"),
         )
+    }
+
+    #[test]
+    fn ask_user_is_enabled_in_all_default_hosts() {
+        for client_commands in [false, true] {
+            let caps = default_coding_harness_capabilities(client_commands);
+            assert_eq!(
+                caps.iter()
+                    .filter(|c| c.capability_id() == "ask_user")
+                    .count(),
+                1
+            );
+        }
     }
 
     #[test]
@@ -10701,11 +10730,21 @@ mod tests {
             .await
             .expect("assemble cold-start context");
 
-        let prompt_bytes = context.runtime_agent.system_prompt.len();
+        // The newly enabled eager ask_user surface is accounted for separately;
+        // retain the historical budget for all pre-existing tools and guidance.
+        let ask_capability = everruns_core::builtins::AskUserCapability::new(Arc::new(
+            crate::capabilities::ask_user::HostResponder(None),
+        ));
+        let ask_prompt_bytes = everruns_core::Capability::system_prompt_addition(&ask_capability)
+            .unwrap()
+            .len();
+        // Capability sections are joined with a five-byte separator.
+        let prompt_bytes = context.runtime_agent.system_prompt.len() - ask_prompt_bytes - 5;
         let schema_bytes: usize = context
             .runtime_agent
             .tools
             .iter()
+            .filter(|tool| tool.name() != "ask_user")
             .map(|tool| {
                 serde_json::to_vec(tool.parameters())
                     .expect("serialize schema")
@@ -10716,6 +10755,7 @@ mod tests {
             .runtime_agent
             .tools
             .iter()
+            .filter(|tool| tool.name() != "ask_user")
             .map(|tool| {
                 serde_json::to_vec(&serde_json::json!({
                     "name": tool.name(),

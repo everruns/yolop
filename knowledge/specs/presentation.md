@@ -197,3 +197,18 @@ Required coverage examples:
 - [`knowledge/specs/shipping.md`](./shipping.md), required validation before merge.
 - [`knowledge/specs/maintenance.md`](./maintenance.md), drift checks across user-facing
   surfaces.
+
+## Structured questions
+
+The runtime enables the core `ask_user` capability. The TUI presents each
+question through the host prompt dialog, including option descriptions and
+default markers. Closed single-choice questions use a selector. Multiple
+choices use comma-separated option numbers, and open choices accept
+`other:` followed by text. Text questions accept a free-form answer. Escape
+cancels the batch. Secret questions are declined before any input is collected,
+because this host does not integrate encrypted session-secret storage.
+Timed-out or cancelled prompts are dismissed when their reply channel closes.
+
+`--print` applies core unattended defaults immediately: declared defaults,
+or the first option when none is declared. Batches containing text or secret
+questions are declined. No stdin read or client-result wait is introduced.

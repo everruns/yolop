@@ -170,6 +170,7 @@ impl RuntimeFactory for ConfigRuntimeFactory {
             self.settings.clone(),
             BuildOptions {
                 client_ui: ClientUiContext::Acp,
+                ask_user_responder: Some(Arc::new(crate::capabilities::ask_user::AcpResponder)),
                 acp_allow_hosted_provider_fallback: !self.provider_was_explicit,
                 client_mcp_servers,
                 tool_approver,
@@ -283,6 +284,7 @@ mod tests {
                 BuildOptions {
                     llmsim_override: Some(self.config.clone().with_model("llmsim-yolop")),
                     client_ui: ClientUiContext::Acp,
+                    ask_user_responder: Some(Arc::new(crate::capabilities::ask_user::AcpResponder)),
                     client_mcp_servers,
                     tool_approver,
                     ..BuildOptions::default()
@@ -326,6 +328,7 @@ mod tests {
                 BuildOptions {
                     llmsim_override: Some(self.config.clone().with_model("llmsim-yolop")),
                     client_ui: ClientUiContext::Acp,
+                    ask_user_responder: Some(Arc::new(crate::capabilities::ask_user::AcpResponder)),
                     client_mcp_servers,
                     tool_approver,
                     ..BuildOptions::default()

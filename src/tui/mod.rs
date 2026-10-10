@@ -1944,7 +1944,18 @@ impl App {
         }
         // Extension `ui/ask` prompts. One at a time; a request arriving while a
         // prompt is open is answered "cancelled" rather than stacking overlays.
+        if self
+            .pending_ask
+            .as_ref()
+            .is_some_and(|ask| ask.reply.as_ref().is_some_and(|reply| reply.is_closed()))
+        {
+            self.pending_ask = None;
+            applied_ui_command = true;
+        }
         while let Ok(request) = self.ask_rx.try_recv() {
+            if request.reply.is_closed() {
+                continue;
+            }
             if self.pending_ask.is_some() {
                 let _ = request.reply.send(crate::tui::host_ui::AskAnswer {
                     answer: String::new(),
@@ -1952,7 +1963,7 @@ impl App {
                 });
                 continue;
             }
-            self.push_system(format!("extension asks: {}", request.prompt));
+            self.push_system(format!("question: {}", request.prompt));
             self.pending_ask = Some(PendingAsk {
                 prompt: request.prompt,
                 placeholder: request.placeholder,
@@ -8706,6 +8717,36 @@ flowchart TD
             "the composer behind the wizard must stay untouched: {:?}",
             app.input_text()
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn queued_question_is_visible_and_selection_answers_request() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+        let (tx, rx) = mpsc::unbounded_channel();
+        app.ask_rx = rx;
+        let (reply, mut answer_rx) = oneshot::channel();
+        tx.send(crate::tui::host_ui::AskRequest {
+            prompt: "Plan: Which plan?\n1: Alpha (first)\n2: Beta (second)".into(),
+            placeholder: None,
+            secret: false,
+            options: vec!["Alpha".into(), "Beta".into()],
+            reply,
+        })
+        .unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        app.run_loop_iteration(&mut terminal).await.unwrap();
+        assert!(app.lines.iter().any(|line| {
+            line.text == "question: Plan: Which plan?\n1: Alpha (first)\n2: Beta (second)"
+        }));
+        assert_eq!(app.pending_ask.as_ref().unwrap().options, ["Alpha", "Beta"]);
+        app.handle_ask_key(KeyEvent::new(KeyCode::Down, KeyModifiers::empty()));
+        app.handle_ask_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()));
+        let answer = answer_rx.try_recv().unwrap();
+        assert!(!answer.cancelled);
+        assert_eq!(answer.answer, "Beta");
+        assert!(app.pending_ask.is_none());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

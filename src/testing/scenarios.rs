@@ -487,6 +487,36 @@ async fn scripted_error_turn_marks_run_failed() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ask_user_dispatch_returns_the_default_in_noninteractive_runtime() {
+    let (runtime, _workspace) = build_scripted_runtime(LlmSimConfig::scripted(vec![
+        SimTurn::ToolCalls(vec![SimToolCall {
+            name: "ask_user".into(),
+            arguments: json!({"questions": [{"id": "color", "header": "Color", "question": "Which color?", "allow_other": false, "options": [{"label": "red", "description": "red color"}, {"label": "blue", "description": "blue color", "default": true}]}]}),
+            id: None,
+        }]),
+        SimTurn::Assistant("Default received.".into()),
+    ]))
+    .await;
+    let result = run_single_turn(&runtime, "Ask for a color").await;
+    assert!(result.success, "ask_user turn: {result:?}");
+    assert_eq!(result.tool_calls_count, 1);
+    let events = runtime.handles.runtime.events().await.expect("events");
+    let answer = events
+        .iter()
+        .find_map(|event| match &event.data {
+            everruns_core::EventData::ToolCompleted(data) if data.tool_name == "ask_user" => {
+                Some(&data.result)
+            }
+            _ => None,
+        })
+        .expect("ask_user completed through the runtime");
+    let output = serde_json::to_string(answer).expect("answer JSON");
+    assert!(output.contains("blue"), "default answer: {output}");
+    assert!(output.contains("unattended"), "answer origin: {output}");
+    assert!(!output.contains("error"), "tool must succeed: {output}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn scripted_default_repeat_last_lets_second_call_succeed_after_exhaustion() {
     // Default OnExhausted::RepeatLast: once the script is consumed the
     // last turn keeps serving. Two run_turns against a 1-turn script
