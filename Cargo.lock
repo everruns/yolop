@@ -2150,10 +2150,11 @@ dependencies = [
 
 [[package]]
 name = "everruns"
-version = "0.44.0"
+version = "0.46.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b3e1cb8bd0542b6c9a13520e4c8b8c48c63a2fd0bbff2f12996b44ec58c14466"
+checksum = "39dcf9f869e516a618d21b8ba7cc002dc648587349ccce1c49a2128e92d89e1e"
 dependencies = [
+ "anyhow",
  "async-trait",
  "base64 0.23.1",
  "chrono",
@@ -2179,9 +2180,9 @@ dependencies = [
 
 [[package]]
 name = "everruns-capabilities"
-version = "0.44.0"
+version = "0.46.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5b8d42fb41835683d5ba7960cd42130d7ff97b5e8b284d4ba2b7d3efe257fd26"
+checksum = "fec6656e7ccac96c41e6d370bdc230f8693e01b03f37d90a52dab31796336a7d"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2200,9 +2201,9 @@ dependencies = [
 
 [[package]]
 name = "everruns-contracts"
-version = "0.44.0"
+version = "0.46.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b248cb47f14881915890c7e4f386e4c3b054f96d0cc67caf11db12157eb2643b"
+checksum = "35dea584b34428f923d1122177584d0b985f018792aadd61b9ac4c8bb057aab0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2243,9 +2244,9 @@ dependencies = [
 
 [[package]]
 name = "everruns-core"
-version = "0.44.0"
+version = "0.46.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eb59a2ab19d66bb57443d4ddc64040affccd7dd6e8e8cedd9efe0046db8a15de"
+checksum = "b8add193e2b25987c7af899239a33421099a1d0d1b089282b00db140c44c2586"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2282,9 +2283,9 @@ dependencies = [
 
 [[package]]
 name = "everruns-drivers"
-version = "0.44.0"
+version = "0.46.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6e32e20212aa76b5dd7a5f384919aac1ad183688e7302447232f53494aac78d6"
+checksum = "db865940b1804b6ed6d7ad78ab139c8eecee9131685fb83b5f7f84f3f94bf7da"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2301,14 +2302,15 @@ dependencies = [
  "sha2 0.11.0",
  "thiserror 2.0.21",
  "tokio",
+ "tokio-tungstenite 0.30.0",
  "tracing",
 ]
 
 [[package]]
 name = "everruns-integrations"
-version = "0.44.0"
+version = "0.46.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "342500ece6f7e357aff6f8ee2c9f5c9197731b54f06a1add7cd7ace6ef77a8dc"
+checksum = "f654d3ad7c50c6ac3476ba7147b1e42286c5ffe57b6997bf109fbdc058389489"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2336,9 +2338,9 @@ dependencies = [
 
 [[package]]
 name = "everruns-llmsim"
-version = "0.44.0"
+version = "0.46.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "65d7a155b46f66b7812f3b5ac0e7b743aeda76fa9728f8cd302631e4a5a039f6"
+checksum = "a752505cc92d40e35f95baf8ab4d5f93e4c3ce4b64ee4b338da14c2e08fd6a37"
 dependencies = [
  "anyhow",
  "async-trait",
