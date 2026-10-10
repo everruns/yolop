@@ -2974,9 +2974,6 @@ pub struct BuiltRuntime {
     /// stops new schedule claims; due prompts share `background_wake` with
     /// ordinary background-task completion signals.
     pub schedule_runner: LocalScheduleRunnerHandle,
-    /// Owns this process's coordination lease and durable inbox poller.
-    /// Dropping the runtime marks the session offline and stops delivery.
-    _coordination_host: Option<CoordinationHost>,
     /// Shared repointable workspace disk for host-path tools (`bash`, `!shell`).
     pub workspace_host: Arc<WorkspaceHost>,
     /// Shared Everruns session task registry, backed by `everruns-local`. The
@@ -3036,6 +3033,13 @@ pub struct RuntimeHandles {
     /// the live runtime and activates it like any other capability. `None`
     /// where there is no extensions dir.
     pub(crate) extension_factory: Option<ExtensionFactory>,
+    /// Owns this session's coordination lease and durable inbox poller. It
+    /// lives on the handles, not beside them in [`BuiltRuntime`], because every
+    /// host (TUI, ACP, print) keeps the handles for the session lifetime and
+    /// destructures the rest: a host-specific field was dropped at startup and
+    /// left every interactive session offline. The last clone dropping marks
+    /// the session offline and stops delivery.
+    pub(crate) _coordination_host: Option<Arc<CoordinationHost>>,
 }
 
 /// Builds a capability for an installed extension by name; `Err` when no such
@@ -4104,11 +4108,13 @@ pub async fn build_with_options(
         .map(|config| {
             CoordinationHost::start(
                 coordination_store.clone(),
+                task_registry.clone(),
                 session_id,
                 config,
                 project_id.clone(),
                 effective_root.clone(),
                 background_wake_tx,
+                event_bus_typed.subscribe(),
             )
         })
         .transpose()
@@ -4926,6 +4932,7 @@ pub async fn build_with_options(
             control: session_control,
             herdr,
             extension_factory,
+            _coordination_host: coordination_host.map(Arc::new),
         },
         startup: StartupInfo {
             workspace_root: effective_root,
@@ -4955,7 +4962,6 @@ pub async fn build_with_options(
         sandbox_approval_rx,
         background_wake: background_wake_rx,
         schedule_runner,
-        _coordination_host: coordination_host,
         workspace_host,
         task_registry,
         task_schedule_store,
@@ -5391,6 +5397,43 @@ mod tests {
             "missing Codex login should recommend setup"
         );
         assert_eq!(built.model.provider_name(), "codex");
+    }
+
+    /// Hosts keep `handles` and destructure the rest of [`BuiltRuntime`]. The
+    /// coordination lease used to sit beside the handles, so the TUI and ACP
+    /// dropped it on startup and every interactive session was offline to
+    /// `yolop coordination` from its first second. Destructure the way they do
+    /// and prove the session stays present until the handles go.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn coordination_presence_lives_as_long_as_the_handles() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let sessions = tempfile::tempdir().expect("sessions");
+        let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
+        let built = build_with_options(
+            workspace.path().to_path_buf(),
+            ProviderChoice::Sim,
+            None,
+            sessions.path().to_path_buf(),
+            settings,
+            BuildOptions::default(),
+        )
+        .await
+        .expect("build");
+        let BuiltRuntime { handles, .. } = built;
+        let session_id = handles.session_id.to_string();
+        let store = CoordinationStore::open(sessions.path()).expect("store");
+        let present = |store: &CoordinationStore| {
+            store
+                .live_session_ids()
+                .expect("presence")
+                .contains(&session_id)
+        };
+        assert!(present(&store), "a live session must hold its lease");
+        drop(handles);
+        assert!(
+            !present(&store),
+            "dropping the handles marks the session offline"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

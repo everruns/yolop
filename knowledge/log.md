@@ -1,5 +1,16 @@
 # Knowledge Log
 
+## 2026-10-10, Coordination that survives restarts and failures
+
+A live evaluation found coordinator mode unusable: the TUI and ACP dropped the
+coordination host at startup, so every session was offline. The host now lives
+on the runtime handles. Inbox messages are acknowledged from the woken turn's
+outcome instead of delivered once, failed turns retry then fail back, and a
+coordinator fails assignments whose worker vanished. Sessions re-exec through
+`/proc/<pid>/exe`, so upgrades no longer break the shim. Coordinators get prompt
+guidance toward the worker pool. See
+[session coordination](specs/session-coordination.md).
+
 ## 2026-10-09, Structured user questions
 
 Registered upstream `ask_user` in the coding harness. TUI questions reuse the

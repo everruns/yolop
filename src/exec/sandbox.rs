@@ -162,7 +162,8 @@ fn native_command(cwd: &Path, script: &str, mode: SandboxMode) -> Result<Command
 fn native_command(cwd: &Path, script: &str, mode: SandboxMode) -> Result<Command> {
     let temp = sandbox_temp_dir()?;
     let home = sandbox_home_dir(&temp)?;
-    let executable = std::env::current_exe().context("resolve yolop sandbox worker executable")?;
+    let executable =
+        crate::exec::self_exe::reexec_path().context("resolve yolop sandbox worker executable")?;
     let mut command = Command::new(executable);
     command
         .arg("__sandbox-exec")

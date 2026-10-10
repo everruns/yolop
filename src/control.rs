@@ -508,7 +508,7 @@ impl Drop for ControlEndpoint {
 
 #[cfg(unix)]
 fn install_current_executable_shim(bin_dir: &Path) -> anyhow::Result<()> {
-    std::os::unix::fs::symlink(std::env::current_exe()?, bin_dir.join("yolop"))?;
+    std::os::unix::fs::symlink(crate::exec::self_exe::reexec_path()?, bin_dir.join("yolop"))?;
     Ok(())
 }
 
@@ -629,7 +629,7 @@ async fn invoke_attached_inner(
     approval_gate: Arc<crate::sandbox_approval::ApprovalGate>,
     sandbox_mode: crate::config::SandboxMode,
 ) -> anyhow::Result<AttachedCommandOutput> {
-    let executable = std::env::current_exe()?;
+    let executable = crate::exec::self_exe::reexec_path()?;
     let mut child = tokio::process::Command::new(executable)
         .arg("--__attached-control-child")
         .args(&args)

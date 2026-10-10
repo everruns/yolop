@@ -111,6 +111,10 @@ pub struct WakeMessage {
     raw: String,
     handoff: Option<WakeHandoff>,
     kind: WakeKind,
+    /// Coordination inbox message this wake delivers. Carried into the turn
+    /// input's metadata so the coordination host can settle the delivery from
+    /// the turn's outcome.
+    delivery: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -126,14 +130,26 @@ impl WakeMessage {
             raw: raw.into(),
             handoff: None,
             kind: WakeKind::Background,
+            delivery: None,
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn coordination(prompt: impl Into<String>) -> Self {
         Self {
             raw: prompt.into(),
             handoff: None,
             kind: WakeKind::Coordination,
+            delivery: None,
+        }
+    }
+
+    pub(crate) fn coordination_delivery(prompt: impl Into<String>, message_id: String) -> Self {
+        Self {
+            raw: prompt.into(),
+            handoff: None,
+            kind: WakeKind::Coordination,
+            delivery: Some(message_id),
         }
     }
 
@@ -203,6 +219,7 @@ impl WakeMessage {
             raw,
             handoff: Some(handoff),
             kind: WakeKind::Background,
+            delivery: None,
         }
     }
 }
@@ -275,6 +292,7 @@ pub(crate) fn coalesce_pending_wakes(
             omitted_tasks,
         }),
         kind: WakeKind::Background,
+        delivery: None,
     }
 }
 
@@ -344,6 +362,7 @@ impl WakeRunner {
                 raw: truncate_bytes(content, MAX_WAKE_BATCH_BYTES),
                 handoff: None,
                 kind: WakeKind::Background,
+                delivery: None,
             };
         };
         let task = if content.starts_with("Task \"") {
@@ -382,6 +401,7 @@ impl WakeRunner {
                 omitted_tasks: 0,
             }),
             kind: WakeKind::Background,
+            delivery: None,
         }
     }
 }
@@ -504,6 +524,12 @@ pub fn input_for_wake(message: &WakeMessage) -> InputMessage {
     let mut input = InputMessage::user(frame_wake_prompt(message));
     if message.kind == WakeKind::Coordination {
         input.tags.push("automatic_coordination".to_string());
+        if let Some(delivery) = &message.delivery {
+            input.metadata = Some(std::collections::HashMap::from([(
+                crate::capabilities::session_coordination::DELIVERY_METADATA_KEY.to_string(),
+                serde_json::Value::String(delivery.clone()),
+            )]));
+        }
         return input;
     }
     if let Some(handoff) = &message.handoff
@@ -983,6 +1009,7 @@ mod tests {
                 omitted_tasks: 0,
             }),
             kind: WakeKind::Background,
+            delivery: None,
         };
 
         let input = input_for_wake(&wake);
@@ -1025,6 +1052,7 @@ mod tests {
                 omitted_tasks: 0,
             }),
             kind: WakeKind::Background,
+            delivery: None,
         };
         let observation = |tool: &str, id: &str, state: &str| {
             Event::new(
@@ -1101,6 +1129,7 @@ mod tests {
                 omitted_tasks: 0,
             }),
             kind: WakeKind::Background,
+            delivery: None,
         };
         let (tx, rx) = mpsc::unbounded_channel();
         let mut rx = WakeReceiver::unrouted(rx);
