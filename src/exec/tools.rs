@@ -646,6 +646,7 @@ impl BackgroundExecutableTool for BashTool {
                 total: None,
                 unit: Some("ms".to_string()),
                 label: Some("runtime".to_string()),
+                steps: Vec::new(),
             })
             .await;
         let result = json!({
