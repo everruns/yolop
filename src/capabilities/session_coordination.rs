@@ -740,6 +740,18 @@ impl CoordinationStore {
     }
 
     /// Threads of `coordinator` with messages waiting and no live host.
+    /// Whether `coordinator` has started any threads.
+    pub(crate) fn has_threads(&self, coordinator: SessionId) -> anyhow::Result<bool> {
+        let any = self.db.with_conn(|conn| {
+            conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM yolop_threads WHERE coordinator_session_id = ?1)",
+                params![coordinator.to_string()],
+                |row| row.get::<_, bool>(0),
+            )
+        })?;
+        Ok(any)
+    }
+
     fn threads_needing_host(&self, coordinator: SessionId) -> anyhow::Result<Vec<ThreadRecord>> {
         let now = now_ms();
         let rows = self.db.with_conn(|conn| {

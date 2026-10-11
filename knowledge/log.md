@@ -6,6 +6,12 @@
 in-process MXC process container instead of running it uncontained, and fail
 closed on Windows builds older than 11 24H2. See [sandboxing](specs/sandboxing.md#windows).
 
+## 2026-10-11, Coordinator mode flag
+
+`--coordinator` turns any session into a coordinator on top of the active
+settings and profile, and a resumed session with threads stays one, so no
+profile file is needed. See [session coordination](specs/session-coordination.md).
+
 ## 2026-10-11, Coordination follow-ups
 
 A dead thread host's background jobs started with `&` are stopped too, headless

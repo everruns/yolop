@@ -115,6 +115,13 @@ struct Cli {
     #[arg(long, value_name = "NAME")]
     profile: Option<String>,
 
+    /// Run as a coordinator: hand independent pieces of work to threads, each
+    /// its own Yolop process in its own worktree, and follow them through.
+    /// Uses the current settings and profile, models included. A session that
+    /// already has threads resumes as a coordinator without the flag.
+    #[arg(long, conflicts_with = "serve")]
+    coordinator: bool,
+
     /// Override the model id
     #[arg(short, long)]
     model: Option<String>,
@@ -1171,6 +1178,7 @@ async fn async_main(crash_reporter: &crash_report::CrashReporter) -> Result<()> 
             sandbox_mode_override,
             setup_page,
             extra_environment_context,
+            cli.coordinator,
         )
         .await;
     }
@@ -1237,6 +1245,7 @@ async fn async_main(crash_reporter: &crash_report::CrashReporter) -> Result<()> 
             sandbox_mode_override,
             extra_environment_context,
             serve_release: serve_release.clone(),
+            coordinator: cli.coordinator,
             ..Default::default()
         },
     )
@@ -3332,6 +3341,7 @@ mod tests {
             cwd: None,
             provider: Some(ProviderArg::Openrouter),
             profile: None,
+            coordinator: false,
             model: Some("nvidia/nemotron-3-super-120b-a12b".to_string()),
             reasoning_effort: reasoning_effort.map(str::to_string),
             print: None,
@@ -3447,6 +3457,7 @@ mod tests {
             cwd: None,
             provider: None,
             profile: None,
+            coordinator: false,
             model: None,
             reasoning_effort: None,
             print: None,

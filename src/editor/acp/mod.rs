@@ -81,6 +81,8 @@ struct ConfigRuntimeFactory {
     setup_page: Option<setup_page::SetupPageService>,
     /// Operator `--env-context` defaults, shared across sessions.
     extra_environment_context: Vec<(String, String)>,
+    /// `--coordinator`: every session on this connection coordinates threads.
+    coordinator: bool,
     /// Editor identity from `initialize`, shared across sessions on this
     /// connection. `None` until the client initializes.
     client_identity: std::sync::Mutex<Option<EditorClientIdentity>>,
@@ -179,6 +181,7 @@ impl RuntimeFactory for ConfigRuntimeFactory {
                 sandbox_mode_override: self.sandbox_mode_override,
                 extra_environment_context: self.extra_environment_context.clone(),
                 editor_context_value,
+                coordinator: self.coordinator,
                 ..BuildOptions::default()
             },
         )
@@ -196,6 +199,7 @@ impl RuntimeFactory for ConfigRuntimeFactory {
 /// Serve the ACP agent over this process's stdin/stdout until the client
 /// disconnects. Tracing still writes to stderr, keeping stdout clean for the
 /// protocol.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_stdio(
     provider: ProviderChoice,
     provider_was_explicit: bool,
@@ -204,6 +208,7 @@ pub async fn run_stdio(
     sandbox_mode_override: Option<SandboxMode>,
     setup_page: bool,
     extra_environment_context: Vec<(String, String)>,
+    coordinator: bool,
 ) -> Result<()> {
     let factory = Arc::new(ConfigRuntimeFactory {
         provider,
@@ -213,6 +218,7 @@ pub async fn run_stdio(
         sessions_dir,
         sandbox_mode_override,
         extra_environment_context,
+        coordinator,
         client_identity: std::sync::Mutex::new(None),
     });
     serve(tokio::io::stdin(), tokio::io::stdout(), factory).await
