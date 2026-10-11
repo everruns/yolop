@@ -168,6 +168,10 @@ urlencoding = "2"
 landlock = "0.4.4"
 seccompiler = "0.5.0"
 
+# Windows shell containment, run in-process: see src/exec/sandbox_windows.rs.
+[target.'cfg(windows)'.dependencies]
+mxc-sdk = "=1.0.0"
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 # Descriptor-relative skill deletion uses rustix so repository-controlled

@@ -6,6 +6,8 @@
 pub(crate) mod group_ledger;
 pub mod proc;
 pub mod sandbox;
+#[cfg(windows)]
+pub(crate) mod sandbox_windows;
 pub(crate) mod self_exe;
 pub(crate) mod shell_policy;
 pub mod tools;

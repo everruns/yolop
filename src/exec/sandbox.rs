@@ -14,7 +14,114 @@ use tokio::process::Command;
 
 pub(crate) trait SandboxProvider: Send + Sync {
     fn mode(&self) -> SandboxMode;
-    fn command(&self, cwd: &Path, script: &str) -> Result<Command>;
+    fn command(&self, cwd: &Path, script: &str) -> Result<SandboxCommand>;
+
+    /// Whether the attached `yolop` control endpoint can reach the host from
+    /// commands this provider starts. The Windows container has no host
+    /// loopback access, and opening it would expose every local service.
+    fn supports_control_endpoint(&self) -> bool {
+        true
+    }
+}
+
+/// A shell launch prepared by a provider.
+///
+/// macOS and Linux contain an ordinary child process, so they hand back a
+/// `tokio` command. Windows containment is created in-process by the MXC
+/// library, which owns process creation, so it hands back its own launch.
+pub(crate) enum SandboxCommand {
+    Host(Command),
+    #[cfg(windows)]
+    Windows(crate::exec::sandbox_windows::ContainedCommand),
+}
+
+impl SandboxCommand {
+    /// The underlying host command, when the provider launches one.
+    pub(crate) fn host_mut(&mut self) -> Option<&mut Command> {
+        match self {
+            Self::Host(command) => Some(command),
+            #[cfg(windows)]
+            Self::Windows(_) => None,
+        }
+    }
+
+    /// Start the command with piped stdout and stderr and no stdin.
+    pub(crate) fn spawn(self) -> std::io::Result<SandboxChild> {
+        match self {
+            Self::Host(mut command) => {
+                configure_stdio(&mut command);
+                #[cfg(unix)]
+                command.process_group(0);
+                let mut child = command.spawn()?;
+                let stdout = child.stdout.take().expect("stdout is piped");
+                let stderr = child.stderr.take().expect("stderr is piped");
+                Ok(SandboxChild {
+                    stdout: Box::new(stdout),
+                    stderr: Box::new(stderr),
+                    process: ChildProcess::Host(child),
+                })
+            }
+            #[cfg(windows)]
+            Self::Windows(command) => {
+                let (child, stdout, stderr) = command.spawn()?;
+                Ok(SandboxChild {
+                    stdout,
+                    stderr,
+                    process: ChildProcess::Windows(child),
+                })
+            }
+        }
+    }
+}
+
+pub(crate) type ChildOutput = Box<dyn tokio::io::AsyncRead + Unpin + Send>;
+
+/// A running shell command, whichever provider started it.
+pub(crate) struct SandboxChild {
+    stdout: ChildOutput,
+    stderr: ChildOutput,
+    process: ChildProcess,
+}
+
+enum ChildProcess {
+    Host(tokio::process::Child),
+    #[cfg(windows)]
+    Windows(crate::exec::sandbox_windows::ContainedChild),
+}
+
+impl SandboxChild {
+    /// Take stdout and stderr, leaving empty readers behind.
+    pub(crate) fn take_output(&mut self) -> (ChildOutput, ChildOutput) {
+        (
+            std::mem::replace(&mut self.stdout, Box::new(tokio::io::empty())),
+            std::mem::replace(&mut self.stderr, Box::new(tokio::io::empty())),
+        )
+    }
+
+    pub(crate) fn id(&self) -> Option<u32> {
+        match &self.process {
+            ChildProcess::Host(child) => child.id(),
+            #[cfg(windows)]
+            ChildProcess::Windows(child) => Some(child.id()),
+        }
+    }
+
+    pub(crate) fn start_kill(&mut self) -> std::io::Result<()> {
+        match &mut self.process {
+            ChildProcess::Host(child) => child.start_kill(),
+            #[cfg(windows)]
+            ChildProcess::Windows(child) => child.kill(),
+        }
+    }
+
+    /// Wait for exit. `None` when the process ended without an exit code.
+    pub(crate) async fn wait(&mut self) -> std::io::Result<Option<i32>> {
+        match &mut self.process {
+            ChildProcess::Host(child) => child.wait().await.map(|status| status.code()),
+            #[cfg(windows)]
+            ChildProcess::Windows(child) => child.wait().await.map(Some),
+        }
+    }
 }
 
 pub(crate) fn provider(mode: SandboxMode) -> std::sync::Arc<dyn SandboxProvider> {
@@ -29,13 +136,17 @@ pub(crate) fn provider(mode: SandboxMode) -> std::sync::Arc<dyn SandboxProvider>
 pub(crate) fn danger_warning(mode: SandboxMode) -> Option<&'static str> {
     #[cfg(windows)]
     {
-        // No native sandbox exists for Windows yet, so every mode — including
-        // the default — runs with full host access. Warn regardless
-        // of the configured mode.
-        let _ = mode;
-        Some(
-            "WARNING: sandboxing is not available on Windows — shell commands run unsandboxed with full access to your files, processes, and the network",
-        )
+        if mode == SandboxMode::DangerFullAccess {
+            Some(
+                "DANGER: danger-full-access (UNSAFE HOST) — shell commands can access and modify files, processes, and the network outside the workspace",
+            )
+        } else if !crate::exec::sandbox_windows::available() {
+            Some(
+                "WARNING: the Windows sandbox is unavailable on this Windows build — shell commands will be refused. Windows 11 24H2 or later is required; set `sandbox_mode = \"danger-full-access\"` to run commands uncontained",
+            )
+        } else {
+            None
+        }
     }
     #[cfg(not(windows))]
     {
@@ -47,12 +158,7 @@ pub(crate) fn danger_warning(mode: SandboxMode) -> Option<&'static str> {
 
 /// Network availability of the shell process the selected provider launches.
 pub(crate) fn network_access(mode: SandboxMode) -> &'static str {
-    #[cfg(windows)]
-    {
-        let _ = mode;
-        "enabled"
-    }
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     {
         if mode == SandboxMode::DangerFullAccess {
             "enabled"
@@ -106,8 +212,8 @@ impl SandboxProvider for UnsafeHost {
         SandboxMode::DangerFullAccess
     }
 
-    fn command(&self, cwd: &Path, script: &str) -> Result<Command> {
-        Ok(shell_command(cwd, script))
+    fn command(&self, cwd: &Path, script: &str) -> Result<SandboxCommand> {
+        Ok(SandboxCommand::Host(shell_command(cwd, script)))
     }
 }
 
@@ -120,8 +226,20 @@ impl SandboxProvider for NativeSandbox {
         self.mode
     }
 
-    fn command(&self, cwd: &Path, script: &str) -> Result<Command> {
-        native_command(cwd, script, self.mode)
+    fn supports_control_endpoint(&self) -> bool {
+        cfg!(not(windows))
+    }
+
+    fn command(&self, cwd: &Path, script: &str) -> Result<SandboxCommand> {
+        #[cfg(windows)]
+        {
+            crate::exec::sandbox_windows::command(cwd, script, self.mode)
+                .map(SandboxCommand::Windows)
+        }
+        #[cfg(not(windows))]
+        {
+            native_command(cwd, script, self.mode).map(SandboxCommand::Host)
+        }
     }
 }
 
@@ -277,22 +395,14 @@ pub(crate) fn run_linux_worker(
         .into())
 }
 
-#[cfg(target_os = "windows")]
-fn native_command(cwd: &Path, script: &str, _mode: SandboxMode) -> Result<Command> {
-    // Windows has no native sandbox implementation yet. Rather than refuse to
-    // run, execute unsandboxed — the user is warned at startup via
-    // `danger_warning`, which fires for every mode on Windows.
-    Ok(shell_command(cwd, script))
-}
-
-#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 fn native_command(_cwd: &Path, _script: &str, _mode: SandboxMode) -> Result<Command> {
     anyhow::bail!(
         "native sandbox is supported only on macOS and Linux; refusing to run unsandboxed. Set `sandbox_mode = \"danger-full-access\"` only inside an already isolated environment"
     )
 }
 
-fn prepared_global_skills_dir() -> Result<Option<PathBuf>> {
+pub(super) fn prepared_global_skills_dir() -> Result<Option<PathBuf>> {
     let Some(path) = global_skills_dir() else {
         return Ok(None);
     };
@@ -303,7 +413,7 @@ fn prepared_global_skills_dir() -> Result<Option<PathBuf>> {
     })?))
 }
 
-fn sandbox_temp_dir() -> Result<PathBuf> {
+pub(super) fn sandbox_temp_dir() -> Result<PathBuf> {
     let path = std::env::temp_dir().join(format!("yolop-sandbox-{}", std::process::id()));
     prepare_sandbox_temp(&path)?;
     std::fs::canonicalize(&path)
@@ -338,7 +448,7 @@ fn prepare_sandbox_temp(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn sandbox_home_dir(temp: &Path) -> Result<PathBuf> {
+pub(super) fn sandbox_home_dir(temp: &Path) -> Result<PathBuf> {
     let path = temp.join("home");
     std::fs::create_dir_all(&path)
         .with_context(|| format!("create sandbox home directory: {}", path.display()))?;
@@ -355,7 +465,7 @@ fn apply_native_environment(command: &mut Command, home: &Path, temp: &Path) {
     command.env("HOME", home).env("TMPDIR", temp);
 }
 
-fn safe_environment_key(key: &str) -> bool {
+pub(super) fn safe_environment_key(key: &str) -> bool {
     matches!(
         key,
         "PATH"
@@ -509,7 +619,7 @@ mod tests {
         );
     }
 
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     #[test]
     fn network_access_matches_native_and_unsafe_execution() {
         assert_eq!(network_access(SandboxMode::ReadOnly), "disabled");
@@ -519,15 +629,17 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn windows_warns_unsandboxed_for_every_mode() {
-        // Windows has no sandbox, so even workspace-write must
-        // warn that commands run with full host access.
-        for mode in [
-            SandboxMode::ReadOnly,
-            SandboxMode::WorkspaceWrite,
-            SandboxMode::DangerFullAccess,
-        ] {
-            assert!(danger_warning(mode).is_some());
+    fn windows_warns_only_when_commands_are_not_contained() {
+        assert!(
+            danger_warning(SandboxMode::DangerFullAccess)
+                .unwrap()
+                .contains("UNSAFE HOST")
+        );
+        for mode in [SandboxMode::ReadOnly, SandboxMode::WorkspaceWrite] {
+            assert_eq!(
+                danger_warning(mode).is_some(),
+                !crate::exec::sandbox_windows::available()
+            );
         }
     }
 
