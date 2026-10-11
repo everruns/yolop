@@ -962,7 +962,7 @@ async fn async_main(crash_reporter: &crash_report::CrashReporter) -> Result<()> 
                 // leaving the person at a shell.
                 if let Ok(coordinator) = std::env::var(RETURN_SESSION_ENV) {
                     eprintln!(
-                        "yolop: session {session_id} is still busy in a background host; returning to its coordinator"
+                        "yolop: the thread is still busy in a background host; returning to its coordinator"
                     );
                     return switch_session(&coordinator, None);
                 }
