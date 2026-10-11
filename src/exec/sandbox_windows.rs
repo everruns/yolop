@@ -15,6 +15,13 @@
 //!   `yolop` subcommands still reach the session from inside.
 //! - Workspace `.git` stays writable, matching Linux rather than macOS.
 //! - Scripts travel as `-EncodedCommand` so no PowerShell quoting is involved.
+//! - Drive roots are never granted. MXC's tools policy adds `C:\` when `pwsh`
+//!   is on `PATH`, which would expose the whole drive and, on the
+//!   AppContainer+DACL tier, rewrite the ACL of every file on it per command.
+//!   The shell is Windows PowerShell, which does not need the root.
+//! - Win32k stays enabled (`ui.disable = false`): `powershell.exe` and most
+//!   console tools load `user32.dll` and exit with STATUS_DLL_INIT_FAILED
+//!   without it. Window creation is not a filesystem or network escape.
 
 use std::io::Read;
 use std::path::Path;
@@ -25,7 +32,7 @@ use anyhow::{Context, Result};
 use base64::Engine as _;
 use mxc_sdk::v1::{
     self, ContainerRequest, FilesystemPolicy, MxcProcess, NetworkAction, NetworkEgressPolicy,
-    NetworkIngressPolicy, NetworkPolicy, StreamCloser,
+    NetworkIngressPolicy, NetworkPolicy, StreamCloser, UiPolicy,
     policy::filesystem::{
         ToolsPolicyContainerType, ToolsPolicyOptions, available_tools_policy, user_profile_policy,
     },
@@ -87,7 +94,12 @@ pub(crate) fn command(
             container_type: Some(ToolsPolicyContainerType::ProcessContainer),
         },
     );
-    filesystem.readonly_paths.extend(tools.readonly_paths);
+    filesystem.readonly_paths.extend(
+        tools
+            .readonly_paths
+            .into_iter()
+            .filter(|path| !is_drive_root(path)),
+    );
     if let Some(control) = control {
         // The `yolop` shim and the executable it runs; the pipe itself is
         // admitted by its own ACL (`control::control_pipe`).
@@ -118,6 +130,10 @@ pub(crate) fn command(
                 host_loopback: Some(NetworkAction::Deny),
             }),
             runtime_config: None,
+        }),
+        ui: Some(UiPolicy {
+            disable: false,
+            ..Default::default()
         }),
         working_directory: Some(path_string(cwd)),
         environment: Some({
@@ -304,6 +320,12 @@ fn path_string(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
 
+/// `C:`, `C:\` or `C:/`.
+fn is_drive_root(path: &str) -> bool {
+    let trimmed = path.trim_end_matches(['\\', '/']);
+    trimmed.len() == 2 && trimmed.ends_with(':')
+}
+
 /// Drop read-only grants already covered by a read-write grant, so a tool
 /// directory inside the workspace keeps write access.
 fn dedupe_granted(filesystem: &mut FilesystemPolicy) {
@@ -375,6 +397,15 @@ mod tests {
         };
         dedupe_granted(&mut filesystem);
         assert_eq!(filesystem.readonly_paths, [r"C:\Tools".to_string()]);
+    }
+
+    #[test]
+    fn drive_roots_are_never_granted() {
+        assert!(is_drive_root(r"C:\"));
+        assert!(is_drive_root("D:"));
+        assert!(is_drive_root("C:/"));
+        assert!(!is_drive_root(r"C:\Tools"));
+        assert!(!is_drive_root(r"\\server\share"));
     }
 
     /// The control pipe's ACL is what lets a contained shell reach the
@@ -450,18 +481,32 @@ mod tests {
         let prepared =
             command(&workspace_path, &script, SandboxMode::WorkspaceWrite, None).unwrap();
         eprintln!("sandbox policy prepared in {:?}", started.elapsed());
+        if let Ok(probe) = v1::probe(None) {
+            eprintln!("sandbox tier: {:?}", probe.tier);
+        }
+        if let Some(filesystem) = &prepared.request.filesystem {
+            eprintln!("sandbox read-only grants: {:?}", filesystem.readonly_paths);
+            eprintln!(
+                "sandbox read-write grants: {:?}",
+                filesystem.readwrite_paths
+            );
+        }
         let started = std::time::Instant::now();
         let mut child = crate::exec::sandbox::SandboxCommand::Windows(prepared)
             .spawn()
             .unwrap();
         eprintln!("sandbox container started in {:?}", started.elapsed());
-        let (mut output, _) = child.take_output();
+        let (mut output, mut errors) = child.take_output();
         let mut stdout = String::new();
+        let mut stderr = String::new();
         tokio::io::AsyncReadExt::read_to_string(&mut output, &mut stdout)
             .await
             .unwrap();
+        tokio::io::AsyncReadExt::read_to_string(&mut errors, &mut stderr)
+            .await
+            .unwrap();
         let code = child.wait().await.unwrap();
-        assert_eq!(code, Some(0), "{stdout}");
+        assert_eq!(code, Some(0), "stdout={stdout} stderr={stderr}");
         assert!(workspace_path.join("inside.txt").exists(), "{stdout}");
         assert!(!outside_file.exists(), "{stdout}");
         assert!(stdout.contains("outside-denied"), "{stdout}");

@@ -136,7 +136,11 @@ workspace (writable in `workspace-write`, read-only in `read-only`), the
 private temp, the global skills directory in `workspace-write`, toolchain
 directories found on `PATH` and well-known SDK variables, and per-user
 installs under `%LOCALAPPDATA%\Programs`. The rest of the user profile is
-unreadable. All network is denied, host loopback included. The environment is
+unreadable. A drive root is never granted, even when MXC's tools discovery
+offers one for `pwsh`: it would expose the whole drive, and on hosts that fall
+back to the AppContainer+DACL tier it rewrites the ACL of every file on the
+drive for each command. Win32k stays enabled because `powershell.exe` cannot
+start without `user32.dll`. All network is denied, host loopback included. The environment is
 the shared allowlist plus the variables Windows programs need to start, with
 `HOME`, `TEMP`, and `TMP` pointed at the private sandbox directories.
 
