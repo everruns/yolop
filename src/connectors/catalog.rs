@@ -4,7 +4,6 @@
 //! catalog is the single place new sandbox backends (E2B, etc.) plug in.
 
 use everruns_capabilities::{Connector, ConnectorRegistry, ConnectorValidation};
-use everruns_integrations::daytona::connection::DaytonaConnector;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -51,8 +50,17 @@ impl ConnectionCatalogBuilder {
     }
 
     pub fn build(mut self) -> ConnectionCatalog {
-        if !self.providers.has("daytona") {
-            self.providers.register(DaytonaConnector);
+        // Seed defaults from the upstream catalog so new providers land
+        // automatically; builder-registered providers keep precedence.
+        let mut defaults = ConnectorRegistry::new();
+        everruns_capabilities::integrations_catalog::register_connectors(
+            &mut defaults,
+            everruns_core::DeploymentGrade::Prod,
+        );
+        for provider in defaults.list() {
+            if !self.providers.has(provider.provider_id()) {
+                self.providers.register_arc(provider.clone());
+            }
         }
         ConnectionCatalog {
             providers: self.providers,
@@ -162,5 +170,25 @@ mod catalog_tests {
         let catalog = ConnectionCatalog::builder().register(StubProvider).build();
         assert!(catalog.get("stub").is_some());
         assert!(catalog.get("daytona").is_some());
+    }
+
+    #[test]
+    fn defaults_track_upstream_catalog() {
+        use everruns_capabilities::integrations_catalog::register_connectors;
+        use everruns_core::DeploymentGrade;
+        let mut upstream = ConnectorRegistry::new();
+        register_connectors(&mut upstream, DeploymentGrade::Prod);
+        assert!(
+            upstream.list().len() > 1,
+            "upstream catalog should seed more than the daytona default"
+        );
+        let catalog = ConnectionCatalog::with_defaults();
+        for provider in upstream.list() {
+            assert!(
+                catalog.get(provider.provider_id()).is_some(),
+                "default catalog is missing upstream connector `{}`",
+                provider.provider_id()
+            );
+        }
     }
 }

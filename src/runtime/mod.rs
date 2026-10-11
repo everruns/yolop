@@ -107,6 +107,7 @@ use everruns_core::{
 };
 use everruns_integrations::daytona::DaytonaCapability;
 use everruns_integrations::duckduckgo::DuckDuckGoCapability;
+use everruns_integrations::e2b::E2BCapability;
 use everruns_integrations::filesystem::{FileSystemCapability, SESSION_FILE_SYSTEM_CAPABILITY_ID};
 use everruns_integrations::web_fetch::{WEB_FETCH_CAPABILITY_ID, WebFetchCapability};
 use everruns_llmsim::LlmSimConfig;
@@ -2706,6 +2707,7 @@ fn reasoning_effort_value(value: &ReasoningEffort) -> Option<String> {
 // instead of scattering string literals.
 pub(crate) const DUCKDUCKGO_CAPABILITY_ID: &str = "duckduckgo";
 pub(crate) const DAYTONA_CAPABILITY_ID: &str = "daytona";
+pub(crate) const E2B_CAPABILITY_ID: &str = "e2b";
 pub(crate) const COMPACTION_BUDGET_PERCENT: u8 = 85;
 
 fn default_coding_harness_capabilities(client_commands: bool) -> Vec<CapabilityRef> {
@@ -2822,8 +2824,10 @@ pub(crate) fn coding_harness_defaults(client_commands: bool) -> Vec<CapabilityRe
 /// one row, resolved transitively below — rather than hand-written per-pair
 /// checks. IDs are constants so a typo or an upstream rename is a compile error,
 /// not a silently dropped dependency.
-const HARNESS_CAPABILITY_DEPENDENCIES: &[(&str, &[&str])] =
-    &[(DAYTONA_CAPABILITY_ID, &[SESSION_STORAGE_CAPABILITY_ID])];
+const HARNESS_CAPABILITY_DEPENDENCIES: &[(&str, &[&str])] = &[
+    (DAYTONA_CAPABILITY_ID, &[SESSION_STORAGE_CAPABILITY_ID]),
+    (E2B_CAPABILITY_ID, &[SESSION_STORAGE_CAPABILITY_ID]),
+];
 
 /// Append any capabilities that enabled ones depend on (e.g. `daytona` pulls in
 /// `session_storage`), closing the set against the production
@@ -4232,6 +4236,7 @@ pub async fn build_with_options(
     //   * free_search          — best-effort free SERP/dev search (`free_web_search`); no API key
     //   * session_storage      — session kv/secret store (Daytona dependency)
     //   * daytona              — remote cloud sandboxes (`daytona_*` tools)
+    //   * e2b                  — remote cloud sandboxes (`e2b_*` tools)
     //   * connectors           — connect/disconnect sandbox backends
     //   * user_hooks           — executes user-authored hook specs loaded from
     //                            global/workspace hook config
@@ -4561,6 +4566,7 @@ pub async fn build_with_options(
     capabilities.register(crate::capabilities::NarratedBackgroundExecutionCapability::new());
     capabilities.register(SessionStorageCapability);
     capabilities.register(DaytonaCapability);
+    capabilities.register(E2BCapability);
     capabilities.register(UserHooksCapability);
     capabilities.register(DuckDuckGoCapability);
     capabilities.register(crate::capabilities::FreeSearchCapability::new());
@@ -7050,6 +7056,28 @@ mod tests {
         assert!(
             ids.iter()
                 .any(|cap| cap.capability_id() == DAYTONA_CAPABILITY_ID)
+        );
+        assert!(
+            ids.iter()
+                .any(|cap| cap.capability_id() == SESSION_STORAGE_CAPABILITY_ID)
+        );
+    }
+
+    #[test]
+    fn harness_applies_e2b_from_settings() {
+        use crate::config::capability_settings::CapabilityOverride;
+
+        let mut settings = Settings::default();
+        settings.capabilities.push(CapabilityOverride {
+            capability_ref: E2B_CAPABILITY_ID.to_string(),
+            enabled: Some(true),
+            append: false,
+            config: serde_json::json!({}),
+        });
+        let ids = coding_harness_capabilities(false, None, &settings);
+        assert!(
+            ids.iter()
+                .any(|cap| cap.capability_id() == E2B_CAPABILITY_ID)
         );
         assert!(
             ids.iter()
