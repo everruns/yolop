@@ -1,9 +1,12 @@
-//! Read-only access to prior local Yolop sessions.
+//! Local Yolop sessions: search earlier ones, see which are live, and send a
+//! message to one.
 //!
-//! [`SessionsCapability`] is CLI-owned: agents search prior sessions through
-//! `yolop sessions search` instead of a model tool. Results report failure
-//! state, tool names, and event counts for bounded diagnosis without reading
-//! entire session logs.
+//! [`SessionsCapability`] is CLI-owned: agents use `yolop sessions ...`
+//! instead of a model tool. Search results report failure state, tool names,
+//! and event counts for bounded diagnosis without reading entire session logs.
+//! `send` queues a message in the target session's durable inbox
+//! (`session_coordination`), which wakes it when it is live and waits for its
+//! next start when it is not.
 
 use async_trait::async_trait;
 use everruns_contracts::typed_id::SessionId;
@@ -17,6 +20,9 @@ use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+use crate::capabilities::session_coordination::{
+    CoordinationStore, InboxPayload, MAX_MESSAGE_BYTES,
+};
 use crate::control::{
     CliCapability, ControlCapability, ControlRequest, ControlResponse, ControlRoute,
 };
@@ -24,6 +30,12 @@ use crate::control::{
 pub(crate) const SESSIONS_CAPABILITY_ID: &str = "sessions";
 const SESSIONS_COMMAND: &str = "sessions";
 const SESSIONS_CONTROL_RESOURCE: &str = "sessions";
+pub(crate) const SESSIONS_CONTROL_ROUTE: ControlRoute = ControlRoute {
+    resource: SESSIONS_CONTROL_RESOURCE,
+    cli_subcommand: SESSIONS_COMMAND,
+    read_only_operations: &["search", "list", "live"],
+    summary: "search local Yolop sessions and message one",
+};
 const DEFAULT_LIMIT: usize = 10;
 const MAX_LIMIT: usize = 50;
 const MAX_SCANNED_SESSIONS: usize = 500;
@@ -33,21 +45,65 @@ const MAX_SNIPPET_CHARS: usize = 600;
 pub(crate) struct SessionsCapability {
     sessions_dir: PathBuf,
     current_session_id: SessionId,
+    /// `None` when sent from a shell rather than from inside a session.
+    sender: Option<SessionId>,
+    store: CoordinationStore,
 }
 
 impl SessionsCapability {
-    pub(crate) fn new(sessions_dir: PathBuf, current_session_id: SessionId) -> Self {
+    pub(crate) fn new(
+        sessions_dir: PathBuf,
+        current_session_id: SessionId,
+        store: CoordinationStore,
+    ) -> Self {
         Self {
             sessions_dir,
             current_session_id,
+            sender: Some(current_session_id),
+            store,
         }
     }
 
     /// Detached CLI use: no live session exists, so a fresh id excludes nothing.
-    pub(crate) fn detached(sessions_dir: PathBuf) -> Self {
+    pub(crate) fn detached(sessions_dir: PathBuf, store: CoordinationStore) -> Self {
         Self {
             sessions_dir,
             current_session_id: SessionId::new(),
+            sender: None,
+            store,
+        }
+    }
+
+    fn send(&self, session: &str, message: &str) -> ToolExecutionResult {
+        let Ok(target) = session.trim().parse::<SessionId>() else {
+            return ToolExecutionResult::tool_error(format!("not a session id: {session}"));
+        };
+        if Some(target) == self.sender {
+            return ToolExecutionResult::tool_error("a session cannot message itself");
+        }
+        let message = message.trim();
+        if message.is_empty() || message.len() > MAX_MESSAGE_BYTES {
+            return ToolExecutionResult::tool_error(format!(
+                "message must be 1..={MAX_MESSAGE_BYTES} bytes"
+            ));
+        }
+        let payload = InboxPayload::Message {
+            from: self.sender.map(|sender| sender.to_string()),
+            text: message.to_string(),
+        };
+        let result = self
+            .store
+            .enqueue(target, self.sender, &payload)
+            .and_then(|message_id| Ok((message_id, self.store.is_live(target)?)));
+        match result {
+            Ok((message_id, live)) => ToolExecutionResult::success(json!({
+                "message_id": message_id,
+                "session_id": target.to_string(),
+                "delivered": if live { "now" } else { "when the session next starts" },
+            })),
+            Err(error) => {
+                ToolExecutionResult::tool_error(format!("could not queue message: {error}"))
+            }
         }
     }
 }
@@ -63,7 +119,7 @@ impl Capability for SessionsCapability {
     }
 
     fn description(&self) -> &str {
-        "Find recent local Yolop sessions and search their user-visible messages. Use `yolop sessions search`."
+        "Find recent local Yolop sessions, search their user-visible messages, and message a session. Use `yolop sessions`."
     }
 
     fn status(&self) -> CapabilityStatus {
@@ -92,17 +148,17 @@ pub(crate) enum SessionsAction {
     List {
         limit: Option<u64>,
     },
+    Live,
+    Send {
+        session: String,
+        message: String,
+    },
 }
 
 #[async_trait]
 impl ControlCapability for SessionsCapability {
     fn control_route(&self) -> ControlRoute {
-        ControlRoute {
-            resource: SESSIONS_CONTROL_RESOURCE,
-            cli_subcommand: SESSIONS_COMMAND,
-            read_only_operations: &["search", "list"],
-            summary: "search prior local Yolop sessions",
-        }
+        SESSIONS_CONTROL_ROUTE
     }
 
     async fn execute_control(&self, action: &Value) -> ToolExecutionResult {
@@ -116,6 +172,15 @@ impl ControlCapability for SessionsCapability {
                 include_current,
             } => (query, limit, include_current),
             SessionsAction::List { limit } => (None, limit, false),
+            SessionsAction::Live => {
+                return match self.store.live_sessions() {
+                    Ok(sessions) => ToolExecutionResult::success(json!({ "sessions": sessions })),
+                    Err(error) => ToolExecutionResult::tool_error(format!(
+                        "could not read live sessions: {error}"
+                    )),
+                };
+            }
+            SessionsAction::Send { session, message } => return self.send(&session, &message),
         };
         let arguments = json!({
             "query": query,
@@ -174,6 +239,22 @@ enum SessionsCommand {
         #[arg(long)]
         limit: Option<u64>,
     },
+    /// List sessions some yolop process is hosting right now.
+    #[command(
+        after_help = "Examples:\n  See which sessions can take a message now:\n    yolop sessions live"
+    )]
+    Live,
+    /// Send a message to a session. A live session wakes and takes it as a
+    /// turn; one that is not running gets it when it next starts.
+    #[command(
+        after_help = "Examples:\n  Ask another session for its status:\n    yolop sessions send session_0193... \"What is left on the migration?\""
+    )]
+    Send {
+        /// The target session id.
+        session: String,
+        /// The message text.
+        message: String,
+    },
 }
 
 impl SessionsCommandLine {
@@ -195,6 +276,12 @@ impl SessionsCommandLine {
                 "operation": "list",
                 "limit": limit,
             })),
+            SessionsCommand::Live => Ok(json!({ "operation": "live" })),
+            SessionsCommand::Send { session, message } => Ok(json!({
+                "operation": "send",
+                "session": session,
+                "message": message,
+            })),
         }
     }
 }
@@ -206,7 +293,7 @@ impl CliCapability for SessionsCapability {
         SessionsCommandLine::augment_args(clap::Command::new("sessions"))
             .about("Find earlier yolop sessions and what happened in them")
             .after_help(
-            "Examples:\n  Search prior sessions for an exact marker:\n    yolop sessions search --query QUASAR-9182\n\n  List recent sessions:\n    yolop sessions list --limit 5",
+            "Examples:\n  Search prior sessions for an exact marker:\n    yolop sessions search --query QUASAR-9182\n\n  List recent sessions:\n    yolop sessions list --limit 5\n\n  Message another session:\n    yolop sessions send session_0193... \"Rebase on main when you are done\"",
         )
     }
 
@@ -721,7 +808,7 @@ mod tests {
                 )],
             );
         }
-        let capability = SessionsCapability::new(dir.path().to_path_buf(), current);
+        let capability = SessionsCapability::new(dir.path().to_path_buf(), current, memory_store());
         let response = ControlResponse::from_tool_result(
             capability
                 .execute_control(&json!({"operation": "search", "query": "needle", "limit": 2}))
@@ -758,7 +845,7 @@ mod tests {
             std::fs::write(session.join("events.jsonl"), body).unwrap();
         }
 
-        let capability = SessionsCapability::new(dir.path().to_path_buf(), current);
+        let capability = SessionsCapability::new(dir.path().to_path_buf(), current, memory_store());
         let response = ControlResponse::from_tool_result(
             capability
                 .execute_control(
@@ -782,7 +869,8 @@ mod tests {
     #[tokio::test]
     async fn control_rejects_unknown_operation() {
         let dir = tempfile::tempdir().unwrap();
-        let capability = SessionsCapability::new(dir.path().to_path_buf(), SessionId::new());
+        let capability =
+            SessionsCapability::new(dir.path().to_path_buf(), SessionId::new(), memory_store());
         let response = ControlResponse::from_tool_result(
             capability
                 .execute_control(&json!({"operation": "nope"}))
@@ -804,7 +892,8 @@ mod tests {
                 "2026-01-01T00:00:00Z",
             )],
         );
-        let capability = SessionsCapability::new(dir.path().to_path_buf(), SessionId::new());
+        let capability =
+            SessionsCapability::new(dir.path().to_path_buf(), SessionId::new(), memory_store());
         assert_eq!(capability.control_route().cli_subcommand, "sessions");
         let matches = capability
             .cli_command()
@@ -827,5 +916,50 @@ mod tests {
         assert!(response.ok);
         let value = response.value.expect("search must return a value");
         assert_eq!(value["count"], 1);
+    }
+
+    fn memory_store() -> CoordinationStore {
+        CoordinationStore::new(everruns::local::SqliteDb::open_in_memory().unwrap()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn send_queues_a_message_for_another_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = memory_store();
+        let current = SessionId::new();
+        let capability = SessionsCapability::new(dir.path().to_path_buf(), current, store.clone());
+        let target = SessionId::new();
+
+        let response = ControlResponse::from_tool_result(
+            capability
+                .execute_control(&json!({
+                    "operation": "send",
+                    "session": target.to_string(),
+                    "message": "Rebase on main",
+                }))
+                .await,
+        );
+        assert!(response.ok, "unexpected error: {:?}", response.error);
+        assert_eq!(
+            response.value.unwrap()["delivered"],
+            "when the session next starts"
+        );
+
+        for (session, message) in [
+            (current.to_string(), "hi".to_string()),
+            ("not-a-session".to_string(), "hi".to_string()),
+            (target.to_string(), " ".to_string()),
+        ] {
+            let refused = ControlResponse::from_tool_result(
+                capability
+                    .execute_control(&json!({
+                        "operation": "send",
+                        "session": session,
+                        "message": message,
+                    }))
+                    .await,
+            );
+            assert!(!refused.ok);
+        }
     }
 }

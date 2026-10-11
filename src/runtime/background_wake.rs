@@ -111,6 +111,10 @@ pub struct WakeMessage {
     raw: String,
     handoff: Option<WakeHandoff>,
     kind: WakeKind,
+    /// Coordination inbox message this wake delivers. Carried into the turn
+    /// input's metadata so the coordination host can settle the delivery from
+    /// the turn's outcome.
+    delivery: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -126,14 +130,26 @@ impl WakeMessage {
             raw: raw.into(),
             handoff: None,
             kind: WakeKind::Background,
+            delivery: None,
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn coordination(prompt: impl Into<String>) -> Self {
         Self {
             raw: prompt.into(),
             handoff: None,
             kind: WakeKind::Coordination,
+            delivery: None,
+        }
+    }
+
+    pub(crate) fn coordination_delivery(prompt: impl Into<String>, message_id: String) -> Self {
+        Self {
+            raw: prompt.into(),
+            handoff: None,
+            kind: WakeKind::Coordination,
+            delivery: Some(message_id),
         }
     }
 
@@ -203,6 +219,7 @@ impl WakeMessage {
             raw,
             handoff: Some(handoff),
             kind: WakeKind::Background,
+            delivery: None,
         }
     }
 }
@@ -275,6 +292,7 @@ pub(crate) fn coalesce_pending_wakes(
             omitted_tasks,
         }),
         kind: WakeKind::Background,
+        delivery: None,
     }
 }
 
@@ -290,6 +308,9 @@ pub struct WakeRunner {
     /// pass through the host's turn entry point, so this is the only place it
     /// can learn the level an endpoint that mandates reasoning requires.
     provider: Arc<RwLock<crate::runtime::ProviderChoice>>,
+    /// Coordination threads run in their own yolop processes; messages to
+    /// them go through the session inbox instead of an in-process turn.
+    threads: Option<crate::capabilities::ThreadRouting>,
 }
 
 impl WakeRunner {
@@ -305,7 +326,38 @@ impl WakeRunner {
             tasks,
             child_turn_locks: Mutex::new(HashMap::new()),
             provider,
+            threads: None,
         }
+    }
+
+    pub fn with_thread_routing(mut self, routing: crate::capabilities::ThreadRouting) -> Self {
+        self.threads = Some(routing);
+        self
+    }
+
+    /// The coordination thread `session_id` is, if it is one.
+    async fn thread(
+        &self,
+        session_id: SessionId,
+    ) -> Result<
+        Option<(
+            &crate::capabilities::ThreadRouting,
+            crate::capabilities::session_coordination::ThreadRecord,
+        )>,
+    > {
+        let Some(routing) = self.threads.as_ref() else {
+            return Ok(None);
+        };
+        let parent = self
+            .sessions
+            .get_session(session_id)
+            .await?
+            .and_then(|session| session.parent_session_id);
+        let thread = routing
+            .thread(session_id, parent, self.tasks.as_deref())
+            .await
+            .map_err(|error| AgentLoopError::store(error.to_string()))?;
+        Ok(thread.map(|thread| (routing, thread)))
     }
 
     /// The reasoning level the session's model names, for messages this runner
@@ -344,6 +396,7 @@ impl WakeRunner {
                 raw: truncate_bytes(content, MAX_WAKE_BATCH_BYTES),
                 handoff: None,
                 kind: WakeKind::Background,
+                delivery: None,
             };
         };
         let task = if content.starts_with("Task \"") {
@@ -382,6 +435,7 @@ impl WakeRunner {
                 omitted_tasks: 0,
             }),
             kind: WakeKind::Background,
+            delivery: None,
         }
     }
 }
@@ -504,6 +558,12 @@ pub fn input_for_wake(message: &WakeMessage) -> InputMessage {
     let mut input = InputMessage::user(frame_wake_prompt(message));
     if message.kind == WakeKind::Coordination {
         input.tags.push("automatic_coordination".to_string());
+        if let Some(delivery) = &message.delivery {
+            input.metadata = Some(std::collections::HashMap::from([(
+                crate::capabilities::session_coordination::DELIVERY_METADATA_KEY.to_string(),
+                serde_json::Value::String(delivery.clone()),
+            )]));
+        }
         return input;
     }
     if let Some(handoff) = &message.handoff
@@ -632,6 +692,11 @@ impl LocalSessionRunner for WakeRunner {
     }
 
     async fn send_message(&self, session_id: SessionId, content: &str) -> Result<()> {
+        if let Some((routing, thread)) = self.thread(session_id).await? {
+            return routing
+                .deliver(&thread, content)
+                .map_err(|error| AgentLoopError::tool(error.to_string()));
+        }
         if self.sessions.get_session(session_id).await?.is_none() {
             return Err(AgentLoopError::session_not_found(session_id));
         }
@@ -722,7 +787,12 @@ impl LocalSessionRunner for WakeRunner {
         session_id: SessionId,
         limit: Option<usize>,
     ) -> Result<Vec<PlatformMessage>> {
-        let messages = self.runtime()?.messages(session_id).await?;
+        let messages = match self.thread(session_id).await? {
+            Some((routing, thread)) => routing
+                .messages(&thread)
+                .map_err(|error| AgentLoopError::store(error.to_string()))?,
+            None => self.runtime()?.messages(session_id).await?,
+        };
         let mut mapped: Vec<_> = messages
             .iter()
             .map(|message| PlatformMessage {
@@ -743,6 +813,14 @@ impl LocalSessionRunner for WakeRunner {
     }
 
     async fn get_session_status(&self, session_id: SessionId) -> Result<Option<String>> {
+        if let Some((routing, thread)) = self.thread(session_id).await? {
+            let status = if routing.is_live(&thread) {
+                "running"
+            } else {
+                "idle"
+            };
+            return Ok(Some(status.to_string()));
+        }
         Ok(self
             .sessions
             .get_session(session_id)
@@ -983,6 +1061,7 @@ mod tests {
                 omitted_tasks: 0,
             }),
             kind: WakeKind::Background,
+            delivery: None,
         };
 
         let input = input_for_wake(&wake);
@@ -1025,6 +1104,7 @@ mod tests {
                 omitted_tasks: 0,
             }),
             kind: WakeKind::Background,
+            delivery: None,
         };
         let observation = |tool: &str, id: &str, state: &str| {
             Event::new(
@@ -1101,6 +1181,7 @@ mod tests {
                 omitted_tasks: 0,
             }),
             kind: WakeKind::Background,
+            delivery: None,
         };
         let (tx, rx) = mpsc::unbounded_channel();
         let mut rx = WakeReceiver::unrouted(rx);

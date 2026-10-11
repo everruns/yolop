@@ -29,16 +29,16 @@ use crate::capabilities::{
     CLIENT_COMMANDS_CAPABILITY_ID, CODING_BASH_CAPABILITY_ID, CONFIG_CAPABILITY_ID,
     CONTEXT_COST_CONTROL_CAPABILITY_ID, CheckpointCapability, ClientCommandsCapability,
     ClientUiContext, CodingBashCapability, CodingCliEnvironmentCapability, CommandDispatch,
-    ConfigCapability, ContextCostControlCapability, CoordinationConfig, CoordinationHost,
-    CoordinationStore, ENVIRONMENT_CONTEXT_CAPABILITY_ID, EnvironmentContextRegistry,
+    ConfigCapability, ContextCostControlCapability, CoordinationHost, CoordinationStore,
+    CoordinatorInboxWaker, ENVIRONMENT_CONTEXT_CAPABILITY_ID, EnvironmentContextRegistry,
     HERDR_CAPABILITY_ID, HOOKS_CAPABILITY_ID, HerdrCapability, HooksCapability, LspCapability,
     MODEL_RUNTIME_CONTEXT_CAPABILITY_ID, MODELS_CAPABILITY_ID, ModelCliCapability,
     ModelRuntimeContextCapability, ModelsCapability, NativeEditToolsCapability,
     PROGRESS_GUARD_CAPABILITY_ID, ProgressGuardCapability, REPO_MAP_CAPABILITY_ID,
-    RepoMapCapability, SESSION_COORDINATION_CAPABILITY_ID, SESSIONS_CAPABILITY_ID,
-    SOFT_APPROVAL_CAPABILITY_ID, SessionCoordinationCapability, SessionsCapability,
-    SetupCliCapability, TOOL_ARGUMENT_VALIDATION_CAPABILITY_ID, ToolArgumentValidationCapability,
-    WorktreeCapability, coordination_project_id,
+    RepoMapCapability, SESSIONS_CAPABILITY_ID, SOFT_APPROVAL_CAPABILITY_ID, SessionsCapability,
+    SetupCliCapability, TOOL_ARGUMENT_VALIDATION_CAPABILITY_ID, ThreadRouting,
+    ToolArgumentValidationCapability, WorktreeCapability, coordination_project_id,
+    inherited_launch_args, process_thread_launcher,
 };
 use crate::config::capability_settings::{CapabilityCatalog, apply_capability_settings};
 use crate::config::mcp::McpConfigStore;
@@ -2723,10 +2723,6 @@ fn default_coding_harness_capabilities(client_commands: bool) -> Vec<CapabilityR
     caps.push(CapabilityRef::new("ask_user"));
     caps.extend([
         CapabilityRef::with_config(
-            SESSION_COORDINATION_CAPABILITY_ID,
-            serde_json::json!({ "role": "worker", "accept_work": false }),
-        ),
-        CapabilityRef::with_config(
             SESSION_CAPABILITY_ID,
             serde_json::json!({ "auto_title": true }),
         ),
@@ -2974,9 +2970,6 @@ pub struct BuiltRuntime {
     /// stops new schedule claims; due prompts share `background_wake` with
     /// ordinary background-task completion signals.
     pub schedule_runner: LocalScheduleRunnerHandle,
-    /// Owns this process's coordination lease and durable inbox poller.
-    /// Dropping the runtime marks the session offline and stops delivery.
-    _coordination_host: Option<CoordinationHost>,
     /// Shared repointable workspace disk for host-path tools (`bash`, `!shell`).
     pub workspace_host: Arc<WorkspaceHost>,
     /// Shared Everruns session task registry, backed by `everruns-local`. The
@@ -3036,6 +3029,13 @@ pub struct RuntimeHandles {
     /// the live runtime and activates it like any other capability. `None`
     /// where there is no extensions dir.
     pub(crate) extension_factory: Option<ExtensionFactory>,
+    /// Owns this session's coordination lease and durable inbox poller. It
+    /// lives on the handles, not beside them in [`BuiltRuntime`], because every
+    /// host (TUI, ACP, print) keeps the handles for the session lifetime and
+    /// destructures the rest: a host-specific field was dropped at startup and
+    /// left every interactive session offline. The last clone dropping marks
+    /// the session offline and stops delivery.
+    pub(crate) _coordination_host: Option<Arc<CoordinationHost>>,
 }
 
 /// Builds a capability for an installed extension by name; `Err` when no such
@@ -3629,6 +3629,13 @@ pub struct BuildOptions {
     /// context entry. Set per session by the ACP host; `None` everywhere
     /// else, which omits the entry entirely.
     pub editor_context_value: Option<String>,
+    /// Starts the headless host of a coordinator's thread. `None` launches
+    /// this executable with `--serve`; tests inject a recorder.
+    pub thread_launcher: Option<crate::capabilities::session_coordination::ThreadLauncher>,
+    /// Set by a headless `--serve` host: notified when someone opening the
+    /// session asks this host to hand it over. `None` for hosts with a person
+    /// attached, which never yield.
+    pub serve_release: Option<Arc<tokio::sync::Notify>>,
 }
 
 impl Default for BuildOptions {
@@ -3649,6 +3656,8 @@ impl Default for BuildOptions {
             provider_retry_config: None,
             extra_environment_context: Vec::new(),
             editor_context_value: None,
+            thread_launcher: None,
+            serve_release: None,
         }
     }
 }
@@ -3806,6 +3815,27 @@ fn set_sandbox_environment_context(
     registry.set("network_access", crate::exec::sandbox::network_access(mode));
 }
 
+/// Environment context entry that tells a thread whose it is and where its
+/// work lands.
+const THREAD_CONTEXT_KEY: &str = "coordination_thread";
+
+fn thread_context(
+    coordinator: SessionId,
+    worktree: Option<&crate::exec::worktree::WorktreeInfo>,
+) -> String {
+    let mut context = format!("This session is a thread of coordinator session {coordinator}.");
+    if let Some(worktree) = worktree {
+        context.push_str(&format!(
+            " You work in your own git worktree at {} on branch {}. Commit your \
+             change there and name the branch in complete_assignment, so the \
+             coordinator can review it and bring it in.",
+            worktree.path.display(),
+            worktree.branch
+        ));
+    }
+    context
+}
+
 /// Merge operator and protocol entries over the sandbox builtins. Later
 /// sources win: CLI `--env-context` defaults over builtins, then the
 /// protocol-detected `editor` value over both on its reserved key.
@@ -3873,7 +3903,22 @@ pub async fn build_with_options(
         .unwrap_or_else(|| canonical_root.clone());
     let active_root = std::fs::canonicalize(&initial_active).unwrap_or(initial_active);
 
-    let worktrees_mode = settings.snapshot().worktrees_mode();
+    // A coordinator's thread works in its own worktree unless the profile
+    // turns worktrees off: threads run side by side on one repository, and
+    // the coordinator reviews each one's branch before bringing it in.
+    let thread_of = match resume_session_id {
+        Some(id) => CoordinationStore::open(&sessions_dir)
+            .and_then(|store| store.thread(id))
+            .context("read thread record")?
+            .map(|thread| thread.coordinator),
+        None => None,
+    };
+    let worktrees_mode = match settings.snapshot().worktrees_mode() {
+        crate::config::WorktreesMode::Auto if thread_of.is_some() => {
+            crate::config::WorktreesMode::Always
+        }
+        mode => mode,
+    };
     let worktree = Arc::new(WorktreeManager::new(
         worktrees_mode,
         repo_root.clone(),
@@ -3988,12 +4033,6 @@ pub async fn build_with_options(
         hook_capability_config,
         &settings_snapshot,
     );
-    let coordination_config = harness_capabilities
-        .iter()
-        .find(|capability| capability.capability_id() == SESSION_COORDINATION_CAPABILITY_ID)
-        .map(|capability| CoordinationConfig::from_value(capability.config_value()))
-        .transpose()
-        .map_err(anyhow::Error::msg)?;
     let connections_path =
         default_connections_path().unwrap_or_else(|| PathBuf::from("connections.toml"));
     let connections = Arc::new(ConnectionStore::open(connections_path));
@@ -4072,11 +4111,28 @@ pub async fn build_with_options(
         .with_connection_resolver(connection_resolver);
     let local_profile = LocalProfile::new(sessions_dir.join("everruns-local"))
         .with_workspace_root(effective_root.clone());
-    let local_backends = LocalBackends::new(local_profile, base_backends)
+    let mut local_backends = LocalBackends::new(local_profile, base_backends)
         .context("initialize everruns-local backend stores")?;
     let coordination_store = CoordinationStore::new(local_backends.db.clone())
-        .context("initialize session coordination store")?;
-    let task_registry: Arc<dyn SessionTaskRegistry> = local_backends.task_registry.clone();
+        .context("initialize session coordination store")?
+        .with_sessions_dir(&sessions_dir);
+    // Assignment changes this process makes for a coordinator hosted elsewhere
+    // (this session is its thread) reach that coordinator through its inbox.
+    let task_registry: Arc<dyn SessionTaskRegistry> = Arc::new(
+        everruns_core::ObservingTaskRegistry::new(local_backends.task_registry.clone())
+            .with_observer(Arc::new(CoordinatorInboxWaker::new(
+                coordination_store.clone(),
+                session_id,
+            ))),
+    );
+    local_backends.runtime_backends = local_backends
+        .runtime_backends
+        .with_session_task_registry(task_registry.clone());
+    let thread_coordinator = thread_of;
+    let thread_launcher = options
+        .thread_launcher
+        .clone()
+        .unwrap_or_else(process_thread_launcher);
     let task_schedule_store: Arc<dyn everruns_core::session_services::SessionScheduleStore> =
         Arc::new(
             local_backends
@@ -4094,25 +4150,31 @@ pub async fn build_with_options(
             local_backends.runtime_backends.session_store.clone(),
             Some(task_registry.clone()),
             provider_state.clone(),
-        ),
+        )
+        .with_thread_routing(ThreadRouting::new(
+            coordination_store.clone(),
+            thread_launcher.clone(),
+            effective_root.clone(),
+            inherited_launch_args(std::env::args()),
+            sessions_dir.clone(),
+        )),
         everruns::local::WakeRoutes::new(),
     ));
     let (background_wake_tx, background_wake_rx) =
         crate::runtime::background_wake::register_host_route(wake_runner.clone(), session_id).await;
     let project_id = coordination_project_id(&canonical_root);
-    let coordination_host = coordination_config
-        .map(|config| {
-            CoordinationHost::start(
-                coordination_store.clone(),
-                session_id,
-                config,
-                project_id.clone(),
-                effective_root.clone(),
-                background_wake_tx,
-            )
-        })
-        .transpose()
-        .context("start session coordination host")?;
+    let coordination_host = CoordinationHost::start(
+        coordination_store.clone(),
+        task_registry.clone(),
+        session_id,
+        project_id,
+        effective_root.clone(),
+        background_wake_tx,
+        event_bus_typed.subscribe(),
+        thread_launcher,
+        options.serve_release.clone(),
+    )
+    .context("start session coordination host")?;
     let schedule_runner = local_backends
         .start_schedule_runner(wake_runner.clone())
         .context("start everruns-local schedule runner")?;
@@ -4155,20 +4217,22 @@ pub async fn build_with_options(
     //   * user_hooks           — executes user-authored hook specs loaded from
     //                            global/workspace hook config
     let mut capabilities = CapabilityRegistry::new();
-    let coordination_capability = Arc::new(SessionCoordinationCapability::live(
-        coordination_store,
-        task_registry.clone(),
-        session_id,
-        project_id,
-        coordination_config,
-    ));
-    capabilities.register_arc(coordination_capability.clone());
+    // Everruns coordination: a profile enables it with `ref = "coordination"`.
+    // Threads run in their own yolop processes through `ThreadRouting`.
+    capabilities
+        .register(everruns_capabilities::capabilities::coordination::CoordinationCapability);
     // Shared across every reveal-gated capability: `tool_reveal` writes it from
     // `tool_search` results, `config` and `memory` read it when deciding whether
     // their how-to prose has earned its place this turn.
     let tool_reveals = Arc::new(RevealedTools::new());
     let environment_context = EnvironmentContextRegistry::default();
     set_sandbox_environment_context(&environment_context, sandbox_mode);
+    if let Some(coordinator) = thread_coordinator {
+        environment_context.set(
+            THREAD_CONTEXT_KEY,
+            thread_context(coordinator, worktree.owned_worktree_info().as_ref()),
+        );
+    }
     apply_extra_environment_context(
         &environment_context,
         &options.extra_environment_context,
@@ -4298,11 +4362,14 @@ pub async fn build_with_options(
     // administration banner (src/capabilities/yolop.rs); it previously had no
     // in-prompt breadcrumb at all, leaving a cold session to discover the CLI
     // subcommand by guesswork.
-    let sessions_capability = Arc::new(SessionsCapability::new(sessions_dir.clone(), session_id));
+    let sessions_capability = Arc::new(SessionsCapability::new(
+        sessions_dir.clone(),
+        session_id,
+        coordination_store.clone(),
+    ));
     session_control_registry.register(sessions_capability.clone())?;
     capabilities.register_arc(sessions_capability);
     session_control_registry.register(skill_management)?;
-    session_control_registry.register(coordination_capability)?;
     // Hook management is exposed through the control plane and `yolop config hooks`.
     // Runtime execution is still upstream `user_hooks`, registered above.
     let hooks_capability = Arc::new(HooksCapability::new((*hooks_store).clone()));
@@ -4825,6 +4892,10 @@ pub async fn build_with_options(
         .tag("example")
         .tag("coding");
 
+    // A thread knows its coordinator from the durable thread record; the
+    // coordination worker tools find its assignment through this parent link.
+    let mut host_session = session_builder.build();
+    host_session.parent_session_id = thread_coordinator;
     // Retain the session store so the host can hot-swap the live session's
     // scoped MCP servers (`RuntimeHandles::reload_mcp_servers`) without
     // rebuilding the runtime. Cloned before `backends` is moved into the
@@ -4839,7 +4910,7 @@ pub async fn build_with_options(
         .backends(backends)
         .harness(harness_builder.build())
         .agent(agent_builder.build())
-        .session(session_builder.build());
+        .session(host_session);
     // Always register the llmsim driver so `/setup` can switch to offline mode.
     // mid-session, even if the user started with anthropic or openai.
     let llmsim_config = options.llmsim_override.unwrap_or_else(|| {
@@ -4926,6 +4997,7 @@ pub async fn build_with_options(
             control: session_control,
             herdr,
             extension_factory,
+            _coordination_host: Some(Arc::new(coordination_host)),
         },
         startup: StartupInfo {
             workspace_root: effective_root,
@@ -4955,7 +5027,6 @@ pub async fn build_with_options(
         sandbox_approval_rx,
         background_wake: background_wake_rx,
         schedule_runner,
-        _coordination_host: coordination_host,
         workspace_host,
         task_registry,
         task_schedule_store,
@@ -5393,6 +5464,107 @@ mod tests {
         assert_eq!(built.model.provider_name(), "codex");
     }
 
+    /// Hosts keep `handles` and destructure the rest of [`BuiltRuntime`]. The
+    /// coordination lease used to sit beside the handles, so the TUI and ACP
+    /// dropped it on startup and every interactive session was offline to
+    /// `yolop coordination` from its first second. Destructure the way they do
+    /// and prove the session stays present until the handles go.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn coordination_presence_lives_as_long_as_the_handles() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let sessions = tempfile::tempdir().expect("sessions");
+        let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
+        let built = build_with_options(
+            workspace.path().to_path_buf(),
+            ProviderChoice::Sim,
+            None,
+            sessions.path().to_path_buf(),
+            settings,
+            BuildOptions::default(),
+        )
+        .await
+        .expect("build");
+        let BuiltRuntime { handles, .. } = built;
+        let session_id = handles.session_id.to_string();
+        let store = CoordinationStore::open(sessions.path()).expect("store");
+        let present = |store: &CoordinationStore| {
+            store
+                .live_session_ids()
+                .expect("presence")
+                .contains(&session_id)
+        };
+        assert!(present(&store), "a live session must hold its lease");
+        drop(handles);
+        assert!(
+            !present(&store),
+            "dropping the handles marks the session offline"
+        );
+    }
+
+    /// Threads of one coordinator run side by side on a repository, so a
+    /// thread session gets its own worktree even under the default `auto`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_thread_session_works_in_its_own_worktree() {
+        let repo = tempfile::tempdir().expect("repo");
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .args(args)
+                .current_dir(repo.path())
+                .output()
+                .expect("git");
+            assert!(output.status.success(), "git {args:?}: {output:?}");
+        };
+        git(&["init", "-q", "-b", "main"]);
+        std::fs::write(repo.path().join("README.md"), "hi\n").expect("write");
+        git(&["add", "README.md"]);
+        git(&[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.com",
+            "commit",
+            "-qm",
+            "init",
+        ]);
+        let sessions = tempfile::tempdir().expect("sessions");
+        let thread = SessionId::new();
+        let coordinator = SessionId::new();
+        CoordinationStore::open(sessions.path())
+            .expect("store")
+            .record_thread(&crate::capabilities::session_coordination::ThreadRecord {
+                thread_id: thread,
+                coordinator,
+                workspace_root: repo.path().to_path_buf(),
+                launch: Vec::new(),
+            })
+            .expect("record thread");
+
+        let built = build_with_options(
+            repo.path().to_path_buf(),
+            ProviderChoice::Sim,
+            Some(thread),
+            sessions.path().to_path_buf(),
+            Arc::new(SettingsStore::open(sessions.path().join("settings.toml"))),
+            BuildOptions {
+                session_kind: crate::runtime::session_log::SessionKind::Automated,
+                ..BuildOptions::default()
+            },
+        )
+        .await
+        .expect("build");
+        let worktree = built
+            .worktree
+            .owned_worktree_info()
+            .expect("a thread gets its own worktree");
+        assert_ne!(
+            std::fs::canonicalize(&worktree.path).unwrap(),
+            std::fs::canonicalize(repo.path()).unwrap()
+        );
+        let context = thread_context(coordinator, Some(&worktree));
+        assert!(context.contains(&coordinator.to_string()), "{context}");
+        assert!(context.contains(&worktree.branch), "{context}");
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[allow(clippy::await_holding_lock)]
     async fn acp_build_exposes_model_configuration_when_default_credentials_missing() {
@@ -5719,7 +5891,7 @@ mod tests {
             context
                 .runtime_agent
                 .system_prompt
-                .contains("`sessions`, search prior local Yolop sessions"),
+                .contains("`sessions`, search local Yolop sessions"),
             "a cold session must be told `yolop sessions search` exists: {}",
             context.runtime_agent.system_prompt
         );
@@ -11310,7 +11482,7 @@ mod tests {
     /// registered, the session still knew nothing about `yolop extensions`.
     #[test]
     fn yolop_administration_is_enabled_on_the_harness_when_routes_exist() {
-        use crate::capabilities::session_coordination::COORDINATION_CONTROL_ROUTE;
+        use crate::capabilities::sessions::SESSIONS_CONTROL_ROUTE;
         use crate::capabilities::yolop::YOLOP_CAPABILITY_ID;
         use crate::extensions::EXTENSIONS_CONTROL_ROUTE;
         use everruns_core::Capability as _;
@@ -11318,7 +11490,7 @@ mod tests {
         let mut caps = coding_harness_capabilities(false, None, &Settings::default());
         let capability = enable_yolop(
             &mut caps,
-            &[COORDINATION_CONTROL_ROUTE, EXTENSIONS_CONTROL_ROUTE],
+            &[SESSIONS_CONTROL_ROUTE, EXTENSIONS_CONTROL_ROUTE],
         );
         let block = capability
             .system_prompt_addition()
@@ -11368,7 +11540,7 @@ mod tests {
         use crate::capabilities::background::BACKGROUND_SYSTEM_PROMPT;
         use crate::capabilities::client_commands::CLIENT_COMMANDS_PROMPT;
         use crate::capabilities::host::MODELS_PROMPT;
-        use crate::capabilities::session_coordination::COORDINATION_CONTROL_ROUTE;
+        use crate::capabilities::sessions::SESSIONS_CONTROL_ROUTE;
         use crate::config::ApprovalMode;
         use crate::extensions::EXTENSIONS_CONTROL_ROUTE;
         use everruns_core::Capability as _;
@@ -11390,7 +11562,7 @@ mod tests {
             ("attribution", attribution_prompt().len()),
             (
                 "yolop",
-                YolopCapability::new(&[COORDINATION_CONTROL_ROUTE, EXTENSIONS_CONTROL_ROUTE])
+                YolopCapability::new(&[SESSIONS_CONTROL_ROUTE, EXTENSIONS_CONTROL_ROUTE])
                     .system_prompt_addition()
                     .map(str::len)
                     .expect("framing plus registered routes contribute the block"),

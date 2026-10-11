@@ -159,7 +159,7 @@ Inside the TUI:
 - `/rewind` lists checkpoints to restore; the undone work stays available for `/redo` with a fresh token.
 - Send another message to resume work after a continuation limit.
 
-Handoffs between agents use `/checkpoint` and `/coordinator`: see [docs/session-coordination.md](docs/session-coordination.md).
+A coordinator session can hand work to threads that run as their own Yolop processes, and any session can message another with `yolop sessions send`: see [docs/session-coordination.md](docs/session-coordination.md).
 
 ## Trust and guardrails
 

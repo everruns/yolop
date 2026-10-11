@@ -78,8 +78,8 @@ pub(crate) use profiles::ProfilesCapability;
 pub(crate) use progress_guard::{PROGRESS_GUARD_CAPABILITY_ID, ProgressGuardCapability};
 pub(crate) use repo_map::{REPO_MAP_CAPABILITY_ID, RepoMapCapability};
 pub(crate) use session_coordination::{
-    CoordinationConfig, CoordinationHost, CoordinationStore, SESSION_COORDINATION_CAPABILITY_ID,
-    SessionCoordinationCapability, coordination_project_id,
+    CoordinationHost, CoordinationStore, CoordinatorInboxWaker, ThreadRouting,
+    coordination_project_id, inherited_launch_args, process_thread_launcher,
 };
 pub(crate) use sessions::{SESSIONS_CAPABILITY_ID, SessionsCapability};
 pub(crate) use setup_cli::SetupCliCapability;

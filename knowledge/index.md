@@ -32,7 +32,7 @@ and [`docs/`](../docs/); it must not link back into this internal bundle.
 - [Model list](specs/model-list.md), the cross-provider menu of models a session offers.
 - [Reasoning effort](specs/reasoning-effort.md), how a model's effort scale is resolved and when a mandated-reasoning failure repairs itself.
 - [Sessions](specs/session-history.md), discovery of earlier sessions.
-- [Session coordination](specs/session-coordination.md), local coordinator and worker orchestration.
+- [Session coordination](specs/session-coordination.md), coordinator threads as separate Yolop processes, and messaging between sessions.
 - [Session titles](specs/session-titles.md), automatic conversation titles.
 - [Skills](specs/skills.md), reusable instruction packs.
 - [Tool calling](specs/tool-calling.md), argument shape enforcement and bounded repair.

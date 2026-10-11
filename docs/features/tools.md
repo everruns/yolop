@@ -59,11 +59,10 @@ cost rollups. See [Parallel sub-agents](subagents/subagents.md).
 
 ## Session coordination
 
-A purpose-built coordinator profile can discover live, opt-in Yolop workers
-in separate Git worktrees, dispatch durable tasks, and receive explicit
-completion wakes through the attached `yolop coordination` CLI, without
-adding model-tool schemas. Presence and delivery are local and restart-safe;
-ordinary sessions start drained. See
+A coordinator profile (`ref = "coordination"`) starts threads with
+`start_thread`, each running as its own Yolop process, and follows their
+checklists, decisions and results. `yolop sessions send` messages any session.
+Presence and delivery are local and restart-safe. See
 [Session coordination](../session-coordination.md).
 
 ## Web
@@ -131,6 +130,7 @@ Secret questions are declined because encrypted session-secret storage is not
 available, so credentials are never collected by this tool.
 
 In `-p` mode, choice questions use declared defaults or the first option.
-Text and secret questions are declined without reading stdin. ACP declines
-structured questions because its current protocol has no question-response
-method; ordinary conversational clarification remains available.
+Text and secret questions are declined without reading stdin. Over ACP, an
+editor that supports form elicitation shows the questions as one form, with a
+field per question; an editor without it declines them, and ordinary
+conversational clarification remains available.

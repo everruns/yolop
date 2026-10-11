@@ -1,5 +1,34 @@
 # Knowledge Log
 
+## 2026-10-11, Coordination gaps closed
+
+Threads get their own worktree by default, a dead thread host's commands are
+stopped before it restarts, the TUI rail shows a `THREADS` board, and ACP asks
+structured questions (and so coordination decisions) through form elicitation
+when the editor supports it. See [session coordination](specs/session-coordination.md)
+and [ACP](specs/acp.md).
+
+## 2026-10-11, Coordination threads in separate processes
+
+Yolop's own worker pool (dispatch, accept/drain, spawn-workers) is replaced by
+the everruns `coordination` capability that Platform Chat runs, so there is one
+coordination model. Yolop now hosts each thread as a headless `yolop --serve`
+process that its coordinator supervises and restarts, carries briefs and
+updates through the durable inbox, and adds `yolop sessions send` for messaging
+any session. Opening a thread takes it over from its headless host. See
+[session coordination](specs/session-coordination.md).
+
+## 2026-10-10, Coordination that survives restarts and failures
+
+A live evaluation found coordinator mode unusable: the TUI and ACP dropped the
+coordination host at startup, so every session was offline. The host now lives
+on the runtime handles. Inbox messages are acknowledged from the woken turn's
+outcome instead of delivered once, failed turns retry then fail back, and a
+coordinator fails assignments whose worker vanished. Sessions re-exec through
+`/proc/<pid>/exe`, so upgrades no longer break the shim. Coordinators get prompt
+guidance toward the worker pool. See
+[session coordination](specs/session-coordination.md).
+
 ## 2026-10-09, Structured user questions
 
 Registered upstream `ask_user` in the coding harness. TUI questions reuse the

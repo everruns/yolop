@@ -77,7 +77,7 @@ impl Capability for YolopCapability {
 mod tests {
     use super::*;
     use crate::capabilities::model_list::MODEL_LIST_CONTROL_ROUTE;
-    use crate::capabilities::session_coordination::COORDINATION_CONTROL_ROUTE;
+    use crate::capabilities::sessions::SESSIONS_CONTROL_ROUTE;
     use crate::extensions::EXTENSIONS_CONTROL_ROUTE;
 
     #[test]
@@ -110,12 +110,11 @@ mod tests {
 
     #[test]
     fn administration_uses_registered_routes() {
-        let capability =
-            YolopCapability::new(&[COORDINATION_CONTROL_ROUTE, EXTENSIONS_CONTROL_ROUTE]);
+        let capability = YolopCapability::new(&[SESSIONS_CONTROL_ROUTE, EXTENSIONS_CONTROL_ROUTE]);
         let block = capability.system_prompt_addition().expect("block");
         assert!(block.contains("Administer this session"));
         assert!(block.contains("global request about yolop"));
-        for route in [COORDINATION_CONTROL_ROUTE, EXTENSIONS_CONTROL_ROUTE] {
+        for route in [SESSIONS_CONTROL_ROUTE, EXTENSIONS_CONTROL_ROUTE] {
             assert!(
                 block.contains(route.cli_subcommand),
                 "missing route {}",
@@ -127,14 +126,14 @@ mod tests {
 
     #[test]
     fn administration_discourages_repeated_help_probes() {
-        let capability = YolopCapability::new(&[COORDINATION_CONTROL_ROUTE]);
+        let capability = YolopCapability::new(&[SESSIONS_CONTROL_ROUTE]);
         let block = capability.system_prompt_addition().expect("block");
         assert!(block.contains("Do not repeat `--help`"));
     }
 
     #[test]
     fn administration_supports_shell_composition() {
-        let capability = YolopCapability::new(&[COORDINATION_CONTROL_ROUTE]);
+        let capability = YolopCapability::new(&[SESSIONS_CONTROL_ROUTE]);
         let block = capability.system_prompt_addition().expect("block");
         assert!(block.contains("scripts and shell composition"));
         assert!(!block.contains("Invoke directly"));

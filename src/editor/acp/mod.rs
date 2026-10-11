@@ -16,6 +16,7 @@
 mod bridge;
 mod modes;
 mod protocol;
+mod questions;
 mod server;
 mod setup_page;
 
@@ -150,6 +151,7 @@ impl RuntimeFactory for ConfigRuntimeFactory {
         resume_session_id: Option<RuntimeSessionId>,
         client_mcp_servers: ScopedMcpServers,
         tool_approver: Option<Arc<dyn crate::capabilities::ToolApprover>>,
+        ask_user: Arc<dyn everruns_core::builtins::ask_user::AskUser>,
     ) -> Result<BuiltRuntime> {
         // ACP sessions always carry the editor entry: detected identity, or
         // `unknown` when the client never identified itself. It wins over a
@@ -170,7 +172,7 @@ impl RuntimeFactory for ConfigRuntimeFactory {
             self.settings.clone(),
             BuildOptions {
                 client_ui: ClientUiContext::Acp,
-                ask_user_responder: Some(Arc::new(crate::capabilities::ask_user::AcpResponder)),
+                ask_user_responder: Some(ask_user),
                 acp_allow_hosted_provider_fallback: !self.provider_was_explicit,
                 client_mcp_servers,
                 tool_approver,
@@ -274,6 +276,7 @@ mod tests {
             resume_session_id: Option<RuntimeSessionId>,
             client_mcp_servers: ScopedMcpServers,
             tool_approver: Option<Arc<dyn crate::capabilities::ToolApprover>>,
+            ask_user: Arc<dyn everruns_core::builtins::ask_user::AskUser>,
         ) -> Result<BuiltRuntime> {
             build_with_options(
                 cwd,
@@ -284,7 +287,7 @@ mod tests {
                 BuildOptions {
                     llmsim_override: Some(self.config.clone().with_model("llmsim-yolop")),
                     client_ui: ClientUiContext::Acp,
-                    ask_user_responder: Some(Arc::new(crate::capabilities::ask_user::AcpResponder)),
+                    ask_user_responder: Some(ask_user),
                     client_mcp_servers,
                     tool_approver,
                     ..BuildOptions::default()
@@ -318,6 +321,7 @@ mod tests {
             resume_session_id: Option<RuntimeSessionId>,
             client_mcp_servers: ScopedMcpServers,
             tool_approver: Option<Arc<dyn crate::capabilities::ToolApprover>>,
+            ask_user: Arc<dyn everruns_core::builtins::ask_user::AskUser>,
         ) -> Result<BuiltRuntime> {
             let built = build_with_options(
                 cwd,
@@ -328,7 +332,7 @@ mod tests {
                 BuildOptions {
                     llmsim_override: Some(self.config.clone().with_model("llmsim-yolop")),
                     client_ui: ClientUiContext::Acp,
-                    ask_user_responder: Some(Arc::new(crate::capabilities::ask_user::AcpResponder)),
+                    ask_user_responder: Some(ask_user),
                     client_mcp_servers,
                     tool_approver,
                     ..BuildOptions::default()
@@ -377,9 +381,16 @@ mod tests {
             resume_session_id: Option<RuntimeSessionId>,
             client_mcp_servers: ScopedMcpServers,
             tool_approver: Option<Arc<dyn crate::capabilities::ToolApprover>>,
+            ask_user: Arc<dyn everruns_core::builtins::ask_user::AskUser>,
         ) -> Result<BuiltRuntime> {
             self.inner
-                .build(cwd, resume_session_id, client_mcp_servers, tool_approver)
+                .build(
+                    cwd,
+                    resume_session_id,
+                    client_mcp_servers,
+                    tool_approver,
+                    ask_user,
+                )
                 .await
         }
     }
@@ -998,6 +1009,117 @@ mod tests {
         collect_until_response_id(&mut reader, 2).await;
 
         (w, reader, server, session_id)
+    }
+
+    fn one_decision() -> LlmSimConfig {
+        LlmSimConfig::scripted(vec![
+            SimTurn::ToolCalls(vec![SimToolCall {
+                name: "ask_user".to_string(),
+                arguments: json!({ "questions": [{
+                    "kind": "choice", "id": "deploy", "header": "Deploy",
+                    "question": "Ship it now?", "allow_other": false,
+                    "options": [
+                        { "label": "Ship", "description": "deploy now" },
+                        { "label": "Wait", "description": "hold until Monday" }
+                    ]
+                }] }),
+                id: Some("call_ask".to_string()),
+            }]),
+            SimTurn::Assistant("done".to_string()),
+        ])
+    }
+
+    /// Run one prompt whose model asks a decision, answering any
+    /// `elicitation/create` with `answer`. Returns the elicitation request (if
+    /// one came) and every session update seen.
+    async fn ask_decision_over_acp(
+        client_capabilities: Value,
+        answer: Value,
+    ) -> (Option<Value>, String) {
+        let sessions = tempfile::tempdir().expect("sessions tempdir");
+        let (mut w, mut reader, _server) =
+            start_raw_server(one_decision(), sessions.path().to_path_buf());
+        send_json(
+            &mut w,
+            json!({ "jsonrpc": "2.0", "id": 0, "method": "initialize",
+                    "params": { "protocolVersion": 1, "clientCapabilities": client_capabilities } }),
+        )
+        .await;
+        collect_until_response_id(&mut reader, 0).await;
+        let cwd = tempfile::tempdir().expect("cwd tempdir").keep();
+        send_json(
+            &mut w,
+            json!({ "jsonrpc": "2.0", "id": 1, "method": "session/new", "params": { "cwd": cwd, "mcpServers": [] } }),
+        )
+        .await;
+        let (new_resp, _) = collect_until_response_id(&mut reader, 1).await;
+        let session_id = new_resp["result"]["sessionId"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        send_json(
+            &mut w,
+            json!({ "jsonrpc": "2.0", "id": 2, "method": "session/prompt",
+                    "params": { "sessionId": session_id, "prompt": [{ "type": "text", "text": "go" }] } }),
+        )
+        .await;
+        let mut elicitation = None;
+        loop {
+            let msg = next_json(&mut reader).await;
+            match msg.get("method").and_then(Value::as_str) {
+                Some("elicitation/create") => {
+                    send_json(
+                        &mut w,
+                        json!({ "jsonrpc": "2.0", "id": msg["id"], "result": answer }),
+                    )
+                    .await;
+                    elicitation = Some(msg["params"].clone());
+                }
+                _ if msg.get("id").and_then(Value::as_i64) == Some(2) => {
+                    // What the model was handed is in the session log.
+                    let id = session_id.parse().expect("session id");
+                    let log = session_log_path(&session_dir_path(sessions.path(), id));
+                    let log = std::fs::read_to_string(log).expect("session log");
+                    return (elicitation, log);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn tool_result_line(log: &str) -> &str {
+        log.lines()
+            .find(|line| line.contains("call_ask") && line.contains(r#""type":"tool.completed""#))
+            .unwrap_or_else(|| panic!("no ask_user result in {log}"))
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_decision_is_asked_through_a_form_and_the_answer_reaches_the_model() {
+        let (elicitation, log) = ask_decision_over_acp(
+            json!({ "elicitation": { "form": {} } }),
+            json!({ "action": "accept", "content": { "deploy": "Wait" } }),
+        )
+        .await;
+        let elicitation = elicitation.expect("the editor is asked");
+        assert_eq!(elicitation["mode"], "form");
+        assert_eq!(elicitation["message"], "Ship it now?");
+        assert_eq!(elicitation["toolCallId"], "call_ask");
+        let field = &elicitation["requestedSchema"]["properties"]["deploy"];
+        assert_eq!(field["oneOf"][1]["const"], "Wait");
+        let result = tool_result_line(&log);
+        assert!(result.contains(r#"\"answered\""#), "{result}");
+        assert!(result.contains(r#"[\"Wait\"]"#), "{result}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn without_form_support_a_decision_declines_without_asking() {
+        let (elicitation, log) =
+            ask_decision_over_acp(json!({}), json!({ "action": "decline" })).await;
+        assert!(
+            elicitation.is_none(),
+            "a client without forms is never asked"
+        );
+        assert!(tool_result_line(&log).contains("declined"), "{log}");
     }
 
     fn one_bash_call() -> LlmSimConfig {

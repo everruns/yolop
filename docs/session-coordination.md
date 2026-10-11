@@ -1,129 +1,133 @@
 # Session coordination
 
-Yolop can coordinate work across independently running local sessions. The
-`session_coordination` capability provides worker discovery, durable dispatch,
-and an explicit completion path back to the coordinator.
+A coordinator session hands independent pieces of work to threads and follows
+them to completion. The model is the everruns `coordination` capability, the
+same one Everruns Platform Chat runs. Yolop's part is where a thread runs: each
+thread is its own headless Yolop process, so threads keep working while the
+coordinator is closed, and you can open any of them like an ordinary session.
 
-The feature is intentionally local and opt-in. A worker must be running, share
-the same sessions directory and Git repository, and advertise that it accepts
-work. Git worktrees from the same repository are treated as one project.
+## Start a coordinator
 
-## Configure roles
-
-Use named profiles to give sessions a stable role. A coordinator profile can
-contain:
+Enable the capability in a named profile:
 
 ```toml
-instructions = "Triage incoming requests. Dispatch actionable repository work to an available local worker, then follow the durable task through completion."
+instructions = "Triage incoming requests. Hand each independent piece of repository work to a thread, then follow it through to completion."
 
 [[capabilities]]
-ref = "session_coordination"
-role = "coordinator"
-accept_work = false
+ref = "coordination"
 ```
 
-A worker profile can opt in at startup:
-
-```toml
-[[capabilities]]
-ref = "session_coordination"
-role = "worker"
-accept_work = true
-
-worktrees = "always"
-```
-
-Start the sessions against the same repository and sessions directory:
+Then start a session with it, in a terminal or an editor:
 
 ```bash
-yolop -C /path/to/repo --profile worker
 yolop -C /path/to/repo --profile coordinator
+yolop --acp --profile coordinator
 ```
 
-Every ordinary session has the capability in worker mode but starts drained,
-so it cannot receive work until it opts in.
+For Zed or Paseo, run `yolop into zed` or `yolop into paseo`, then add
+`"--profile", "coordinator"` to the generated `args`.
 
-## Operate the pool
+## Threads and assignments
 
-Coordination administration is CLI-first and contributes no model tools. Inside
-a running session, invoke `yolop coordination ...` through Bash. A local
-session endpoint carries raw argv to the host, whose exact Yolop executable
-parses and dispatches the typed request to the live capability.
+The coordinator gets these tools:
 
-The CLI covers discovery, worker planning, dispatch, completion, cancellation, and worker availability:
+- `start_thread` starts a thread with a brief.
+- `message_thread` sends it a follow-up.
+- `list_threads` and `get_thread` show each thread's state, checklist and
+  recent messages.
+- `resolve_thread` closes a thread whose work is done.
+
+Each brief is an assignment the coordinator owns. While a thread works on one,
+it has its own tools:
+
+- `update_checklist` keeps its progress steps current.
+- `complete_assignment` reports the result with a summary and artifacts.
+- `ask_decision` asks a question with up to four options and a recommended one.
+- `report_to_coordinator` and `redirect_to_coordinator` send it a note.
+
+Every change to an assignment wakes the coordinator with an automatic update,
+and the coordinator reads the thread before acting on it. A thread turn that
+ends without completing its assignment is flagged as needing attention, unless
+the thread is only waiting on background work it started.
+
+A thread runs the coordinator's executable with its profile, provider, model,
+and sessions directory. In a Git repository each thread works in its own
+worktree on its own branch, so threads never edit the same checkout; the
+thread names its branch when it completes, and the coordinator reviews and
+brings in the change. A profile with `worktrees = "off"` keeps threads in the
+coordinator's checkout.
+
+## Watch the board
+
+In the terminal, the activity rail (`Ctrl+B`) opens a `THREADS` section when
+the first thread starts. Each thread shows its current assignment, where it
+stands (working, needs you, ready for review, closed) and its checklist
+progress, such as `2/5 steps`.
+
+## Decisions
+
+A thread that hits a real choice calls `ask_decision`, and its coordinator
+asks you. In the terminal that is a question with its options. In an editor
+that supports ACP form elicitation it is a form with the options to pick from;
+an editor without it gets the question in the conversation.
+
+Threads belong to the coordinator that started them. Several coordinators can
+run at once, and none of them sees or steers another's threads.
+
+## Restarts
+
+Threads, assignments, checklists and pending messages live in the local
+sessions database, so coordination survives the usual interruptions:
+
+- **The coordinator closes or restarts.** Threads keep working. Resume the
+  coordinator with `yolop --session <id> --profile coordinator`; updates it
+  missed are delivered then.
+- **A thread's process stops.** A thread with a message waiting is started
+  again by its coordinator. A thread that stopped in the middle of an
+  assignment is restarted with a note to check where its work stands. Commands
+  the stopped process was running (builds, tests, servers) are stopped first,
+  so they do not race its successor in the same worktree.
+- **A thread is idle.** Its process exits after ten minutes with nothing to do
+  and starts again when the coordinator messages it.
+- **A woken turn fails** (provider error, quota, stalled stream). A failed
+  thread turn fails its assignment, and the coordinator decides what to do. A
+  plain message is offered again after a backoff, three attempts in all.
+
+## Open a thread
+
+`yolop sessions live` lists the sessions running now and, for threads, their
+coordinator. Open one with `yolop --session <id>`. A thread's background host
+finishes the turn it is running and hands the session over; messages for the
+thread are then delivered to the session you opened.
+
+## Message any session
+
+Any session can message any other, coordinated or not. Inside a session, or
+from a shell:
 
 ```bash
-yolop coordination list
-yolop coordination list --json
-yolop coordination status
-yolop coordination dispatch --title Inspect parser --request Inspect parser behavior and add tests
-yolop coordination complete --status succeeded --summary Parser fixed --validation cargo test passed --artifact https://example.test/pr/1
-yolop coordination cancel --task-id <task-id> --reason Superseded by newer plan
-yolop coordination accept
-yolop coordination drain
-yolop coordination spawn-workers --count 3 --profile review-worker
+yolop sessions live
+yolop sessions send <session-id> "Rebase on main before you push."
 ```
 
-### Start workers for a review round
-
-A coordinator that needs more workers plans them with `spawn-workers`, which
-prints one `yolop` launch command per worker with the requested profile,
-provider, and model (up to 10 per call; run it again for more). Start one
-worker per launch command (one terminal each) in the project, wait until
-`yolop coordination status` shows them as live workers, then dispatch one
-review per worker. `spawn-workers` needs no role and works outside a session;
-dispatching still requires the coordinator role.
-
-The `yolop_spawn` command routes a spawn request to the right primitive: mode
-`agent` delegates to `spawn_agent` for an in-process child (same session, same
-model), mode `session` plans separate Yolop worker sessions with their own
-model, provider, and worktree, dispatching directly when a target worker is
-named:
-
-```text
-yolop_spawn --mode session --count 2 --profile review-worker --task <work>
-yolop_spawn --mode agent --task <work> --title <short title>
-```
-
-Multiword `--title`, `--request`, `--summary`, and `--validation` values consume
-words until the next option, though ordinary shell quoting also works.
-Run `yolop coordination <operation> --help` for the canonical grammar. The
-built-in `/coordination` command accepts the same operation syntax.
-
-An attached `list` is scoped to the current Git project. A CLI outside a
-session may list all live sessions and plan worker launches with
-`spawn-workers`, but every other operation requires a running session
-and derives its identity and role from that attachment. A caller cannot mutate
-another session by supplying a session ID.
-
-`dispatch` requires a coordinator or combined role. It reserves one idle worker
-atomically and creates a `session_dispatch` task in the coordinator's existing
-task registry. The worker receives an authenticated automatic prompt and must
-invoke `yolop coordination complete` from its own attached session. Completion
-settles the task and wakes the coordinator with the durable result. Every dispatch
-records parent (coordinator) and child (worker) session IDs in the success
-payload and status views. When no worker is available, dispatch fails instead
-of creating an untracked process: plan workers with
-`yolop coordination spawn-workers` and start them (or spawn one with the
-`spawn_agent` tool for an in-process child), then retry dispatch. The owning coordinator can
-cancel its running assignment with `yolop coordination cancel`, which fails
-the coordinator task, releases the worker for new work, and delivers a one-shot
-cancellation inbox message to the worker.
-
-If no eligible worker is live, dispatch fails visibly. The spawner generates
-launch commands with the coordinator's chosen profile, provider, and model;
-starting the worker processes themselves stays with the operator, so tracking
-stays honest about which workers are actually live. Full process supervision
-with owned restarts, logs, and cleanup waits for a durable worker lifecycle.
+A live session receives the message on its next idle moment. A message for a
+session that is not running waits until that session next starts. A message
+sent from a session tells the receiver who sent it and how to answer.
 
 ## Delivery and safety
 
-Presence uses short SQLite leases, so crashed workers disappear without a
-central daemon. Assignment and completion messages use a durable SQLite inbox.
-Restarting the target session redelivers unfinished messages to the new host.
-Automatic coordination wakes are not disabled by the background-only
-`proactive_wake` preference.
+Presence uses short SQLite leases, so a crashed process drops out without a
+central daemon. Messages are acknowledged only when the turn they woke
+finishes, so a process that dies first leaves them for its next run. Automatic
+coordination wakes are not disabled by the background-only `proactive_wake`
+preference.
 
-Coordination does not widen authority. A worker keeps its own workspace,
-sandbox, approval policy, profile instructions, and capability set. The
-coordinator can target only a live, opted-in session in the same local project.
+Coordination does not widen authority. A thread has the coordinator's profile,
+sandbox and approval policy. A headless thread cannot show approval prompts,
+so a sandbox escalation that needs one is denied, as in `--print`; open the
+thread to approve it. Everything stays in one user-owned sessions database,
+with no network listener.
+
+On Linux, running sessions start threads and control calls through
+`/proc/<pid>/exe`, so upgrading Yolop under them keeps them on the binary they
+started with until they restart.

@@ -1,4 +1,5 @@
 use everruns_contracts::typed_id::SessionId;
+use everruns_core::session_task::TASK_KIND_ASSIGNMENT;
 use everruns_core::{SessionStore, SessionTask, SessionTaskRegistry, TokenUsage};
 use everruns_core::{SessionTaskState, TASK_KIND_MONITOR, TASK_KIND_SUBAGENT};
 use std::collections::HashSet;
@@ -37,10 +38,11 @@ impl TaskTree {
         self.rows.get(selected).map(|row| &row.task)
     }
 
-    pub(crate) fn has_subagents(&self) -> bool {
+    /// Sub-agents or coordination threads: delegated work the rail opens for.
+    pub(crate) fn has_delegated_work(&self) -> bool {
         self.rows
             .iter()
-            .any(|row| row.task.kind == TASK_KIND_SUBAGENT)
+            .any(|row| row.task.kind == TASK_KIND_SUBAGENT || row.task.kind == TASK_KIND_ASSIGNMENT)
     }
 }
 
@@ -48,6 +50,8 @@ impl TaskTree {
 /// renderers. It deliberately describes tasks rather than terminal chrome.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ActivityRail {
+    /// A coordinator's threads, one row per thread (its latest assignment).
+    pub(crate) threads: ActivityCounts,
     pub(crate) agents: ActivityCounts,
     pub(crate) background: ActivityCounts,
     pub(crate) rows: Vec<ActivityRailRow>,
@@ -73,6 +77,7 @@ pub(crate) enum ActivityRailRow {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ActivitySection {
+    Threads,
     Agents,
     Background,
 }
@@ -80,6 +85,7 @@ pub(crate) enum ActivitySection {
 impl ActivitySection {
     pub(crate) fn label(self) -> &'static str {
         match self {
+            Self::Threads => "THREADS",
             Self::Agents => "AGENTS",
             Self::Background => "BACKGROUND",
         }
@@ -101,9 +107,18 @@ pub(crate) struct ActivityTaskRow {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ActivityTaskKind {
+    /// A coordination thread, shown by its latest assignment. Its process runs
+    /// separately, so it has no child rows here.
+    Thread,
     Agent,
     Background,
     Monitor,
+}
+
+impl ActivityTaskKind {
+    fn is_background(self) -> bool {
+        matches!(self, Self::Background | Self::Monitor)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -134,6 +149,16 @@ impl ActivityStatus {
     }
 
     pub(crate) fn label(self, kind: ActivityTaskKind) -> &'static str {
+        // The coordination board's vocabulary: what the thread needs from the
+        // person, not the task machinery.
+        if kind == ActivityTaskKind::Thread {
+            return match self {
+                Self::Queued | Self::Running => "working",
+                Self::AwaitingInput | Self::Failed => "needs you",
+                Self::Succeeded => "ready for review",
+                Self::Canceled => "closed",
+            };
+        }
         if kind == ActivityTaskKind::Monitor
             && !matches!(self, Self::Succeeded | Self::Failed | Self::Canceled)
         {
@@ -164,7 +189,9 @@ impl From<SessionTaskState> for ActivityStatus {
 }
 
 fn activity_task_row(task_index: usize, row: &TaskTreeRow) -> ActivityTaskRow {
-    let kind = if row.task.kind == TASK_KIND_SUBAGENT {
+    let kind = if row.task.kind == TASK_KIND_ASSIGNMENT {
+        ActivityTaskKind::Thread
+    } else if row.task.kind == TASK_KIND_SUBAGENT {
         ActivityTaskKind::Agent
     } else if row.task.kind == TASK_KIND_MONITOR {
         ActivityTaskKind::Monitor
@@ -177,15 +204,34 @@ fn activity_task_row(task_index: usize, row: &TaskTreeRow) -> ActivityTaskRow {
         name: row.task.display_name.clone(),
         status: row.task.state.into(),
         kind,
-        usage: row.branch_usage.as_ref().map(|usage| {
-            let mut value = format!("{} tok", format_tokens(usage.total_tokens() as u64));
-            if let Some(cost) = usage.effective_cost_usd() {
-                value.push_str(&format!(" · ${cost:.4}"));
-            }
-            value
-        }),
+        usage: if kind == ActivityTaskKind::Thread {
+            checklist(&row.task)
+        } else {
+            row.branch_usage.as_ref().map(|usage| {
+                let mut value = format!("{} tok", format_tokens(usage.total_tokens() as u64));
+                if let Some(cost) = usage.effective_cost_usd() {
+                    value.push_str(&format!(" · ${cost:.4}"));
+                }
+                value
+            })
+        },
         canceling: row.task.cancel_requested_at.is_some() && !row.task.state.is_terminal(),
     }
+}
+
+/// A thread's checklist progress, as the coordinator's `list_threads` reports it.
+fn checklist(task: &SessionTask) -> Option<String> {
+    let steps = &task.progress.as_ref()?.steps;
+    if steps.is_empty() {
+        return None;
+    }
+    let done = steps
+        .iter()
+        .filter(|step| {
+            step.status == everruns_contracts::runtime::background::ProgressStepStatus::Done
+        })
+        .count();
+    Some(format!("{done}/{} steps", steps.len()))
 }
 
 fn activity_counts<'a>(rows: impl Iterator<Item = &'a ActivityTaskRow>) -> ActivityCounts {
@@ -214,24 +260,39 @@ pub(crate) fn activity_rail(tree: &TaskTree) -> Option<ActivityRail> {
     if tree.rows.is_empty() && tree.errors.is_empty() {
         return None;
     }
+    // A thread works one assignment at a time; its board row is the latest.
+    let latest_assignment: HashSet<usize> = {
+        let mut latest = std::collections::HashMap::new();
+        for (index, row) in tree.rows.iter().enumerate() {
+            if row.task.kind == TASK_KIND_ASSIGNMENT {
+                latest.insert(row.task.links.child_session_id, index);
+            }
+        }
+        latest.into_values().collect()
+    };
     let task_rows: Vec<_> = tree
         .rows
         .iter()
         .enumerate()
+        .filter(|(index, row)| {
+            row.task.kind != TASK_KIND_ASSIGNMENT || latest_assignment.contains(index)
+        })
         .map(|(index, row)| activity_task_row(index, row))
         .collect();
+    let threads = activity_counts(
+        task_rows
+            .iter()
+            .filter(|row| row.kind == ActivityTaskKind::Thread),
+    );
     let agents = activity_counts(
         task_rows
             .iter()
             .filter(|row| row.kind == ActivityTaskKind::Agent),
     );
-    let background = activity_counts(
-        task_rows
-            .iter()
-            .filter(|row| row.kind != ActivityTaskKind::Agent),
-    );
-    let mut rows = Vec::with_capacity(task_rows.len() + 2 + tree.errors.len());
+    let background = activity_counts(task_rows.iter().filter(|row| row.kind.is_background()));
+    let mut rows = Vec::with_capacity(task_rows.len() + 3 + tree.errors.len());
     for (section, counts, is_member) in [
+        (ActivitySection::Threads, threads, ActivityTaskKind::Thread),
         (ActivitySection::Agents, agents, ActivityTaskKind::Agent),
         (
             ActivitySection::Background,
@@ -248,14 +309,15 @@ pub(crate) fn activity_rail(tree: &TaskTree) -> Option<ActivityRail> {
         });
         rows.extend(task_rows.iter().filter_map(|row| {
             let matches = match section {
-                ActivitySection::Agents => row.kind == is_member,
-                ActivitySection::Background => row.kind != ActivityTaskKind::Agent,
+                ActivitySection::Threads | ActivitySection::Agents => row.kind == is_member,
+                ActivitySection::Background => row.kind.is_background(),
             };
             matches.then(|| ActivityRailRow::Task(row.clone()))
         }));
     }
     rows.extend(tree.errors.iter().cloned().map(ActivityRailRow::Warning));
     Some(ActivityRail {
+        threads,
         agents,
         background,
         rows,
@@ -280,7 +342,7 @@ impl ActivityRail {
     }
 
     pub(crate) fn active(&self) -> usize {
-        self.agents.active + self.background.active
+        self.threads.active + self.agents.active + self.background.active
     }
 }
 
@@ -422,36 +484,39 @@ pub(crate) async fn load_task_tree(
                 }
                 prefix.push_str(if is_last { "└─ " } else { "├─ " });
 
-                let (child_session_id, branch_usage) =
-                    if let Some(child_id) = task.links.child_session_id {
-                        match sessions.get_session(child_id).await {
-                            Ok(Some(session))
-                                if session.parent_session_id == Some(task.session_id)
-                                    || session.forked_from_session_id == Some(task.session_id) =>
-                            {
-                                (Some(child_id), session.usage)
-                            }
-                            Ok(Some(_)) => {
-                                tree.errors.push(format!(
-                                    "linked session {child_id} is not a child of {}",
-                                    task.session_id
-                                ));
-                                (None, None)
-                            }
-                            Ok(None) => {
-                                tree.errors
-                                    .push(format!("child session {child_id} not found"));
-                                (None, None)
-                            }
-                            Err(error) => {
-                                tree.errors
-                                    .push(format!("child session {child_id}: {error}"));
-                                (None, None)
-                            }
+                // A coordination thread is its own process and session log;
+                // its tasks are not this session's to list.
+                let (child_session_id, branch_usage) = if task.kind == TASK_KIND_ASSIGNMENT {
+                    (None, None)
+                } else if let Some(child_id) = task.links.child_session_id {
+                    match sessions.get_session(child_id).await {
+                        Ok(Some(session))
+                            if session.parent_session_id == Some(task.session_id)
+                                || session.forked_from_session_id == Some(task.session_id) =>
+                        {
+                            (Some(child_id), session.usage)
                         }
-                    } else {
-                        (None, None)
-                    };
+                        Ok(Some(_)) => {
+                            tree.errors.push(format!(
+                                "linked session {child_id} is not a child of {}",
+                                task.session_id
+                            ));
+                            (None, None)
+                        }
+                        Ok(None) => {
+                            tree.errors
+                                .push(format!("child session {child_id} not found"));
+                            (None, None)
+                        }
+                        Err(error) => {
+                            tree.errors
+                                .push(format!("child session {child_id}: {error}"));
+                            (None, None)
+                        }
+                    }
+                } else {
+                    (None, None)
+                };
                 let row_index = tree.rows.len();
                 tree.rows.push(TaskTreeRow {
                     task,
@@ -737,7 +802,7 @@ mod tests {
         assert_eq!(panel.selectable_task_indices(), vec![0, 1, 2, 3]);
         assert_eq!(panel.body_row_for_task(0), Some(1));
         assert_eq!(panel.body_row_for_task(2), Some(4));
-        assert!(tree.has_subagents());
+        assert!(tree.has_delegated_work());
 
         let rendered = render_activity_rail(&tree, Some(0));
         assert!(rendered.contains("AGENTS 2"));
@@ -835,6 +900,87 @@ mod tests {
         let root_usage = tree.rows[0].branch_usage.as_ref().unwrap();
         assert_eq!(root_usage.total_tokens(), 175);
         assert_eq!(root_usage.effective_cost_usd(), Some(0.03));
+    }
+
+    /// A coordinator's board: one row per thread (its latest assignment), in
+    /// the board's words, with checklist progress. A thread runs in its own
+    /// process, so the coordinator's session store not knowing it is normal.
+    #[tokio::test]
+    async fn coordination_threads_form_a_board_by_their_latest_assignment() {
+        use everruns_contracts::runtime::background::{ProgressStep, ProgressStepStatus};
+        let root_id = SessionId::from_seed(720);
+        let parser = SessionId::from_seed(721);
+        let docs = SessionId::from_seed(722);
+        let registry = LocalSessionTaskRegistry::new(
+            SqliteDb::open_in_memory().expect("in-memory task database"),
+        )
+        .expect("task registry");
+        let assign =
+            |id: &str, thread: SessionId, title: &str, state: SessionTaskState| CreateSessionTask {
+                session_id: root_id,
+                id: Some(id.into()),
+                kind: TASK_KIND_ASSIGNMENT.into(),
+                display_name: title.into(),
+                spec: json!({}),
+                state,
+                links: TaskLinks {
+                    child_session_id: Some(thread),
+                    ..Default::default()
+                },
+                wake_policy: Default::default(),
+            };
+        for task in [
+            assign("asg_1", parser, "Parser tests", SessionTaskState::Succeeded),
+            assign("asg_2", docs, "Docs pass", SessionTaskState::AwaitingInput),
+            assign("asg_3", parser, "Parser fuzzing", SessionTaskState::Running),
+        ] {
+            registry.create(task).await.unwrap();
+            // Distinct creation times keep "latest" well defined.
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        registry
+            .update(
+                root_id,
+                "asg_3",
+                everruns_core::SessionTaskUpdate {
+                    progress: Some(
+                        everruns_contracts::runtime::background::BackgroundProgress {
+                            current: None,
+                            total: None,
+                            unit: None,
+                            label: None,
+                            steps: vec![
+                                ProgressStep {
+                                    title: "seed corpus".into(),
+                                    status: ProgressStepStatus::Done,
+                                },
+                                ProgressStep {
+                                    title: "run".into(),
+                                    status: ProgressStepStatus::InProgress,
+                                },
+                            ],
+                        },
+                    ),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        let tree = load_task_tree(root_id, &registry, &Sessions(HashMap::new())).await;
+        assert!(tree.errors.is_empty(), "{:?}", tree.errors);
+        let rail = activity_rail(&tree).expect("assignments produce a board");
+        assert_eq!((rail.threads.total, rail.threads.active), (2, 2));
+        let rendered = render_activity_rail(&tree, None);
+        assert!(rendered.contains("THREADS 2"), "{rendered}");
+        assert!(rendered.contains("? Docs pass — needs you"), "{rendered}");
+        assert!(
+            rendered.contains("● Parser fuzzing — working · 1/2 steps"),
+            "{rendered}"
+        );
+        assert!(!rendered.contains("Parser tests"), "{rendered}");
+        assert!(!rendered.contains("BACKGROUND"), "{rendered}");
+        assert!(tree.has_delegated_work(), "the rail opens for a board");
     }
 
     #[tokio::test]

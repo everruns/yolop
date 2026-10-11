@@ -96,42 +96,37 @@ fn models_pull_reaches_the_download_without_a_nested_runtime() {
 }
 
 #[test]
-fn coordination_cli_lists_workers_without_model_startup() {
+fn sessions_cli_lists_live_sessions_without_model_startup() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let output = yolop_command()
-        .args(["coordination", "list", "--json"])
+        .args(["sessions", "live"])
         .env("HOME", tmp.path())
         .env("XDG_DATA_HOME", tmp.path().join("data"))
         .output()
-        .expect("list coordination workers through CLI");
+        .expect("list live sessions through CLI");
     assert!(
         output.status.success(),
         "stderr={}",
         String::from_utf8_lossy(&output.stderr)
     );
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(value["workers"], serde_json::json!([]));
+    assert_eq!(value["sessions"], serde_json::json!([]));
 }
 
 #[test]
-fn coordination_cli_advertises_dispatch_and_completion() {
+fn sessions_cli_advertises_messaging_another_session() {
     let output = yolop_command()
-        .args(["coordination", "--help"])
+        .args(["sessions", "--help"])
         .output()
-        .expect("show coordination CLI help");
+        .expect("show sessions CLI help");
     assert!(
         output.status.success(),
         "stderr={}",
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("dispatch"), "stdout={stdout}");
-    assert!(stdout.contains("complete"), "stdout={stdout}");
-    assert!(stdout.contains("cancel"), "stdout={stdout}");
-    assert!(
-        stdout.contains("yolop coordination dispatch --title 'Add parser tests'"),
-        "stdout={stdout}"
-    );
+    assert!(stdout.contains("live"), "stdout={stdout}");
+    assert!(stdout.contains("send"), "stdout={stdout}");
 }
 
 #[test]

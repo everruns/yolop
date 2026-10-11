@@ -36,14 +36,10 @@ Background agents consume provider requests and tokens concurrently. Start with
 a small fan-out, use explicit task boundaries, and keep the root responsible for
 the final full test run.
 
-For a child with its own model, provider, or worktree, use a separate worker
-session instead of an in-process sub-agent:
-`yolop coordination spawn-workers` plans the launches (one `yolop` command per
-worker with `--profile`, `--provider`, and `--model`), the coordinator hands
-out reviews with `coordination dispatch`, and each worker reports back with
-`coordination complete`. The `yolop_spawn` command routes between the two
-paths: mode `agent` for an in-process `spawn_agent` child, mode `session` for
-separate worker sessions. See [Session coordination](../../session-coordination.md).
+For long-running work that should outlive the session that started it, use a
+coordinator profile instead: each thread runs as its own Yolop process,
+reports progress and results back, and can be opened like any other session.
+See [Session coordination](../../session-coordination.md).
 
 To reproduce the demo from the repository root, authenticate the Codex provider
 and run:
