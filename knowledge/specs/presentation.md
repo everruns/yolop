@@ -143,8 +143,7 @@ Monitors are described as waiting rather than executing commands. Each task has
 a semantic state marker, name, right-aligned state, and branch usage when space
 permits.
 
-A coordinator (a session whose profile enables `coordination` and that is not
-itself a thread) starts with the rail open and passive, showing "No threads
+A coordinator (see [session coordination](session-coordination.md)) starts with the rail open and passive, showing "No threads
 yet" until its first thread, since the board is its main view. Otherwise the
 rail opens once, when the first sub-agent or thread appears, and stays passive so the
 composer retains focus. `Ctrl+B` focuses a passive rail and closes a focused
