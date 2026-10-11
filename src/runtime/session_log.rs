@@ -972,9 +972,9 @@ fn message_from_event(data: &EventData) -> Option<RuntimeMessage> {
     }
 }
 
-// Only checkpoint tests project messages from events now: the runtime reads the
-// conversation back through the event log itself.
-#[cfg(test)]
+// The runtime reads its own conversation back through the event log; this
+// projection serves readers of another session's log (a coordinator reading
+// its thread) and checkpoint tests.
 pub(crate) fn messages_from_events(events: &[Event]) -> Vec<RuntimeMessage> {
     events
         .iter()

@@ -308,6 +308,9 @@ pub struct WakeRunner {
     /// pass through the host's turn entry point, so this is the only place it
     /// can learn the level an endpoint that mandates reasoning requires.
     provider: Arc<RwLock<crate::runtime::ProviderChoice>>,
+    /// Coordination threads run in their own yolop processes; messages to
+    /// them go through the session inbox instead of an in-process turn.
+    threads: Option<crate::capabilities::ThreadRouting>,
 }
 
 impl WakeRunner {
@@ -323,7 +326,38 @@ impl WakeRunner {
             tasks,
             child_turn_locks: Mutex::new(HashMap::new()),
             provider,
+            threads: None,
         }
+    }
+
+    pub fn with_thread_routing(mut self, routing: crate::capabilities::ThreadRouting) -> Self {
+        self.threads = Some(routing);
+        self
+    }
+
+    /// The coordination thread `session_id` is, if it is one.
+    async fn thread(
+        &self,
+        session_id: SessionId,
+    ) -> Result<
+        Option<(
+            &crate::capabilities::ThreadRouting,
+            crate::capabilities::session_coordination::ThreadRecord,
+        )>,
+    > {
+        let Some(routing) = self.threads.as_ref() else {
+            return Ok(None);
+        };
+        let parent = self
+            .sessions
+            .get_session(session_id)
+            .await?
+            .and_then(|session| session.parent_session_id);
+        let thread = routing
+            .thread(session_id, parent, self.tasks.as_deref())
+            .await
+            .map_err(|error| AgentLoopError::store(error.to_string()))?;
+        Ok(thread.map(|thread| (routing, thread)))
     }
 
     /// The reasoning level the session's model names, for messages this runner
@@ -658,6 +692,11 @@ impl LocalSessionRunner for WakeRunner {
     }
 
     async fn send_message(&self, session_id: SessionId, content: &str) -> Result<()> {
+        if let Some((routing, thread)) = self.thread(session_id).await? {
+            return routing
+                .deliver(&thread, content)
+                .map_err(|error| AgentLoopError::tool(error.to_string()));
+        }
         if self.sessions.get_session(session_id).await?.is_none() {
             return Err(AgentLoopError::session_not_found(session_id));
         }
@@ -748,7 +787,12 @@ impl LocalSessionRunner for WakeRunner {
         session_id: SessionId,
         limit: Option<usize>,
     ) -> Result<Vec<PlatformMessage>> {
-        let messages = self.runtime()?.messages(session_id).await?;
+        let messages = match self.thread(session_id).await? {
+            Some((routing, thread)) => routing
+                .messages(&thread)
+                .map_err(|error| AgentLoopError::store(error.to_string()))?,
+            None => self.runtime()?.messages(session_id).await?,
+        };
         let mut mapped: Vec<_> = messages
             .iter()
             .map(|message| PlatformMessage {
@@ -769,6 +813,14 @@ impl LocalSessionRunner for WakeRunner {
     }
 
     async fn get_session_status(&self, session_id: SessionId) -> Result<Option<String>> {
+        if let Some((routing, thread)) = self.thread(session_id).await? {
+            let status = if routing.is_live(&thread) {
+                "running"
+            } else {
+                "idle"
+            };
+            return Ok(Some(status.to_string()));
+        }
         Ok(self
             .sessions
             .get_session(session_id)

@@ -1,5 +1,15 @@
 # Knowledge Log
 
+## 2026-10-11, Coordination threads in separate processes
+
+Yolop's own worker pool (dispatch, accept/drain, spawn-workers) is replaced by
+the everruns `coordination` capability that Platform Chat runs, so there is one
+coordination model. Yolop now hosts each thread as a headless `yolop --serve`
+process that its coordinator supervises and restarts, carries briefs and
+updates through the durable inbox, and adds `yolop sessions send` for messaging
+any session. Opening a thread takes it over from its headless host. See
+[session coordination](specs/session-coordination.md).
+
 ## 2026-10-10, Coordination that survives restarts and failures
 
 A live evaluation found coordinator mode unusable: the TUI and ACP dropped the

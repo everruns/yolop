@@ -162,6 +162,14 @@ struct Cli {
     #[arg(long, conflicts_with = "print")]
     acp: bool,
 
+    /// Host an existing session headlessly: no terminal UI, only the messages
+    /// that reach its inbox (`yolop sessions send`, a coordinator's brief) and
+    /// its own background work. Coordinators start their threads this way.
+    /// Requires `--session`; exits once idle for ten minutes, and is started
+    /// again when new work arrives for a thread.
+    #[arg(long, requires = "session", conflicts_with_all = ["print", "acp"])]
+    serve: bool,
+
     /// Add an entry to the `<environment_context>` block of the system
     /// prompt, as `KEY=VALUE`. Repeatable; on duplicate keys the last
     /// occurrence wins. Keys must be 1-64 chars of `[A-Za-z0-9_.-]`
@@ -936,13 +944,27 @@ async fn async_main(crash_reporter: &crash_report::CrashReporter) -> Result<()> 
     // Only the interactive TUI can apply terminal-side commands (overlays,
     // transcript clear, quit), so only it enables `ClientCommandsCapability`.
     // `--print` is one-shot and never dispatches them.
-    let interactive = cli.print.is_none();
+    let interactive = cli.print.is_none() && !cli.serve;
     if let Some(warning) = exec::sandbox::danger_warning(effective_sandbox_mode) {
         eprintln!("yolop: {warning}");
     }
     // Captured before `settings` is moved into the runtime build below; used to
     // resolve the TUI theme once the runtime is ready.
     let saved_theme = settings.snapshot().theme().map(str::to_string);
+    // A person opening a thread that a headless host holds takes it over: the
+    // host yields between turns, since only one process may write a session log.
+    if let (Some(session_id), false) = (resume_session_id, cli.serve) {
+        let store = capabilities::CoordinationStore::open(&sessions_dir)?;
+        if store.request_release(session_id)? {
+            eprintln!("yolop: waiting for the background host to hand this session over");
+            if !store.take_over(session_id, SERVE_HANDOVER_TIMEOUT).await? {
+                anyhow::bail!(
+                    "session {session_id} is still busy in a background host; try again once its turn ends"
+                );
+            }
+        }
+    }
+    let serve_release = cli.serve.then(|| Arc::new(tokio::sync::Notify::new()));
     let runtime = runtime::build_with_options(
         cwd,
         provider,
@@ -956,7 +978,9 @@ async fn async_main(crash_reporter: &crash_report::CrashReporter) -> Result<()> 
             } else {
                 ClientUiContext::Print
             },
-            session_kind: if interactive {
+            session_kind: if cli.serve {
+                runtime::session_log::SessionKind::Automated
+            } else if interactive {
                 runtime::session_log::SessionKind::Interactive
             } else {
                 runtime::session_log::SessionKind::Print
@@ -964,6 +988,7 @@ async fn async_main(crash_reporter: &crash_report::CrashReporter) -> Result<()> 
             initial_prompt: cli.print.clone(),
             sandbox_mode_override,
             extra_environment_context,
+            serve_release: serve_release.clone(),
             ..Default::default()
         },
     )
@@ -992,6 +1017,9 @@ async fn async_main(crash_reporter: &crash_report::CrashReporter) -> Result<()> 
         }
     }
 
+    if let Some(release) = serve_release {
+        return run_serve_mode(runtime, release).await;
+    }
     if let Some(prompt) = cli.print {
         let image_parts = tui::input::image_input::load_image_parts(&cli.images)?;
         return run_print_mode(runtime, prompt, image_parts, cli.trajectory_out).await;
@@ -1633,9 +1661,6 @@ fn detached_cli_registry() -> Result<control::CliRegistry> {
         Some(store) => store,
         None => capabilities::CoordinationStore::new(everruns::local::SqliteDb::open_in_memory()?)?,
     };
-    registry.register(Arc::new(
-        capabilities::SessionCoordinationCapability::detached(coordination_store),
-    ))?;
     registry.register(Arc::new(capabilities::SkillManagementCapability::new(
         capabilities::SkillDirs::resolve(&workspace, None),
     )))?;
@@ -1644,6 +1669,7 @@ fn detached_cli_registry() -> Result<control::CliRegistry> {
         .unwrap_or_else(|| workspace.join(".yolop").join("sessions"));
     registry.register(Arc::new(capabilities::SessionsCapability::detached(
         sessions_dir,
+        coordination_store,
     )))?;
     registry.register(Arc::new(connectors::ConnectorsCapability::new(
         Arc::new(connectors::ConnectionCatalog::with_defaults()),
@@ -2250,6 +2276,80 @@ async fn run_print_mode(
     Ok(())
 }
 
+/// How long a headless host waits with nothing to do before it exits. Its
+/// presence lapses with it; a coordinator starts it again when new work for
+/// the thread arrives.
+const SERVE_IDLE_EXIT: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// How long opening a session waits for its headless host to finish the turn
+/// it is running and hand the session over.
+const SERVE_HANDOVER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Headless host: run each wake (inbox delivery or background completion) as a
+/// turn, with nobody at a keyboard, until idle or signalled.
+async fn run_serve_mode(runtime: BuiltRuntime, release: Arc<tokio::sync::Notify>) -> Result<()> {
+    let BuiltRuntime {
+        handles,
+        model,
+        task_registry,
+        mut background_wake,
+        schedule_runner: _schedule_runner,
+        ..
+    } = runtime;
+    use everruns_core::host::RuntimeHostAdapter;
+    tracing::info!(session = %handles.session_id, "serving session headless");
+    loop {
+        let message = tokio::select! {
+            _ = tokio::signal::ctrl_c() => break,
+            // Someone opened this session; yield between turns.
+            _ = release.notified() => break,
+            message = tokio::time::timeout(SERVE_IDLE_EXIT, background_wake.recv()) => match message {
+                Ok(Some(message)) => message,
+                Ok(None) => break,
+                Err(_) => {
+                    let pending = session_state::task_completion::has_pending_execution(
+                        &task_registry.list(handles.session_id, None).await.unwrap_or_default(),
+                    );
+                    if pending {
+                        continue;
+                    }
+                    break;
+                }
+            },
+        };
+        let message =
+            runtime::background_wake::coalesce_pending_wakes(message, &mut background_wake)
+                .resolve_artifacts(
+                    handles
+                        .runtime
+                        .file_store(everruns_core::host::in_process_internal_org_id(
+                            everruns_core::DEFAULT_ORG_PUBLIC_ID,
+                        ))
+                        .as_ref(),
+                );
+        let input = runtime::background_wake::input_for_wake(&message);
+        let prompt = input
+            .content
+            .iter()
+            .filter_map(ContentPart::as_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+        match collect_print_turn(&handles, &model, &prompt, input).await {
+            Ok(turn) if !turn.result.success => tracing::warn!(
+                session = %handles.session_id,
+                error = turn.result.error.as_deref().unwrap_or("turn failed"),
+                "served turn failed"
+            ),
+            Ok(_) => {}
+            Err(error) => {
+                tracing::warn!(session = %handles.session_id, %error, "served turn failed")
+            }
+        }
+    }
+    handles.flush_trace_exporters().await;
+    Ok(())
+}
+
 // The host waits without spending model turns polling. Wakes use the same
 // provenance and artifact mapping as interactive hosts; signal-disabled tasks
 // still become visible when their durable registry state turns terminal.
@@ -2847,6 +2947,7 @@ mod tests {
             print: None,
             images: vec![],
             acp: false,
+            serve: false,
             env_context: vec![],
             config_dir: None,
             data_dir: None,
@@ -2961,6 +3062,7 @@ mod tests {
             print: None,
             images: vec![],
             acp: false,
+            serve: false,
             env_context: vec![],
             config_dir: None,
             data_dir: None,

@@ -59,11 +59,10 @@ cost rollups. See [Parallel sub-agents](subagents/subagents.md).
 
 ## Session coordination
 
-A purpose-built coordinator profile can discover live, opt-in Yolop workers
-in separate Git worktrees, dispatch durable tasks, and receive explicit
-completion wakes through the attached `yolop coordination` CLI, without
-adding model-tool schemas. Presence and delivery are local and restart-safe;
-ordinary sessions start drained. See
+A coordinator profile (`ref = "coordination"`) starts threads with
+`start_thread`, each running as its own Yolop process, and follows their
+checklists, decisions and results. `yolop sessions send` messages any session.
+Presence and delivery are local and restart-safe. See
 [Session coordination](../session-coordination.md).
 
 ## Web

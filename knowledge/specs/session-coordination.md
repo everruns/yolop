@@ -1,173 +1,144 @@
 ---
 type: Product Specification
 title: Session coordination
-description: Defines local coordinator and worker session orchestration.
+description: Defines coordinator threads hosted as separate Yolop processes, and messaging between sessions.
 ---
 
 # Session coordination
 
-Status: first local transport implemented. Live opt-in workers can receive
-durable assignments and return explicit completion to a coordinator. Worker
-processes are started by the operator from launch plans the capability
-generates (see Lifecycle); the capability routes to those live workers,
-records parent and child session IDs on every assignment, and lets the owning
-coordinator manage running work with cancel.
+Status: implemented on the everruns `coordination` capability. Yolop hosts each
+thread as its own headless process and carries messages between sessions
+through a durable local inbox.
 
 ## Ownership
 
-`session_coordination` is one capability boundary. It owns role policy,
-presence, worker selection, typed control and CLI actions, inbox prompts,
-interpretation, and completion. The host supplies the existing session-task
-registry, local SQLite handle, workspace identity, and generic wake channel.
+The coordination model is everruns', not Yolop's: threads, assignments, the
+coordinator and worker tools, wake text, and the rule that settles a thread
+turn all come from `everruns_capabilities::capabilities::coordination`, the
+capability Platform Chat runs. A profile enables it with
+`ref = "coordination"`. Yolop must not grow a parallel dispatch protocol; a
+missing seam is an upstream change.
 
-There is no second task system. Each dispatch is a `session_dispatch` task
-owned by the coordinator's ordinary `SessionTaskRegistry`. The coordination
-tables add routing state only.
+Yolop owns three things:
 
-## Roles and activation
+- where a thread runs (a headless `yolop --serve` process per thread);
+- the transport between processes (presence leases and the inbox);
+- `yolop sessions live` and `yolop sessions send`, the generic messaging
+  surface any session or shell can use.
 
-The capability config is strict:
+Implementation: `src/capabilities/session_coordination.rs`, routing in
+`WakeRunner` (`src/runtime/background_wake.rs`), the serve loop in
+`src/main.rs`.
 
-- `role` is `coordinator`, `worker`, or `both`.
-- `accept_work` is a boolean.
+## Threads out of process
 
-The default harness enables `worker` with `accept_work = false`. This makes the
-surface available without silently enrolling interactive sessions. A named
-profile is the intended way to define a standing coordinator or worker.
+Upstream starts and drives a thread only through the session's sub-agent
+delegate (`create_session_with_options`, `send_message`, `get_messages`,
+`get_session_status`). Yolop's `WakeRunner` is that delegate. For a session
+that is a thread, it routes `send_message` to the thread's inbox, reads
+messages from the thread's session log, and reports status from presence.
 
-The capability contributes no model tools. Coordinator and worker agents use
-the ordinary Bash tool to invoke `yolop coordination ...`, matching
-extension administration and the shared attached-control contract. The
-contributed CLI covers `list`, `status`, `dispatch`, `complete`, `cancel`, `accept`,
-`drain`, and `spawn-workers`; `/coordination` parses the same action grammar.
-The `yolop_spawn` command routes a spawn request to the right primitive: mode
-`agent` delegates to the platform `spawn_agent` for an in-process child, mode
-`session` plans separate worker sessions (own model, provider, worktree). Multiword payload
-fields consume unquoted words until the next option. Ordinary shell quoting and
-composition are also supported by the attached endpoint.
+A session becomes a thread the first time its coordinator messages it: the
+coordinator has an `assignment` task linking the child. The relationship is
+recorded in `yolop_threads`, because the local session store keeps
+`parent_session_id` in memory only. The thread host sets its own
+`parent_session_id` from that record, which is what makes upstream inject the
+worker tools.
 
-The attached host derives session identity and role. `dispatch` requires a
-coordinator or combined role, `complete` requires a worker or combined role and
-an active assignment, `cancel` requires a coordinator or combined role and
-ownership of the running assignment, and availability changes operate only on
-the attached host. Detached execution is side-effect free and may list presence
-or plan worker launches with `spawn-workers`. Attached
-lists are project-scoped; detached lists are an operator view across projects.
+A thread is launched with the coordinator's executable (`/proc/<pid>/exe` on
+Linux), workspace, and an allowlist of inherited flags (profile, provider,
+model, reasoning effort, config, data and session directories, environment
+context), in its own process group.
 
-## Identity and selection
+## Messages and wakes
 
-A worker row is keyed by `SessionId` and leased to a random host incarnation.
-The project identity is the canonical Git common directory, so linked
-worktrees share a pool. Non-Git workspaces use their canonical root. Only
-same-project, live, opted-in, idle sessions are eligible, and a coordinator
-cannot select itself.
+Every cross-process message is an inbox row, acknowledged only when the turn
+it woke finishes:
 
-Selection is deterministic after heartbeat ordering and reserves the worker
-with a compare-and-set update. An explicit target goes through the same checks.
-One worker therefore cannot accept two concurrent assignments even when two
-coordinators race. Each assignment records its owner as the parent session and
-its worker as the child session, so roots can list and manage their own
-children through status views and cancel.
+- a brief or relay for a thread (raw text);
+- an assignment update for its coordinator, produced by a
+  `TaskTransitionObserver` on the coordinator's task registry using upstream's
+  `wake_text_for`, framed as automatic and not a request from the person;
+- a plain message from `yolop sessions send`, framed with its sender and how
+  to answer.
 
-## Protocol
+A host delivers one message per idle moment as a wake with host-only delivery
+metadata, so user and editor input cannot forge it. A host acknowledges only
+deliveries it made. A message claimed by a host that dies first is offered to
+the next incarnation of that session. A failed turn on a plain message is
+retried after a growing backoff, three attempts in all. A failed thread turn is
+not retried: it fails the assignment through `settle_thread_turn`, and the
+coordinator decides.
 
-Dispatch performs these state changes:
+The coordinator's own process never wakes itself through the inbox for its
+own transitions.
 
-1. Create a queued `session_dispatch` task under the coordinator.
-2. Reserve one eligible worker.
-3. Persist the assignment route and inbox message in one SQLite transaction.
-4. Mark the task running with its worker ID.
+## Settling thread turns
 
-The worker host polls its durable inbox and injects a typed automatic wake. It
-does not interrupt an active turn. The message carries the assignment ID,
-coordinator ID, title, and requested work. Ordinary user text cannot create
-this host-only wake provenance.
+Only turns an inbox delivery started are settled, with upstream's
+`settle_thread_turn`. A turn the person starts in an opened thread is theirs.
+A turn that ends while the thread's own background work is pending is not
+"ended without completing"; the completion wake continues it. Without that
+exception, a thread waiting on a long build bounced its coordinator.
 
-The worker must invoke `yolop coordination complete` with a terminal status,
-summary, validation evidence, and bounded artifact references. The typed
-control action settles the coordinator's task, releases the worker, and
-persists a completion inbox message. The coordinator receives that message
-through the same generic wake channel and can inspect the authoritative task.
+## Supervision and restarts
 
-Every inbox message (assignment, completion, cancellation) stays pending until
-the turn it woke finishes. The wake input carries the message ID in host-only
-metadata; the host follows that input to its turn and acknowledges the message
-on completion or a user cancel. A message records the host incarnation that
-claimed it, so one host never receives it twice while a restarted host (the
-same session resumed with `--session`) receives whatever was claimed but never
-acknowledged. A failed turn hands the message back after a growing backoff,
-for three attempts in all; an assignment still failing then fails back to its
-coordinator with the last error, and a completion is acknowledged as given up,
-leaving the coordinator's terminal task as the record. Once an assignment is
-terminal, its worker message is no longer eligible.
+Every host heartbeats a presence lease (two seconds, fifteen-second lease) and
+marks itself offline on drop. A coordinator's host supervises its threads:
 
-Settling is a compare-and-set on the running assignment, so exactly one of
-completion, cancel, or orphan failure wins and notifies the coordinator. The
-loser fails visibly: a late `complete` is refused rather than overwriting the
-coordinator's task.
+- a thread with pending messages and no live host is started, at most once
+  per thirty-second backoff;
+- a thread with no live host whose latest assignment is still running and not
+  waiting on input is restarted with a note to check what survived.
 
-The completion carries the worker's registered workspace root, because workers
-normally run in their own worktree and the coordinator has to review and bring
-their change over.
+A headless host exits after ten idle minutes unless background work is
+pending. A coordinator that restarts keeps its threads, assignments, and
+missed updates, all in the private WAL-mode `everruns-local` database under
+the sessions directory.
 
-## Lifecycle
+## Opening a thread
 
-Hosts heartbeat every two seconds and leases expire after fifteen seconds.
-Graceful drop marks the host offline immediately. The host is owned by the
-runtime handles, which every frontend (TUI, ACP, print) keeps for the session
-lifetime; owning it anywhere a frontend destructures away leaves the session
-offline from its first second.
+Only one process may write a session log. A person opening a session held by a
+headless host (`yolop --session <id>`) sets a release request on the host's
+presence row. The host stops taking deliveries, finishes its current turn, and
+exits; the opener waits for the lease to end (up to two minutes) and holds off
+the coordinator's restart of that thread meanwhile. An interactive host never
+yields.
 
-A coordinator host fails its running assignments whose worker has held no lease
-for two minutes (`worker_offline`), longer than the lease so a worker resumed
-with `--session` keeps its assignment. The coordinator wakes with the reason
-and the resume command. Presence and inbox state use
-the private WAL-mode `everruns-local` database under the sessions directory.
+## Isolation
 
-The capability plans worker launches but does not supervise processes.
-`yolop coordination spawn-workers` generates one launch command per worker
-with the coordinator's chosen profile, provider, and model (up to 10 per
-call); starting those processes stays with the operator, so presence only ever
-reports workers that actually heartbeat. `yolop coordination dispatch` still
-fails when no eligible live worker is available instead of creating an
-untracked process. Full supervision with owned restarts, logs, and worktree
-cleanup waits for a durable worker lifecycle.
-
-Sessions re-execute their own binary for the `yolop` shim, the sandbox worker,
-and attached control children. On Linux that goes through `/proc/<pid>/exe`, so
-an upgrade that replaces the file under running sessions leaves them on the
-image they started with, protocol included, until restarted.
+Upstream scopes every coordinator tool by parent session, so several
+coordinators can run against one sessions database without seeing or steering
+each other's threads. Supervision only touches threads recorded under the
+supervising coordinator.
 
 ## Safety constraints
 
-- Coordination never expands the worker's filesystem, sandbox, approval, or
-  capability authority.
-- Workers must opt in, and draining prevents new reservations without
-  interrupting an active assignment.
-- Request, summary, validation, and artifact sizes are bounded before durable
-  storage or prompt construction.
-- Presence is local to one user-owned sessions database. There is no network
-  listener or session-ID based remote mutation surface.
-- Background `proactive_wake` controls background-task convenience only.
-  Authenticated assignments and completions always wake an idle target.
-- Only message IDs the host itself delivered are settled from turn outcomes;
-  user and editor input cannot set the delivery metadata.
+- Coordination never widens authority: a thread has the coordinator's profile,
+  sandbox, and approval policy.
+- A headless host has no prompt surface, so sandbox escalations are denied as
+  in `--print`.
+- Message text is bounded (32 KiB) before storage or prompt construction.
+- Everything is local to one user-owned database; there is no network
+  listener.
+- Background `proactive_wake` controls background-task convenience only;
+  coordination wakes always wake an idle target.
 
-## Model guidance
+## Known gaps
 
-Sessions with an opted-in role get a short prompt block; ordinary drained
-sessions get none. A coordinator learns the live idle and busy worker counts,
-to prefer `dispatch` over in-process `spawn_agent` children that share its
-checkout, to brief workers with repository-relative paths, and to verify and
-bring in work from the worker's workspace. Without it, models defaulted to
-in-process children even with workers idle.
+- Killing a thread host does not kill background processes it started.
+- ACP `ask_user` declines, so an ACP coordinator relays `ask_decision`
+  questions in plain text.
+- There is no TUI thread board yet; `list_threads` and `yolop sessions live`
+  are the views.
+- Threads share the coordinator's checkout unless the profile sets
+  `worktrees = "always"`.
 
 ## Verification bar
 
-Tests cover strict config parsing, absence of model tools, role authorization,
-same-project atomic reservation, CLI decoding into typed control actions, real
-task registry transitions, assignment and completion inbox delivery,
-acknowledgement and restart redelivery, failed-turn retry and hand-back, orphan
-failure, refusal of a late completion, delivery correlation that ignores
-foreign IDs, and presence surviving the way frontends destructure the runtime. Runtime tests must also prove automatic wake framing. The
-contributed CLI receives a binary smoke test.
+Tests cover thread recognition from an assignment, supervision restarts with
+and without pending work, the restart note, inbox acknowledgement and
+redelivery, plain-message retry, settling only this host's deliveries, the
+"ended without completing" and failed-turn outcomes, the background-work
+exception, the coordinator not waking itself, yield-on-open, and the
+`sessions live` and `sessions send` CLI.
