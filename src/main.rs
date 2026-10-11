@@ -965,6 +965,12 @@ async fn async_main(crash_reporter: &crash_report::CrashReporter) -> Result<()> 
         }
     }
     let serve_release = cli.serve.then(|| Arc::new(tokio::sync::Notify::new()));
+    if cli.serve {
+        // A headless host is restarted automatically, so it records the
+        // command groups it starts, and stops those its predecessor left.
+        exec::group_ledger::reap_dead_hosts(&sessions_dir);
+        exec::group_ledger::enable(&sessions_dir)?;
+    }
     let runtime = runtime::build_with_options(
         cwd,
         provider,

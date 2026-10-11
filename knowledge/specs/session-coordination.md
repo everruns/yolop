@@ -50,6 +50,12 @@ Linux), workspace, and an allowlist of inherited flags (profile, provider,
 model, reasoning effort, config, data and session directories, environment
 context), in its own process group.
 
+In a Git repository a thread session resolves the default `auto` worktree mode
+to `always`, because threads run side by side on one repository; an explicit
+`off` is honored. The thread's environment context names its coordinator and,
+with a worktree, its path and branch, and tells it to name the branch in
+`complete_assignment` so the coordinator can review and bring it in.
+
 ## Messages and wakes
 
 Every cross-process message is an inbox row, acknowledged only when the turn
@@ -91,6 +97,17 @@ marks itself offline on drop. A coordinator's host supervises its threads:
 - a thread with no live host whose latest assignment is still running and not
   waiting on input is restarted with a note to check what survived.
 
+Before restarting anything, supervision stops the commands a dead headless
+host left running. Each `--serve` host records the process group of every bash
+command it starts, with the leader's start time, in a per-process ledger under
+`<sessions>/.thread-procs/`, and forgets it when the command ends. A ledger
+whose host process is gone (pid absent or start time different) has each
+group whose leader still matches its recorded start time killed, then is
+deleted. Start times guard against signalling a reused pid. Interactive hosts
+keep no ledger: a crashed TUI's processes are the person's to manage, while a
+thread is restarted automatically and its leftovers would race the successor.
+A group whose leader already exited cannot be verified and is left alone.
+
 A headless host exits after ten idle minutes unless background work is
 pending. A coordinator that restarts keeps its threads, assignments, and
 missed updates, all in the private WAL-mode `everruns-local` database under
@@ -104,6 +121,16 @@ presence row. The host stops taking deliveries, finishes its current turn, and
 exits; the opener waits for the lease to end (up to two minutes) and holds off
 the coordinator's restart of that thread meanwhile. An interactive host never
 yields.
+
+## Board and decisions
+
+The TUI activity rail turns a coordinator's assignment tasks into a `THREADS`
+section, one row per thread (its latest assignment) in the board's words, with
+checklist progress. Assignment rows never descend into the thread's session,
+which lives in another process. A thread's `ask_decision` puts its assignment
+in needs-input; the coordinator then asks the person with `ask_user`, which
+the TUI shows as a question and ACP as a form elicitation where the editor
+supports it (see [ACP](acp.md)).
 
 ## Isolation
 
@@ -126,13 +153,12 @@ supervising coordinator.
 
 ## Known gaps
 
-- Killing a thread host does not kill background processes it started.
-- ACP `ask_user` declines, so an ACP coordinator relays `ask_decision`
-  questions in plain text.
-- There is no TUI thread board yet; `list_threads` and `yolop sessions live`
-  are the views.
-- Threads share the coordinator's checkout unless the profile sets
-  `worktrees = "always"`.
+- Background work started with `&` inside a command that then returned has no
+  verifiable group leader, so a dead host's leftovers of that shape survive.
+- A headless thread denies sandbox escalations that need an approval prompt;
+  opening the thread is the way to approve one.
+- Selecting a thread on the board does not open it; `yolop --session <id>`
+  does.
 
 ## Verification bar
 
@@ -140,5 +166,7 @@ Tests cover thread recognition from an assignment, supervision restarts with
 and without pending work, the restart note, inbox acknowledgement and
 redelivery, plain-message retry, settling only this host's deliveries, the
 "ended without completing" and failed-turn outcomes, the background-work
-exception, the coordinator not waking itself, yield-on-open, and the
-`sessions live` and `sessions send` CLI.
+exception, the coordinator not waking itself, yield-on-open, the
+`sessions live` and `sessions send` CLI, stopping a dead host's command groups
+(and never a live host's or a reused pid's), a thread's own worktree, the
+`THREADS` board, and a decision answered through an ACP form end to end.

@@ -131,8 +131,8 @@ fn stopped(status: AskUserStatus) -> AskUserResult {
     }
 }
 
-/// ACP has no negotiated structured-question request. Do not disguise questions
-/// as permission requests or leave the turn blocked awaiting a second prompt.
+/// ACP fallback for a build with no editor connection to ask. A connected
+/// session asks through form elicitation instead (`editor::acp::questions`).
 pub struct AcpResponder;
 #[async_trait]
 impl AskUser for AcpResponder {

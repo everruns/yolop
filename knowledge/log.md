@@ -1,5 +1,13 @@
 # Knowledge Log
 
+## 2026-10-11, Coordination gaps closed
+
+Threads get their own worktree by default, a dead thread host's commands are
+stopped before it restarts, the TUI rail shows a `THREADS` board, and ACP asks
+structured questions (and so coordination decisions) through form elicitation
+when the editor supports it. See [session coordination](specs/session-coordination.md)
+and [ACP](specs/acp.md).
+
 ## 2026-10-11, Coordination threads in separate processes
 
 Yolop's own worker pool (dispatch, accept/drain, spawn-workers) is replaced by

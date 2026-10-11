@@ -28,6 +28,7 @@ use everruns_contracts::tool_types::{
 };
 use everruns_contracts::typed_id::SessionId as RuntimeSessionId;
 use everruns_core::ContentPart;
+use everruns_core::builtins::ask_user::AskUser;
 use everruns_core::command::{CommandDescriptor, CommandSource, ExecuteCommandRequest};
 use everruns_core::host::RuntimeHostAdapter;
 use everruns_core::{InputMessage, ScopedMcpServers};
@@ -103,6 +104,7 @@ pub trait RuntimeFactory: Send + Sync + 'static {
         resume_session_id: Option<RuntimeSessionId>,
         client_mcp_servers: ScopedMcpServers,
         tool_approver: Option<Arc<dyn ToolApprover>>,
+        ask_user: Arc<dyn AskUser>,
     ) -> Result<BuiltRuntime>;
 
     /// Record the editor identity from `initialize`, so later `session/new`
@@ -363,9 +365,19 @@ struct Server<F: RuntimeFactory> {
     /// Whether a task is already awaiting the loopback setup page, so several
     /// sessions opened with nothing connected share one watcher.
     setup_page_watch: AtomicBool,
+    /// Whether the client advertised form elicitation in `initialize`, which
+    /// is what lets structured questions reach the person.
+    elicitation_forms: Arc<AtomicBool>,
 }
 
 impl<F: RuntimeFactory> Server<F> {
+    fn questioner(&self, peer: &Peer) -> Arc<dyn AskUser> {
+        Arc::new(super::questions::AcpQuestioner {
+            cx: peer.cx.clone(),
+            forms: self.elicitation_forms.clone(),
+        })
+    }
+
     fn session(&self, id: &str) -> Option<Arc<Session>> {
         self.sessions.lock().unwrap().get(id).cloned()
     }
@@ -390,6 +402,7 @@ where
         shutdown: shutdown_rx,
         poller_handles: StdMutex::new(Vec::new()),
         setup_page_watch: AtomicBool::new(false),
+        elicitation_forms: Arc::new(AtomicBool::new(false)),
     });
     let next_tool_id = Arc::new(AtomicI64::new(1));
     let (eof_tx, eof_rx) = oneshot::channel::<()>();
@@ -429,6 +442,12 @@ where
                     let identity =
                         detect_client_identity(params.client_info.as_ref(), params.meta.as_ref());
                     server.factory.note_client_identity(identity);
+                    let forms = params
+                        .client_capabilities
+                        .elicitation
+                        .as_ref()
+                        .is_some_and(|elicitation| elicitation.supports_form());
+                    server.elicitation_forms.store(forms, Ordering::Release);
                     responder.respond(handle_initialize(params, server.factory.auth_methods()))
                 }
             },
@@ -677,7 +696,13 @@ async fn handle_new_session<F: RuntimeFactory>(
 
     let built = server
         .factory
-        .build(cwd, None, client_mcp_servers, tool_approver)
+        .build(
+            cwd,
+            None,
+            client_mcp_servers,
+            tool_approver,
+            server.questioner(peer),
+        )
         .await
         .map_err(|e| internal_error(format!("build runtime: {e}")))?;
 
@@ -720,6 +745,7 @@ async fn handle_load_session<F: RuntimeFactory>(
                     Some(resume_session_id),
                     client_mcp_servers,
                     tool_approver,
+                    server.questioner(peer),
                 )
                 .await
                 .map_err(|e| internal_error(format!("load runtime: {e}")))?;

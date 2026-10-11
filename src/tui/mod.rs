@@ -1307,7 +1307,7 @@ impl App {
         if !selectable.contains(&self.background_selected) {
             self.background_selected = selectable.first().copied().unwrap_or(0);
         }
-        if !self.background_panel_auto_opened && self.session_tasks.has_subagents() {
+        if !self.background_panel_auto_opened && self.session_tasks.has_delegated_work() {
             self.background_panel = Some(0);
             self.background_panel_focused = false;
             self.background_panel_auto_opened = true;
@@ -7915,6 +7915,7 @@ flowchart TD
             })
         };
         let rail = ActivityRail {
+            threads: ActivityCounts::default(),
             agents: ActivityCounts {
                 total: 2,
                 succeeded: 2,

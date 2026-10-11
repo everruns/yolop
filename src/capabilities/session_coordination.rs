@@ -66,7 +66,7 @@ const THREAD_SPAWN_BACKOFF_MS: i64 = 30_000;
 const MAX_DELIVERY_ATTEMPTS: i64 = 3;
 const DELIVERY_RETRY_BACKOFF_MS: i64 = 30_000;
 /// What a thread restarted mid-assignment is told first.
-const RESUME_NOTE: &str = "[automatic] This thread's process stopped while it was working on its assignment, and it has been restarted. Background work it started may not have survived. Check where the work stands, then continue it or report with complete_assignment.";
+const RESUME_NOTE: &str = "[automatic] This thread's process stopped while it was working on its assignment, and it has been restarted. Commands it was running were stopped, so builds, tests or servers it had started need starting again. Check where the work stands, then continue it or report with complete_assignment.";
 /// Host-only input metadata naming the inbox message a wake turn delivers.
 pub(crate) const DELIVERY_METADATA_KEY: &str = "yolop.coordination_delivery";
 pub(crate) const MAX_MESSAGE_BYTES: usize = 32 * 1024;
@@ -141,19 +141,31 @@ pub(crate) struct LiveSession {
 #[derive(Clone)]
 pub(crate) struct CoordinationStore {
     db: SqliteDb,
+    /// Where dead thread hosts' command ledgers live; `None` for in-memory
+    /// stores, which supervise nothing on disk.
+    sessions_dir: Option<PathBuf>,
 }
 
 impl CoordinationStore {
     pub(crate) fn new(db: SqliteDb) -> anyhow::Result<Self> {
-        let store = Self { db };
+        let store = Self {
+            db,
+            sessions_dir: None,
+        };
         store.ensure_schema()?;
         Ok(store)
+    }
+
+    /// Supervise dead thread hosts' command ledgers under `sessions_dir`.
+    pub(crate) fn with_sessions_dir(mut self, sessions_dir: &Path) -> Self {
+        self.sessions_dir = Some(sessions_dir.to_path_buf());
+        self
     }
 
     pub(crate) fn open(sessions_dir: &Path) -> anyhow::Result<Self> {
         let profile = everruns::local::LocalProfile::new(sessions_dir.join("everruns-local"));
         profile.ensure_dirs()?;
-        Self::new(SqliteDb::open(profile.db_path())?)
+        Ok(Self::new(SqliteDb::open(profile.db_path())?)?.with_sessions_dir(sessions_dir))
     }
 
     fn ensure_schema(&self) -> anyhow::Result<()> {
@@ -1027,6 +1039,14 @@ async fn supervise_threads(
     launcher: &ThreadLauncher,
     session_id: SessionId,
 ) {
+    // A thread host that died outright left its commands running; stop them
+    // before a successor starts on the same workspace.
+    if let Some(dir) = store.sessions_dir.as_deref() {
+        let stopped = crate::exec::group_ledger::reap_dead_hosts(dir);
+        if stopped > 0 {
+            tracing::info!(stopped, "stopped commands left by a dead thread host");
+        }
+    }
     let waiting = store.threads_needing_host(session_id);
     let hostless = store.hostless_threads(session_id);
     let (waiting, hostless) = match (waiting, hostless) {

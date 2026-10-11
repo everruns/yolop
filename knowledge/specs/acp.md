@@ -433,9 +433,16 @@ same way.
 
 ## Structured questions
 
-The shared runtime exposes `ask_user`, but ACP declines structured questions
-because the current protocol has no question-response method. It never reports
-an invented answer as user input. The agent can ask for clarification in ordinary
-conversation and receive it in a later prompt. `session/request_permission`
-remains an action-consent mechanism, not a substitute for preference or
-credential questions. Secret questions are declined without collecting input.
+The shared runtime exposes `ask_user`. When the client advertised form
+elicitation in `initialize` (`clientCapabilities.elicitation.form`), a batch is
+asked as one `elicitation/create` form scoped to the session and tool call,
+with one field per question: a single choice is a string with `oneOf`, a
+multiple choice a titled array, an open choice gets an optional free-text
+field beside it, and a text question is a required string. An answer that does
+not match a listed option is reported as declined, never guessed at. Decline
+and cancel map to the matching `ask_user` statuses. Without form support the
+batch declines as before, and the agent can ask in ordinary conversation.
+Coordination decisions reach an ACP person this way, since a coordinator asks
+with `ask_user`. `session/request_permission` remains an action-consent
+mechanism, not a substitute for preference or credential questions. Secret
+questions decline the whole batch without collecting input.

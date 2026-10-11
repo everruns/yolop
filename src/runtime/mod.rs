@@ -3815,6 +3815,27 @@ fn set_sandbox_environment_context(
     registry.set("network_access", crate::exec::sandbox::network_access(mode));
 }
 
+/// Environment context entry that tells a thread whose it is and where its
+/// work lands.
+const THREAD_CONTEXT_KEY: &str = "coordination_thread";
+
+fn thread_context(
+    coordinator: SessionId,
+    worktree: Option<&crate::exec::worktree::WorktreeInfo>,
+) -> String {
+    let mut context = format!("This session is a thread of coordinator session {coordinator}.");
+    if let Some(worktree) = worktree {
+        context.push_str(&format!(
+            " You work in your own git worktree at {} on branch {}. Commit your \
+             change there and name the branch in complete_assignment, so the \
+             coordinator can review it and bring it in.",
+            worktree.path.display(),
+            worktree.branch
+        ));
+    }
+    context
+}
+
 /// Merge operator and protocol entries over the sandbox builtins. Later
 /// sources win: CLI `--env-context` defaults over builtins, then the
 /// protocol-detected `editor` value over both on its reserved key.
@@ -3882,7 +3903,22 @@ pub async fn build_with_options(
         .unwrap_or_else(|| canonical_root.clone());
     let active_root = std::fs::canonicalize(&initial_active).unwrap_or(initial_active);
 
-    let worktrees_mode = settings.snapshot().worktrees_mode();
+    // A coordinator's thread works in its own worktree unless the profile
+    // turns worktrees off: threads run side by side on one repository, and
+    // the coordinator reviews each one's branch before bringing it in.
+    let thread_of = match resume_session_id {
+        Some(id) => CoordinationStore::open(&sessions_dir)
+            .and_then(|store| store.thread(id))
+            .context("read thread record")?
+            .map(|thread| thread.coordinator),
+        None => None,
+    };
+    let worktrees_mode = match settings.snapshot().worktrees_mode() {
+        crate::config::WorktreesMode::Auto if thread_of.is_some() => {
+            crate::config::WorktreesMode::Always
+        }
+        mode => mode,
+    };
     let worktree = Arc::new(WorktreeManager::new(
         worktrees_mode,
         repo_root.clone(),
@@ -4078,7 +4114,8 @@ pub async fn build_with_options(
     let mut local_backends = LocalBackends::new(local_profile, base_backends)
         .context("initialize everruns-local backend stores")?;
     let coordination_store = CoordinationStore::new(local_backends.db.clone())
-        .context("initialize session coordination store")?;
+        .context("initialize session coordination store")?
+        .with_sessions_dir(&sessions_dir);
     // Assignment changes this process makes for a coordinator hosted elsewhere
     // (this session is its thread) reach that coordinator through its inbox.
     let task_registry: Arc<dyn SessionTaskRegistry> = Arc::new(
@@ -4091,10 +4128,7 @@ pub async fn build_with_options(
     local_backends.runtime_backends = local_backends
         .runtime_backends
         .with_session_task_registry(task_registry.clone());
-    let thread_coordinator = coordination_store
-        .thread(session_id)
-        .context("read thread record")?
-        .map(|thread| thread.coordinator);
+    let thread_coordinator = thread_of;
     let thread_launcher = options
         .thread_launcher
         .clone()
@@ -4193,6 +4227,12 @@ pub async fn build_with_options(
     let tool_reveals = Arc::new(RevealedTools::new());
     let environment_context = EnvironmentContextRegistry::default();
     set_sandbox_environment_context(&environment_context, sandbox_mode);
+    if let Some(coordinator) = thread_coordinator {
+        environment_context.set(
+            THREAD_CONTEXT_KEY,
+            thread_context(coordinator, worktree.owned_worktree_info().as_ref()),
+        );
+    }
     apply_extra_environment_context(
         &environment_context,
         &options.extra_environment_context,
@@ -5459,6 +5499,70 @@ mod tests {
             !present(&store),
             "dropping the handles marks the session offline"
         );
+    }
+
+    /// Threads of one coordinator run side by side on a repository, so a
+    /// thread session gets its own worktree even under the default `auto`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_thread_session_works_in_its_own_worktree() {
+        let repo = tempfile::tempdir().expect("repo");
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .args(args)
+                .current_dir(repo.path())
+                .output()
+                .expect("git");
+            assert!(output.status.success(), "git {args:?}: {output:?}");
+        };
+        git(&["init", "-q", "-b", "main"]);
+        std::fs::write(repo.path().join("README.md"), "hi\n").expect("write");
+        git(&["add", "README.md"]);
+        git(&[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.com",
+            "commit",
+            "-qm",
+            "init",
+        ]);
+        let sessions = tempfile::tempdir().expect("sessions");
+        let thread = SessionId::new();
+        let coordinator = SessionId::new();
+        CoordinationStore::open(sessions.path())
+            .expect("store")
+            .record_thread(&crate::capabilities::session_coordination::ThreadRecord {
+                thread_id: thread,
+                coordinator,
+                workspace_root: repo.path().to_path_buf(),
+                launch: Vec::new(),
+            })
+            .expect("record thread");
+
+        let built = build_with_options(
+            repo.path().to_path_buf(),
+            ProviderChoice::Sim,
+            Some(thread),
+            sessions.path().to_path_buf(),
+            Arc::new(SettingsStore::open(sessions.path().join("settings.toml"))),
+            BuildOptions {
+                session_kind: crate::runtime::session_log::SessionKind::Automated,
+                ..BuildOptions::default()
+            },
+        )
+        .await
+        .expect("build");
+        let worktree = built
+            .worktree
+            .owned_worktree_info()
+            .expect("a thread gets its own worktree");
+        assert_ne!(
+            std::fs::canonicalize(&worktree.path).unwrap(),
+            std::fs::canonicalize(repo.path()).unwrap()
+        );
+        let context = thread_context(coordinator, Some(&worktree));
+        assert!(context.contains(&coordinator.to_string()), "{context}");
+        assert!(context.contains(&worktree.branch), "{context}");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

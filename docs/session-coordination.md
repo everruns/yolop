@@ -51,9 +51,25 @@ ends without completing its assignment is flagged as needing attention, unless
 the thread is only waiting on background work it started.
 
 A thread runs the coordinator's executable with its profile, provider, model,
-and sessions directory, in the coordinator's workspace. Set `worktrees =
-"always"` above the first `[[capabilities]]` table of the profile to give each
-thread its own Git worktree.
+and sessions directory. In a Git repository each thread works in its own
+worktree on its own branch, so threads never edit the same checkout; the
+thread names its branch when it completes, and the coordinator reviews and
+brings in the change. A profile with `worktrees = "off"` keeps threads in the
+coordinator's checkout.
+
+## Watch the board
+
+In the terminal, the activity rail (`Ctrl+B`) opens a `THREADS` section when
+the first thread starts. Each thread shows its current assignment, where it
+stands (working, needs you, ready for review, closed) and its checklist
+progress, such as `2/5 steps`.
+
+## Decisions
+
+A thread that hits a real choice calls `ask_decision`, and its coordinator
+asks you. In the terminal that is a question with its options. In an editor
+that supports ACP form elicitation it is a form with the options to pick from;
+an editor without it gets the question in the conversation.
 
 Threads belong to the coordinator that started them. Several coordinators can
 run at once, and none of them sees or steers another's threads.
@@ -68,8 +84,9 @@ sessions database, so coordination survives the usual interruptions:
   missed are delivered then.
 - **A thread's process stops.** A thread with a message waiting is started
   again by its coordinator. A thread that stopped in the middle of an
-  assignment is restarted with a note to check what survived, because
-  background processes it started may not have.
+  assignment is restarted with a note to check where its work stands. Commands
+  the stopped process was running (builds, tests, servers) are stopped first,
+  so they do not race its successor in the same worktree.
 - **A thread is idle.** Its process exits after ten minutes with nothing to do
   and starts again when the coordinator messages it.
 - **A woken turn fails** (provider error, quota, stalled stream). A failed

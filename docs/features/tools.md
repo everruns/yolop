@@ -130,6 +130,7 @@ Secret questions are declined because encrypted session-secret storage is not
 available, so credentials are never collected by this tool.
 
 In `-p` mode, choice questions use declared defaults or the first option.
-Text and secret questions are declined without reading stdin. ACP declines
-structured questions because its current protocol has no question-response
-method; ordinary conversational clarification remains available.
+Text and secret questions are declined without reading stdin. Over ACP, an
+editor that supports form elicitation shows the questions as one form, with a
+field per question; an editor without it declines them, and ordinary
+conversational clarification remains available.

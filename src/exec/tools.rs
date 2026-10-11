@@ -62,8 +62,16 @@ pub struct BashTool {
 struct CommandProcessGroup(Option<i32>);
 #[cfg(unix)]
 impl CommandProcessGroup {
+    fn new(group: Option<i32>) -> Self {
+        if let Some(group) = group {
+            crate::exec::group_ledger::record(group);
+        }
+        Self(group)
+    }
+
     fn kill(&mut self) {
         if let Some(group) = self.0.take() {
+            crate::exec::group_ledger::forget(group);
             // The spawned command owns this group. A shell-only kill leaves
             // pipeline children and build workers running during recovery.
             unsafe {
@@ -240,7 +248,7 @@ impl BashTool {
             .spawn()
             .map_err(|e| ToolExecutionResult::tool_error(format!("spawn failed: {e}")))?;
         #[cfg(unix)]
-        let mut group = CommandProcessGroup(child.id().map(|id| id as i32));
+        let mut group = CommandProcessGroup::new(child.id().map(|id| id as i32));
         let mut stdout = child.stdout.take().unwrap();
         let mut stderr = child.stderr.take().unwrap();
 
