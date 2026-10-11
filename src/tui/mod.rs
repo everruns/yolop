@@ -322,6 +322,8 @@ pub struct App {
     background_panel_focused: bool,
     /// Auto-open at most once per TUI session when the first subagent appears.
     background_panel_auto_opened: bool,
+    /// This session coordinates threads, so the rail is its threads board.
+    coordinates_threads: bool,
     /// Selected task row while the activity rail is focused.
     background_selected: usize,
     /// Persisted activity-rail viewport. Passive rails stay pinned to new work;
@@ -727,6 +729,9 @@ impl App {
         let should_setup = runtime.startup.setup_recommended;
         let pending_approval = runtime.pending_approval.clone();
         let session_store = runtime.handles.session_store.clone();
+        // A coordinator's threads are its main work, so their board starts
+        // open, passive, before the first thread exists.
+        let coordinates_threads = runtime.handles.coordinates_threads;
         let session = Session::new(runtime.handles, runtime.model.clone());
         let (models_tx, models_rx) = mpsc::unbounded_channel::<ModelDiscovery>();
         let (codex_login_tx, codex_login_rx) = mpsc::unbounded_channel::<CodexLoginEvent>();
@@ -800,9 +805,10 @@ impl App {
             session_tasks: Default::default(),
             session_tasks_refresh: None,
             last_session_tasks_refresh: None,
-            background_panel: None,
+            background_panel: coordinates_threads.then_some(0),
             background_panel_focused: false,
-            background_panel_auto_opened: false,
+            background_panel_auto_opened: coordinates_threads,
+            coordinates_threads,
             background_selected: 0,
             activity_scroll: ScrollState::new(),
             activity_scroll_metrics: (0, 0),
@@ -7502,6 +7508,35 @@ flowchart TD
 
         assert!(test.app.session_tasks_refresh.is_none());
         assert_eq!(test.app.session_tasks.errors, ["refreshed"]);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_coordinator_starts_with_its_threads_board_open() {
+        let workspace = tempfile::tempdir().expect("workspace tempdir");
+        let sessions = tempfile::tempdir().expect("sessions tempdir");
+        let path = sessions.path().join("settings.toml");
+        std::fs::write(&path, "[[capabilities]]\nref = \"coordination\"\n").unwrap();
+        let settings = std::sync::Arc::new(crate::config::SettingsStore::open(path));
+        let runtime = crate::runtime::build_with_options(
+            workspace.path().to_path_buf(),
+            crate::runtime::ProviderChoice::Sim,
+            None,
+            sessions.path().to_path_buf(),
+            settings,
+            crate::runtime::BuildOptions::default(),
+        )
+        .await
+        .expect("build coordinator runtime");
+        let coordinator = App::new(runtime, vec![]);
+        assert_eq!(coordinator.background_panel, Some(0));
+        assert!(
+            !coordinator.background_panel_focused,
+            "the composer keeps focus"
+        );
+
+        // Without the capability the rail waits for the first delegated work.
+        let plain = app_with_llmsim().await;
+        assert_eq!(plain.app.background_panel, None);
     }
 
     async fn app_with_llmsim() -> TestApp {

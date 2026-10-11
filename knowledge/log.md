@@ -4,8 +4,8 @@
 
 A dead thread host's background jobs started with `&` are stopped too, headless
 threads put sandbox escalations to their coordinator instead of denying them,
-and `Enter` on the TUI board opens a thread and returns to the coordinator on
-quit. See [session coordination](specs/session-coordination.md).
+`Enter` on the TUI board opens a thread and returns to the coordinator on
+quit, and a coordinator's TUI starts with the board open. See [session coordination](specs/session-coordination.md).
 
 ## 2026-10-11, Coordination gaps closed
 

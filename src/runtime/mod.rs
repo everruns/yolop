@@ -3014,6 +3014,9 @@ pub struct RuntimeHandles {
     /// Shared containment provider for host-triggered shell commands.
     pub(crate) sandbox: Arc<dyn SandboxProvider>,
     pub(crate) sandbox_approval_gate: Arc<crate::sandbox_approval::ApprovalGate>,
+    /// Whether this session coordinates threads: its profile enables the
+    /// `coordination` capability and it is not itself a thread.
+    pub(crate) coordinates_threads: bool,
     pub(crate) approval_policy: crate::config::ApprovalPolicy,
     /// One-shot typed control service exposed only to conservative direct
     /// foreground Yolop CLI invocations from this session's Bash surface.
@@ -4857,6 +4860,11 @@ pub async fn build_with_options(
     // reversible for an attached `yolop extensions enable|disable` command.
     // The capabilities are still registered above; only their ownership layer
     // changes. Newly installed manifests require a new session to register.
+    let coordinates_threads = thread_coordinator.is_none()
+        && harness_capabilities.iter().any(|capability| {
+            capability.capability_id()
+                == everruns_capabilities::capabilities::coordination::COORDINATION_CAPABILITY_ID
+        });
     let session_extension_capabilities =
         take_session_extension_capabilities(&mut harness_capabilities);
     // Resolve the hard approval gate only when a host supplied an approver
@@ -5009,6 +5017,7 @@ pub async fn build_with_options(
             connections,
             sandbox: sandbox.clone(),
             sandbox_approval_gate,
+            coordinates_threads,
             approval_policy,
             control: session_control,
             herdr,

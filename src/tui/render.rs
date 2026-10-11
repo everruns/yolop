@@ -717,7 +717,11 @@ pub(crate) fn activity_rail_view(app: &mut App, width: u16, height: u16) -> Elem
         })
         .unwrap_or_else(|| {
             vec![Line::from(Span::styled(
-                "No activity",
+                if app.coordinates_threads {
+                    "No threads yet"
+                } else {
+                    "No activity"
+                },
                 Style::default().fg(TEXT_MUTED),
             ))]
         });

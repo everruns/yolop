@@ -59,8 +59,9 @@ coordinator's checkout.
 
 ## Watch the board
 
-In the terminal, the activity rail (`Ctrl+B`) opens a `THREADS` section when
-the first thread starts. Each thread shows its current assignment, where it
+In the terminal, a coordinator starts with its activity rail open as the threads
+board, and a `THREADS` section fills in as threads start. `Ctrl+B` focuses or
+closes it. Each thread shows its current assignment, where it
 stands (working, needs you, ready for review, closed) and its checklist
 progress, such as `2/5 steps`. Select a thread and press `Enter` to open it;
 quitting the thread brings you back to the coordinator.
