@@ -156,6 +156,19 @@ Account selection across several registrations and a ChatGPT-specific model
 catalog are separate product work; this migration preserves Yolop's existing
 single-registration experience and model menu.
 
+## Verification boundary
+
+Both sign-in routes need request-contract coverage through Yolop's driver
+registry, with the session and harness metadata that real turns carry. Mocks
+must reject unsupported body fields rather than accepting every Responses
+request. The legacy route retains the session header while omitting body
+metadata; host observability still retains that metadata.
+
+The Doppler live-provider job covers API-key providers, not ChatGPT sign-in.
+A green live-provider job therefore does not prove either ChatGPT route works
+against a real account. Shared driver upgrades must pass the offline contract
+for both routes; live ChatGPT validation is separate evidence.
+
 ## Ownership boundary
 
 `src/auth/codex.rs` owns legacy browser/device UX, client configuration and route

@@ -92,6 +92,7 @@ mod tests {
             controls,
             metadata: None,
             tags: vec![],
+            external_actor: None,
         };
         let with_effort = message(Some(Controls {
             reasoning: Some(ReasoningConfig {
