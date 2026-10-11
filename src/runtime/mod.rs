@@ -3644,6 +3644,9 @@ pub struct BuildOptions {
     /// session asks this host to hand it over. `None` for hosts with a person
     /// attached, which never yield.
     pub serve_release: Option<Arc<tokio::sync::Notify>>,
+    /// `--coordinator`: this session hands work to threads. A session that
+    /// already coordinates threads is one without it.
+    pub coordinator: bool,
 }
 
 impl Default for BuildOptions {
@@ -3666,6 +3669,7 @@ impl Default for BuildOptions {
             editor_context_value: None,
             thread_launcher: None,
             serve_release: None,
+            coordinator: false,
         }
     }
 }
@@ -3905,12 +3909,18 @@ pub async fn build_with_options(
     // A coordinator's thread works in its own worktree unless the profile
     // turns worktrees off: threads run side by side on one repository, and
     // the coordinator reviews each one's branch before bringing it in.
-    let thread_of = match resume_session_id {
-        Some(id) => CoordinationStore::open(&sessions_dir)
-            .and_then(|store| store.thread(id))
-            .context("read thread record")?
-            .map(|thread| thread.coordinator),
-        None => None,
+    let (thread_of, has_threads) = match resume_session_id {
+        Some(id) => {
+            let store = CoordinationStore::open(&sessions_dir)?;
+            (
+                store
+                    .thread(id)
+                    .context("read thread record")?
+                    .map(|thread| thread.coordinator),
+                store.has_threads(id).context("read thread records")?,
+            )
+        }
+        None => (None, false),
     };
     // A headless thread has no prompt surface of its own: its escalations go
     // to its coordinator's host, which asks the person (see
@@ -4053,6 +4063,19 @@ pub async fn build_with_options(
         hook_capability_config,
         &settings_snapshot,
     );
+    // Coordinator mode: `--coordinator`, a profile enabling `coordination`, or
+    // a resumed session that already has threads. A thread is never one; it
+    // gets the capability for its worker tools whatever its flags or profile.
+    let coordination_id =
+        everruns_capabilities::capabilities::coordination::COORDINATION_CAPABILITY_ID;
+    let profile_coordinates = harness_capabilities
+        .iter()
+        .any(|capability| capability.capability_id() == coordination_id);
+    let coordinates_threads =
+        thread_of.is_none() && (options.coordinator || has_threads || profile_coordinates);
+    if (coordinates_threads || thread_of.is_some()) && !profile_coordinates {
+        harness_capabilities.push(CapabilityRef::new(coordination_id));
+    }
     let connections_path =
         default_connections_path().unwrap_or_else(|| PathBuf::from("connections.toml"));
     let connections = Arc::new(ConnectionStore::open(connections_path));
@@ -4876,11 +4899,6 @@ pub async fn build_with_options(
     // reversible for an attached `yolop extensions enable|disable` command.
     // The capabilities are still registered above; only their ownership layer
     // changes. Newly installed manifests require a new session to register.
-    let coordinates_threads = thread_coordinator.is_none()
-        && harness_capabilities.iter().any(|capability| {
-            capability.capability_id()
-                == everruns_capabilities::capabilities::coordination::COORDINATION_CAPABILITY_ID
-        });
     let session_extension_capabilities =
         take_session_extension_capabilities(&mut harness_capabilities);
     // Resolve the hard approval gate only when a host supplied an approver
@@ -5544,6 +5562,68 @@ mod tests {
 
     /// Threads of one coordinator run side by side on a repository, so a
     /// thread session gets its own worktree even under the default `auto`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn coordinator_mode_comes_from_the_flag_or_from_having_threads() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let sessions = tempfile::tempdir().expect("sessions");
+        let settings = || Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
+        let build = |resume: Option<SessionId>, coordinator: bool| {
+            build_with_options(
+                workspace.path().to_path_buf(),
+                ProviderChoice::Sim,
+                resume,
+                sessions.path().to_path_buf(),
+                settings(),
+                BuildOptions {
+                    coordinator,
+                    ..BuildOptions::default()
+                },
+            )
+        };
+        assert!(
+            !build(None, false)
+                .await
+                .expect("plain")
+                .handles
+                .coordinates_threads
+        );
+        assert!(
+            build(None, true)
+                .await
+                .expect("flag")
+                .handles
+                .coordinates_threads
+        );
+
+        // Resuming a session that started threads keeps it a coordinator; the
+        // thread itself never is one, even with the flag.
+        let coordinator = SessionId::new();
+        let thread = SessionId::new();
+        CoordinationStore::open(sessions.path())
+            .expect("store")
+            .record_thread(&crate::capabilities::session_coordination::ThreadRecord {
+                thread_id: thread,
+                coordinator,
+                workspace_root: workspace.path().to_path_buf(),
+                launch: Vec::new(),
+            })
+            .expect("record thread");
+        assert!(
+            build(Some(coordinator), false)
+                .await
+                .expect("resumed coordinator")
+                .handles
+                .coordinates_threads
+        );
+        assert!(
+            !build(Some(thread), true)
+                .await
+                .expect("thread")
+                .handles
+                .coordinates_threads
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_thread_session_works_in_its_own_worktree() {
         let repo = tempfile::tempdir().expect("repo");

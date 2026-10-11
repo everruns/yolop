@@ -15,8 +15,12 @@ through a durable local inbox.
 The coordination model is everruns', not Yolop's: threads, assignments, the
 coordinator and worker tools, wake text, and the rule that settles a thread
 turn all come from `everruns_capabilities::capabilities::coordination`, the
-capability Platform Chat runs. A profile enables it with
-`ref = "coordination"`. Yolop must not grow a parallel dispatch protocol; a
+capability Platform Chat runs. A session coordinates when started with
+`--coordinator` (TUI, ACP, or `--print`), when its profile enables
+`ref = "coordination"`, or when it is resumed and already has threads, so a
+coordinator never needs the flag again. Coordinator mode is not a profile: it
+layers on whatever settings and profile are active, models included. A thread
+always gets the capability, for its worker tools, and is never a coordinator. Yolop must not grow a parallel dispatch protocol; a
 missing seam is an upstream change.
 
 Yolop owns three things:

@@ -8,24 +8,18 @@ coordinator is closed, and you can open any of them like an ordinary session.
 
 ## Start a coordinator
 
-Enable the capability in a named profile:
-
-```toml
-instructions = "Triage incoming requests. Hand each independent piece of repository work to a thread, then follow it through to completion."
-
-[[capabilities]]
-ref = "coordination"
-```
-
-Then start a session with it, in a terminal or an editor:
+Add `--coordinator`, in a terminal or an editor:
 
 ```bash
-yolop -C /path/to/repo --profile coordinator
-yolop --acp --profile coordinator
+yolop -C /path/to/repo --coordinator
+yolop --acp --coordinator
 ```
 
-For Zed or Paseo, run `yolop into zed` or `yolop into paseo`, then add
-`"--profile", "coordinator"` to the generated `args`.
+Coordinator mode keeps your settings, provider, model, and any `--profile`
+you pass; it only adds the coordination tools. For Zed or Paseo, run
+`yolop into zed` or `yolop into paseo`, then add `"--coordinator"` to the
+generated `args`. A profile can make it permanent with
+`[[capabilities]] ref = "coordination"`.
 
 ## Threads and assignments
 
@@ -88,7 +82,7 @@ Threads, assignments, checklists and pending messages live in the local
 sessions database, so coordination survives the usual interruptions:
 
 - **The coordinator closes or restarts.** Threads keep working. Resume the
-  coordinator with `yolop --session <id> --profile coordinator`; updates it
+  coordinator with `yolop --session <id>`, no flag needed; updates it
   missed are delivered then.
 - **A thread's process stops.** A thread with a message waiting is started
   again by its coordinator. A thread that stopped in the middle of an
