@@ -2872,7 +2872,7 @@ fn classify_tool(data: &Value) -> ToolKind {
         .and_then(Value::as_str)
         .unwrap_or("unknown");
     match name {
-        "read_file" | "grep_files" | "repo_map" | "ast_grep" | "list_directory" | "stat_file" => {
+        "read_file" | "grep_files" | "repo_map" | "ast_grep" | "rg" | "list_directory" | "stat_file" => {
             return ToolKind::Exploration;
         }
         "write_file" | "edit_file" | "delete_file" | "ast_edit" | "apply_patch" | "edit" => {

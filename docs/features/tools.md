@@ -19,6 +19,10 @@ Real workspace disk, with every write checkpointed for `/undo` and `/rewind`:
   [Repo map](repo-map/repo-map.md).
 - `ast_grep` runs read-only structural pattern search across Rust, Python,
   TypeScript/TSX, JavaScript/JSX, C#, Go, CSS, HTML, and Bash.
+- `rg` runs deterministic ripgrep-compatible workspace search on the
+  same engine as `yolop utils rg`, so agents and scripts agree. Bounded
+  output with a `truncated` flag. Registered only when no system `rg` is
+  on `PATH`.
 - `ast_edit` (optional, off by default) applies pattern rewrites with a
   preview-first `dry_run` flow. Enable with `[[capabilities]] ref = "ast_edit"`
   in `settings.toml`.

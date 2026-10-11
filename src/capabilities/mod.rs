@@ -32,6 +32,7 @@ pub(crate) mod narration;
 pub(crate) mod profiles;
 pub(crate) mod progress_guard;
 pub(crate) mod repo_map;
+pub(crate) mod rg;
 pub(crate) mod session_coordination;
 pub(crate) mod session_tasks_override;
 pub(crate) mod sessions;
@@ -77,6 +78,7 @@ pub(crate) use model_runtime_context::{
 pub(crate) use profiles::ProfilesCapability;
 pub(crate) use progress_guard::{PROGRESS_GUARD_CAPABILITY_ID, ProgressGuardCapability};
 pub(crate) use repo_map::{REPO_MAP_CAPABILITY_ID, RepoMapCapability};
+pub(crate) use rg::RgCapability;
 pub(crate) use session_coordination::{
     CoordinationHost, CoordinationStore, CoordinatorInboxWaker, ThreadRouting,
     coordination_project_id, inherited_launch_args, process_thread_launcher,

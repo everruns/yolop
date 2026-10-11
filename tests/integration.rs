@@ -3855,3 +3855,64 @@ fn config_entry_point_get_set_json_and_clear() {
     assert_eq!(cleared["field"]["key"], "default_provider");
     assert!(cleared["field"]["current"].is_null());
 }
+
+/// `yolop utils rg` must search with `rg` compatible output and exit codes,
+/// so scripts and agents can rely on it where no external `rg` exists.
+#[test]
+fn utils_rg_searches_with_rg_compatible_output() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    fs::write(tmp.path().join("a.txt"), "hello world\nfoo bar\n").expect("write a.txt");
+    fs::write(tmp.path().join("b.log"), "nothing here\n").expect("write b.log");
+    let output = Command::new(yolop_binary())
+        .args(["utils", "rg", "-n", "hello", "."])
+        .current_dir(tmp.path())
+        .output()
+        .expect("run yolop utils rg");
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).expect("utf8 stdout");
+    assert!(
+        stdout.contains("a.txt:1:hello world"),
+        "unexpected stdout: {stdout}"
+    );
+    assert!(!stdout.contains("b.log"), "unexpected stdout: {stdout}");
+}
+
+/// No match must exit 1 with empty stdout, like `rg`.
+#[test]
+fn utils_rg_reports_no_match_with_exit_1() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    fs::write(tmp.path().join("a.txt"), "hello world\n").expect("write a.txt");
+    let output = Command::new(yolop_binary())
+        .args(["utils", "rg", "definitely-absent-pattern-2b9f1c", "."])
+        .current_dir(tmp.path())
+        .output()
+        .expect("run yolop utils rg");
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+}
+
+/// `--files` must list searchable files while respecting ignore files.
+#[test]
+fn utils_rg_files_lists_searchable_files() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    fs::write(tmp.path().join("a.txt"), "hello\n").expect("write a.txt");
+    fs::write(tmp.path().join("skip.me"), "hello\n").expect("write skip.me");
+    fs::write(tmp.path().join(".ignore"), "skip.me\n").expect("write .ignore");
+    let output = Command::new(yolop_binary())
+        .args(["utils", "rg", "--files", "."])
+        .current_dir(tmp.path())
+        .output()
+        .expect("run yolop utils rg --files");
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).expect("utf8 stdout");
+    assert!(stdout.contains("a.txt"), "unexpected stdout: {stdout}");
+    assert!(!stdout.contains("skip.me"), "unexpected stdout: {stdout}");
+}
