@@ -56,6 +56,13 @@ pub(crate) fn command(cwd: &Path, script: &str, mode: SandboxMode) -> Result<Con
 
     let temp = super::sandbox::sandbox_temp_dir()?;
     let home = super::sandbox::sandbox_home_dir(&temp)?;
+    for profile_dir in [["AppData", "Local"], ["AppData", "Roaming"]] {
+        let path = profile_dir
+            .iter()
+            .fold(home.clone(), |path, part| path.join(part));
+        std::fs::create_dir_all(&path)
+            .with_context(|| format!("create sandbox profile directory: {}", path.display()))?;
+    }
     let mut filesystem = FilesystemPolicy {
         readwrite_paths: vec![path_string(&temp)],
         ..Default::default()
@@ -216,10 +223,18 @@ fn environment(home: &Path, temp: &Path) -> Vec<(String, String)> {
     let mut environment: Vec<(String, String)> = std::env::vars()
         .filter(|(key, _)| windows_environment_key(key))
         .collect();
+    let local_app_data = path_string(&home.join("AppData").join("Local"));
+    let app_data = path_string(&home.join("AppData").join("Roaming"));
     let home = path_string(home);
     let temp = path_string(temp);
+    // MXC refuses to create a container without LOCALAPPDATA. The profile
+    // directories point inside the sandbox home so per-user caches stay
+    // writable without exposing the real profile.
     for (key, value) in [
         ("HOME", &home),
+        ("USERPROFILE", &home),
+        ("LOCALAPPDATA", &local_app_data),
+        ("APPDATA", &app_data),
         ("TEMP", &temp),
         ("TMP", &temp),
         ("TMPDIR", &temp),
@@ -306,6 +321,11 @@ mod tests {
         assert!(!windows_environment_key("USERPROFILE"));
 
         let environment = environment(Path::new(r"C:\sb\home"), Path::new(r"C:\sb"));
+        assert!(
+            environment
+                .iter()
+                .any(|(key, value)| key == "LOCALAPPDATA" && value.starts_with(r"C:\sb\home"))
+        );
         let temp = environment
             .iter()
             .filter(|(key, _)| key.eq_ignore_ascii_case("TEMP"))
@@ -346,11 +366,14 @@ mod tests {
             outside_file.display()
         );
         let workspace_path = std::fs::canonicalize(workspace.path()).unwrap();
-        let mut child = crate::exec::sandbox::SandboxCommand::Windows(
-            command(&workspace_path, &script, SandboxMode::WorkspaceWrite).unwrap(),
-        )
-        .spawn()
-        .unwrap();
+        let started = std::time::Instant::now();
+        let prepared = command(&workspace_path, &script, SandboxMode::WorkspaceWrite).unwrap();
+        eprintln!("sandbox policy prepared in {:?}", started.elapsed());
+        let started = std::time::Instant::now();
+        let mut child = crate::exec::sandbox::SandboxCommand::Windows(prepared)
+            .spawn()
+            .unwrap();
+        eprintln!("sandbox container started in {:?}", started.elapsed());
         let (mut output, _) = child.take_output();
         let mut stdout = String::new();
         tokio::io::AsyncReadExt::read_to_string(&mut output, &mut stdout)
