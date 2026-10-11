@@ -5,6 +5,7 @@
 //! interactive commands share the same kernel boundary.
 
 use crate::config::SandboxMode;
+use crate::control::ControlEndpoint;
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
@@ -14,14 +15,15 @@ use tokio::process::Command;
 
 pub(crate) trait SandboxProvider: Send + Sync {
     fn mode(&self) -> SandboxMode;
-    fn command(&self, cwd: &Path, script: &str) -> Result<SandboxCommand>;
-
-    /// Whether the attached `yolop` control endpoint can reach the host from
-    /// commands this provider starts. The Windows container has no host
-    /// loopback access, and opening it would expose every local service.
-    fn supports_control_endpoint(&self) -> bool {
-        true
-    }
+    /// `control` is the attached `yolop` endpoint for this execution, when one
+    /// exists; a contained provider admits exactly that endpoint and nothing
+    /// else on the network.
+    fn command(
+        &self,
+        cwd: &Path,
+        script: &str,
+        control: Option<&ControlEndpoint>,
+    ) -> Result<SandboxCommand>;
 }
 
 /// A shell launch prepared by a provider.
@@ -212,7 +214,12 @@ impl SandboxProvider for UnsafeHost {
         SandboxMode::DangerFullAccess
     }
 
-    fn command(&self, cwd: &Path, script: &str) -> Result<SandboxCommand> {
+    fn command(
+        &self,
+        cwd: &Path,
+        script: &str,
+        _control: Option<&ControlEndpoint>,
+    ) -> Result<SandboxCommand> {
         Ok(SandboxCommand::Host(shell_command(cwd, script)))
     }
 }
@@ -226,25 +233,31 @@ impl SandboxProvider for NativeSandbox {
         self.mode
     }
 
-    fn supports_control_endpoint(&self) -> bool {
-        cfg!(not(windows))
-    }
-
-    fn command(&self, cwd: &Path, script: &str) -> Result<SandboxCommand> {
+    fn command(
+        &self,
+        cwd: &Path,
+        script: &str,
+        control: Option<&ControlEndpoint>,
+    ) -> Result<SandboxCommand> {
         #[cfg(windows)]
         {
-            crate::exec::sandbox_windows::command(cwd, script, self.mode)
+            crate::exec::sandbox_windows::command(cwd, script, self.mode, control)
                 .map(SandboxCommand::Windows)
         }
         #[cfg(not(windows))]
         {
-            native_command(cwd, script, self.mode).map(SandboxCommand::Host)
+            native_command(cwd, script, self.mode, control).map(SandboxCommand::Host)
         }
     }
 }
 
 #[cfg(target_os = "macos")]
-fn native_command(cwd: &Path, script: &str, mode: SandboxMode) -> Result<Command> {
+fn native_command(
+    cwd: &Path,
+    script: &str,
+    mode: SandboxMode,
+    control: Option<&ControlEndpoint>,
+) -> Result<Command> {
     let executable = Path::new("/usr/bin/sandbox-exec");
     if !executable.is_file() {
         anyhow::bail!(
@@ -263,7 +276,8 @@ fn native_command(cwd: &Path, script: &str, mode: SandboxMode) -> Result<Command
     if mode == SandboxMode::WorkspaceWrite {
         prepared_global_skills_dir()?;
     }
-    let profile = macos_profile(cwd, &temp, mode);
+    let control_socket = control.and_then(ControlEndpoint::socket_path);
+    let profile = macos_profile(cwd, &temp, mode, control_socket);
     let mut command = Command::new(executable);
     command
         .arg("-p")
@@ -276,8 +290,16 @@ fn native_command(cwd: &Path, script: &str, mode: SandboxMode) -> Result<Command
     Ok(command)
 }
 
+/// Landlock leaves Unix-socket connects alone and the seccomp filter blocks
+/// only internet and packet sockets, so the attached control socket needs no
+/// grant here.
 #[cfg(target_os = "linux")]
-fn native_command(cwd: &Path, script: &str, mode: SandboxMode) -> Result<Command> {
+fn native_command(
+    cwd: &Path,
+    script: &str,
+    mode: SandboxMode,
+    _control: Option<&ControlEndpoint>,
+) -> Result<Command> {
     let temp = sandbox_temp_dir()?;
     let home = sandbox_home_dir(&temp)?;
     let executable =
@@ -396,7 +418,12 @@ pub(crate) fn run_linux_worker(
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
-fn native_command(_cwd: &Path, _script: &str, _mode: SandboxMode) -> Result<Command> {
+fn native_command(
+    _cwd: &Path,
+    _script: &str,
+    _mode: SandboxMode,
+    _control: Option<&ControlEndpoint>,
+) -> Result<Command> {
     anyhow::bail!(
         "native sandbox is supported only on macOS and Linux; refusing to run unsandboxed. Set `sandbox_mode = \"danger-full-access\"` only inside an already isolated environment"
     )
@@ -492,7 +519,12 @@ pub(super) fn safe_environment_key(key: &str) -> bool {
 }
 
 #[cfg(target_os = "macos")]
-fn macos_profile(cwd: &Path, temp: &Path, mode: SandboxMode) -> String {
+fn macos_profile(
+    cwd: &Path,
+    temp: &Path,
+    mode: SandboxMode,
+    control_socket: Option<&Path>,
+) -> String {
     let workspace_write = if mode == SandboxMode::WorkspaceWrite {
         format!(" (subpath \"{}\")", seatbelt_escape(cwd))
     } else {
@@ -510,12 +542,30 @@ fn macos_profile(cwd: &Path, temp: &Path, mode: SandboxMode) -> String {
     } else {
         String::new()
     };
+    // The one network exception: connecting to this execution's attached
+    // `yolop` control socket. Listed under both spellings because /tmp is a
+    // symlink to /private/tmp.
+    let control_connect = control_socket
+        .map(|socket| {
+            let literal = socket.to_string_lossy();
+            let private = literal
+                .strip_prefix("/tmp/")
+                .map(|rest| format!("/private/tmp/{rest}"))
+                .unwrap_or_else(|| literal.to_string());
+            format!(
+                "\n(allow network-outbound (remote unix-socket (path-literal \"{}\")) (remote unix-socket (path-literal \"{}\")))",
+                seatbelt_escape(socket),
+                seatbelt_escape(Path::new(&private)),
+            )
+        })
+        .unwrap_or_default();
     format!(
-        "(version 1)\n(deny default)\n(allow process*)\n(allow file-read*)\n(allow sysctl-read)\n(allow mach-lookup)\n(allow file-write-data (require-all (path \"/dev/null\") (vnode-type CHARACTER-DEVICE)))\n(allow file-write*{} (subpath \"{}\"){}{})\n(deny network*)\n(deny file-write* (literal \"{}\") (subpath \"{}\"))",
+        "(version 1)\n(deny default)\n(allow process*)\n(allow file-read*)\n(allow sysctl-read)\n(allow mach-lookup)\n(allow file-write-data (require-all (path \"/dev/null\") (vnode-type CHARACTER-DEVICE)))\n(allow file-write*{} (subpath \"{}\"){}{})\n(deny network*){}\n(deny file-write* (literal \"{}\") (subpath \"{}\"))",
         workspace_write,
         seatbelt_escape(temp),
         shared_temp_write,
         global_skills_write,
+        control_connect,
         seatbelt_escape(&cwd.join(".git")),
         seatbelt_escape(&cwd.join(".git")),
     )
@@ -568,6 +618,7 @@ mod tests {
             Path::new("/workspace"),
             Path::new("/private/tmp/sandbox"),
             SandboxMode::WorkspaceWrite,
+            None,
         );
 
         assert!(profile.contains(
@@ -583,11 +634,13 @@ mod tests {
             Path::new("/workspace"),
             Path::new("/private/tmp/sandbox"),
             SandboxMode::WorkspaceWrite,
+            None,
         );
         let read_only = macos_profile(
             Path::new("/workspace"),
             Path::new("/private/tmp/sandbox"),
             SandboxMode::ReadOnly,
+            None,
         );
         let rule = format!(r#"(subpath "{}")"#, seatbelt_escape(&skills));
 
@@ -604,8 +657,36 @@ mod tests {
             std::fs::canonicalize(&temp).expect("sandbox temp should remain canonical")
         );
 
-        let profile = macos_profile(Path::new("/workspace"), &temp, SandboxMode::WorkspaceWrite);
+        let profile = macos_profile(
+            Path::new("/workspace"),
+            &temp,
+            SandboxMode::WorkspaceWrite,
+            None,
+        );
         assert!(profile.contains(&format!(r#"(subpath "{}")"#, temp.display())));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_sandbox_admits_only_the_attached_control_socket() {
+        let socket = Path::new("/tmp/yolop-control-1-abc/control.sock");
+        let profile = macos_profile(
+            Path::new("/workspace"),
+            Path::new("/private/tmp/sandbox"),
+            SandboxMode::WorkspaceWrite,
+            Some(socket),
+        );
+        assert!(profile.contains(
+            r#"(allow network-outbound (remote unix-socket (path-literal "/tmp/yolop-control-1-abc/control.sock")) (remote unix-socket (path-literal "/private/tmp/yolop-control-1-abc/control.sock")))"#
+        ));
+        assert!(profile.contains("(deny network*)"));
+        let without = macos_profile(
+            Path::new("/workspace"),
+            Path::new("/private/tmp/sandbox"),
+            SandboxMode::WorkspaceWrite,
+            None,
+        );
+        assert!(!without.contains("network-outbound"));
     }
 
     #[cfg(not(windows))]

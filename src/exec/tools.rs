@@ -214,11 +214,7 @@ impl BashTool {
 
         // kill_on_drop ensures a timed-out or canceled background command is
         // reaped when the owning future is dropped.
-        let control = self
-            .control
-            .as_ref()
-            .filter(|_| sandbox.supports_control_endpoint());
-        let control_endpoint = if let Some(control) = control {
+        let control_endpoint = if let Some(control) = &self.control {
             Some(
                 crate::control::ControlEndpoint::start(
                     control.clone(),
@@ -240,7 +236,11 @@ impl BashTool {
             .as_ref()
             .map(|endpoint| endpoint.wrap_shell_script(command));
         let mut process = sandbox
-            .command(&cwd, attached_script.as_deref().unwrap_or(command))
+            .command(
+                &cwd,
+                attached_script.as_deref().unwrap_or(command),
+                control_endpoint.as_ref(),
+            )
             .map_err(|e| ToolExecutionResult::tool_error(format!("sandbox setup failed: {e:#}")))?;
         if let (Some(endpoint), Some(host)) = (&control_endpoint, process.host_mut()) {
             endpoint.apply_to(host);

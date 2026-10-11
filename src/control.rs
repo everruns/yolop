@@ -395,7 +395,7 @@ impl ControlEndpoint {
         }
         let bin_dir = root.join("bin");
         std::fs::create_dir(&bin_dir)?;
-        install_current_executable_shim(&bin_dir)?;
+        install_current_executable_shim(&bin_dir, sandbox_mode)?;
 
         let routes = service
             .routes()
@@ -433,20 +433,29 @@ impl ControlEndpoint {
 
         #[cfg(windows)]
         let (address, task) = {
-            // Windows shell containment is not available yet. Loopback plus a
-            // per-execution random token retains process-local authentication.
-            let listener =
-                tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?;
-            let address = format!("tcp:{}", listener.local_addr()?);
+            // A named pipe rather than loopback TCP: the Windows shell sandbox
+            // has no network, host loopback included, but may open this one
+            // pipe. Its ACL admits AppContainers; the per-execution random
+            // token still authenticates every request.
+            let name = format!(r"\\.\pipe\yolop-control-{}-{nonce}", std::process::id());
+            let mut server = control_pipe::create(&name, true)?;
+            let address = format!("pipe:{name}");
             let expected_token = token.clone();
             let task = tokio::spawn(async move {
-                while let Ok((stream, _)) = listener.accept().await {
+                while server.connect().await.is_ok() {
+                    let connected = server;
+                    // The next instance exists before this one is served, so
+                    // a second client never finds the pipe missing.
+                    server = match control_pipe::create(&name, false) {
+                        Ok(next) => next,
+                        Err(_) => break,
+                    };
                     let service = service.clone();
                     let token = expected_token.clone();
                     let gate = approval_gate.clone();
                     tokio::spawn(async move {
                         let _ = handle_endpoint_stream(
-                            stream,
+                            connected,
                             &token,
                             service,
                             approval_policy,
@@ -469,11 +478,31 @@ impl ControlEndpoint {
         })
     }
 
+    /// The variables a shell child needs to reach this endpoint.
+    pub(crate) fn child_environment(&self) -> [(&'static str, &str); 3] {
+        [
+            (CONTROL_ENDPOINT_ENV, &self.address),
+            (CONTROL_TOKEN_ENV, &self.token),
+            (CONTROL_ROUTES_ENV, &self.routes),
+        ]
+    }
+
+    /// Directory holding the `yolop` shim that shell scripts find on `PATH`.
+    #[cfg(windows)]
+    pub(crate) fn bin_dir(&self) -> &Path {
+        &self.bin_dir
+    }
+
+    /// The listening socket, which the macOS sandbox policy admits.
+    #[cfg(target_os = "macos")]
+    pub(crate) fn socket_path(&self) -> Option<&Path> {
+        self.address.strip_prefix("unix:").map(Path::new)
+    }
+
     pub(crate) fn apply_to(&self, command: &mut tokio::process::Command) {
-        command
-            .env(CONTROL_ENDPOINT_ENV, &self.address)
-            .env(CONTROL_TOKEN_ENV, &self.token)
-            .env(CONTROL_ROUTES_ENV, &self.routes);
+        for (key, value) in self.child_environment() {
+            command.env(key, value);
+        }
         let mut paths = vec![self.bin_dir.clone()];
         if let Some(existing) = std::env::var_os("PATH") {
             paths.extend(std::env::split_paths(&existing));
@@ -507,13 +536,28 @@ impl Drop for ControlEndpoint {
 }
 
 #[cfg(unix)]
-fn install_current_executable_shim(bin_dir: &Path) -> anyhow::Result<()> {
-    std::os::unix::fs::symlink(crate::exec::self_exe::reexec_path()?, bin_dir.join("yolop"))?;
+fn install_current_executable_shim(
+    bin_dir: &Path,
+    sandbox_mode: crate::config::SandboxMode,
+) -> anyhow::Result<()> {
+    // Uncontained shells follow `/proc/<pid>/exe`, which survives an upgrade
+    // replacing the binary. A Landlock-contained shell may not resolve another
+    // process's `/proc` links (ptrace scoping), so contained shells get the
+    // executable's own path instead.
+    let target = if sandbox_mode == crate::config::SandboxMode::DangerFullAccess {
+        crate::exec::self_exe::reexec_path()?
+    } else {
+        std::env::current_exe()?
+    };
+    std::os::unix::fs::symlink(target, bin_dir.join("yolop"))?;
     Ok(())
 }
 
 #[cfg(windows)]
-fn install_current_executable_shim(bin_dir: &Path) -> anyhow::Result<()> {
+fn install_current_executable_shim(
+    bin_dir: &Path,
+    _sandbox_mode: crate::config::SandboxMode,
+) -> anyhow::Result<()> {
     let target = std::env::current_exe()?;
     std::fs::write(
         bin_dir.join("yolop.cmd"),
@@ -768,12 +812,12 @@ pub(crate) async fn run_endpoint_client(argv: Vec<String>) -> anyhow::Result<i32
     };
     #[cfg(windows)]
     let stream = {
-        let target = address
-            .strip_prefix("tcp:")
+        let name = address
+            .strip_prefix("pipe:")
             .ok_or_else(|| anyhow::anyhow!("unsupported attached control endpoint `{address}`"))?;
-        tokio::net::TcpStream::connect(target).await.map_err(|error| {
+        control_pipe::open(name).await.map_err(|error| {
             anyhow::anyhow!(
-                "cannot reach the running Yolop session at `{target}`: {error}; refusing detached fallback"
+                "cannot reach the running Yolop session at `{name}`: {error}; refusing detached fallback"
             )
         })?
     };
@@ -1088,6 +1132,74 @@ mod tests {
 
         fn render_control(&self, _action: &Value, response: &ControlResponse) -> String {
             response.render_default()
+        }
+    }
+}
+
+/// The Windows control transport: a local named pipe that the shell sandbox
+/// (an AppContainer) may open.
+#[cfg(windows)]
+pub(crate) mod control_pipe {
+    use std::time::Duration;
+    use tokio::net::windows::named_pipe::{
+        ClientOptions, NamedPipeClient, NamedPipeServer, ServerOptions,
+    };
+    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Security::Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW;
+    use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
+
+    /// Owner and SYSTEM get full access; any AppContainer (`AC`) may read and
+    /// write; the low mandatory label lets a low-integrity container token
+    /// write. No other principal is admitted.
+    const PIPE_SDDL: &str = "D:P(A;;GA;;;OW)(A;;GA;;;SY)(A;;GRGW;;;AC)S:(ML;;NW;;;LW)";
+    const ERROR_PIPE_BUSY: i32 = 231;
+
+    pub(crate) fn create(name: &str, first: bool) -> std::io::Result<NamedPipeServer> {
+        let sddl: Vec<u16> = PIPE_SDDL.encode_utf16().chain(Some(0)).collect();
+        let mut descriptor = std::ptr::null_mut();
+        // SAFETY: `sddl` is NUL-terminated; on success the descriptor is a
+        // LocalAlloc buffer freed below, after the pipe has copied it.
+        let converted = unsafe {
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                sddl.as_ptr(),
+                1,
+                &mut descriptor,
+                std::ptr::null_mut(),
+            )
+        };
+        if converted == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let mut attributes = SECURITY_ATTRIBUTES {
+            nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: descriptor,
+            bInheritHandle: 0,
+        };
+        // SAFETY: `attributes` points at a valid descriptor for the call.
+        let server = unsafe {
+            ServerOptions::new()
+                .first_pipe_instance(first)
+                .reject_remote_clients(true)
+                .create_with_security_attributes_raw(
+                    name,
+                    (&mut attributes as *mut SECURITY_ATTRIBUTES).cast(),
+                )
+        };
+        // SAFETY: allocated by the conversion above and no longer referenced.
+        unsafe { LocalFree(descriptor) };
+        server
+    }
+
+    pub(crate) async fn open(name: &str) -> std::io::Result<NamedPipeClient> {
+        let mut attempts = 0;
+        loop {
+            match ClientOptions::new().open(name) {
+                Err(error) if error.raw_os_error() == Some(ERROR_PIPE_BUSY) && attempts < 100 => {
+                    attempts += 1;
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                result => return result,
+            }
         }
     }
 }

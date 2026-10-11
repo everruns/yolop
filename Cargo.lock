@@ -10703,6 +10703,7 @@ dependencies = [
  "tuika-mermaid",
  "urlencoding",
  "vt100",
+ "windows-sys 0.61.2",
  "yolop-yep",
 ]
 

@@ -2827,6 +2827,72 @@ fn shell_commands_have_full_host_access_by_default() {
     assert!(tui.wait_or_kill(Duration::from_secs(3)).success());
 }
 
+/// The attached `yolop` CLI keeps working inside the native sandbox: the
+/// policy admits this execution's control socket and nothing else.
+#[cfg(not(windows))]
+#[test]
+fn sandbox_admits_the_attached_yolop_control_endpoint() {
+    if !require_native_sandbox("sandbox_admits_the_attached_yolop_control_endpoint") {
+        return;
+    }
+    let root = tempfile::Builder::new()
+        .prefix("yolop-sandbox-control-test-")
+        .tempdir_in(std::env::current_dir().expect("current directory"))
+        .expect("tempdir outside shared temp");
+    let workspace = root.path().join("workspace");
+    std::fs::create_dir(&workspace).expect("create workspace");
+    let mut tui = spawn_tui_llmsim_with(
+        &yolop_binary(),
+        TuiSpawnOptions {
+            workspace: Some(workspace),
+            sandbox: true,
+            inline: false,
+            compact_work: true,
+            ..TuiSpawnOptions::default()
+        },
+    );
+    assert!(
+        tui.wait_for_output("type /help", Duration::from_secs(10)),
+        "TUI did not finish startup: {}",
+        tui.output_text()
+    );
+
+    tui.write_input(b"!bash -c 'yolop extensions list' | sed -n '1p'\r");
+    let summary = tui
+        .wait_for_screen(Duration::from_secs(10), |screen| {
+            screen.iter().any(|line| line.contains("Ctrl+O details"))
+        })
+        .join("\n");
+    assert!(
+        summary.contains("Ctrl+O details"),
+        "sandboxed attached control did not complete: {summary}"
+    );
+    assert!(
+        tui.wait_for_output("Worked", Duration::from_secs(10)),
+        "sandboxed attached control did not finish: {}",
+        tui.output_text()
+    );
+    tui.write_input(b"\x0f");
+    assert!(
+        tui.wait_for_output("shell exited with code 0", Duration::from_secs(5)),
+        "sandboxed attached control should exit cleanly: {}",
+        tui.output_text()
+    );
+    assert!(
+        tui.wait_for_output("No extensions installed.", Duration::from_secs(3)),
+        "sandboxed attached control should reach the session: {}",
+        tui.output_text()
+    );
+    let transcript = strip_ansi(&tui.output_text());
+    assert!(
+        !transcript.contains("cannot reach the running Yolop session"),
+        "the sandbox blocked the control endpoint: {transcript}"
+    );
+
+    tui.write_input(b"\x03\x03");
+    assert!(tui.wait_or_kill(Duration::from_secs(3)).success());
+}
+
 #[cfg(not(windows))]
 #[test]
 fn sandbox_flag_restricts_shell_writes_for_one_run() {

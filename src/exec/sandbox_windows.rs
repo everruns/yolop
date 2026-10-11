@@ -10,9 +10,9 @@
 //!   the policy grants the workspace, the private temp, toolchain directories
 //!   found on `PATH` and well-known SDK variables, and per-user installs under
 //!   `%LOCALAPPDATA%\Programs`. Everything else in the profile stays unreadable.
-//! - All network is denied, host loopback included, so the attached `yolop`
-//!   control endpoint (loopback TCP on Windows) is not offered in here; see
-//!   `SandboxProvider::supports_control_endpoint`.
+//! - All network is denied, host loopback included. The attached `yolop`
+//!   control endpoint is a named pipe whose ACL admits AppContainers, so
+//!   `yolop` subcommands still reach the session from inside.
 //! - Workspace `.git` stays writable, matching Linux rather than macOS.
 //! - Scripts travel as `-EncodedCommand` so no PowerShell quoting is involved.
 
@@ -33,6 +33,7 @@ use mxc_sdk::v1::{
 use tokio::io::AsyncWriteExt;
 
 use crate::config::SandboxMode;
+use crate::control::ControlEndpoint;
 use crate::exec::sandbox::ChildOutput;
 
 /// Whether this host can create a ProcessContainer. Probed once per process.
@@ -44,7 +45,12 @@ pub(crate) fn available() -> bool {
 }
 
 /// A contained PowerShell launch for `script` in `cwd`.
-pub(crate) fn command(cwd: &Path, script: &str, mode: SandboxMode) -> Result<ContainedCommand> {
+pub(crate) fn command(
+    cwd: &Path,
+    script: &str,
+    mode: SandboxMode,
+    control: Option<&ControlEndpoint>,
+) -> Result<ContainedCommand> {
     if mode == SandboxMode::DangerFullAccess {
         anyhow::bail!("the Windows sandbox cannot run danger-full-access");
     }
@@ -82,6 +88,19 @@ pub(crate) fn command(cwd: &Path, script: &str, mode: SandboxMode) -> Result<Con
         },
     );
     filesystem.readonly_paths.extend(tools.readonly_paths);
+    if let Some(control) = control {
+        // The `yolop` shim and the executable it runs; the pipe itself is
+        // admitted by its own ACL (`control::control_pipe`).
+        filesystem
+            .readonly_paths
+            .push(path_string(control.bin_dir()));
+        if let Some(exe_dir) = std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(Path::to_path_buf))
+        {
+            filesystem.readonly_paths.push(path_string(&exe_dir));
+        }
+    }
     filesystem
         .readonly_paths
         .extend(user_profile_policy(None).readonly_paths);
@@ -101,7 +120,17 @@ pub(crate) fn command(cwd: &Path, script: &str, mode: SandboxMode) -> Result<Con
             runtime_config: None,
         }),
         working_directory: Some(path_string(cwd)),
-        environment: Some(environment(&home, &temp)),
+        environment: Some({
+            let mut environment = environment(&home, &temp);
+            if let Some(control) = control {
+                environment.extend(
+                    control
+                        .child_environment()
+                        .map(|(key, value)| (key.to_string(), value.to_string())),
+                );
+            }
+            environment
+        }),
         inherit_default_environment: Some(false),
         ..ContainerRequest::new(powershell_command_line(script))
     };
@@ -348,6 +377,57 @@ mod tests {
         assert_eq!(filesystem.readonly_paths, [r"C:\Tools".to_string()]);
     }
 
+    /// The control pipe's ACL is what lets a contained shell reach the
+    /// session, so open it from inside a real container.
+    #[tokio::test]
+    async fn workspace_write_container_can_open_the_control_pipe() {
+        if !available() {
+            eprintln!("skipping: MXC process container unavailable on this Windows build");
+            return;
+        }
+        let name = format!(r"\\.\pipe\yolop-sandbox-test-{}", std::process::id());
+        let server = crate::control::control_pipe::create(&name, true).unwrap();
+        let accept = tokio::spawn(async move {
+            server.connect().await.unwrap();
+            let mut line = String::new();
+            let mut reader = tokio::io::BufReader::new(server);
+            tokio::io::AsyncBufReadExt::read_line(&mut reader, &mut line)
+                .await
+                .unwrap();
+            line
+        });
+        let pipe = name.trim_start_matches(r"\\.\pipe\");
+        let script = format!(
+            "$pipe = New-Object IO.Pipes.NamedPipeClientStream('.', '{pipe}', [IO.Pipes.PipeDirection]::InOut); \
+             $pipe.Connect(10000); $writer = New-Object IO.StreamWriter($pipe); \
+             $writer.WriteLine('hello-from-container'); $writer.Flush(); 'pipe-connected'"
+        );
+        let workspace = tempfile::tempdir().unwrap();
+        let workspace_path = std::fs::canonicalize(workspace.path()).unwrap();
+        let mut child = crate::exec::sandbox::SandboxCommand::Windows(
+            command(&workspace_path, &script, SandboxMode::WorkspaceWrite, None).unwrap(),
+        )
+        .spawn()
+        .unwrap();
+        let (mut output, mut errors) = child.take_output();
+        let mut stdout = String::new();
+        let mut stderr = String::new();
+        tokio::io::AsyncReadExt::read_to_string(&mut output, &mut stdout)
+            .await
+            .unwrap();
+        tokio::io::AsyncReadExt::read_to_string(&mut errors, &mut stderr)
+            .await
+            .unwrap();
+        let code = child.wait().await.unwrap();
+        assert_eq!(code, Some(0), "stdout={stdout} stderr={stderr}");
+        assert!(stdout.contains("pipe-connected"), "{stdout} {stderr}");
+        let line = tokio::time::timeout(Duration::from_secs(10), accept)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(line.trim(), "hello-from-container");
+    }
+
     /// End to end on a host that supports MXC; skips elsewhere, per the
     /// repository's no-`#[ignore]` rule.
     #[tokio::test]
@@ -367,7 +447,8 @@ mod tests {
         );
         let workspace_path = std::fs::canonicalize(workspace.path()).unwrap();
         let started = std::time::Instant::now();
-        let prepared = command(&workspace_path, &script, SandboxMode::WorkspaceWrite).unwrap();
+        let prepared =
+            command(&workspace_path, &script, SandboxMode::WorkspaceWrite, None).unwrap();
         eprintln!("sandbox policy prepared in {:?}", started.elapsed());
         let started = std::time::Instant::now();
         let mut child = crate::exec::sandbox::SandboxCommand::Windows(prepared)

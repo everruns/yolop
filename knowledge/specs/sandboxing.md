@@ -140,9 +140,12 @@ unreadable. All network is denied, host loopback included. The environment is
 the shared allowlist plus the variables Windows programs need to start, with
 `HOME`, `TEMP`, and `TMP` pointed at the private sandbox directories.
 
-Known limits: workspace `.git` stays writable, as on Linux. Attached `yolop`
-subcommands are unavailable inside the container, because their endpoint is
-loopback TCP on Windows and the container has no host loopback access.
+Attached `yolop` subcommands reach the session over a local named pipe
+whose ACL admits AppContainers (plus a low-integrity label), authenticated by
+the per-execution token as on Unix. The shim directory and the Yolop
+executable's directory are granted read-only so the shim can run.
+
+Known limit: workspace `.git` stays writable, as on Linux.
 `danger-full-access` runs `powershell.exe -NoProfile -NonInteractive
 -Command` on the host, as before. The shell is PowerShell in every mode, and
 the `bash` tool advertises it so the model emits the right syntax.
@@ -299,7 +302,11 @@ provider smoke.
   their own host-side boundaries;
 - hooks use Bashkit virtual execution rather than the native shell provider;
 - the one-shot attached Yolop administration broker is a typed host boundary,
-  not a sandbox escape available to arbitrary child processes;
+  not a sandbox escape available to arbitrary child processes. Each native
+  provider admits only this execution's endpoint: Linux leaves Unix-socket
+  connects alone, macOS allows `network-outbound` to that one socket path,
+  and Windows uses a named pipe the container may open. Every request still
+  carries the per-execution random token;
 - LSP, MCP, and extension server processes are configured control-plane
   processes and are not automatically moved into this shell sandbox;
 - danger-full-access does not isolate process signals at the OS boundary. The
