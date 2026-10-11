@@ -4283,6 +4283,15 @@ pub async fn build_with_options(
     ));
     capabilities.register(RepoMapCapability::new(workspace_host.clone()));
     capabilities.register(AstGrepCapability::new(workspace_host.clone()));
+    // The built-in search covers machines without a real ripgrep; where `rg`
+    // resolves on PATH the model keeps using that instead.
+    if crate::capabilities::rg::system_rg_available() {
+        tracing::debug!("system rg found on PATH; skipping built-in rg tool");
+    } else {
+        capabilities.register(crate::capabilities::RgCapability::new(
+            workspace_host.clone(),
+        ));
+    }
     // `ast_edit` — structural rewrites with preview-first `dry_run`. Registered
     // for the catalog but intentionally NOT part of the default harness; enable
     // with `[[capabilities]] ref = "ast_edit"` in settings.toml.

@@ -481,7 +481,7 @@ enum ToolKind {
 /// write to the workspace, so they count as mutations.
 fn classify_tool(name: &str) -> ToolKind {
     match name {
-        "read_file" | "grep_files" | "repo_map" | "repo_symbols" | "ast_grep"
+        "read_file" | "grep_files" | "repo_map" | "repo_symbols" | "ast_grep" | "rg"
         | "list_directory" | "stat_file" | "lsp_definition" | "lsp_references" | "lsp_hover"
         | "lsp_diagnostics" | "lsp_symbols" => ToolKind::Exploration,
         "write_file" | "edit_file" | "delete_file" | "lsp_rename" | "lsp_code_actions" => {

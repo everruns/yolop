@@ -17,6 +17,7 @@ mod runtime;
 mod sandbox_approval;
 mod session_state;
 mod tui;
+mod utils;
 mod version;
 
 #[cfg(test)]
@@ -266,6 +267,9 @@ enum Commands {
     /// user's model list (see `capabilities::model_list`); this command is
     /// about files on disk.
     Weights(WeightsArgs),
+    /// Deterministic local helpers for scripts and agents (`utils rg` text
+    /// search, more to come). Always installed, unlike external binaries.
+    Utils(UtilsArgs),
     /// Internal Linux Landlock/seccomp worker. Not a user-facing command.
     #[cfg(target_os = "linux")]
     #[command(name = "__sandbox-exec", hide = true)]
@@ -291,6 +295,236 @@ struct McpArgs {
 struct WeightsArgs {
     #[command(subcommand)]
     command: WeightsCommand,
+}
+
+#[derive(Args, Debug)]
+struct UtilsArgs {
+    #[command(subcommand)]
+    command: UtilsCommand,
+}
+
+#[derive(Subcommand, Debug)]
+enum UtilsCommand {
+    /// Search text with an `rg` compatible subset of flags.
+    ///
+    /// Line oriented and UTF-8 only, using the same `ignore` walker and Rust
+    /// regex engine as the agent search tool, so scripted results match
+    /// interactive ones. Exit codes follow `rg`: 0 matches found, 1 no
+    /// match, 2 error. Long help lists the supported flags; anything outside
+    /// that subset (multiline, PCRE2, `--json`, `-t` types, binary search)
+    /// needs a real `rg` install.
+    #[command(
+        after_help = "Examples:\n  Search with line numbers:\n    yolop utils rg -n hello src\n  List searched files:\n    yolop utils rg --files -g '*.rs'"
+    )]
+    Rg(Box<RgArgs>),
+}
+
+#[derive(Args, Debug)]
+struct RgArgs {
+    /// Pattern to search for (ORed with every `-e/--regexp` value).
+    /// Required unless `--files` or `-e/--regexp` is given. With `--files`
+    /// every positional is a PATH, so a lone positional is a path there.
+    #[arg(
+        value_name = "PATTERN",
+        required_unless_present_any = ["files", "regexps"]
+    )]
+    pattern: Option<String>,
+
+    /// Files or directories to search. Defaults to the current directory.
+    #[arg(value_name = "PATH", default_value = ".")]
+    paths: Vec<PathBuf>,
+
+    /// Additional patterns to OR with the positional pattern.
+    #[arg(short = 'e', long = "regexp", value_name = "PATTERN")]
+    regexps: Vec<String>,
+
+    /// List every file that would be searched instead of searching.
+    #[arg(long = "files")]
+    files: bool,
+
+    /// Treat the pattern as a literal string, not a regex.
+    #[arg(short = 'F', long = "fixed-strings")]
+    fixed_strings: bool,
+
+    /// Case insensitive search.
+    #[arg(short = 'i', long = "ignore-case")]
+    ignore_case: bool,
+
+    /// Case insensitive only when the pattern is all lowercase.
+    #[arg(short = 'S', long = "smart-case")]
+    smart_case: bool,
+
+    /// Force case sensitive search, overriding `-i` and `-S`.
+    #[arg(short = 's', long = "case-sensitive")]
+    case_sensitive: bool,
+
+    /// Match whole words only.
+    #[arg(short = 'w', long = "word-regexp")]
+    word: bool,
+
+    /// Match entire lines only.
+    #[arg(short = 'x', long = "line-regexp")]
+    line_regexp: bool,
+
+    /// Report lines that do not match.
+    #[arg(short = 'v', long = "invert-match")]
+    invert_match: bool,
+
+    /// Filter files with gitignore style globs. Repeatable.
+    /// Globs without a slash match the file name.
+    #[arg(short = 'g', long = "glob", value_name = "GLOB")]
+    globs: Vec<String>,
+
+    /// Search hidden files and directories.
+    #[arg(long = "hidden")]
+    hidden: bool,
+
+    /// Ignore `.gitignore`, `.ignore`, and global excludes.
+    #[arg(long = "no-ignore")]
+    no_ignore: bool,
+
+    /// Follow symbolic links.
+    #[arg(short = 'L', long = "follow")]
+    follow: bool,
+
+    /// Descend at most NUM directories.
+    #[arg(long = "max-depth", value_name = "NUM")]
+    max_depth: Option<usize>,
+
+    /// Repeat to search more: `-u` disables ignore files,
+    /// `-uu` also shows hidden files.
+    #[arg(short = 'u', long = "unrestricted", action = ArgAction::Count)]
+    unrestricted: u8,
+
+    /// Print only the paths of files with a match.
+    #[arg(short = 'l', long = "files-with-matches")]
+    files_with_matches: bool,
+
+    /// Print per file match counts instead of matching lines.
+    #[arg(short = 'c', long = "count")]
+    count: bool,
+
+    /// Print nothing, only report matches via the exit code.
+    #[arg(short = 'q', long = "quiet")]
+    quiet: bool,
+
+    /// Stop each file after NUM matching lines.
+    #[arg(short = 'm', long = "max-count", value_name = "NUM")]
+    max_count: Option<u64>,
+
+    /// Truncate printed content lines to NUM characters.
+    #[arg(short = 'M', long = "max-columns", value_name = "NUM")]
+    max_columns: Option<usize>,
+
+    /// Show NUM lines before and after each match.
+    #[arg(short = 'C', long = "context", value_name = "NUM")]
+    context: Option<usize>,
+
+    /// Show NUM lines before each match.
+    #[arg(short = 'B', long = "before-context", value_name = "NUM")]
+    before: Option<usize>,
+
+    /// Show NUM lines after each match.
+    #[arg(short = 'A', long = "after-context", value_name = "NUM")]
+    after: Option<usize>,
+
+    /// Show line numbers. Accepted for compatibility, on by default.
+    #[arg(short = 'n', long = "line-number")]
+    line_number: bool,
+
+    /// Never show line numbers.
+    #[arg(short = 'N', long = "no-line-number")]
+    no_line_number: bool,
+
+    /// Show the byte column of the first match on each line.
+    #[arg(long = "column")]
+    column: bool,
+
+    /// `path:line:column:content` on every line. Implies line numbers.
+    #[arg(long = "vimgrep")]
+    vimgrep: bool,
+
+    /// Always show the file path on each line.
+    #[arg(short = 'H', long = "with-filename")]
+    with_filename: bool,
+
+    /// Never show the file path on each line.
+    #[arg(short = 'I', long = "no-filename")]
+    no_filename: bool,
+
+    /// NUL separator for `--files`, `-l`, and `--count` output.
+    #[arg(short = '0', long = "null")]
+    null: bool,
+
+    /// Accepted for compatibility with `rg` muscle memory, always plain
+    /// output (this command never colors or paginates).
+    #[arg(long = "color", value_name = "WHEN", default_value = "auto")]
+    color: String,
+
+    /// Accepted for compatibility, this command never prints headings.
+    #[arg(long = "heading")]
+    heading: bool,
+
+    /// Accepted for compatibility, this command never prints headings.
+    #[arg(long = "no-heading")]
+    no_heading: bool,
+}
+
+impl RgArgs {
+    fn into_options(self) -> utils::RgOptions {
+        let mut patterns = Vec::new();
+        // With `--files` there is no pattern: clap still parks the first
+        // positional in `pattern`, so move it back to the paths.
+        let mut paths = self.paths;
+        let mut positional = self.pattern;
+        if self.files
+            && let Some(first) = positional.take()
+        {
+            let single_default = paths.len() == 1 && paths[0].as_os_str() == ".";
+            if single_default {
+                paths = vec![PathBuf::from(first)];
+            } else {
+                paths.insert(0, PathBuf::from(first));
+            }
+        }
+        if let Some(pattern) = positional {
+            patterns.push(pattern);
+        }
+        patterns.extend(self.regexps);
+        utils::RgOptions {
+            patterns,
+            paths,
+            files: self.files,
+            fixed_strings: self.fixed_strings,
+            ignore_case: self.ignore_case,
+            smart_case: self.smart_case,
+            case_sensitive: self.case_sensitive,
+            word: self.word,
+            line_regexp: self.line_regexp,
+            invert_match: self.invert_match,
+            globs: self.globs,
+            hidden: self.hidden,
+            no_ignore: self.no_ignore,
+            follow: self.follow,
+            max_depth: self.max_depth,
+            unrestricted: self.unrestricted,
+            files_with_matches: self.files_with_matches,
+            count: self.count,
+            quiet: self.quiet,
+            max_count: self.max_count,
+            max_columns: self.max_columns,
+            max_lines: None,
+            max_bytes: None,
+            before: self.before.or(self.context).unwrap_or(0),
+            after: self.after.or(self.context).unwrap_or(0),
+            line_number: self.line_number || !self.no_line_number,
+            column: self.column,
+            vimgrep: self.vimgrep,
+            with_filename: self.with_filename,
+            no_filename: self.no_filename,
+            null: self.null,
+        }
+    }
 }
 
 #[derive(Subcommand, Debug)]
@@ -1167,6 +1401,38 @@ fn empty_weights_store_hint() -> String {
     }
 }
 
+/// Pure local helper: no config, network, or sandbox involved. Exits with
+/// `rg` style codes (0 match, 1 no match, 2 error) instead of returning, so
+/// scripts can use it exactly like `rg`. A broken stdout pipe (for example
+/// `| head`) is not an error.
+fn run_utils_command(args: UtilsArgs) -> Result<()> {
+    let UtilsCommand::Rg(rg_args) = args.command;
+    let opts = (*rg_args).into_options();
+    let stdout = std::io::stdout();
+    let mut out = std::io::BufWriter::new(stdout.lock());
+    let code = match utils::run_rg(&opts, &mut out) {
+        Ok(stats) => {
+            if stats.matched() {
+                utils::EXIT_MATCH
+            } else {
+                utils::EXIT_NO_MATCH
+            }
+        }
+        Err(err) => {
+            let _ = out.flush();
+            eprintln!("yolop utils rg: {err:#}");
+            utils::EXIT_ERROR
+        }
+    };
+    if let Err(err) = out.flush()
+        && err.kind() != std::io::ErrorKind::BrokenPipe
+    {
+        eprintln!("yolop utils rg: {err:#}");
+        std::process::exit(utils::EXIT_ERROR);
+    }
+    std::process::exit(code);
+}
+
 async fn run_weights_command(command: WeightsCommand) -> Result<()> {
     match command {
         WeightsCommand::List => {
@@ -1504,6 +1770,7 @@ async fn run_command(command: Commands) -> Result<()> {
         }
         Commands::Mcp(args) => run_mcp_command(*args.command).await,
         Commands::Weights(args) => run_weights_command(args.command).await,
+        Commands::Utils(args) => run_utils_command(args),
         #[cfg(target_os = "linux")]
         Commands::SandboxExec {
             cwd,
