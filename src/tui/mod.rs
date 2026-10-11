@@ -223,6 +223,8 @@ pub struct App {
     pub busy: bool,
     pub should_quit: bool,
     ctrl_c_exit: bool,
+    /// A coordination thread picked on the board, to open once the UI closes.
+    open_session: Option<SessionId>,
     /// When the first Ctrl+C armed exit; a second press quits.
     ctrl_c_pending_exit_at: Option<Instant>,
     /// First Esc during a busy turn armed cancellation; a second press cancels.
@@ -753,6 +755,7 @@ impl App {
             busy: false,
             should_quit: false,
             ctrl_c_exit: false,
+            open_session: None,
             ctrl_c_pending_exit_at: None,
             esc_pending_cancel: false,
             busy_frame: 0,
@@ -1182,6 +1185,20 @@ impl App {
 
     pub fn should_show_resume_hint(&self) -> bool {
         self.ctrl_c_exit
+    }
+
+    /// The thread session picked on the board to open in place of this one.
+    pub fn open_session(&self) -> Option<SessionId> {
+        self.open_session
+    }
+
+    /// The thread session of the selected activity row, when it is a
+    /// coordination thread.
+    pub(crate) fn selected_thread(&self) -> Option<SessionId> {
+        self.session_tasks
+            .selected(self.background_selected)
+            .filter(|task| task.kind == everruns_core::session_task::TASK_KIND_ASSIGNMENT)
+            .and_then(|task| task.links.child_session_id)
     }
 
     /// Final assistant text to leave visible after the full-screen UI closes.
@@ -3163,6 +3180,17 @@ impl App {
             }
             KeyCode::Char('x') | KeyCode::Delete => {
                 self.cancel_selected_task().await;
+            }
+            // A thread is its own session in its own process; opening it hands
+            // the terminal over, and quitting it comes back here.
+            KeyCode::Enter => {
+                if let Some(thread) = self.selected_thread() {
+                    self.abort_codex_login();
+                    self.abort_openrouter_login();
+                    self.abort_mcp_login();
+                    self.open_session = Some(thread);
+                    self.should_quit = true;
+                }
             }
             _ => {}
         }
@@ -7987,6 +8015,60 @@ flowchart TD
             .unwrap();
         assert!(task.cancel_requested_at.is_some());
         assert!(app.background_panel_body().contains("canceling"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn enter_on_a_thread_opens_it_in_place_of_the_coordinator() {
+        let mut test = app_with_llmsim().await;
+        let app = &mut test.app;
+        let session_id = app.session.session_id();
+        let thread = SessionId::new();
+        app.task_registry
+            .create(CreateSessionTask {
+                session_id,
+                id: Some("task_background".to_string()),
+                kind: TASK_KIND_BACKGROUND_TOOL.to_string(),
+                display_name: "long command".to_string(),
+                spec: serde_json::json!({ "tool": "bash" }),
+                state: SessionTaskState::Running,
+                links: Default::default(),
+                wake_policy: Default::default(),
+            })
+            .await
+            .unwrap();
+        app.refresh_session_tasks().await;
+        app.background_panel = Some(0);
+        app.background_panel_focused = true;
+        app.select_first_visible_activity();
+        // Enter on anything but a thread does nothing.
+        app.handle_background_panel_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()))
+            .await;
+        assert!(!app.should_quit);
+        assert_eq!(app.open_session(), None);
+
+        app.task_registry
+            .create(CreateSessionTask {
+                session_id,
+                id: Some("task_assignment".to_string()),
+                kind: everruns_core::session_task::TASK_KIND_ASSIGNMENT.to_string(),
+                display_name: "fix the flaky test".to_string(),
+                spec: serde_json::json!({}),
+                state: SessionTaskState::Running,
+                links: everruns_core::session_task::TaskLinks {
+                    child_session_id: Some(thread),
+                    ..Default::default()
+                },
+                wake_policy: Default::default(),
+            })
+            .await
+            .unwrap();
+        app.refresh_session_tasks().await;
+        app.select_first_visible_activity();
+        assert_eq!(app.selected_thread(), Some(thread));
+        app.handle_background_panel_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()))
+            .await;
+        assert!(app.should_quit);
+        assert_eq!(app.open_session(), Some(thread));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

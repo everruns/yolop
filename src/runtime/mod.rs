@@ -3874,15 +3874,6 @@ pub async fn build_with_options(
         .unwrap_or_else(|| settings.snapshot().sandbox_mode());
     let sandbox = crate::exec::sandbox::provider(sandbox_mode);
     let approval_policy = settings.snapshot().approval_policy();
-    let (sandbox_approval_gate, sandbox_approval_rx) = if options.client_ui == ClientUiContext::Tui
-    {
-        crate::sandbox_approval::ApprovalGate::channel()
-    } else {
-        (
-            crate::sandbox_approval::ApprovalGate::deny(),
-            crate::sandbox_approval::denied_receiver(),
-        )
-    };
 
     // Pin the SessionId so resume can re-attach to the same session folder
     // (directory name is the session id).
@@ -3912,6 +3903,27 @@ pub async fn build_with_options(
             .context("read thread record")?
             .map(|thread| thread.coordinator),
         None => None,
+    };
+    // A headless thread has no prompt surface of its own: its escalations go
+    // to its coordinator's host, which asks the person (see
+    // `session_coordination`). Other non-TUI hosts deny, as `--print` does.
+    let relays_approvals = thread_of.is_some() && options.serve_release.is_some();
+    let (sandbox_approval_gate, sandbox_approval_rx) =
+        if options.client_ui == ClientUiContext::Tui || relays_approvals {
+            crate::sandbox_approval::ApprovalGate::channel()
+        } else {
+            (
+                crate::sandbox_approval::ApprovalGate::deny(),
+                crate::sandbox_approval::denied_receiver(),
+            )
+        };
+    let (sandbox_approval_rx, approval_relay) = if relays_approvals {
+        (
+            crate::sandbox_approval::denied_receiver(),
+            Some(sandbox_approval_rx),
+        )
+    } else {
+        (sandbox_approval_rx, None)
     };
     let worktrees_mode = match settings.snapshot().worktrees_mode() {
         crate::config::WorktreesMode::Auto if thread_of.is_some() => {
@@ -4173,6 +4185,10 @@ pub async fn build_with_options(
         event_bus_typed.subscribe(),
         thread_launcher,
         options.serve_release.clone(),
+        crate::capabilities::session_coordination::HostApprovals {
+            gate: sandbox_approval_gate.clone(),
+            relay: approval_relay,
+        },
     )
     .context("start session coordination host")?;
     let schedule_runner = local_backends

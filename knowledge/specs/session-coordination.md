@@ -106,12 +106,30 @@ group whose leader still matches its recorded start time killed, then is
 deleted. Start times guard against signalling a reused pid. Interactive hosts
 keep no ledger: a crashed TUI's processes are the person's to manage, while a
 thread is restarted automatically and its leftovers would race the successor.
-A group whose leader already exited cannot be verified and is left alone.
+A command that returned normally keeps its entry, since it may have started a
+service with `&`. Once its leader has exited, such a group is still stopped on
+Linux when no process holds the group id as its pid and a member is in the
+group, in the leader's terminal session, and started no earlier than the
+leader; the kernel does not reissue a pid that names a live group. Each new
+entry prunes the ones with nothing left to stop.
 
 A headless host exits after ten idle minutes unless background work is
 pending. A coordinator that restarts keeps its threads, assignments, and
 missed updates, all in the private WAL-mode `everruns-local` database under
 the sessions directory.
+
+## Escalations from headless threads
+
+A headless thread has no prompt surface, so its sandbox escalations are put to
+its coordinator. The thread's gate writes the request to `yolop_thread_approvals`
+and waits; the coordinator's host, on each supervision pass, asks the person
+through its own approval prompt, labelled with the thread, and writes the
+answer back. The thread's gate applies the answer, so approving "for this
+session" approves the thread's session, never the coordinator's. A coordinator
+with no prompt surface (ACP, `--print`) denies, as it does for its own
+commands. Only requests from a live host are asked. With no coordinator
+running, a request waits up to thirty minutes, then is denied; a person opening
+the thread denies it at once, so the hand-over is not stuck behind it.
 
 ## Opening a thread
 
@@ -121,6 +139,12 @@ presence row. The host stops taking deliveries, finishes its current turn, and
 exits; the opener waits for the lease to end (up to two minutes) and holds off
 the coordinator's restart of that thread meanwhile. An interactive host never
 yields.
+
+In the TUI, `Enter` on a thread row of the board does the same from the
+coordinator: the process re-executes itself with the thread's session id and
+`YOLOP_RETURN_SESSION` naming the coordinator, and quitting the thread
+re-executes back into it. A hand-over that times out returns to the
+coordinator too.
 
 ## Board and decisions
 
@@ -143,8 +167,9 @@ supervising coordinator.
 
 - Coordination never widens authority: a thread has the coordinator's profile,
   sandbox, and approval policy.
-- A headless host has no prompt surface, so sandbox escalations are denied as
-  in `--print`.
+- A headless thread's sandbox escalations are asked by its coordinator's host
+  and denied where that host cannot ask; other headless hosts deny them, as in
+  `--print`.
 - Message text is bounded (32 KiB) before storage or prompt construction.
 - Everything is local to one user-owned database; there is no network
   listener.
@@ -153,12 +178,10 @@ supervising coordinator.
 
 ## Known gaps
 
-- Background work started with `&` inside a command that then returned has no
-  verifiable group leader, so a dead host's leftovers of that shape survive.
-- A headless thread denies sandbox escalations that need an approval prompt;
-  opening the thread is the way to approve one.
-- Selecting a thread on the board does not open it; `yolop --session <id>`
-  does.
+- Outside Linux, a dead host's command group whose leader already exited is
+  left running, since its members cannot be verified there.
+- A process that left its command's group (`setsid`, a daemon that
+  double-forks) is not stopped.
 
 ## Verification bar
 
@@ -168,5 +191,9 @@ redelivery, plain-message retry, settling only this host's deliveries, the
 "ended without completing" and failed-turn outcomes, the background-work
 exception, the coordinator not waking itself, yield-on-open, the
 `sessions live` and `sessions send` CLI, stopping a dead host's command groups
-(and never a live host's or a reused pid's), a thread's own worktree, the
-`THREADS` board, and a decision answered through an ACP form end to end.
+(and never a live host's or a reused pid's), background work that outlived its
+command (and never members outside the leader's session), a thread's
+escalation asked and answered by its coordinator (denied without a prompt
+surface, on opening the thread, and never asked for a dead host), a thread's
+own worktree, the `THREADS` board and opening a thread from it, and a decision
+answered through an ACP form end to end.

@@ -1,5 +1,12 @@
 # Knowledge Log
 
+## 2026-10-11, Coordination follow-ups
+
+A dead thread host's background jobs started with `&` are stopped too, headless
+threads put sandbox escalations to their coordinator instead of denying them,
+and `Enter` on the TUI board opens a thread and returns to the coordinator on
+quit. See [session coordination](specs/session-coordination.md).
+
 ## 2026-10-11, Coordination gaps closed
 
 Threads get their own worktree by default, a dead thread host's commands are

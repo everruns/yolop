@@ -958,6 +958,14 @@ async fn async_main(crash_reporter: &crash_report::CrashReporter) -> Result<()> 
         if store.request_release(session_id)? {
             eprintln!("yolop: waiting for the background host to hand this session over");
             if !store.take_over(session_id, SERVE_HANDOVER_TIMEOUT).await? {
+                // Opened from a coordinator's board: go back to it rather than
+                // leaving the person at a shell.
+                if let Ok(coordinator) = std::env::var(RETURN_SESSION_ENV) {
+                    eprintln!(
+                        "yolop: session {session_id} is still busy in a background host; returning to its coordinator"
+                    );
+                    return switch_session(&coordinator, None);
+                }
                 anyhow::bail!(
                     "session {session_id} is still busy in a background host; try again once its turn ends"
                 );
@@ -1887,6 +1895,7 @@ async fn run_tui(
         app.set_render_mode(tui::RenderMode::Fullscreen);
     }
     let result = app.run(&mut terminal).await;
+    let open_session = app.open_session();
     let show_resume_hint = app.should_show_resume_hint();
     let session_id = app.session_id().to_string();
     let last_assistant_message = app.last_assistant_message().map(str::to_owned);
@@ -1929,6 +1938,22 @@ async fn run_tui(
     // session's final events before their servers are killed.
     trajectory_handles.flush_trace_exporters().await;
 
+    // Opening a thread from the board hands the terminal to that session, and
+    // quitting the thread comes back to the coordinator it was opened from.
+    if result.is_ok() {
+        let switch = match open_session {
+            Some(thread) => Some((thread.to_string(), Some(session_id.clone()))),
+            None => std::env::var(RETURN_SESSION_ENV)
+                .ok()
+                .filter(|coordinator| *coordinator != session_id)
+                .map(|coordinator| (coordinator, None)),
+        };
+        if let Some((target, return_to)) = switch {
+            drop(app);
+            return switch_session(&target, return_to.as_deref());
+        }
+    }
+
     if show_resume_hint {
         println!();
         if fullscreen && let Some(message) = last_assistant_message {
@@ -1943,6 +1968,68 @@ async fn run_tui(
         print_centered_ukraine_banner();
     }
     result
+}
+
+/// Names the session a thread opened from the coordination board returns to.
+const RETURN_SESSION_ENV: &str = "YOLOP_RETURN_SESSION";
+
+/// Replace this process with the same command line resuming `session_id`.
+/// `return_to` is the session to come back to when that one quits.
+fn switch_session(session_id: &str, return_to: Option<&str>) -> Result<()> {
+    let executable = std::env::current_exe().context("locate the yolop executable")?;
+    let mut command = std::process::Command::new(executable);
+    command
+        .args(switch_session_args(std::env::args_os(), session_id))
+        .env_remove(RETURN_SESSION_ENV);
+    if let Some(return_to) = return_to {
+        command.env(RETURN_SESSION_ENV, return_to);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        Err(anyhow::Error::new(command.exec()).context("open the session"))
+    }
+    #[cfg(not(unix))]
+    {
+        let status = command.status().context("open the session")?;
+        std::process::exit(status.code().unwrap_or(1));
+    }
+}
+
+/// This run's arguments without the session and one-shot inputs, resuming
+/// `session_id` instead.
+fn switch_session_args(
+    args: impl IntoIterator<Item = std::ffi::OsString>,
+    session_id: &str,
+) -> Vec<std::ffi::OsString> {
+    let mut args = args.into_iter();
+    let _executable = args.next();
+    let mut kept = Vec::new();
+    let mut skip_value = false;
+    for arg in args {
+        if skip_value {
+            skip_value = false;
+            continue;
+        }
+        let value = arg.to_string_lossy();
+        if matches!(
+            value.as_ref(),
+            "-p" | "--print" | "-i" | "--image" | "--session" | "--trajectory-out"
+        ) {
+            skip_value = true;
+            continue;
+        }
+        if ["--print=", "--image=", "--session=", "--trajectory-out="]
+            .iter()
+            .any(|prefix| value.starts_with(prefix))
+        {
+            continue;
+        }
+        kept.push(arg);
+    }
+    kept.push("--session".into());
+    kept.push(session_id.into());
+    kept
 }
 
 fn continuation_command(
@@ -2475,6 +2562,36 @@ fn print_final_output(output: &[String]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn switching_sessions_keeps_the_run_flags_and_replaces_the_session() {
+        let args = [
+            "yolop",
+            "--profile",
+            "coordinator",
+            "--session",
+            "old",
+            "-i",
+            "shot.png",
+            "--trajectory-out=t.json",
+            "--inline",
+        ]
+        .map(std::ffi::OsString::from);
+        let switched: Vec<String> = switch_session_args(args, "thread")
+            .into_iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            switched,
+            [
+                "--profile",
+                "coordinator",
+                "--inline",
+                "--session",
+                "thread"
+            ]
+        );
+    }
     use std::ffi::OsString;
     use std::process::Command;
 

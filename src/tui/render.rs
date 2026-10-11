@@ -738,7 +738,9 @@ pub(crate) fn activity_rail_view(app: &mut App, width: u16, height: u16) -> Elem
             .add_modifier(Modifier::BOLD),
         Style::default().fg(if active > 0 { ACCENT_BLUE } else { TEXT_DIM }),
     );
-    let footer_text = if app.background_panel_focused {
+    let footer_text = if app.background_panel_focused && app.selected_thread().is_some() {
+        "↑↓ select · Enter open · x cancel · Esc"
+    } else if app.background_panel_focused {
         "↑↓ select · PgUp/PgDn · x cancel · Esc"
     } else {
         "Ctrl+B focus"
