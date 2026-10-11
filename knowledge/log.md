@@ -25,6 +25,13 @@ updates through the durable inbox, and adds `yolop sessions send` for messaging
 any session. Opening a thread takes it over from its headless host. See
 [session coordination](specs/session-coordination.md).
 
+## 2026-10-10, Codex metadata regression fixed upstream
+
+Everruns 0.47.0 omits unsupported body metadata from legacy Codex requests,
+preserving host observability and the session header. Yolop adopts that batch
+with strict request-contract coverage for both ChatGPT routes. See
+[ChatGPT sign-in](specs/chatgpt-sign-in.md).
+
 ## 2026-10-10, Coordination that survives restarts and failures
 
 A live evaluation found coordinator mode unusable: the TUI and ACP dropped the

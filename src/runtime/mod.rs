@@ -2404,6 +2404,7 @@ impl ProviderChoice {
             controls: None,
             metadata: None,
             tags: vec![],
+            external_actor: None,
         };
         // 0.19 typed `ReasoningConfig::effort`, so the closed taxonomy is parsed
         // once here instead of by each driver. Yolop's own value is a string
@@ -6893,7 +6894,13 @@ mod tests {
             "local backend database should be created under the Yolop sessions dir"
         );
         assert!(
-            built.handles.runtime.session_task_registry().is_some(),
+            built
+                .handles
+                .runtime
+                .session_task_registry(everruns_core::host::in_process_internal_org_id(
+                    everruns_core::DEFAULT_ORG_PUBLIC_ID
+                ))
+                .is_some(),
             "everruns-local should install a session task registry"
         );
         assert!(

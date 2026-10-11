@@ -347,6 +347,7 @@ mod tests {
             controls: None,
             metadata: None,
             tags: vec!["automatic_background_wake".to_string()],
+            external_actor: None,
         };
 
         let mut input = wake();
@@ -375,6 +376,7 @@ mod tests {
             controls: None,
             metadata: None,
             tags: vec![],
+            external_actor: None,
         };
         assert_eq!(sent_reasoning_effort(&input), None);
 
@@ -392,6 +394,7 @@ mod tests {
             controls: None,
             metadata: None,
             tags: vec!["wake".to_string()],
+            external_actor: None,
         };
 
         apply_reasoning_effort(&mut input, "medium");
