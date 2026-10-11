@@ -10,6 +10,28 @@ mechanical `### What's Changed` list of merged PRs.
 Releases are cut via [`/release`](./.agents/skills/release/SKILL.md), which
 tags the version and publishes to crates.io and the Homebrew tap.
 
+## [0.21.0] - 2026-10-11
+
+### Highlights
+
+- Treat everruns coordination threads as yolop processes and close the thread follow-ups.
+- Seed connector defaults from the upstream catalog and register E2B tools.
+- Default to the latest model on every provider.
+- Search with the built-in rg fallback on machines without ripgrep, and ask structured questions across hosts.
+
+### What's Changed
+
+* feat(search): add built-in rg search for machines without ripgrep ([#839](https://github.com/everruns/yolop/pull/839)) by @chaliy
+* fix(codex): adopt everruns 0.47 request shaping ([#838](https://github.com/everruns/yolop/pull/838)) by @chaliy
+* feat(coordination): close the thread follow-ups ([#837](https://github.com/everruns/yolop/pull/837)) by @chaliy
+* feat(connectors): seed defaults from upstream catalog, register E2B tools ([#836](https://github.com/everruns/yolop/pull/836)) by @chaliy
+* feat(coordination): everruns coordination threads as yolop processes ([#835](https://github.com/everruns/yolop/pull/835)) by @chaliy
+* feat(models): default to the latest model on every provider ([#834](https://github.com/everruns/yolop/pull/834)) by @chaliy
+* chore(evals): re-pin search-efficiency baseline to current main ([#833](https://github.com/everruns/yolop/pull/833)) by @chaliy
+* fix(repo-map): require query and narrow path on truncation ([#832](https://github.com/everruns/yolop/pull/832)) by @chaliy
+* chore(deps): bump everruns crates to 0.46.0 ([#831](https://github.com/everruns/yolop/pull/831)) by @chaliy
+* feat(tools): enable structured ask_user across hosts ([#830](https://github.com/everruns/yolop/pull/830)) by @chaliy
+
 ## [0.20.0] - 2026-10-09
 
 ### Highlights
