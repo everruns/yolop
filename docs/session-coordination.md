@@ -59,10 +59,12 @@ coordinator's checkout.
 
 ## Watch the board
 
-In the terminal, the activity rail (`Ctrl+B`) opens a `THREADS` section when
-the first thread starts. Each thread shows its current assignment, where it
+In the terminal, a coordinator starts with its activity rail open as the threads
+board, and a `THREADS` section fills in as threads start. `Ctrl+B` focuses or
+closes it. Each thread shows its current assignment, where it
 stands (working, needs you, ready for review, closed) and its checklist
-progress, such as `2/5 steps`.
+progress, such as `2/5 steps`. Select a thread and press `Enter` to open it;
+quitting the thread brings you back to the coordinator.
 
 ## Decisions
 
@@ -70,6 +72,12 @@ A thread that hits a real choice calls `ask_decision`, and its coordinator
 asks you. In the terminal that is a question with its options. In an editor
 that supports ACP form elicitation it is a form with the options to pick from;
 an editor without it gets the question in the conversation.
+
+A thread that needs to cross the sandbox (network access, a write outside its
+worktree) asks through its coordinator too: the coordinator's terminal shows
+the usual approval prompt, naming the thread. An approval for the session
+covers the thread's session only. A coordinator in an editor or in `--print`
+mode cannot show that prompt, so it denies, as it does for its own commands.
 
 Threads belong to the coordinator that started them. Several coordinators can
 run at once, and none of them sees or steers another's threads.
@@ -85,8 +93,9 @@ sessions database, so coordination survives the usual interruptions:
 - **A thread's process stops.** A thread with a message waiting is started
   again by its coordinator. A thread that stopped in the middle of an
   assignment is restarted with a note to check where its work stands. Commands
-  the stopped process was running (builds, tests, servers) are stopped first,
-  so they do not race its successor in the same worktree.
+  the stopped process was running (builds, tests, servers, including ones it
+  started in the background with `&`) are stopped first, so they do not race
+  its successor in the same worktree.
 - **A thread is idle.** Its process exits after ten minutes with nothing to do
   and starts again when the coordinator messages it.
 - **A woken turn fails** (provider error, quota, stalled stream). A failed
@@ -124,8 +133,9 @@ preference.
 
 Coordination does not widen authority. A thread has the coordinator's profile,
 sandbox and approval policy. A headless thread cannot show approval prompts,
-so a sandbox escalation that needs one is denied, as in `--print`; open the
-thread to approve it. Everything stays in one user-owned sessions database,
+so a sandbox escalation is put to its coordinator, as described under
+Decisions. A request nobody answers is denied after thirty minutes, or as soon
+as you open the thread, where you can retry it. Everything stays in one user-owned sessions database,
 with no network listener.
 
 On Linux, running sessions start threads and control calls through

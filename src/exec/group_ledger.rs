@@ -13,9 +13,14 @@
 //! Decision: the ledger is keyed by host process, not session, and each entry
 //! carries its process's start time. A pid or group id the kernel reused for
 //! an unrelated process never matches, so reaping cannot signal a stranger.
-//! Decision: a group whose leader already exited is not signalled, because its
-//! id can no longer be verified. Background work started with `&` inside a
-//! command that then returned is the gap this leaves.
+//! Decision: a group whose leader already exited (a command that started
+//! background work with `&` and returned) is still stopped when its remaining
+//! members can be verified instead: no process holds the group id as its pid,
+//! and each member is in the group, in the session the leader was in, and
+//! started no earlier than the leader. The kernel never hands out a pid that
+//! names a live process group, so such a group cannot have been reissued to a
+//! stranger outside that terminal session. Linux only; elsewhere a group
+//! without its leader is left alone.
 
 use std::fs;
 use std::io::Write;
@@ -28,9 +33,18 @@ pub(crate) const LEDGER_DIR: &str = ".thread-procs";
 
 static LEDGER: OnceLock<Ledger> = OnceLock::new();
 
+/// One recorded command group: its id, its leader's start time, and the
+/// session the leader ran in (0 where that is not known).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Group {
+    id: i32,
+    started: u64,
+    session: i32,
+}
+
 struct Ledger {
     path: PathBuf,
-    groups: Mutex<Vec<(i32, u64)>>,
+    groups: Mutex<Vec<Group>>,
 }
 
 /// Start recording this process's command groups under `sessions_dir`. Called
@@ -58,8 +72,16 @@ pub(crate) fn record(group: i32) {
     let Some(started) = start_time(group) else {
         return;
     };
+    let session = session_of(group).unwrap_or(0);
     let mut groups = ledger.groups.lock().unwrap_or_else(|e| e.into_inner());
-    groups.push((group, started));
+    // A command that finished normally keeps its entry, since it may have left
+    // a service running; drop the ones with nothing left to stop.
+    groups.retain(still_running);
+    groups.push(Group {
+        id: group,
+        started,
+        session,
+    });
     ledger.write(&groups);
 }
 
@@ -70,16 +92,13 @@ pub(crate) fn forget(group: i32) {
         return;
     };
     let mut groups = ledger.groups.lock().unwrap_or_else(|e| e.into_inner());
-    groups.retain(|(id, _)| *id != group);
+    groups.retain(|recorded| recorded.id != group);
     ledger.write(&groups);
 }
 
 impl Ledger {
-    fn write(&self, groups: &[(i32, u64)]) {
-        let body: String = groups
-            .iter()
-            .map(|(group, started)| format!("{group} {started}\n"))
-            .collect();
+    fn write(&self, groups: &[Group]) {
+        let body: String = groups.iter().map(Group::line).collect();
         // Write then rename, so a reaper never reads half a ledger.
         let tmp = self.path.with_extension("tmp");
         let written = fs::File::create(&tmp)
@@ -114,22 +133,46 @@ pub(crate) fn reap_dead_hosts(sessions_dir: &Path) -> usize {
         let Ok(body) = fs::read_to_string(&path) else {
             continue;
         };
-        for line in body.lines() {
-            let mut fields = line.split_whitespace();
-            let (Some(Ok(group)), Some(Ok(group_started))) = (
-                fields.next().map(str::parse::<i32>),
-                fields.next().map(str::parse::<u64>),
-            ) else {
-                continue;
-            };
-            if group > 1 && is_same_process(group, group_started) {
-                kill_group(group);
+        for group in body.lines().filter_map(Group::parse) {
+            if still_running(&group) {
+                kill_group(group.id);
                 signalled += 1;
             }
         }
         let _ = fs::remove_file(&path);
     }
     signalled
+}
+
+impl Group {
+    fn line(&self) -> String {
+        format!("{} {} {}\n", self.id, self.started, self.session)
+    }
+
+    fn parse(line: &str) -> Option<Self> {
+        let mut fields = line.split_whitespace();
+        let id = fields.next()?.parse().ok()?;
+        let started = fields.next()?.parse().ok()?;
+        let session = fields.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+        Some(Self {
+            id,
+            started,
+            session,
+        })
+    }
+}
+
+/// Whether `group` is still the group this host started and has a process in
+/// it: its leader, or verified members once the leader has exited.
+fn still_running(group: &Group) -> bool {
+    if group.id <= 1 {
+        return false;
+    }
+    if start_time(group.id).is_some() {
+        // A process holds the id: the leader, or a stranger the id was reused for.
+        return is_same_process(group.id, group.started);
+    }
+    group.session > 0 && has_members(group)
 }
 
 fn parse_host(name: &str) -> Option<(i32, u64)> {
@@ -156,11 +199,59 @@ fn kill_group(_group: i32) {}
 /// when the process does not exist.
 #[cfg(target_os = "linux")]
 fn start_time(pid: i32) -> Option<u64> {
+    proc_stat(pid).map(|stat| stat.started)
+}
+
+#[cfg(target_os = "linux")]
+fn session_of(pid: i32) -> Option<i32> {
+    proc_stat(pid).map(|stat| stat.session)
+}
+
+#[cfg(target_os = "linux")]
+struct ProcStat {
+    group: i32,
+    session: i32,
+    started: u64,
+}
+
+#[cfg(target_os = "linux")]
+fn proc_stat(pid: i32) -> Option<ProcStat> {
     let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     // The command name in field 2 may contain spaces; fields after its closing
-    // parenthesis are fixed. Start time is field 22, the 20th after it.
-    let rest = &stat[stat.rfind(')')? + 1..];
-    rest.split_whitespace().nth(19)?.parse().ok()
+    // parenthesis are fixed: process group is field 5, session field 6, and
+    // start time field 22.
+    let fields: Vec<&str> = stat[stat.rfind(')')? + 1..].split_whitespace().collect();
+    Some(ProcStat {
+        group: fields.get(2)?.parse().ok()?,
+        session: fields.get(3)?.parse().ok()?,
+        started: fields.get(19)?.parse().ok()?,
+    })
+}
+
+/// Whether some process is still in `group`, in the session its leader ran in,
+/// and started no earlier than the leader.
+#[cfg(target_os = "linux")]
+fn has_members(group: &Group) -> bool {
+    let Ok(entries) = fs::read_dir("/proc") else {
+        return false;
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| entry.file_name().to_str()?.parse::<i32>().ok())
+        .filter_map(proc_stat)
+        .any(|stat| {
+            stat.group == group.id && stat.session == group.session && stat.started >= group.started
+        })
+}
+
+#[cfg(not(target_os = "linux"))]
+fn session_of(_pid: i32) -> Option<i32> {
+    None
+}
+
+#[cfg(not(target_os = "linux"))]
+fn has_members(_group: &Group) -> bool {
+    false
 }
 
 #[cfg(all(unix, not(target_os = "linux")))]
@@ -190,13 +281,32 @@ fn start_time(_pid: i32) -> Option<u64> {
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
+    use std::io::{BufRead, BufReader};
     use std::os::unix::process::CommandExt;
+    use std::process::Stdio;
 
-    fn write_ledger(dir: &Path, host: &str, groups: &[(i32, u64)]) {
+    fn write_ledger(dir: &Path, host: &str, groups: &[Group]) {
         let dir = dir.join(LEDGER_DIR);
         fs::create_dir_all(&dir).unwrap();
-        let body: String = groups.iter().map(|(g, s)| format!("{g} {s}\n")).collect();
+        let body: String = groups.iter().map(Group::line).collect();
         fs::write(dir.join(host), body).unwrap();
+    }
+
+    fn recorded(id: i32) -> Group {
+        Group {
+            id,
+            started: start_time(id).unwrap(),
+            session: session_of(id).unwrap(),
+        }
+    }
+
+    fn gone_or_zombie(pid: i32) -> bool {
+        match fs::read_to_string(format!("/proc/{pid}/stat")) {
+            Err(_) => true,
+            Ok(stat) => stat[stat.rfind(')').unwrap() + 1..]
+                .trim_start()
+                .starts_with('Z'),
+        }
     }
 
     #[test]
@@ -207,28 +317,88 @@ mod tests {
             .process_group(0)
             .spawn()
             .unwrap();
-        let group = orphan.id() as i32;
-        let started = start_time(group).unwrap();
+        let group = recorded(orphan.id() as i32);
 
         // A live host (this test process) keeps its groups running.
         let me = std::process::id() as i32;
         let host = format!("{me}-{}", start_time(me).unwrap());
-        write_ledger(tmp.path(), &host, &[(group, started)]);
+        write_ledger(tmp.path(), &host, &[group]);
         assert_eq!(reap_dead_hosts(tmp.path()), 0);
         assert!(orphan.try_wait().unwrap().is_none());
 
         // A host whose pid now names another process counts as gone. A
         // reused group id (wrong start time) is still never signalled.
         let dead = format!("{me}-0");
-        write_ledger(tmp.path(), &dead, &[(group, started + 1)]);
+        let reused = Group {
+            started: group.started + 1,
+            ..group
+        };
+        write_ledger(tmp.path(), &dead, &[reused]);
         assert_eq!(reap_dead_hosts(tmp.path()), 0);
         assert!(orphan.try_wait().unwrap().is_none());
         assert!(!tmp.path().join(LEDGER_DIR).join(&dead).exists());
 
         // A host that is gone has its groups stopped and its ledger dropped.
-        write_ledger(tmp.path(), &dead, &[(group, started)]);
+        write_ledger(tmp.path(), &dead, &[group]);
         assert_eq!(reap_dead_hosts(tmp.path()), 1);
         assert!(orphan.wait().unwrap().code().is_none());
         assert!(!tmp.path().join(LEDGER_DIR).join(&dead).exists());
+    }
+
+    #[test]
+    fn background_work_outliving_its_command_is_stopped_with_a_dead_host() {
+        let tmp = tempfile::tempdir().unwrap();
+        // The shell is the group leader; it starts `sleep` in the background,
+        // reports its pid, and exits once its stdin closes, as a command that
+        // ran `server &` does when it returns.
+        let mut shell = std::process::Command::new("sh")
+            .args(["-c", "sleep 30 & echo $!; read _"])
+            .process_group(0)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let group = recorded(shell.id() as i32);
+        let mut line = String::new();
+        BufReader::new(shell.stdout.take().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        let background: i32 = line.trim().parse().unwrap();
+        drop(shell.stdin.take());
+        shell.wait().unwrap();
+        assert!(start_time(group.id).is_none(), "the leader has exited");
+        assert!(!gone_or_zombie(background));
+
+        let me = std::process::id() as i32;
+        let dead = format!("{me}-0");
+
+        // Members are only trusted in the leader's own terminal session.
+        let elsewhere = Group {
+            session: group.session + 1,
+            ..group
+        };
+        write_ledger(tmp.path(), &dead, &[elsewhere]);
+        assert_eq!(reap_dead_hosts(tmp.path()), 0);
+        assert!(!gone_or_zombie(background));
+
+        write_ledger(tmp.path(), &dead, &[group]);
+        assert_eq!(reap_dead_hosts(tmp.path()), 1);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !gone_or_zombie(background) && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(gone_or_zombie(background), "the background job was stopped");
+    }
+
+    #[test]
+    fn ledgers_from_before_sessions_were_recorded_still_parse() {
+        assert_eq!(
+            Group::parse("42 1000"),
+            Some(Group {
+                id: 42,
+                started: 1000,
+                session: 0
+            })
+        );
     }
 }

@@ -96,6 +96,59 @@ impl ApprovalGate {
     }
 }
 
+impl ApprovalGate {
+    /// Put `request` to whoever answers this gate, without applying the
+    /// answer to this gate's own approved scopes. A coordinator uses it to ask
+    /// on a thread's behalf; the thread's gate applies the answer. `None` when
+    /// nothing here can answer.
+    pub(crate) async fn ask(&self, request: ApprovalRequest) -> Option<ApprovalDecision> {
+        let Self::Channel { tx, .. } = self else {
+            return None;
+        };
+        let (reply, answer) = oneshot::channel();
+        tx.send((request, reply)).ok()?;
+        answer.await.ok()
+    }
+}
+
+impl ApprovalScope {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Sandboxed => "sandboxed",
+            Self::FullAccess => "full_access",
+            Self::Memory => "memory",
+        }
+    }
+
+    pub(crate) fn parse(value: &str) -> Option<Self> {
+        match value {
+            "sandboxed" => Some(Self::Sandboxed),
+            "full_access" => Some(Self::FullAccess),
+            "memory" => Some(Self::Memory),
+            _ => None,
+        }
+    }
+}
+
+impl ApprovalDecision {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Deny => "deny",
+            Self::ApproveOnce => "approve_once",
+            Self::ApproveForSession => "approve_for_session",
+        }
+    }
+
+    pub(crate) fn parse(value: &str) -> Option<Self> {
+        match value {
+            "deny" => Some(Self::Deny),
+            "approve_once" => Some(Self::ApproveOnce),
+            "approve_for_session" => Some(Self::ApproveForSession),
+            _ => None,
+        }
+    }
+}
+
 pub(crate) fn denied_receiver() -> ApprovalReceiver {
     let (_tx, rx) = mpsc::unbounded_channel();
     rx

@@ -31,11 +31,21 @@
 //!   (`yolop --session <id>`): the opener asks through the presence row, the
 //!   host exits after its current turn, and the opener takes the lock. Inbox
 //!   delivery continues in the opened session.
+//! Decision: a headless thread's sandbox escalation is put to its
+//!   coordinator's host, which asks the person in its own approval prompt and
+//!   writes the answer back; the thread's gate applies it, so "for this
+//!   session" means the thread's session. A coordinator with no prompt surface
+//!   (ACP, `--print`) denies, as it does for itself. With no coordinator
+//!   running the request waits, up to a limit; opening the thread denies it so
+//!   the hand-over is not stuck behind it, and the person can retry there.
 //! Decision: a thread whose host vanished mid-assignment (crash, kill, reboot)
 //!   is restarted with a note to check what survived, since its background
 //!   processes may not have.
 
 use crate::runtime::background_wake::{WakeMessage, WakeSender};
+use crate::sandbox_approval::{
+    ApprovalDecision, ApprovalGate, ApprovalReceiver, ApprovalRequest, ApprovalScope,
+};
 use everruns::local::SqliteDb;
 use everruns_capabilities::capabilities::coordination::{
     THREAD_RESOLVED_DETAIL, ThreadTurn, settle_thread_turn,
@@ -70,6 +80,46 @@ const RESUME_NOTE: &str = "[automatic] This thread's process stopped while it wa
 /// Host-only input metadata naming the inbox message a wake turn delivers.
 pub(crate) const DELIVERY_METADATA_KEY: &str = "yolop.coordination_delivery";
 pub(crate) const MAX_MESSAGE_BYTES: usize = 32 * 1024;
+/// How often a thread host checks for answers to its relayed escalations.
+const APPROVAL_POLL_INTERVAL: Duration = Duration::from_millis(500);
+/// How long a relayed escalation waits for an answer before it is denied.
+const APPROVAL_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+
+/// `text` cut to at most `MAX_MESSAGE_BYTES` on a character boundary.
+fn bounded(text: &str) -> &str {
+    if text.len() <= MAX_MESSAGE_BYTES {
+        return text;
+    }
+    let mut end = MAX_MESSAGE_BYTES;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
+}
+
+/// A thread's sandbox escalation waiting on its coordinator.
+#[derive(Debug)]
+struct ThreadApproval {
+    approval_id: i64,
+    thread_id: SessionId,
+    request: ApprovalRequest,
+}
+
+/// Sandbox approvals a session host handles for coordination.
+pub(crate) struct HostApprovals {
+    /// This host's own gate. A coordinator asks the person through it on
+    /// behalf of its threads.
+    pub(crate) gate: Arc<ApprovalGate>,
+    /// A headless thread's own escalations, to relay to its coordinator.
+    pub(crate) relay: Option<ApprovalReceiver>,
+}
+
+/// An escalation this thread host relayed and is waiting on.
+struct RelayedApproval {
+    approval_id: i64,
+    reply: tokio::sync::oneshot::Sender<ApprovalDecision>,
+    deadline: tokio::time::Instant,
+}
 /// Launch flags a thread host inherits from the process that started it.
 const INHERITED_FLAGS: [&str; 8] = [
     "--profile",
@@ -207,7 +257,20 @@ impl CoordinationStore {
                     spawned_at_ms INTEGER NOT NULL DEFAULT 0
                  );
                  CREATE INDEX IF NOT EXISTS yolop_threads_coordinator
-                    ON yolop_threads(coordinator_session_id);",
+                    ON yolop_threads(coordinator_session_id);
+                 CREATE TABLE IF NOT EXISTS yolop_thread_approvals (
+                    approval_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    thread_id TEXT NOT NULL,
+                    coordinator_session_id TEXT NOT NULL,
+                    host_id TEXT NOT NULL,
+                    command TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    scope TEXT NOT NULL,
+                    decision TEXT,
+                    created_at_ms INTEGER NOT NULL
+                 );
+                 CREATE INDEX IF NOT EXISTS yolop_thread_approvals_coordinator
+                    ON yolop_thread_approvals(coordinator_session_id, decision);",
             )?;
             // Presence rows are leases that expire within seconds, so a table
             // from a build without the hand-over columns is rebuilt, not migrated.
@@ -368,6 +431,119 @@ impl CoordinationStore {
             )
         })?;
         Ok(requested)
+    }
+
+    /// Put a headless thread host's sandbox escalation to its coordinator.
+    /// Requests an earlier host of the thread left behind are dropped.
+    fn request_approval(
+        &self,
+        thread_id: SessionId,
+        coordinator: SessionId,
+        host_id: &str,
+        request: &ApprovalRequest,
+    ) -> anyhow::Result<i64> {
+        let id = self.db.with_conn(|conn| {
+            conn.execute(
+                "DELETE FROM yolop_thread_approvals WHERE thread_id = ?1 AND host_id != ?2",
+                params![thread_id.to_string(), host_id],
+            )?;
+            conn.execute(
+                "INSERT INTO yolop_thread_approvals
+                    (thread_id, coordinator_session_id, host_id, command, reason, scope,
+                     created_at_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    thread_id.to_string(),
+                    coordinator.to_string(),
+                    host_id,
+                    bounded(&request.command),
+                    bounded(&request.reason),
+                    request.scope.as_str(),
+                    now_ms(),
+                ],
+            )?;
+            Ok(conn.last_insert_rowid())
+        })?;
+        Ok(id)
+    }
+
+    /// The answer to an approval request, once its coordinator gave one.
+    fn approval_answer(&self, approval_id: i64) -> anyhow::Result<Option<ApprovalDecision>> {
+        let decision = self.db.with_conn(|conn| {
+            conn.query_row(
+                "SELECT decision FROM yolop_thread_approvals WHERE approval_id = ?1",
+                params![approval_id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()
+        })?;
+        Ok(decision
+            .flatten()
+            .and_then(|decision| ApprovalDecision::parse(&decision)))
+    }
+
+    fn drop_approval(&self, approval_id: i64) {
+        let _ = self.db.with_conn(|conn| {
+            conn.execute(
+                "DELETE FROM yolop_thread_approvals WHERE approval_id = ?1",
+                params![approval_id],
+            )?;
+            Ok(())
+        });
+    }
+
+    /// Unanswered approval requests from live hosts of `coordinator`'s threads.
+    fn pending_approvals(&self, coordinator: SessionId) -> anyhow::Result<Vec<ThreadApproval>> {
+        let approvals = self.db.with_conn(|conn| {
+            let mut statement = conn.prepare(
+                "SELECT a.approval_id, a.thread_id, a.command, a.reason, a.scope
+                 FROM yolop_thread_approvals a
+                 JOIN yolop_session_presence p
+                    ON p.session_id = a.thread_id AND p.host_id = a.host_id
+                 WHERE a.coordinator_session_id = ?1 AND a.decision IS NULL
+                    AND p.heartbeat_at_ms >= ?2
+                 ORDER BY a.approval_id",
+            )?;
+            let rows = statement.query_map(
+                params![coordinator.to_string(), now_ms() - PRESENCE_LEASE_MS],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                    ))
+                },
+            )?;
+            rows.collect::<Result<Vec<_>, _>>()
+        })?;
+        Ok(approvals
+            .into_iter()
+            .filter_map(|(approval_id, thread_id, command, reason, scope)| {
+                Some(ThreadApproval {
+                    approval_id,
+                    thread_id: thread_id.parse().ok()?,
+                    request: ApprovalRequest {
+                        command,
+                        reason,
+                        scope: ApprovalScope::parse(&scope)?,
+                    },
+                })
+            })
+            .collect())
+    }
+
+    fn answer_approval(&self, approval_id: i64, decision: ApprovalDecision) -> anyhow::Result<()> {
+        self.db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE yolop_thread_approvals SET decision = ?2
+                 WHERE approval_id = ?1 AND decision IS NULL",
+                params![approval_id, decision.as_str()],
+            )?;
+            Ok(())
+        })?;
+        Ok(())
     }
 
     /// Every live session, newest heartbeat first.
@@ -940,6 +1116,7 @@ impl CoordinationHost {
         mut events: tokio::sync::broadcast::Receiver<everruns_core::Event>,
         launcher: ThreadLauncher,
         release: Option<Arc<tokio::sync::Notify>>,
+        approvals: HostApprovals,
     ) -> anyhow::Result<Self> {
         let host_id = format!("host_{}", SessionId::new().uuid().simple());
         store.register_host(
@@ -952,15 +1129,50 @@ impl CoordinationHost {
         let coordinator = store.thread(session_id)?.map(|thread| thread.coordinator);
         let poll_store = store.clone();
         let poll_host_id = host_id.clone();
+        let HostApprovals { gate, relay } = approvals;
+        // Only a thread has someone to relay to.
+        let mut relay = relay.filter(|_| coordinator.is_some());
+        let asking = Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
         let task = tokio::spawn(async move {
             let mut heartbeat = tokio::time::interval(HEARTBEAT_INTERVAL);
             let mut inbox = tokio::time::interval(INBOX_INTERVAL);
             let mut supervise = tokio::time::interval(SUPERVISE_INTERVAL);
+            let mut approval_poll = tokio::time::interval(APPROVAL_POLL_INTERVAL);
+            let mut relayed: Vec<RelayedApproval> = Vec::new();
             let mut tracker = DeliveryTracker::default();
             let mut events_open = true;
             let mut yielding = false;
             loop {
                 tokio::select! {
+                    request = async {
+                        match relay.as_mut() {
+                            Some(relay) => relay.recv().await,
+                            None => std::future::pending().await,
+                        }
+                    }, if relay.is_some() => {
+                        let Some((request, reply)) = request else {
+                            relay = None;
+                            continue;
+                        };
+                        let Some(coordinator) = coordinator.filter(|_| !yielding) else {
+                            let _ = reply.send(ApprovalDecision::Deny);
+                            continue;
+                        };
+                        match poll_store.request_approval(session_id, coordinator, &poll_host_id, &request) {
+                            Ok(approval_id) => relayed.push(RelayedApproval {
+                                approval_id,
+                                reply,
+                                deadline: tokio::time::Instant::now() + APPROVAL_TIMEOUT,
+                            }),
+                            Err(error) => {
+                                tracing::warn!(%error, %session_id, "could not relay a sandbox approval");
+                                let _ = reply.send(ApprovalDecision::Deny);
+                            }
+                        }
+                    }
+                    _ = approval_poll.tick(), if !relayed.is_empty() => {
+                        settle_relayed_approvals(&poll_store, &mut relayed, yielding);
+                    }
                     _ = heartbeat.tick() => {
                         if let Err(error) = poll_store.heartbeat(session_id, &poll_host_id) {
                             tracing::warn!(%error, %session_id, "session heartbeat failed");
@@ -978,6 +1190,7 @@ impl CoordinationHost {
                     }
                     _ = supervise.tick() => {
                         supervise_threads(&poll_store, tasks.as_ref(), &launcher, session_id).await;
+                        ask_for_threads(&poll_store, &gate, &asking, session_id);
                     }
                     _ = inbox.tick(), if !yielding => {
                         match poll_store.next_delivery(session_id, &poll_host_id) {
@@ -1027,6 +1240,86 @@ impl Drop for CoordinationHost {
     fn drop(&mut self) {
         self.task.abort();
         self.store.mark_offline(self.session_id, &self.host_id);
+    }
+}
+
+/// Hand answered relayed escalations back to the commands waiting on them.
+/// Unanswered ones are denied when they time out, or when this host is
+/// yielding the session, so the turn ends and the opener takes over.
+fn settle_relayed_approvals(
+    store: &CoordinationStore,
+    relayed: &mut Vec<RelayedApproval>,
+    yielding: bool,
+) {
+    let now = tokio::time::Instant::now();
+    let mut waiting = Vec::with_capacity(relayed.len());
+    for approval in relayed.drain(..) {
+        let answer = match store.approval_answer(approval.approval_id) {
+            Ok(Some(decision)) => Some(decision),
+            Ok(None) if yielding || now >= approval.deadline => Some(ApprovalDecision::Deny),
+            Ok(None) => None,
+            Err(error) => {
+                tracing::warn!(%error, "could not read a relayed sandbox approval");
+                None
+            }
+        };
+        match answer {
+            Some(decision) => {
+                store.drop_approval(approval.approval_id);
+                let _ = approval.reply.send(decision);
+            }
+            None => waiting.push(approval),
+        }
+    }
+    *relayed = waiting;
+}
+
+/// Ask the person about this coordinator's threads' pending escalations
+/// through its own approval prompt, one request at a time per approval.
+fn ask_for_threads(
+    store: &CoordinationStore,
+    gate: &Arc<ApprovalGate>,
+    asking: &Arc<std::sync::Mutex<std::collections::HashSet<i64>>>,
+    coordinator: SessionId,
+) {
+    let pending = match store.pending_approvals(coordinator) {
+        Ok(pending) => pending,
+        Err(error) => {
+            tracing::warn!(%error, %coordinator, "could not read thread approvals");
+            return;
+        }
+    };
+    for approval in pending {
+        if !asking
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(approval.approval_id)
+        {
+            continue;
+        }
+        let store = store.clone();
+        let gate = gate.clone();
+        let asking = asking.clone();
+        tokio::spawn(async move {
+            let thread = approval.thread_id.uuid().simple().to_string();
+            let request = ApprovalRequest {
+                reason: format!(
+                    "thread {}: {}",
+                    &thread[..thread.len().min(8)],
+                    approval.request.reason
+                ),
+                ..approval.request
+            };
+            // A host with no prompt surface denies, as for its own commands.
+            let decision = gate.ask(request).await.unwrap_or(ApprovalDecision::Deny);
+            if let Err(error) = store.answer_approval(approval.approval_id, decision) {
+                tracing::warn!(%error, "could not answer a thread approval");
+            }
+            asking
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&approval.approval_id);
+        });
     }
 }
 
@@ -1558,6 +1851,108 @@ mod tests {
         // Work is pending and nothing holds the thread, yet the coordinator
         // leaves it to the person opening it.
         assert!(store.threads_needing_host(coordinator).unwrap().is_empty());
+    }
+
+    fn escalation(command: &str) -> ApprovalRequest {
+        ApprovalRequest {
+            command: command.into(),
+            reason: "needs the network".into(),
+            scope: ApprovalScope::FullAccess,
+        }
+    }
+
+    async fn answer_for(store: &CoordinationStore, approval_id: i64) -> ApprovalDecision {
+        for _ in 0..200 {
+            if let Some(decision) = store.approval_answer(approval_id).unwrap() {
+                return decision;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("approval {approval_id} was never answered");
+    }
+
+    #[tokio::test]
+    async fn a_headless_threads_escalation_is_asked_by_its_coordinator() {
+        let (store, _tasks) = test_store();
+        let coordinator = SessionId::new();
+        let other = SessionId::new();
+        let thread = SessionId::new();
+        store
+            .register_host(thread, "host_t", "p", Path::new("/repo"), true)
+            .unwrap();
+        let approval_id = store
+            .request_approval(thread, coordinator, "host_t", &escalation("cargo fetch"))
+            .unwrap();
+        // Only the thread's own coordinator sees it.
+        assert!(store.pending_approvals(other).unwrap().is_empty());
+
+        let (gate, mut prompts) = ApprovalGate::channel();
+        let asking = Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
+        ask_for_threads(&store, &gate, &asking, coordinator);
+        // A second sweep while the person is deciding does not ask again.
+        ask_for_threads(&store, &gate, &asking, coordinator);
+        let (prompt, reply) = prompts.recv().await.unwrap();
+        assert_eq!(prompt.command, "cargo fetch");
+        assert!(
+            prompt.reason.ends_with("needs the network"),
+            "{}",
+            prompt.reason
+        );
+        assert!(prompt.reason.starts_with("thread "), "{}", prompt.reason);
+        reply.send(ApprovalDecision::ApproveForSession).unwrap();
+        assert_eq!(
+            answer_for(&store, approval_id).await,
+            ApprovalDecision::ApproveForSession
+        );
+        assert!(prompts.try_recv().is_err());
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        let mut relayed = vec![RelayedApproval {
+            approval_id,
+            reply: reply_tx,
+            deadline: tokio::time::Instant::now() + APPROVAL_TIMEOUT,
+        }];
+        settle_relayed_approvals(&store, &mut relayed, false);
+        assert!(relayed.is_empty());
+        assert_eq!(reply_rx.await.unwrap(), ApprovalDecision::ApproveForSession);
+        assert_eq!(store.approval_answer(approval_id).unwrap(), None);
+
+        // A coordinator with no prompt surface denies.
+        let denied = store
+            .request_approval(thread, coordinator, "host_t", &escalation("curl"))
+            .unwrap();
+        ask_for_threads(&store, &ApprovalGate::deny(), &asking, coordinator);
+        assert_eq!(answer_for(&store, denied).await, ApprovalDecision::Deny);
+    }
+
+    #[tokio::test]
+    async fn an_escalation_nobody_answers_is_denied_when_the_thread_is_opened() {
+        let (store, _tasks) = test_store();
+        let coordinator = SessionId::new();
+        let thread = SessionId::new();
+        store
+            .register_host(thread, "host_t", "p", Path::new("/repo"), true)
+            .unwrap();
+        let approval_id = store
+            .request_approval(thread, coordinator, "host_t", &escalation("make"))
+            .unwrap();
+        let (reply_tx, mut reply_rx) = tokio::sync::oneshot::channel();
+        let mut relayed = vec![RelayedApproval {
+            approval_id,
+            reply: reply_tx,
+            deadline: tokio::time::Instant::now() + APPROVAL_TIMEOUT,
+        }];
+        settle_relayed_approvals(&store, &mut relayed, false);
+        assert_eq!(relayed.len(), 1, "still waiting on the coordinator");
+        assert!(reply_rx.try_recv().is_err());
+        settle_relayed_approvals(&store, &mut relayed, true);
+        assert!(relayed.is_empty());
+        assert_eq!(reply_rx.await.unwrap(), ApprovalDecision::Deny);
+        // A dead host's leftover request is never put to the person.
+        store
+            .request_approval(thread, coordinator, "host_t", &escalation("make"))
+            .unwrap();
+        store.mark_offline(thread, "host_t");
+        assert!(store.pending_approvals(coordinator).unwrap().is_empty());
     }
 
     #[test]

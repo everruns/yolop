@@ -134,13 +134,19 @@ The interactive TUI projects session tasks into a flat right-hand activity rail.
 A coordinator's threads form the `THREADS` board first: one row per thread,
 its latest assignment, labelled in the board's words (working, needs you,
 ready for review, closed) with checklist progress where usage would go.
+`Enter` on a thread row opens that thread in place of the coordinator: the
+process re-executes itself on the thread's session, and quitting the thread
+re-executes back into the coordinator.
 Linked sub-agents form the `AGENTS` section; ordinary background commands and
 scheduled monitors remain visible in `BACKGROUND`, even while agents exist.
 Monitors are described as waiting rather than executing commands. Each task has
 a semantic state marker, name, right-aligned state, and branch usage when space
 permits.
 
-The rail opens once, when the first sub-agent or thread appears, and stays passive so the
+A coordinator (a session whose profile enables `coordination` and that is not
+itself a thread) starts with the rail open and passive, showing "No threads
+yet" until its first thread, since the board is its main view. Otherwise the
+rail opens once, when the first sub-agent or thread appears, and stays passive so the
 composer retains focus. `Ctrl+B` focuses a passive rail and closes a focused
 one; a user-closed automatic rail must not repeatedly reopen during the same
 session. The body has a persisted scroll viewport and scrollbar. Passive mode
