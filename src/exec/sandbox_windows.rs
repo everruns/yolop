@@ -570,7 +570,33 @@ mod tests {
             Path::new(r"C:\Windows\System32\bfscfg.exe").exists()
         );
         let workspace = tempfile::tempdir().unwrap();
-        let ws = path_string(workspace.path());
+        let long = std::fs::canonicalize(workspace.path()).unwrap();
+        run_diagnostic(&long, "long-path").await;
+        // Read-attributes only, not inherited, on each ancestor, for every
+        // AppContainer: does PowerShell then accept the workspace?
+        let ancestors: Vec<String> = long
+            .ancestors()
+            .skip(1)
+            .map(path_string)
+            .filter(|path| !is_drive_root(path))
+            .collect();
+        for ancestor in &ancestors {
+            let status = std::process::Command::new("icacls")
+                .args([ancestor.as_str(), "/grant", "*S-1-15-2-1:(RA)"])
+                .output()
+                .unwrap();
+            eprintln!("diag icacls {ancestor}: {}", status.status);
+        }
+        run_diagnostic(&long, "ancestors-ra").await;
+        for ancestor in &ancestors {
+            let _ = std::process::Command::new("icacls")
+                .args([ancestor.as_str(), "/remove:g", "*S-1-15-2-1"])
+                .output();
+        }
+    }
+
+    async fn run_diagnostic(workspace: &Path, label: &str) {
+        let ws = path_string(workspace);
         let script = format!(
             "$ProgressPreference = 'SilentlyContinue'\n\
              'cwd=' + [Environment]::CurrentDirectory\n\
@@ -582,8 +608,7 @@ mod tests {
              try {{ Get-Item -LiteralPath 'C:\\Users' -ErrorAction Stop | Out-Null; 'users-ok' }} catch {{ \"users: $($_.Exception.Message)\" }}\n\
              whoami /groups | Select-String 'Label|APPLICATION'"
         );
-        let mut prepared =
-            command(workspace.path(), "", SandboxMode::WorkspaceWrite, None).unwrap();
+        let mut prepared = command(workspace, "", SandboxMode::WorkspaceWrite, None).unwrap();
         prepared.request.command = powershell_command_line(&script);
         let mut child = crate::exec::sandbox::SandboxCommand::Windows(prepared)
             .spawn()
@@ -598,6 +623,6 @@ mod tests {
             .await
             .unwrap();
         let code = child.wait().await.unwrap();
-        eprintln!("diag code={code:?}\ndiag stdout:\n{stdout}\ndiag stderr:\n{stderr}");
+        eprintln!("diag[{label}] code={code:?}\ndiag stdout:\n{stdout}\ndiag stderr:\n{stderr}");
     }
 }
