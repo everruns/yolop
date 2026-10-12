@@ -258,7 +258,7 @@ fn pump(reader: Option<Box<dyn Read + Send>>) -> ChildOutput {
 fn contained_script(cwd: &Path, script: &str) -> String {
     let cwd = path_string(cwd).replace('\'', "''");
     format!(
-        "$ProgressPreference = 'SilentlyContinue'\nSet-Location -LiteralPath '{cwd}' -ErrorAction Stop\n{script}"
+        "$ProgressPreference = 'SilentlyContinue'\ntry {{ Set-Location -LiteralPath '{cwd}' -ErrorAction Stop }} catch {{ [Console]::Error.WriteLine(\"yolop sandbox: cannot enter the workspace: $_\"); exit 1 }}\n{script}"
     )
 }
 
@@ -425,7 +425,7 @@ mod tests {
         let script = contained_script(Path::new(r"C:\it's"), "Get-ChildItem");
         assert_eq!(
             script,
-            "$ProgressPreference = 'SilentlyContinue'\nSet-Location -LiteralPath 'C:\\it''s' -ErrorAction Stop\nGet-ChildItem"
+            "$ProgressPreference = 'SilentlyContinue'\ntry { Set-Location -LiteralPath 'C:\\it''s' -ErrorAction Stop } catch { [Console]::Error.WriteLine(\"yolop sandbox: cannot enter the workspace: $_\"); exit 1 }\nGet-ChildItem"
         );
     }
 
@@ -554,5 +554,46 @@ mod tests {
         assert!(!outside_file.exists(), "{stdout}");
         assert!(stdout.contains("outside-denied"), "{stdout}");
         assert!(stdout.contains("net-denied"), "{stdout}");
+    }
+
+    /// Temporary: what the contained token can reach on this host's tier.
+    #[tokio::test]
+    async fn container_access_diagnostics() {
+        if !available() {
+            return;
+        }
+        if let Ok(probe) = v1::probe(None) {
+            eprintln!("diag tier: {:?} warnings: {:?}", probe.tier, probe.warnings);
+        }
+        let workspace = tempfile::tempdir().unwrap();
+        let ws = path_string(workspace.path());
+        let script = format!(
+            "$ProgressPreference = 'SilentlyContinue'\n\
+             'cwd=' + [Environment]::CurrentDirectory\n\
+             try {{ [IO.Directory]::GetFiles('{ws}').Count | Out-Null; 'ws-list-ok' }} catch {{ \"ws-list: $($_.Exception.Message)\" }}\n\
+             try {{ [IO.File]::WriteAllText('{ws}\\abs.txt', 'x'); 'ws-write-ok' }} catch {{ \"ws-write: $($_.Exception.Message)\" }}\n\
+             try {{ [IO.File]::WriteAllText(\"$env:TEMP\\t.txt\", 'x'); 'temp-write-ok' }} catch {{ \"temp-write: $($_.Exception.Message)\" }}\n\
+             try {{ [IO.Directory]::SetCurrentDirectory('{ws}'); 'setcwd-ok' }} catch {{ \"setcwd: $($_.Exception.Message)\" }}\n\
+             try {{ Set-Location -LiteralPath '{ws}' -ErrorAction Stop; 'setloc-ok' }} catch {{ \"setloc: $($_.Exception.Message)\" }}\n\
+             try {{ Get-Item -LiteralPath 'C:\\Users' -ErrorAction Stop | Out-Null; 'users-ok' }} catch {{ \"users: $($_.Exception.Message)\" }}\n\
+             whoami /groups | Select-String 'Label|APPLICATION'"
+        );
+        let mut prepared =
+            command(workspace.path(), "", SandboxMode::WorkspaceWrite, None).unwrap();
+        prepared.request.command = powershell_command_line(&script);
+        let mut child = crate::exec::sandbox::SandboxCommand::Windows(prepared)
+            .spawn()
+            .unwrap();
+        let (mut output, mut errors) = child.take_output();
+        let mut stdout = String::new();
+        let mut stderr = String::new();
+        tokio::io::AsyncReadExt::read_to_string(&mut output, &mut stdout)
+            .await
+            .unwrap();
+        tokio::io::AsyncReadExt::read_to_string(&mut errors, &mut stderr)
+            .await
+            .unwrap();
+        let code = child.wait().await.unwrap();
+        eprintln!("diag code={code:?}\ndiag stdout:\n{stdout}\ndiag stderr:\n{stderr}");
     }
 }
