@@ -1119,31 +1119,39 @@ fn unsafe_sandbox_opt_out_warns_from_the_real_binary() {
     assert!(stderr.contains("UNSAFE HOST"), "stderr={stderr}");
 }
 
-// End-to-end proof that Windows surfaces the unsandboxed warning from the real
-// binary. Unlike the unix `off` opt-out, no configuration is needed: the
-// warning fires for the default `native` mode because Windows has no sandbox.
+// End-to-end proof of the Windows startup warnings from the real binary: the
+// default full-access mode warns about the unsafe host, and `--sandbox` runs
+// commands in an MXC container instead, so that warning goes away. Whether a
+// WARNING (no MXC) or a NOTE (MXC's slow compatibility tier) replaces it
+// depends on the host's Windows build.
 #[cfg(windows)]
 #[test]
-fn windows_warns_that_sandboxing_is_unavailable_from_the_real_binary() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let output = yolop_command()
-        .args([
+fn windows_startup_warnings_follow_the_sandbox_mode_from_the_real_binary() {
+    let run = |extra: &[&str]| {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut args = vec![
             "--provider",
             "llmsim",
             "--session-dir",
             tmp.path().to_str().unwrap(),
-            "-p",
-            "hi",
-        ])
-        .env("HOME", tmp.path())
-        .output()
-        .expect("spawn yolop on windows");
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(output.status.success(), "stderr={stderr}");
-    assert!(
-        stderr.contains("sandboxing is not available on Windows"),
-        "stderr={stderr}"
-    );
+        ];
+        args.extend_from_slice(extra);
+        args.extend_from_slice(&["-p", "hi"]);
+        let output = yolop_command()
+            .args(&args)
+            .env("HOME", tmp.path())
+            .output()
+            .expect("spawn yolop on windows");
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        assert!(output.status.success(), "stderr={stderr}");
+        stderr
+    };
+
+    let unsafe_host = run(&[]);
+    assert!(unsafe_host.contains("UNSAFE HOST"), "stderr={unsafe_host}");
+
+    let sandboxed = run(&["--sandbox"]);
+    assert!(!sandboxed.contains("UNSAFE HOST"), "stderr={sandboxed}");
 }
 
 #[cfg(not(windows))]

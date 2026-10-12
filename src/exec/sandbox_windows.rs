@@ -577,9 +577,7 @@ mod tests {
         let prepared =
             command(&workspace_path, &script, SandboxMode::WorkspaceWrite, None).unwrap();
         eprintln!("sandbox policy prepared in {:?}", started.elapsed());
-        if let Ok(probe) = v1::probe(None) {
-            eprintln!("sandbox tier: {:?}", probe.tier);
-        }
+        eprintln!("sandbox tier: {:?}", tier());
         if let Some(filesystem) = &prepared.request.filesystem {
             eprintln!("sandbox read-only grants: {:?}", filesystem.readonly_paths);
             eprintln!(
@@ -610,54 +608,5 @@ mod tests {
         assert!(!outside_file.exists(), "{stdout}");
         assert!(stdout.contains("outside-denied"), "{stdout}");
         assert!(stdout.contains("net-denied"), "{stdout}");
-    }
-
-    /// Temporary: what the contained token can reach on this host's tier.
-    #[tokio::test]
-    async fn container_access_diagnostics() {
-        if !available() {
-            return;
-        }
-        if let Ok(probe) = v1::probe(None) {
-            eprintln!("diag tier: {:?} warnings: {:?}", probe.tier, probe.warnings);
-        }
-        eprintln!(
-            "diag bfscfg.exe present: {}",
-            Path::new(r"C:\Windows\System32\bfscfg.exe").exists()
-        );
-        let workspace = tempfile::tempdir().unwrap();
-        let long = std::fs::canonicalize(workspace.path()).unwrap();
-        run_diagnostic(&long, "long-path").await;
-    }
-
-    async fn run_diagnostic(workspace: &Path, label: &str) {
-        let ws = path_string(workspace);
-        let script = format!(
-            "$ProgressPreference = 'SilentlyContinue'\n\
-             'cwd=' + [Environment]::CurrentDirectory\n\
-             try {{ [IO.Directory]::GetFiles('{ws}').Count | Out-Null; 'ws-list-ok' }} catch {{ \"ws-list: $($_.Exception.Message)\" }}\n\
-             try {{ [IO.File]::WriteAllText('{ws}\\abs.txt', 'x'); 'ws-write-ok' }} catch {{ \"ws-write: $($_.Exception.Message)\" }}\n\
-             try {{ [IO.File]::WriteAllText(\"$env:TEMP\\t.txt\", 'x'); 'temp-write-ok' }} catch {{ \"temp-write: $($_.Exception.Message)\" }}\n\
-             try {{ [IO.Directory]::SetCurrentDirectory('{ws}'); 'setcwd-ok' }} catch {{ \"setcwd: $($_.Exception.Message)\" }}\n\
-             try {{ Set-Location -LiteralPath '{ws}' -ErrorAction Stop; 'setloc-ok' }} catch {{ \"setloc: $($_.Exception.Message)\" }}\n\
-             try {{ Get-Item -LiteralPath 'C:\\Users' -ErrorAction Stop | Out-Null; 'users-ok' }} catch {{ \"users: $($_.Exception.Message)\" }}\n\
-             whoami /groups | Select-String 'Label|APPLICATION'"
-        );
-        let mut prepared = command(workspace, "", SandboxMode::WorkspaceWrite, None).unwrap();
-        prepared.request.command = powershell_command_line(&script);
-        let mut child = crate::exec::sandbox::SandboxCommand::Windows(prepared)
-            .spawn()
-            .unwrap();
-        let (mut output, mut errors) = child.take_output();
-        let mut stdout = String::new();
-        let mut stderr = String::new();
-        tokio::io::AsyncReadExt::read_to_string(&mut output, &mut stdout)
-            .await
-            .unwrap();
-        tokio::io::AsyncReadExt::read_to_string(&mut errors, &mut stderr)
-            .await
-            .unwrap();
-        let code = child.wait().await.unwrap();
-        eprintln!("diag[{label}] code={code:?}\ndiag stdout:\n{stdout}\ndiag stderr:\n{stderr}");
     }
 }
