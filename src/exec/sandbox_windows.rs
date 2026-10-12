@@ -316,8 +316,17 @@ fn windows_environment_key(key: &str) -> bool {
         )
 }
 
+/// The plain form of a path. `canonicalize` returns verbatim `\\?\C:\...`
+/// paths, which PowerShell cannot use as its working directory, so a drive
+/// path loses that prefix.
 fn path_string(path: &Path) -> String {
-    path.to_string_lossy().into_owned()
+    let path = path.to_string_lossy().into_owned();
+    if let Some(rest) = path.strip_prefix(r"\\?\")
+        && rest.as_bytes().get(1) == Some(&b':')
+    {
+        return rest.to_string();
+    }
+    path
 }
 
 /// `C:`, `C:\` or `C:/`.
@@ -406,6 +415,16 @@ mod tests {
         assert!(is_drive_root("C:/"));
         assert!(!is_drive_root(r"C:\Tools"));
         assert!(!is_drive_root(r"\\server\share"));
+    }
+
+    #[test]
+    fn verbatim_drive_paths_lose_their_prefix() {
+        assert_eq!(path_string(Path::new(r"\\?\C:\work")), r"C:\work");
+        assert_eq!(path_string(Path::new(r"C:\work")), r"C:\work");
+        assert_eq!(
+            path_string(Path::new(r"\\?\UNC\server\share")),
+            r"\\?\UNC\server\share"
+        );
     }
 
     /// The control pipe's ACL is what lets a contained shell reach the
@@ -507,7 +526,10 @@ mod tests {
             .unwrap();
         let code = child.wait().await.unwrap();
         assert_eq!(code, Some(0), "stdout={stdout} stderr={stderr}");
-        assert!(workspace_path.join("inside.txt").exists(), "{stdout}");
+        assert!(
+            workspace_path.join("inside.txt").exists(),
+            "stdout={stdout} stderr={stderr}"
+        );
         assert!(!outside_file.exists(), "{stdout}");
         assert!(stdout.contains("outside-denied"), "{stdout}");
         assert!(stdout.contains("net-denied"), "{stdout}");
