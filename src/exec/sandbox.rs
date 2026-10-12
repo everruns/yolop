@@ -146,6 +146,10 @@ pub(crate) fn danger_warning(mode: SandboxMode) -> Option<&'static str> {
             Some(
                 "WARNING: the Windows sandbox is unavailable on this Windows build — shell commands will be refused. Windows 11 24H2 or later is required; set `sandbox_mode = \"danger-full-access\"` to run commands uncontained",
             )
+        } else if crate::exec::sandbox_windows::rewrites_host_permissions() {
+            Some(
+                "NOTE: this Windows build only offers MXC's compatibility sandbox, which re-permissions the granted folders for each command, so shell commands start slowly",
+            )
         } else {
             None
         }
@@ -720,6 +724,7 @@ mod tests {
             assert_eq!(
                 danger_warning(mode).is_some(),
                 !crate::exec::sandbox_windows::available()
+                    || crate::exec::sandbox_windows::rewrites_host_permissions()
             );
         }
     }

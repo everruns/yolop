@@ -140,7 +140,17 @@ unreadable. A drive root is never granted, even when MXC's tools discovery
 offers one for `pwsh`: it would expose the whole drive, and on hosts that fall
 back to the AppContainer+DACL tier it rewrites the ACL of every file on the
 drive for each command. Win32k stays enabled because `powershell.exe` cannot
-start without `user32.dll`. All network is denied, host loopback included. The environment is
+start without `user32.dll`.
+
+Each command runs under its own AppContainer identity, deleted when the
+command ends, because MXC's shared default identity lets one command's
+permission cleanup strip another's access. PowerShell reads the metadata of
+every parent of its working directory, which an AppContainer is denied under
+the user profile, so for the command's lifetime that identity also gets
+read-attributes, not inherited, on each parent of the workspace. Hosts where
+MXC can only enforce the policy by rewriting folder permissions (its
+AppContainer+DACL tier, for example GitHub's Windows Server runners) work but
+start each command slowly, and the startup notice says so. All network is denied, host loopback included. The environment is
 the shared allowlist plus the variables Windows programs need to start, with
 `HOME`, `TEMP`, and `TMP` pointed at the private sandbox directories.
 

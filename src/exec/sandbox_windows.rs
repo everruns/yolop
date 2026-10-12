@@ -39,6 +39,10 @@ use mxc_sdk::v1::{
 };
 use tokio::io::AsyncWriteExt;
 
+mod identity;
+
+use identity::ContainerIdentity;
+
 use crate::config::SandboxMode;
 use crate::control::ControlEndpoint;
 use crate::exec::sandbox::ChildOutput;
@@ -49,6 +53,33 @@ pub(crate) fn available() -> bool {
     *AVAILABLE.get_or_init(
         || matches!(v1::probe(None), Ok(probe) if probe.error.is_none() && probe.tier.is_some()),
     )
+}
+
+/// The isolation tier MXC selects for a policy like ours, probed once. The
+/// policy matters: without filesystem rules MXC reports a tier it would not
+/// use for a real command.
+fn tier() -> Option<&'static str> {
+    static TIER: OnceLock<Option<String>> = OnceLock::new();
+    TIER.get_or_init(|| {
+        let request = ContainerRequest {
+            filesystem: Some(FilesystemPolicy {
+                readwrite_paths: vec![path_string(&std::env::temp_dir())],
+                ..Default::default()
+            }),
+            ..ContainerRequest::new("cmd /c exit 0")
+        };
+        v1::probe(Some(&request))
+            .ok()
+            .and_then(|probe| probe.tier.map(str::to_string))
+    })
+    .as_deref()
+}
+
+/// Whether MXC enforces the filesystem policy by rewriting host folder
+/// permissions for each command (its AppContainer+DACL tier). It works, but
+/// every command pays for re-permissioning the granted folders.
+pub(crate) fn rewrites_host_permissions() -> bool {
+    tier() == Some("appcontainer-dacl")
 }
 
 /// A contained PowerShell launch for `script` in `cwd`.
@@ -67,6 +98,12 @@ pub(crate) fn command(
         );
     }
 
+    static NEXT_CONTAINER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let identity = ContainerIdentity::new(format!(
+        "yolop-{}-{}",
+        std::process::id(),
+        NEXT_CONTAINER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ))?;
     let temp = super::sandbox::sandbox_temp_dir()?;
     let home = super::sandbox::sandbox_home_dir(&temp)?;
     for profile_dir in [["AppData", "Local"], ["AppData", "Roaming"]] {
@@ -131,6 +168,7 @@ pub(crate) fn command(
             }),
             runtime_config: None,
         }),
+        container_name: Some(identity.name().to_string()),
         ui: Some(UiPolicy {
             disable: false,
             ..Default::default()
@@ -150,19 +188,33 @@ pub(crate) fn command(
         inherit_default_environment: Some(false),
         ..ContainerRequest::new(powershell_command_line(&contained_script(cwd, script)))
     };
-    Ok(ContainedCommand { request })
+    Ok(ContainedCommand {
+        request,
+        identity,
+        cwd: cwd.to_path_buf(),
+    })
 }
 
 /// A prepared, not yet started, contained command.
 pub(crate) struct ContainedCommand {
     request: ContainerRequest,
+    identity: ContainerIdentity,
+    cwd: std::path::PathBuf,
 }
 
 impl ContainedCommand {
     /// Start the container. Output arrives through async readers fed by
     /// threads, because MXC exposes blocking pipes.
     pub(crate) fn spawn(self) -> std::io::Result<(ContainedChild, ChildOutput, ChildOutput)> {
-        let mut process = v1::spawn(self.request, Default::default())
+        let Self {
+            request,
+            mut identity,
+            cwd,
+        } = self;
+        if tier() != Some("base-container") {
+            identity.grant_parents(&cwd);
+        }
+        let mut process = v1::spawn(request, Default::default())
             .map_err(|error| std::io::Error::other(format!("MXC container: {error}")))?;
         let stdout = pump(process.take_stdout());
         let stderr = pump(process.take_stderr());
@@ -177,6 +229,7 @@ impl ContainedCommand {
                 closers,
                 id,
                 exited: false,
+                _identity: identity,
             },
             stdout,
             stderr,
@@ -191,6 +244,9 @@ pub(crate) struct ContainedChild {
     closers: Vec<StreamCloser>,
     id: u32,
     exited: bool,
+    /// Declared last so it drops after `process`: MXC restores its own
+    /// grants first, then the parent grants go and the profile is deleted.
+    _identity: ContainerIdentity,
 }
 
 impl ContainedChild {
@@ -572,27 +628,6 @@ mod tests {
         let workspace = tempfile::tempdir().unwrap();
         let long = std::fs::canonicalize(workspace.path()).unwrap();
         run_diagnostic(&long, "long-path").await;
-        // Read-attributes only, not inherited, on each ancestor, for every
-        // AppContainer: does PowerShell then accept the workspace?
-        let ancestors: Vec<String> = long
-            .ancestors()
-            .skip(1)
-            .map(path_string)
-            .filter(|path| !is_drive_root(path))
-            .collect();
-        for ancestor in &ancestors {
-            let status = std::process::Command::new("icacls")
-                .args([ancestor.as_str(), "/grant", "*S-1-15-2-1:(RA)"])
-                .output()
-                .unwrap();
-            eprintln!("diag icacls {ancestor}: {}", status.status);
-        }
-        run_diagnostic(&long, "ancestors-ra").await;
-        for ancestor in &ancestors {
-            let _ = std::process::Command::new("icacls")
-                .args([ancestor.as_str(), "/remove:g", "*S-1-15-2-1"])
-                .output();
-        }
     }
 
     async fn run_diagnostic(workspace: &Path, label: &str) {

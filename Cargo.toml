@@ -172,7 +172,7 @@ seccompiler = "0.5.0"
 [target.'cfg(windows)'.dependencies]
 mxc-sdk = { version = "=1.0.0", features = ["tier2_bfs"] }
 # The attached control endpoint's named-pipe ACL; see `control::control_pipe`.
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Isolation"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
