@@ -148,7 +148,7 @@ pub(crate) fn command(
             environment
         }),
         inherit_default_environment: Some(false),
-        ..ContainerRequest::new(powershell_command_line(script))
+        ..ContainerRequest::new(powershell_command_line(&contained_script(cwd, script)))
     };
     Ok(ContainedCommand { request })
 }
@@ -248,6 +248,18 @@ fn pump(reader: Option<Box<dyn Read + Send>>) -> ChildOutput {
         }
     });
     Box::new(output)
+}
+
+/// The script with a prelude that enters `cwd` explicitly. The container's
+/// launch directory is not reliable (a contained process that cannot open it
+/// is silently started at the drive root), and a relative write must never
+/// land outside the workspace, so a failed `Set-Location` stops the script.
+/// Progress records are silenced so they do not reach stderr as CLIXML.
+fn contained_script(cwd: &Path, script: &str) -> String {
+    let cwd = path_string(cwd).replace('\'', "''");
+    format!(
+        "$ProgressPreference = 'SilentlyContinue'\nSet-Location -LiteralPath '{cwd}' -ErrorAction Stop\n{script}"
+    )
 }
 
 /// `powershell.exe` by absolute path, with the script base64-encoded as
@@ -406,6 +418,15 @@ mod tests {
         };
         dedupe_granted(&mut filesystem);
         assert_eq!(filesystem.readonly_paths, [r"C:\Tools".to_string()]);
+    }
+
+    #[test]
+    fn contained_script_enters_the_workspace_first() {
+        let script = contained_script(Path::new(r"C:\it's"), "Get-ChildItem");
+        assert_eq!(
+            script,
+            "$ProgressPreference = 'SilentlyContinue'\nSet-Location -LiteralPath 'C:\\it''s' -ErrorAction Stop\nGet-ChildItem"
+        );
     }
 
     #[test]
