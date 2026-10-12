@@ -7,7 +7,7 @@ description: Defines the sandboxed execution contract for Yolop.
 # Sandboxed execution
 
 Status: modes × approvals implemented for arbitrary shell execution on macOS and Linux.
-Windows runs the shell unsandboxed (no native containment yet) and warns.
+Windows contains the shell with an in-process MXC process container on Windows 11 24H2 or later.
 
 ## Purpose and boundary
 
@@ -84,10 +84,9 @@ the rest of the session. A sandbox-only session grant does not grant later
 `danger-full-access` requests. Print and ACP shell escalation requests fail
 closed; ACP's separate general tool-permission gate is unchanged.
 
-On macOS and Linux, native execution is fail closed: if the required OS
+Native execution is fail closed on every platform: if the required OS
 primitive is unavailable, the command returns a sandbox-setup error and is not
-retried on the host. Windows has no native provider yet and is the documented
-exception, see [Windows](#windows) below.
+retried on the host. See [Windows](#windows) for its requirements.
 
 ### macOS
 
@@ -124,15 +123,46 @@ a known limit.
 
 ### Windows
 
-There is no native sandbox on Windows yet, so the platform is fail *open*, not
-fail closed: every mode, including `workspace-write`, runs the
-shell with full host access. The shell is PowerShell (`powershell.exe -NoProfile
--NonInteractive -Command`) rather than bash, since it ships in-box on every
-supported Windows. Because nothing is contained, the startup warning fires for
-every mode on Windows, and the `bash` tool advertises PowerShell so the model
-emits the right syntax. A native provider built on
-Windows primitives (restricted tokens, ACLs, a firewall-isolated user) is the
-path to fail-closed parity and is tracked as future work.
+`read-only` and `workspace-write` run the shell inside an MXC process
+container (Microsoft's `mxc-sdk`, ProcessContainer backend: AppContainer
+isolation plus Windows Filtering Platform rules). MXC runs in-process, so no
+helper executable ships next to Yolop. It needs Windows 11 24H2 or later. On
+older builds the provider fails closed like the other platforms, and the
+startup warning says commands will be refused until the user selects
+`danger-full-access`.
+
+AppContainer also denies reads by default, so the policy grants the
+workspace (writable in `workspace-write`, read-only in `read-only`), the
+private temp, the global skills directory in `workspace-write`, toolchain
+directories found on `PATH` and well-known SDK variables, and per-user
+installs under `%LOCALAPPDATA%\Programs`. The rest of the user profile is
+unreadable. A drive root is never granted, even when MXC's tools discovery
+offers one for `pwsh`: it would expose the whole drive, and on hosts that fall
+back to the AppContainer+DACL tier it rewrites the ACL of every file on the
+drive for each command. Win32k stays enabled because `powershell.exe` cannot
+start without `user32.dll`.
+
+Each command runs under its own AppContainer identity, deleted when the
+command ends, because MXC's shared default identity lets one command's
+permission cleanup strip another's access. PowerShell reads the metadata of
+every parent of its working directory, which an AppContainer is denied under
+the user profile, so for the command's lifetime that identity also gets
+read-attributes, not inherited, on each parent of the workspace. Hosts where
+MXC can only enforce the policy by rewriting folder permissions (its
+AppContainer+DACL tier, for example GitHub's Windows Server runners) work but
+start each command slowly, and the startup notice says so. All network is denied, host loopback included. The environment is
+the shared allowlist plus the variables Windows programs need to start, with
+`HOME`, `TEMP`, and `TMP` pointed at the private sandbox directories.
+
+Attached `yolop` subcommands reach the session over a local named pipe
+whose ACL admits AppContainers (plus a low-integrity label), authenticated by
+the per-execution token as on Unix. The shim directory and the Yolop
+executable's directory are granted read-only so the shim can run.
+
+Known limit: workspace `.git` stays writable, as on Linux.
+`danger-full-access` runs `powershell.exe -NoProfile -NonInteractive
+-Command` on the host, as before. The shell is PowerShell in every mode, and
+the `bash` tool advertises it so the model emits the right syntax.
 
 ## Sandbox opt-in
 
@@ -286,7 +316,11 @@ provider smoke.
   their own host-side boundaries;
 - hooks use Bashkit virtual execution rather than the native shell provider;
 - the one-shot attached Yolop administration broker is a typed host boundary,
-  not a sandbox escape available to arbitrary child processes;
+  not a sandbox escape available to arbitrary child processes. Each native
+  provider admits only this execution's endpoint: Linux leaves Unix-socket
+  connects alone, macOS allows `network-outbound` to that one socket path,
+  and Windows uses a named pipe the container may open. Every request still
+  carries the per-execution random token;
 - LSP, MCP, and extension server processes are configured control-plane
   processes and are not automatically moved into this shell sandbox;
 - danger-full-access does not isolate process signals at the OS boundary. The

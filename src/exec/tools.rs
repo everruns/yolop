@@ -236,21 +236,21 @@ impl BashTool {
             .as_ref()
             .map(|endpoint| endpoint.wrap_shell_script(command));
         let mut process = sandbox
-            .command(&cwd, attached_script.as_deref().unwrap_or(command))
+            .command(
+                &cwd,
+                attached_script.as_deref().unwrap_or(command),
+                control_endpoint.as_ref(),
+            )
             .map_err(|e| ToolExecutionResult::tool_error(format!("sandbox setup failed: {e:#}")))?;
-        if let Some(endpoint) = &control_endpoint {
-            endpoint.apply_to(&mut process);
+        if let (Some(endpoint), Some(host)) = (&control_endpoint, process.host_mut()) {
+            endpoint.apply_to(host);
         }
-        crate::exec::sandbox::configure_stdio(&mut process);
-        #[cfg(unix)]
-        process.process_group(0);
         let mut child = process
             .spawn()
             .map_err(|e| ToolExecutionResult::tool_error(format!("spawn failed: {e}")))?;
         #[cfg(unix)]
         let mut group = CommandProcessGroup::new(child.id().map(|id| id as i32));
-        let mut stdout = child.stdout.take().unwrap();
-        let mut stderr = child.stderr.take().unwrap();
+        let (mut stdout, mut stderr) = child.take_output();
 
         let start = Instant::now();
         let mut out_buf = Vec::with_capacity(4096);
@@ -330,7 +330,7 @@ impl BashTool {
         Ok(BashRunOutput {
             stdout_text: String::from_utf8_lossy(&out_buf).to_string(),
             stderr_text: String::from_utf8_lossy(&err_buf).to_string(),
-            exit_code: status.and_then(|s| s.code()).unwrap_or(-1),
+            exit_code: status.flatten().unwrap_or(-1),
             timed_out,
             out_truncated,
             err_truncated,

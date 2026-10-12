@@ -1119,31 +1119,39 @@ fn unsafe_sandbox_opt_out_warns_from_the_real_binary() {
     assert!(stderr.contains("UNSAFE HOST"), "stderr={stderr}");
 }
 
-// End-to-end proof that Windows surfaces the unsandboxed warning from the real
-// binary. Unlike the unix `off` opt-out, no configuration is needed: the
-// warning fires for the default `native` mode because Windows has no sandbox.
+// End-to-end proof of the Windows startup warnings from the real binary: the
+// default full-access mode warns about the unsafe host, and `--sandbox` runs
+// commands in an MXC container instead, so that warning goes away. Whether a
+// WARNING (no MXC) or a NOTE (MXC's slow compatibility tier) replaces it
+// depends on the host's Windows build.
 #[cfg(windows)]
 #[test]
-fn windows_warns_that_sandboxing_is_unavailable_from_the_real_binary() {
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let output = yolop_command()
-        .args([
+fn windows_startup_warnings_follow_the_sandbox_mode_from_the_real_binary() {
+    let run = |extra: &[&str]| {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut args = vec![
             "--provider",
             "llmsim",
             "--session-dir",
             tmp.path().to_str().unwrap(),
-            "-p",
-            "hi",
-        ])
-        .env("HOME", tmp.path())
-        .output()
-        .expect("spawn yolop on windows");
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(output.status.success(), "stderr={stderr}");
-    assert!(
-        stderr.contains("sandboxing is not available on Windows"),
-        "stderr={stderr}"
-    );
+        ];
+        args.extend_from_slice(extra);
+        args.extend_from_slice(&["-p", "hi"]);
+        let output = yolop_command()
+            .args(&args)
+            .env("HOME", tmp.path())
+            .output()
+            .expect("spawn yolop on windows");
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        assert!(output.status.success(), "stderr={stderr}");
+        stderr
+    };
+
+    let unsafe_host = run(&[]);
+    assert!(unsafe_host.contains("UNSAFE HOST"), "stderr={unsafe_host}");
+
+    let sandboxed = run(&["--sandbox"]);
+    assert!(!sandboxed.contains("UNSAFE HOST"), "stderr={sandboxed}");
 }
 
 #[cfg(not(windows))]
@@ -2821,6 +2829,72 @@ fn shell_commands_have_full_host_access_by_default() {
             .expect("read settings")
             .contains("danger-full-access"),
         "one-run override must not persist to settings"
+    );
+
+    tui.write_input(b"\x03\x03");
+    assert!(tui.wait_or_kill(Duration::from_secs(3)).success());
+}
+
+/// The attached `yolop` CLI keeps working inside the native sandbox: the
+/// policy admits this execution's control socket and nothing else.
+#[cfg(not(windows))]
+#[test]
+fn sandbox_admits_the_attached_yolop_control_endpoint() {
+    if !require_native_sandbox("sandbox_admits_the_attached_yolop_control_endpoint") {
+        return;
+    }
+    let root = tempfile::Builder::new()
+        .prefix("yolop-sandbox-control-test-")
+        .tempdir_in(std::env::current_dir().expect("current directory"))
+        .expect("tempdir outside shared temp");
+    let workspace = root.path().join("workspace");
+    std::fs::create_dir(&workspace).expect("create workspace");
+    let mut tui = spawn_tui_llmsim_with(
+        &yolop_binary(),
+        TuiSpawnOptions {
+            workspace: Some(workspace),
+            sandbox: true,
+            inline: false,
+            compact_work: true,
+            ..TuiSpawnOptions::default()
+        },
+    );
+    assert!(
+        tui.wait_for_output("type /help", Duration::from_secs(10)),
+        "TUI did not finish startup: {}",
+        tui.output_text()
+    );
+
+    tui.write_input(b"!bash -c 'yolop extensions list' | sed -n '1p'\r");
+    let summary = tui
+        .wait_for_screen(Duration::from_secs(10), |screen| {
+            screen.iter().any(|line| line.contains("Ctrl+O details"))
+        })
+        .join("\n");
+    assert!(
+        summary.contains("Ctrl+O details"),
+        "sandboxed attached control did not complete: {summary}"
+    );
+    assert!(
+        tui.wait_for_output("Worked", Duration::from_secs(10)),
+        "sandboxed attached control did not finish: {}",
+        tui.output_text()
+    );
+    tui.write_input(b"\x0f");
+    assert!(
+        tui.wait_for_output("shell exited with code 0", Duration::from_secs(5)),
+        "sandboxed attached control should exit cleanly: {}",
+        tui.output_text()
+    );
+    assert!(
+        tui.wait_for_output("No extensions installed.", Duration::from_secs(3)),
+        "sandboxed attached control should reach the session: {}",
+        tui.output_text()
+    );
+    let transcript = strip_ansi(&tui.output_text());
+    assert!(
+        !transcript.contains("cannot reach the running Yolop session"),
+        "the sandbox blocked the control endpoint: {transcript}"
     );
 
     tui.write_input(b"\x03\x03");

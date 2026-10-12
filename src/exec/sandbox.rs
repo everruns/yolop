@@ -5,6 +5,7 @@
 //! interactive commands share the same kernel boundary.
 
 use crate::config::SandboxMode;
+use crate::control::ControlEndpoint;
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
@@ -14,7 +15,115 @@ use tokio::process::Command;
 
 pub(crate) trait SandboxProvider: Send + Sync {
     fn mode(&self) -> SandboxMode;
-    fn command(&self, cwd: &Path, script: &str) -> Result<Command>;
+    /// `control` is the attached `yolop` endpoint for this execution, when one
+    /// exists; a contained provider admits exactly that endpoint and nothing
+    /// else on the network.
+    fn command(
+        &self,
+        cwd: &Path,
+        script: &str,
+        control: Option<&ControlEndpoint>,
+    ) -> Result<SandboxCommand>;
+}
+
+/// A shell launch prepared by a provider.
+///
+/// macOS and Linux contain an ordinary child process, so they hand back a
+/// `tokio` command. Windows containment is created in-process by the MXC
+/// library, which owns process creation, so it hands back its own launch.
+pub(crate) enum SandboxCommand {
+    Host(Command),
+    #[cfg(windows)]
+    Windows(crate::exec::sandbox_windows::ContainedCommand),
+}
+
+impl SandboxCommand {
+    /// The underlying host command, when the provider launches one.
+    pub(crate) fn host_mut(&mut self) -> Option<&mut Command> {
+        match self {
+            Self::Host(command) => Some(command),
+            #[cfg(windows)]
+            Self::Windows(_) => None,
+        }
+    }
+
+    /// Start the command with piped stdout and stderr and no stdin.
+    pub(crate) fn spawn(self) -> std::io::Result<SandboxChild> {
+        match self {
+            Self::Host(mut command) => {
+                configure_stdio(&mut command);
+                #[cfg(unix)]
+                command.process_group(0);
+                let mut child = command.spawn()?;
+                let stdout = child.stdout.take().expect("stdout is piped");
+                let stderr = child.stderr.take().expect("stderr is piped");
+                Ok(SandboxChild {
+                    stdout: Box::new(stdout),
+                    stderr: Box::new(stderr),
+                    process: ChildProcess::Host(child),
+                })
+            }
+            #[cfg(windows)]
+            Self::Windows(command) => {
+                let (child, stdout, stderr) = command.spawn()?;
+                Ok(SandboxChild {
+                    stdout,
+                    stderr,
+                    process: ChildProcess::Windows(child),
+                })
+            }
+        }
+    }
+}
+
+pub(crate) type ChildOutput = Box<dyn tokio::io::AsyncRead + Unpin + Send>;
+
+/// A running shell command, whichever provider started it.
+pub(crate) struct SandboxChild {
+    stdout: ChildOutput,
+    stderr: ChildOutput,
+    process: ChildProcess,
+}
+
+enum ChildProcess {
+    Host(tokio::process::Child),
+    #[cfg(windows)]
+    Windows(crate::exec::sandbox_windows::ContainedChild),
+}
+
+impl SandboxChild {
+    /// Take stdout and stderr, leaving empty readers behind.
+    pub(crate) fn take_output(&mut self) -> (ChildOutput, ChildOutput) {
+        (
+            std::mem::replace(&mut self.stdout, Box::new(tokio::io::empty())),
+            std::mem::replace(&mut self.stderr, Box::new(tokio::io::empty())),
+        )
+    }
+
+    pub(crate) fn id(&self) -> Option<u32> {
+        match &self.process {
+            ChildProcess::Host(child) => child.id(),
+            #[cfg(windows)]
+            ChildProcess::Windows(child) => Some(child.id()),
+        }
+    }
+
+    pub(crate) fn start_kill(&mut self) -> std::io::Result<()> {
+        match &mut self.process {
+            ChildProcess::Host(child) => child.start_kill(),
+            #[cfg(windows)]
+            ChildProcess::Windows(child) => child.kill(),
+        }
+    }
+
+    /// Wait for exit. `None` when the process ended without an exit code.
+    pub(crate) async fn wait(&mut self) -> std::io::Result<Option<i32>> {
+        match &mut self.process {
+            ChildProcess::Host(child) => child.wait().await.map(|status| status.code()),
+            #[cfg(windows)]
+            ChildProcess::Windows(child) => child.wait().await.map(Some),
+        }
+    }
 }
 
 pub(crate) fn provider(mode: SandboxMode) -> std::sync::Arc<dyn SandboxProvider> {
@@ -29,13 +138,21 @@ pub(crate) fn provider(mode: SandboxMode) -> std::sync::Arc<dyn SandboxProvider>
 pub(crate) fn danger_warning(mode: SandboxMode) -> Option<&'static str> {
     #[cfg(windows)]
     {
-        // No native sandbox exists for Windows yet, so every mode — including
-        // the default — runs with full host access. Warn regardless
-        // of the configured mode.
-        let _ = mode;
-        Some(
-            "WARNING: sandboxing is not available on Windows — shell commands run unsandboxed with full access to your files, processes, and the network",
-        )
+        if mode == SandboxMode::DangerFullAccess {
+            Some(
+                "DANGER: danger-full-access (UNSAFE HOST) — shell commands can access and modify files, processes, and the network outside the workspace",
+            )
+        } else if !crate::exec::sandbox_windows::available() {
+            Some(
+                "WARNING: the Windows sandbox is unavailable on this Windows build — shell commands will be refused. Windows 11 24H2 or later is required; set `sandbox_mode = \"danger-full-access\"` to run commands uncontained",
+            )
+        } else if crate::exec::sandbox_windows::rewrites_host_permissions() {
+            Some(
+                "NOTE: this Windows build only offers MXC's compatibility sandbox, which re-permissions the granted folders for each command, so shell commands start slowly",
+            )
+        } else {
+            None
+        }
     }
     #[cfg(not(windows))]
     {
@@ -47,12 +164,7 @@ pub(crate) fn danger_warning(mode: SandboxMode) -> Option<&'static str> {
 
 /// Network availability of the shell process the selected provider launches.
 pub(crate) fn network_access(mode: SandboxMode) -> &'static str {
-    #[cfg(windows)]
-    {
-        let _ = mode;
-        "enabled"
-    }
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     {
         if mode == SandboxMode::DangerFullAccess {
             "enabled"
@@ -106,8 +218,13 @@ impl SandboxProvider for UnsafeHost {
         SandboxMode::DangerFullAccess
     }
 
-    fn command(&self, cwd: &Path, script: &str) -> Result<Command> {
-        Ok(shell_command(cwd, script))
+    fn command(
+        &self,
+        cwd: &Path,
+        script: &str,
+        _control: Option<&ControlEndpoint>,
+    ) -> Result<SandboxCommand> {
+        Ok(SandboxCommand::Host(shell_command(cwd, script)))
     }
 }
 
@@ -120,13 +237,31 @@ impl SandboxProvider for NativeSandbox {
         self.mode
     }
 
-    fn command(&self, cwd: &Path, script: &str) -> Result<Command> {
-        native_command(cwd, script, self.mode)
+    fn command(
+        &self,
+        cwd: &Path,
+        script: &str,
+        control: Option<&ControlEndpoint>,
+    ) -> Result<SandboxCommand> {
+        #[cfg(windows)]
+        {
+            crate::exec::sandbox_windows::command(cwd, script, self.mode, control)
+                .map(SandboxCommand::Windows)
+        }
+        #[cfg(not(windows))]
+        {
+            native_command(cwd, script, self.mode, control).map(SandboxCommand::Host)
+        }
     }
 }
 
 #[cfg(target_os = "macos")]
-fn native_command(cwd: &Path, script: &str, mode: SandboxMode) -> Result<Command> {
+fn native_command(
+    cwd: &Path,
+    script: &str,
+    mode: SandboxMode,
+    control: Option<&ControlEndpoint>,
+) -> Result<Command> {
     let executable = Path::new("/usr/bin/sandbox-exec");
     if !executable.is_file() {
         anyhow::bail!(
@@ -145,7 +280,8 @@ fn native_command(cwd: &Path, script: &str, mode: SandboxMode) -> Result<Command
     if mode == SandboxMode::WorkspaceWrite {
         prepared_global_skills_dir()?;
     }
-    let profile = macos_profile(cwd, &temp, mode);
+    let control_socket = control.and_then(ControlEndpoint::socket_path);
+    let profile = macos_profile(cwd, &temp, mode, control_socket);
     let mut command = Command::new(executable);
     command
         .arg("-p")
@@ -158,8 +294,16 @@ fn native_command(cwd: &Path, script: &str, mode: SandboxMode) -> Result<Command
     Ok(command)
 }
 
+/// Landlock leaves Unix-socket connects alone and the seccomp filter blocks
+/// only internet and packet sockets, so the attached control socket needs no
+/// grant here.
 #[cfg(target_os = "linux")]
-fn native_command(cwd: &Path, script: &str, mode: SandboxMode) -> Result<Command> {
+fn native_command(
+    cwd: &Path,
+    script: &str,
+    mode: SandboxMode,
+    _control: Option<&ControlEndpoint>,
+) -> Result<Command> {
     let temp = sandbox_temp_dir()?;
     let home = sandbox_home_dir(&temp)?;
     let executable =
@@ -277,22 +421,19 @@ pub(crate) fn run_linux_worker(
         .into())
 }
 
-#[cfg(target_os = "windows")]
-fn native_command(cwd: &Path, script: &str, _mode: SandboxMode) -> Result<Command> {
-    // Windows has no native sandbox implementation yet. Rather than refuse to
-    // run, execute unsandboxed — the user is warned at startup via
-    // `danger_warning`, which fires for every mode on Windows.
-    Ok(shell_command(cwd, script))
-}
-
-#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-fn native_command(_cwd: &Path, _script: &str, _mode: SandboxMode) -> Result<Command> {
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
+fn native_command(
+    _cwd: &Path,
+    _script: &str,
+    _mode: SandboxMode,
+    _control: Option<&ControlEndpoint>,
+) -> Result<Command> {
     anyhow::bail!(
         "native sandbox is supported only on macOS and Linux; refusing to run unsandboxed. Set `sandbox_mode = \"danger-full-access\"` only inside an already isolated environment"
     )
 }
 
-fn prepared_global_skills_dir() -> Result<Option<PathBuf>> {
+pub(super) fn prepared_global_skills_dir() -> Result<Option<PathBuf>> {
     let Some(path) = global_skills_dir() else {
         return Ok(None);
     };
@@ -303,7 +444,7 @@ fn prepared_global_skills_dir() -> Result<Option<PathBuf>> {
     })?))
 }
 
-fn sandbox_temp_dir() -> Result<PathBuf> {
+pub(super) fn sandbox_temp_dir() -> Result<PathBuf> {
     let path = std::env::temp_dir().join(format!("yolop-sandbox-{}", std::process::id()));
     prepare_sandbox_temp(&path)?;
     std::fs::canonicalize(&path)
@@ -338,7 +479,7 @@ fn prepare_sandbox_temp(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn sandbox_home_dir(temp: &Path) -> Result<PathBuf> {
+pub(super) fn sandbox_home_dir(temp: &Path) -> Result<PathBuf> {
     let path = temp.join("home");
     std::fs::create_dir_all(&path)
         .with_context(|| format!("create sandbox home directory: {}", path.display()))?;
@@ -355,7 +496,7 @@ fn apply_native_environment(command: &mut Command, home: &Path, temp: &Path) {
     command.env("HOME", home).env("TMPDIR", temp);
 }
 
-fn safe_environment_key(key: &str) -> bool {
+pub(super) fn safe_environment_key(key: &str) -> bool {
     matches!(
         key,
         "PATH"
@@ -382,7 +523,12 @@ fn safe_environment_key(key: &str) -> bool {
 }
 
 #[cfg(target_os = "macos")]
-fn macos_profile(cwd: &Path, temp: &Path, mode: SandboxMode) -> String {
+fn macos_profile(
+    cwd: &Path,
+    temp: &Path,
+    mode: SandboxMode,
+    control_socket: Option<&Path>,
+) -> String {
     let workspace_write = if mode == SandboxMode::WorkspaceWrite {
         format!(" (subpath \"{}\")", seatbelt_escape(cwd))
     } else {
@@ -400,12 +546,30 @@ fn macos_profile(cwd: &Path, temp: &Path, mode: SandboxMode) -> String {
     } else {
         String::new()
     };
+    // The one network exception: connecting to this execution's attached
+    // `yolop` control socket. Listed under both spellings because /tmp is a
+    // symlink to /private/tmp.
+    let control_connect = control_socket
+        .map(|socket| {
+            let literal = socket.to_string_lossy();
+            let private = literal
+                .strip_prefix("/tmp/")
+                .map(|rest| format!("/private/tmp/{rest}"))
+                .unwrap_or_else(|| literal.to_string());
+            format!(
+                "\n(allow network-outbound (remote unix-socket (path-literal \"{}\")) (remote unix-socket (path-literal \"{}\")))",
+                seatbelt_escape(socket),
+                seatbelt_escape(Path::new(&private)),
+            )
+        })
+        .unwrap_or_default();
     format!(
-        "(version 1)\n(deny default)\n(allow process*)\n(allow file-read*)\n(allow sysctl-read)\n(allow mach-lookup)\n(allow file-write-data (require-all (path \"/dev/null\") (vnode-type CHARACTER-DEVICE)))\n(allow file-write*{} (subpath \"{}\"){}{})\n(deny network*)\n(deny file-write* (literal \"{}\") (subpath \"{}\"))",
+        "(version 1)\n(deny default)\n(allow process*)\n(allow file-read*)\n(allow sysctl-read)\n(allow mach-lookup)\n(allow file-write-data (require-all (path \"/dev/null\") (vnode-type CHARACTER-DEVICE)))\n(allow file-write*{} (subpath \"{}\"){}{})\n(deny network*){}\n(deny file-write* (literal \"{}\") (subpath \"{}\"))",
         workspace_write,
         seatbelt_escape(temp),
         shared_temp_write,
         global_skills_write,
+        control_connect,
         seatbelt_escape(&cwd.join(".git")),
         seatbelt_escape(&cwd.join(".git")),
     )
@@ -458,6 +622,7 @@ mod tests {
             Path::new("/workspace"),
             Path::new("/private/tmp/sandbox"),
             SandboxMode::WorkspaceWrite,
+            None,
         );
 
         assert!(profile.contains(
@@ -473,11 +638,13 @@ mod tests {
             Path::new("/workspace"),
             Path::new("/private/tmp/sandbox"),
             SandboxMode::WorkspaceWrite,
+            None,
         );
         let read_only = macos_profile(
             Path::new("/workspace"),
             Path::new("/private/tmp/sandbox"),
             SandboxMode::ReadOnly,
+            None,
         );
         let rule = format!(r#"(subpath "{}")"#, seatbelt_escape(&skills));
 
@@ -494,8 +661,36 @@ mod tests {
             std::fs::canonicalize(&temp).expect("sandbox temp should remain canonical")
         );
 
-        let profile = macos_profile(Path::new("/workspace"), &temp, SandboxMode::WorkspaceWrite);
+        let profile = macos_profile(
+            Path::new("/workspace"),
+            &temp,
+            SandboxMode::WorkspaceWrite,
+            None,
+        );
         assert!(profile.contains(&format!(r#"(subpath "{}")"#, temp.display())));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_sandbox_admits_only_the_attached_control_socket() {
+        let socket = Path::new("/tmp/yolop-control-1-abc/control.sock");
+        let profile = macos_profile(
+            Path::new("/workspace"),
+            Path::new("/private/tmp/sandbox"),
+            SandboxMode::WorkspaceWrite,
+            Some(socket),
+        );
+        assert!(profile.contains(
+            r#"(allow network-outbound (remote unix-socket (path-literal "/tmp/yolop-control-1-abc/control.sock")) (remote unix-socket (path-literal "/private/tmp/yolop-control-1-abc/control.sock")))"#
+        ));
+        assert!(profile.contains("(deny network*)"));
+        let without = macos_profile(
+            Path::new("/workspace"),
+            Path::new("/private/tmp/sandbox"),
+            SandboxMode::WorkspaceWrite,
+            None,
+        );
+        assert!(!without.contains("network-outbound"));
     }
 
     #[cfg(not(windows))]
@@ -509,7 +704,7 @@ mod tests {
         );
     }
 
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     #[test]
     fn network_access_matches_native_and_unsafe_execution() {
         assert_eq!(network_access(SandboxMode::ReadOnly), "disabled");
@@ -519,15 +714,18 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn windows_warns_unsandboxed_for_every_mode() {
-        // Windows has no sandbox, so even workspace-write must
-        // warn that commands run with full host access.
-        for mode in [
-            SandboxMode::ReadOnly,
-            SandboxMode::WorkspaceWrite,
-            SandboxMode::DangerFullAccess,
-        ] {
-            assert!(danger_warning(mode).is_some());
+    fn windows_warns_only_when_commands_are_not_contained() {
+        assert!(
+            danger_warning(SandboxMode::DangerFullAccess)
+                .unwrap()
+                .contains("UNSAFE HOST")
+        );
+        for mode in [SandboxMode::ReadOnly, SandboxMode::WorkspaceWrite] {
+            assert_eq!(
+                danger_warning(mode).is_some(),
+                !crate::exec::sandbox_windows::available()
+                    || crate::exec::sandbox_windows::rewrites_host_permissions()
+            );
         }
     }
 

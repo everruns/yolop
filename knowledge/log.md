@@ -1,5 +1,11 @@
 # Knowledge Log
 
+## 2026-10-11, Windows sandbox on MXC
+
+`read-only` and `workspace-write` now contain the Windows shell in an
+in-process MXC process container instead of running it uncontained, and fail
+closed on Windows builds older than 11 24H2. See [sandboxing](specs/sandboxing.md#windows).
+
 ## 2026-10-11, Coordinator mode flag
 
 `--coordinator` turns any session into a coordinator on top of the active
