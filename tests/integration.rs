@@ -3337,6 +3337,160 @@ fn acp_stdio_handshake_smoke() {
     );
 }
 
+/// An external edit to favourite models reaches open ACP sessions: the agent
+/// watches `settings.toml` and pushes `config_option_update` to the host.
+/// `llmsim` entries are always credential-usable, so this runs offline.
+#[test]
+fn acp_settings_file_change_pushes_config_option_update() {
+    use std::io::BufRead;
+    use std::process::Stdio;
+
+    let config_dir = tempfile::tempdir().expect("config tempdir");
+    let data_dir = tempfile::tempdir().expect("data tempdir");
+    let session_dir = tempfile::tempdir().expect("session tempdir");
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    let settings_path = config_dir.path().join("settings.toml");
+    std::fs::write(
+        &settings_path,
+        "[[models]]\nprovider = \"llmsim\"\nmodel = \"fav-one\"\n",
+    )
+    .expect("seed settings.toml");
+
+    let mut child = Command::new(yolop_binary())
+        .args([
+            "--acp",
+            "--provider",
+            "llmsim",
+            "--session-dir",
+            session_dir.path().to_str().unwrap(),
+        ])
+        .env("YOLOP_CONFIG_DIR", config_dir.path())
+        .env("YOLOP_DATA_DIR", data_dir.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn yolop --acp");
+
+    let mut stdin = child.stdin.take().expect("acp stdin");
+    let (line_tx, line_rx) = mpsc::channel::<String>();
+    let stdout = child.stdout.take().expect("acp stdout");
+    let reader = thread::spawn(move || {
+        let mut buf = std::io::BufReader::new(stdout);
+        loop {
+            let mut line = String::new();
+            match buf.read_line(&mut line) {
+                Ok(0) => break,
+                Ok(_) => {
+                    if line_tx.send(line).is_err() {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
+    let stderr = child.stderr.take().expect("acp stderr");
+    let stderr_reader = thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let mut stderr = stderr;
+        stderr
+            .read_to_end(&mut bytes)
+            .expect("read yolop --acp stderr");
+        String::from_utf8_lossy(&bytes).into_owned()
+    });
+
+    let send = |stdin: &mut std::process::ChildStdin, value: serde_json::Value| {
+        let line = serde_json::to_string(&value).expect("serialize acp request");
+        stdin
+            .write_all(format!("{line}\n").as_bytes())
+            .expect("write acp request");
+    };
+    let await_response = |id: i64| -> serde_json::Value {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let line = line_rx
+                .recv_timeout(remaining)
+                .expect("timed out waiting for acp response");
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else {
+                continue;
+            };
+            if value.get("id") == Some(&serde_json::json!(id)) {
+                return value;
+            }
+        }
+    };
+
+    send(
+        &mut stdin,
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 0,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": 1,
+                "clientCapabilities": { "fs": { "readTextFile": true, "writeTextFile": true } }
+            }
+        }),
+    );
+    await_response(0);
+
+    send(
+        &mut stdin,
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "session/new",
+            "params": { "cwd": workspace.path().to_str().unwrap(), "mcpServers": [] }
+        }),
+    );
+    let new_session = await_response(1);
+    let new_session_raw = serde_json::to_string(&new_session).expect("serialize new session");
+    assert!(
+        new_session_raw.contains("fav-one"),
+        "seeded favourite missing from session/new: {new_session_raw}"
+    );
+    assert!(
+        !new_session_raw.contains("fav-two"),
+        "unexpected favourite before edit: {new_session_raw}"
+    );
+
+    // Another process (or a user edit) adds a favourite model on disk.
+    std::fs::write(
+        &settings_path,
+        "[[models]]\nprovider = \"llmsim\"\nmodel = \"fav-one\"\n\n\
+         [[models]]\nprovider = \"llmsim\"\nmodel = \"fav-two\"\n",
+    )
+    .expect("edit settings.toml");
+
+    let deadline = Instant::now() + Duration::from_secs(25);
+    let mut saw_update = false;
+    while Instant::now() < deadline {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        match line_rx.recv_timeout(remaining) {
+            Ok(line) => {
+                if line.contains("config_option_update") && line.contains("fav-two") {
+                    saw_update = true;
+                    break;
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => break,
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+
+    drop(stdin);
+    let _ = wait_for_process_exit(&mut child, Duration::from_secs(10));
+    let _ = reader.join();
+    let stderr_text = stderr_reader.join().unwrap_or_default();
+
+    assert!(
+        saw_update,
+        "no config_option_update for fav-two within 25s; stderr:\n{stderr_text}"
+    );
+}
+
 /// Resolve a provider API key for a live test.
 ///
 /// Returns `None` (the test should then `return` early) when the key is absent,

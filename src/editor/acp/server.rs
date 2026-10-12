@@ -365,6 +365,10 @@ struct Server<F: RuntimeFactory> {
     /// Whether a task is already awaiting the loopback setup page, so several
     /// sessions opened with nothing connected share one watcher.
     setup_page_watch: AtomicBool,
+    /// Whether the settings-file watcher below is already running: one per
+    /// process, so every open session is pushed fresh config options when
+    /// another yolop (or a hand edit) changes settings on disk.
+    settings_watch: AtomicBool,
     /// Whether the client advertised form elicitation in `initialize`, which
     /// is what lets structured questions reach the person.
     elicitation_forms: Arc<AtomicBool>,
@@ -402,6 +406,7 @@ where
         shutdown: shutdown_rx,
         poller_handles: StdMutex::new(Vec::new()),
         setup_page_watch: AtomicBool::new(false),
+        settings_watch: AtomicBool::new(false),
         elicitation_forms: Arc::new(AtomicBool::new(false)),
     });
     let next_tool_id = Arc::new(AtomicI64::new(1));
@@ -506,6 +511,7 @@ where
                                 let commands = session.commands.lock().unwrap().clone();
                                 notify_available_commands(&peer, &session_id, &commands);
                                 offer_setup_page(&server, &peer, &session).await;
+                                maybe_spawn_settings_watcher(&server, &peer);
                             }
                         }
                         Err(err) => responder.respond_with_error(err)?,
@@ -531,6 +537,7 @@ where
                                 let commands = session.commands.lock().unwrap().clone();
                                 notify_available_commands(&peer, &session_id, &commands);
                             }
+                            maybe_spawn_settings_watcher(&server, &peer);
                         }
                         Err(err) => responder.respond_with_error(err)?,
                     }
@@ -1624,6 +1631,65 @@ async fn offer_setup_page<F: RuntimeFactory>(
                     emit_config_options(&peer, &session).await;
                 }
             }
+        }
+    });
+}
+
+/// How often the settings watcher re-resolves config options per session.
+/// Each tick is a settings snapshot (re-parsed only when the file changed)
+/// plus a pure model-list filter, so idling costs a few file stats.
+const SETTINGS_WATCH_INTERVAL: Duration = Duration::from_secs(1);
+
+/// Starts the settings-file watcher once per process. Whenever settings change
+/// on disk, every open session re-resolves its config options and the host is
+/// pushed `ConfigOptionUpdate` for the ones that changed. New sessions already
+/// receive fresh options in their new/load response, so they only seed the
+/// baseline. Mirrors the setup-page watcher above and drops out on teardown,
+/// so it never holds the session map open across `serve` calls.
+fn maybe_spawn_settings_watcher<F: RuntimeFactory>(server: &Arc<Server<F>>, peer: &Arc<Peer>) {
+    if server.settings_watch.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    tokio::spawn({
+        let server = server.clone();
+        let peer = peer.clone();
+        let mut shutdown = server.shutdown.clone();
+        async move {
+            let mut baseline: HashMap<String, Vec<SessionConfigOption>> = HashMap::new();
+            for session in server.sessions() {
+                baseline.insert(
+                    session.acp_id.clone(),
+                    session_config_options(&session.model).await,
+                );
+            }
+            let mut interval = tokio::time::interval(SETTINGS_WATCH_INTERVAL);
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tokio::select! {
+                    _ = shutdown.wait_for(|done| *done) => break,
+                    _ = interval.tick() => {},
+                }
+                if *shutdown.borrow() {
+                    break;
+                }
+                let live: std::collections::HashSet<String> =
+                    server.sessions().iter().map(|s| s.acp_id.clone()).collect();
+                baseline.retain(|id, _| live.contains(id));
+                for session in server.sessions() {
+                    let current = session_config_options(&session.model).await;
+                    match baseline.get(&session.acp_id) {
+                        None => {
+                            baseline.insert(session.acp_id.clone(), current);
+                        }
+                        Some(previous) if previous == &current => {}
+                        Some(_) => {
+                            emit_config_options(&peer, &session).await;
+                            baseline.insert(session.acp_id.clone(), current);
+                        }
+                    }
+                }
+            }
+            server.settings_watch.store(false, Ordering::Relaxed);
         }
     });
 }
