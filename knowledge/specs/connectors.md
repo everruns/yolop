@@ -102,4 +102,4 @@ docs for the full tool reference.
 - [`knowledge/specs/configuration.md`](./configuration.md), `[[capabilities]]` harness overrides
 - [`knowledge/specs/sandboxing.md`](./sandboxing.md), common execution-provider boundary
 - [`knowledge/specs/maintenance.md`](./maintenance.md), host threat surface
-- [Everruns Daytona integration](https://docs.everruns.com/integrations/daytona/)
+- [Everruns Daytona integration](https://everruns.com/docs/integrations/daytona/)
