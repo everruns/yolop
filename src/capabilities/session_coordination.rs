@@ -71,7 +71,9 @@ const RESUME_NOTE: &str = "[automatic] This thread's process stopped while it wa
 pub(crate) const DELIVERY_METADATA_KEY: &str = "yolop.coordination_delivery";
 pub(crate) const MAX_MESSAGE_BYTES: usize = 32 * 1024;
 /// Launch flags a thread host inherits from the process that started it.
-const INHERITED_FLAGS: [&str; 8] = [
+/// `--sandbox` is a containment override: without it a coordinator started
+/// with `--sandbox` (WorkspaceWrite) would spawn a DangerFullAccess child.
+const INHERITED_FLAGS: [&str; 9] = [
     "--profile",
     "--provider",
     "--model",
@@ -80,7 +82,10 @@ const INHERITED_FLAGS: [&str; 8] = [
     "--data-dir",
     "--session-dir",
     "--env-context",
+    "--sandbox",
 ];
+/// Inherited flags that take no value; `--sandbox` is a boolean override.
+const INHERITED_BOOL_FLAGS: [&str; 1] = ["--sandbox"];
 
 /// What one inbox row carries.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -748,7 +753,12 @@ pub(crate) fn inherited_launch_args(args: impl IntoIterator<Item = String>) -> V
     while let Some(arg) = args.next() {
         if let Some((flag, _)) = arg.split_once('=')
             && INHERITED_FLAGS.contains(&flag)
+            && !INHERITED_BOOL_FLAGS.contains(&flag)
         {
+            inherited.push(arg);
+        } else if INHERITED_BOOL_FLAGS.contains(&arg.as_str()) {
+            // Boolean containment override: inherit the flag alone without
+            // consuming the following argument as its value.
             inherited.push(arg);
         } else if INHERITED_FLAGS.contains(&arg.as_str())
             && let Some(value) = args.next()
@@ -1323,6 +1333,49 @@ mod tests {
                 "--provider=anthropic",
                 "--data-dir",
                 "/d"
+            ]
+            .map(String::from)
+        );
+    }
+
+    #[test]
+    fn launch_args_inherit_sandbox_containment() {
+        // Coordinator started with `--sandbox` must propagate the WorkspaceWrite
+        // override so the child does not fall back to DangerFullAccess.
+        let args = ["yolop", "--sandbox", "--profile", "coordinator", "run"].map(String::from);
+        assert_eq!(
+            inherited_launch_args(args),
+            ["--sandbox", "--profile", "coordinator"].map(String::from)
+        );
+    }
+
+    #[test]
+    fn launch_args_without_sandbox_stays_without_it() {
+        let args = ["yolop", "--profile", "coordinator", "run"].map(String::from);
+        assert_eq!(
+            inherited_launch_args(args),
+            ["--profile", "coordinator"].map(String::from)
+        );
+    }
+
+    #[test]
+    fn launch_args_sandbox_does_not_swallow_following_value() {
+        // `--sandbox` takes no value; the next flag's value must survive.
+        let args = [
+            "yolop",
+            "--sandbox",
+            "--profile",
+            "coordinator",
+            "--provider=anthropic",
+        ]
+        .map(String::from);
+        assert_eq!(
+            inherited_launch_args(args),
+            [
+                "--sandbox",
+                "--profile",
+                "coordinator",
+                "--provider=anthropic"
             ]
             .map(String::from)
         );
