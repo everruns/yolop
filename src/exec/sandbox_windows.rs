@@ -565,6 +565,10 @@ mod tests {
         if let Ok(probe) = v1::probe(None) {
             eprintln!("diag tier: {:?} warnings: {:?}", probe.tier, probe.warnings);
         }
+        eprintln!(
+            "diag bfscfg.exe present: {}",
+            Path::new(r"C:\Windows\System32\bfscfg.exe").exists()
+        );
         let workspace = tempfile::tempdir().unwrap();
         let ws = path_string(workspace.path());
         let script = format!(

@@ -170,7 +170,7 @@ seccompiler = "0.5.0"
 
 # Windows shell containment, run in-process: see src/exec/sandbox_windows.rs.
 [target.'cfg(windows)'.dependencies]
-mxc-sdk = "=1.0.0"
+mxc-sdk = { version = "=1.0.0", features = ["tier2_bfs"] }
 # The attached control endpoint's named-pipe ACL; see `control::control_pipe`.
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization"] }
 
