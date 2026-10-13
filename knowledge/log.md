@@ -1,5 +1,12 @@
 # Knowledge Log
 
+## 2026-10-12, Complete hard approval requests
+
+Hard approval rejects oversized text instead of shortening it, and the thread
+relay binds decisions to the full request. Legacy relay records fail closed.
+See [sandboxing](specs/sandboxing.md) and
+[session coordination](specs/session-coordination.md).
+
 ## 2026-10-11, Windows sandbox on MXC
 
 `read-only` and `workspace-write` now contain the Windows shell in an

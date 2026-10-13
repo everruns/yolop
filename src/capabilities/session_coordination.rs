@@ -85,18 +85,6 @@ const APPROVAL_POLL_INTERVAL: Duration = Duration::from_millis(500);
 /// How long a relayed escalation waits for an answer before it is denied.
 const APPROVAL_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
-/// `text` cut to at most `MAX_MESSAGE_BYTES` on a character boundary.
-fn bounded(text: &str) -> &str {
-    if text.len() <= MAX_MESSAGE_BYTES {
-        return text;
-    }
-    let mut end = MAX_MESSAGE_BYTES;
-    while !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    &text[..end]
-}
-
 /// A thread's sandbox escalation waiting on its coordinator.
 #[derive(Debug)]
 struct ThreadApproval {
@@ -117,6 +105,7 @@ pub(crate) struct HostApprovals {
 /// An escalation this thread host relayed and is waiting on.
 struct RelayedApproval {
     approval_id: i64,
+    request_digest: [u8; 32],
     reply: tokio::sync::oneshot::Sender<ApprovalDecision>,
     deadline: tokio::time::Instant,
 }
@@ -272,11 +261,22 @@ impl CoordinationStore {
                     reason TEXT NOT NULL,
                     scope TEXT NOT NULL,
                     decision TEXT,
+                    request_digest BLOB,
                     created_at_ms INTEGER NOT NULL
                  );
                  CREATE INDEX IF NOT EXISTS yolop_thread_approvals_coordinator
                     ON yolop_thread_approvals(coordinator_session_id, decision);",
             )?;
+            // Older hosts shortened approval text and omit the digest. Keep
+            // their records readable so both relay consumers can deny them.
+            if conn
+                .prepare("SELECT request_digest FROM yolop_thread_approvals LIMIT 0")
+                .is_err()
+            {
+                conn.execute_batch(
+                    "ALTER TABLE yolop_thread_approvals ADD COLUMN request_digest BLOB",
+                )?;
+            }
             // Presence rows are leases that expire within seconds, so a table
             // from a build without the hand-over columns is rebuilt, not migrated.
             let has_release = conn
@@ -447,6 +447,8 @@ impl CoordinationStore {
         host_id: &str,
         request: &ApprovalRequest,
     ) -> anyhow::Result<i64> {
+        request.validate()?;
+        let digest = request.digest();
         let id = self.db.with_conn(|conn| {
             conn.execute(
                 "DELETE FROM yolop_thread_approvals WHERE thread_id = ?1 AND host_id != ?2",
@@ -455,16 +457,17 @@ impl CoordinationStore {
             conn.execute(
                 "INSERT INTO yolop_thread_approvals
                     (thread_id, coordinator_session_id, host_id, command, reason, scope,
-                     created_at_ms)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                     created_at_ms, request_digest)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 params![
                     thread_id.to_string(),
                     coordinator.to_string(),
                     host_id,
-                    bounded(&request.command),
-                    bounded(&request.reason),
+                    &request.command,
+                    &request.reason,
                     request.scope.as_str(),
                     now_ms(),
+                    digest.as_slice(),
                 ],
             )?;
             Ok(conn.last_insert_rowid())
@@ -473,18 +476,47 @@ impl CoordinationStore {
     }
 
     /// The answer to an approval request, once its coordinator gave one.
-    fn approval_answer(&self, approval_id: i64) -> anyhow::Result<Option<ApprovalDecision>> {
-        let decision = self.db.with_conn(|conn| {
+    fn approval_answer(
+        &self,
+        approval_id: i64,
+        expected_digest: &[u8; 32],
+    ) -> anyhow::Result<Option<ApprovalDecision>> {
+        let stored = self.db.with_conn(|conn| {
             conn.query_row(
-                "SELECT decision FROM yolop_thread_approvals WHERE approval_id = ?1",
+                "SELECT decision, request_digest, command, reason, scope
+                 FROM yolop_thread_approvals WHERE approval_id = ?1",
                 params![approval_id],
-                |row| row.get::<_, Option<String>>(0),
+                |row| {
+                    Ok((
+                        row.get::<_, Option<String>>(0)?,
+                        row.get::<_, Option<Vec<u8>>>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                    ))
+                },
             )
             .optional()
         })?;
-        Ok(decision
-            .flatten()
-            .and_then(|decision| ApprovalDecision::parse(&decision)))
+        let Some((decision, digest, command, reason, scope)) = stored else {
+            return Ok(None);
+        };
+        let Some(scope) = ApprovalScope::parse(&scope) else {
+            return Ok(Some(ApprovalDecision::Deny));
+        };
+        let request = ApprovalRequest {
+            command,
+            reason,
+            scope,
+        };
+        // THREAT[TM-BASH]: a decision authorizes this host's original request,
+        // never an incomplete legacy record or a different stored request.
+        if !request.matches_digest(digest.as_deref())
+            || digest.as_deref() != Some(expected_digest.as_slice())
+        {
+            return Ok(Some(ApprovalDecision::Deny));
+        }
+        Ok(decision.and_then(|decision| ApprovalDecision::parse(&decision)))
     }
 
     fn drop_approval(&self, approval_id: i64) {
@@ -501,7 +533,7 @@ impl CoordinationStore {
     fn pending_approvals(&self, coordinator: SessionId) -> anyhow::Result<Vec<ThreadApproval>> {
         let approvals = self.db.with_conn(|conn| {
             let mut statement = conn.prepare(
-                "SELECT a.approval_id, a.thread_id, a.command, a.reason, a.scope
+                "SELECT a.approval_id, a.thread_id, a.command, a.reason, a.scope, a.request_digest
                  FROM yolop_thread_approvals a
                  JOIN yolop_session_presence p
                     ON p.session_id = a.thread_id AND p.host_id = a.host_id
@@ -518,6 +550,7 @@ impl CoordinationStore {
                         row.get::<_, String>(2)?,
                         row.get::<_, String>(3)?,
                         row.get::<_, String>(4)?,
+                        row.get::<_, Option<Vec<u8>>>(5)?,
                     ))
                 },
             )?;
@@ -525,15 +558,20 @@ impl CoordinationStore {
         })?;
         Ok(approvals
             .into_iter()
-            .filter_map(|(approval_id, thread_id, command, reason, scope)| {
+            .filter_map(|(approval_id, thread_id, command, reason, scope, digest)| {
+                let request = ApprovalRequest {
+                    command,
+                    reason,
+                    scope: ApprovalScope::parse(&scope)?,
+                };
+                if !request.matches_digest(digest.as_deref()) {
+                    let _ = self.answer_approval(approval_id, ApprovalDecision::Deny);
+                    return None;
+                }
                 Some(ThreadApproval {
                     approval_id,
                     thread_id: thread_id.parse().ok()?,
-                    request: ApprovalRequest {
-                        command,
-                        reason,
-                        scope: ApprovalScope::parse(&scope)?,
-                    },
+                    request,
                 })
             })
             .collect())
@@ -1183,6 +1221,7 @@ impl CoordinationHost {
                         match poll_store.request_approval(session_id, coordinator, &poll_host_id, &request) {
                             Ok(approval_id) => relayed.push(RelayedApproval {
                                 approval_id,
+                                request_digest: request.digest(),
                                 reply,
                                 deadline: tokio::time::Instant::now() + APPROVAL_TIMEOUT,
                             }),
@@ -1276,7 +1315,7 @@ fn settle_relayed_approvals(
     let now = tokio::time::Instant::now();
     let mut waiting = Vec::with_capacity(relayed.len());
     for approval in relayed.drain(..) {
-        let answer = match store.approval_answer(approval.approval_id) {
+        let answer = match store.approval_answer(approval.approval_id, &approval.request_digest) {
             Ok(Some(decision)) => Some(decision),
             Ok(None) if yielding || now >= approval.deadline => Some(ApprovalDecision::Deny),
             Ok(None) => None,
@@ -1926,14 +1965,187 @@ mod tests {
         }
     }
 
-    async fn answer_for(store: &CoordinationStore, approval_id: i64) -> ApprovalDecision {
+    #[test]
+    fn approval_text_is_rejected_instead_of_shortened() {
+        let (store, _tasks) = test_store();
+        let coordinator = SessionId::new();
+        let thread = SessionId::new();
+        store
+            .register_host(thread, "host_t", "p", Path::new("/repo"), true)
+            .unwrap();
+        for request in [
+            escalation(&"x".repeat(MAX_MESSAGE_BYTES + 1)),
+            ApprovalRequest {
+                reason: "x".repeat(MAX_MESSAGE_BYTES + 1),
+                ..escalation("dummy")
+            },
+        ] {
+            assert!(
+                store
+                    .request_approval(thread, coordinator, "host_t", &request)
+                    .is_err(),
+                "oversized approval text must be rejected"
+            );
+            assert!(store.pending_approvals(coordinator).unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn approval_text_round_trips_at_the_byte_boundary() {
+        let (store, _tasks) = test_store();
+        let coordinator = SessionId::new();
+        let thread = SessionId::new();
+        store
+            .register_host(thread, "host_t", "p", Path::new("/repo"), true)
+            .unwrap();
+        let mut request = escalation(&"é".repeat(MAX_MESSAGE_BYTES / 2));
+        request.reason = "ordinary reason".into();
+        store
+            .request_approval(thread, coordinator, "host_t", &request)
+            .unwrap();
+        let pending = store.pending_approvals(coordinator).unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].request.command, request.command);
+        assert_eq!(pending[0].request.reason, request.reason);
+        assert_eq!(pending[0].request.scope, request.scope);
+    }
+
+    async fn answer_for(
+        store: &CoordinationStore,
+        approval_id: i64,
+        request: &ApprovalRequest,
+    ) -> ApprovalDecision {
         for _ in 0..200 {
-            if let Some(decision) = store.approval_answer(approval_id).unwrap() {
+            if let Some(decision) = store
+                .approval_answer(approval_id, &request.digest())
+                .unwrap()
+            {
                 return decision;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         panic!("approval {approval_id} was never answered");
+    }
+
+    #[tokio::test]
+    async fn ordinary_approval_relay_preserves_once_and_session_decisions() {
+        for decision in [
+            ApprovalDecision::ApproveOnce,
+            ApprovalDecision::ApproveForSession,
+        ] {
+            let (store, _tasks) = test_store();
+            let coordinator = SessionId::new();
+            let thread = SessionId::new();
+            store
+                .register_host(thread, "host_t", "p", Path::new("/repo"), true)
+                .unwrap();
+            let request = escalation("dummy review text");
+            let expected_digest = request.digest();
+            let (thread_gate, mut relay) = ApprovalGate::channel();
+            let waiting_gate = thread_gate.clone();
+            let original = request.clone();
+            let waiting = tokio::spawn(async move { waiting_gate.approve(original).await });
+            let (relayed_request, reply) = relay.recv().await.unwrap();
+            assert_eq!(relayed_request.digest(), expected_digest);
+            let approval_id = store
+                .request_approval(thread, coordinator, "host_t", &relayed_request)
+                .unwrap();
+            let (coordinator_gate, mut prompts) = ApprovalGate::channel();
+            let asking = Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
+            ask_for_threads(&store, &coordinator_gate, &asking, coordinator);
+            let (displayed, answer) = prompts.recv().await.unwrap();
+            assert_eq!(displayed.command, request.command);
+            assert!(displayed.reason.ends_with(&request.reason));
+            assert_eq!(displayed.scope, request.scope);
+            answer.send(decision).unwrap();
+            assert_eq!(answer_for(&store, approval_id, &request).await, decision);
+            let mut relayed = vec![RelayedApproval {
+                approval_id,
+                request_digest: expected_digest,
+                reply,
+                deadline: tokio::time::Instant::now() + APPROVAL_TIMEOUT,
+            }];
+            settle_relayed_approvals(&store, &mut relayed, false);
+            assert!(waiting.await.unwrap());
+            assert!(relayed.is_empty());
+            assert!(store.pending_approvals(coordinator).unwrap().is_empty());
+            let again = thread_gate.approve(escalation("next dummy"));
+            let respond = async {
+                if decision == ApprovalDecision::ApproveOnce {
+                    let (_, reply) = relay.recv().await.unwrap();
+                    reply.send(ApprovalDecision::Deny).unwrap();
+                }
+            };
+            let (approved, ()) = tokio::join!(again, respond);
+            assert_eq!(approved, decision == ApprovalDecision::ApproveForSession);
+            assert!(relay.try_recv().is_err());
+        }
+    }
+
+    #[test]
+    fn legacy_approval_records_fail_closed_before_and_after_a_decision() {
+        let (store, _tasks) = test_store();
+        let coordinator = SessionId::new();
+        let thread = SessionId::new();
+        store
+            .register_host(thread, "host_t", "p", Path::new("/repo"), true)
+            .unwrap();
+        let request = escalation("legacy dummy");
+        for decision in [
+            None,
+            Some(ApprovalDecision::ApproveOnce),
+            Some(ApprovalDecision::ApproveForSession),
+        ] {
+            let id = store.db.with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO yolop_thread_approvals
+                     (thread_id, coordinator_session_id, host_id, command, reason, scope, decision, created_at_ms)
+                     VALUES (?1, ?2, 'host_t', ?3, ?4, ?5, ?6, ?7)",
+                    params![thread.to_string(), coordinator.to_string(), request.command, request.reason,
+                        request.scope.as_str(), decision.map(ApprovalDecision::as_str), now_ms()],
+                )?;
+                Ok(conn.last_insert_rowid())
+            }).unwrap();
+            assert!(store.pending_approvals(coordinator).unwrap().is_empty());
+            assert_eq!(
+                store.approval_answer(id, &request.digest()).unwrap(),
+                Some(ApprovalDecision::Deny)
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_approval_schema_keeps_records_unverified() {
+        let db = SqliteDb::open_in_memory().unwrap();
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "CREATE TABLE yolop_thread_approvals (
+                    approval_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    thread_id TEXT NOT NULL, coordinator_session_id TEXT NOT NULL,
+                    host_id TEXT NOT NULL, command TEXT NOT NULL, reason TEXT NOT NULL,
+                    scope TEXT NOT NULL, decision TEXT, created_at_ms INTEGER NOT NULL
+                 );
+                 INSERT INTO yolop_thread_approvals
+                 (thread_id, coordinator_session_id, host_id, command, reason, scope, decision, created_at_ms)
+                 VALUES ('legacy', 'legacy', 'host', 'dummy', 'review', 'full_access', 'approve_once', 0);",
+            )?;
+            Ok(())
+        }).unwrap();
+        let store = CoordinationStore::new(db.clone()).unwrap();
+        assert_eq!(
+            store
+                .approval_answer(1, &escalation("dummy").digest())
+                .unwrap(),
+            Some(ApprovalDecision::Deny)
+        );
+        // Opening an upgraded store a second time preserves the same denial.
+        CoordinationStore::new(db).unwrap();
+        assert_eq!(
+            store
+                .approval_answer(1, &escalation("dummy").digest())
+                .unwrap(),
+            Some(ApprovalDecision::Deny)
+        );
     }
 
     #[tokio::test]
@@ -1966,27 +2178,36 @@ mod tests {
         assert!(prompt.reason.starts_with("thread "), "{}", prompt.reason);
         reply.send(ApprovalDecision::ApproveForSession).unwrap();
         assert_eq!(
-            answer_for(&store, approval_id).await,
+            answer_for(&store, approval_id, &escalation("cargo fetch")).await,
             ApprovalDecision::ApproveForSession
         );
         assert!(prompts.try_recv().is_err());
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
         let mut relayed = vec![RelayedApproval {
             approval_id,
+            request_digest: escalation("cargo fetch").digest(),
             reply: reply_tx,
             deadline: tokio::time::Instant::now() + APPROVAL_TIMEOUT,
         }];
         settle_relayed_approvals(&store, &mut relayed, false);
         assert!(relayed.is_empty());
         assert_eq!(reply_rx.await.unwrap(), ApprovalDecision::ApproveForSession);
-        assert_eq!(store.approval_answer(approval_id).unwrap(), None);
+        assert_eq!(
+            store
+                .approval_answer(approval_id, &escalation("cargo fetch").digest())
+                .unwrap(),
+            None
+        );
 
         // A coordinator with no prompt surface denies.
         let denied = store
             .request_approval(thread, coordinator, "host_t", &escalation("curl"))
             .unwrap();
         ask_for_threads(&store, &ApprovalGate::deny(), &asking, coordinator);
-        assert_eq!(answer_for(&store, denied).await, ApprovalDecision::Deny);
+        assert_eq!(
+            answer_for(&store, denied, &escalation("curl")).await,
+            ApprovalDecision::Deny
+        );
     }
 
     #[tokio::test]
@@ -2003,6 +2224,7 @@ mod tests {
         let (reply_tx, mut reply_rx) = tokio::sync::oneshot::channel();
         let mut relayed = vec![RelayedApproval {
             approval_id,
+            request_digest: escalation("make").digest(),
             reply: reply_tx,
             deadline: tokio::time::Instant::now() + APPROVAL_TIMEOUT,
         }];

@@ -60,6 +60,13 @@ backend can implement the same boundary without changing tool schemas.
 
 ## Modes × approvals
 
+Hard approval preserves the entire command and reason, with a 32 KiB byte
+limit per field. Oversized requests fail closed before a prompt, including
+when the scope already has session consent. The relay binds each decision to
+the original complete request and denies legacy records whose text may have
+been shortened. This mitigates TM-BASH approval-integrity failures without
+changing the scope or entitlement of a normal once/session approval.
+
 The implicit default is `sandbox_mode = "danger-full-access"` plus
 `approval_policy = "on-request"`. Shell commands run directly on the host and
 are surfaced as `UNSAFE HOST`. The provider is selected once when a runtime is

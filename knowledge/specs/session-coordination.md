@@ -135,6 +135,14 @@ commands. Only requests from a live host are asked. With no coordinator
 running, a request waits up to thirty minutes, then is denied; a person opening
 the thread denies it at once, so the hand-over is not stuck behind it.
 
+Approval requests preserve the complete command, reason and scope. The shared
+hard-approval contract rejects command or reason text above 32 KiB before
+prompting or persisting it. Authorization text is never truncated. Relay
+records carry a digest of the complete request, and the originating host
+accepts decisions only for that same digest. Old records
+without this integrity evidence are denied, including previously recorded
+approvals. An old host cannot obtain an approval through a new coordinator.
+
 ## Opening a thread
 
 Only one process may write a session log. A person opening a session held by a
