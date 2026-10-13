@@ -87,8 +87,7 @@ pub(crate) fn reasoning_effort_config(
 /// the provider catalog,
 /// so re-verify against the catalog before extending this table (muse-spark's
 /// entry was read from OpenRouter `/models`: `supported_efforts` `["max",
-/// "xhigh", "high", "medium", "low", "minimal"]`, default `"medium"`). `max`
-/// stays unoffered: it has no `ReasoningEffort` variant to travel in.
+/// "xhigh", "high", "medium", "low", "minimal"]`, default `"medium"`).
 pub(crate) fn catalog_scale_override(
     provider_type: &DriverId,
     model: &str,
@@ -127,6 +126,7 @@ pub(crate) fn catalog_scale_override(
             everruns_contracts::ReasoningEffort::Medium,
             everruns_contracts::ReasoningEffort::High,
             everruns_contracts::ReasoningEffort::Xhigh,
+            everruns_contracts::ReasoningEffort::Max,
         ]
         .into_iter()
         .map(|value| everruns_contracts::ReasoningEffortValue {

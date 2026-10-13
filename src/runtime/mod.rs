@@ -8187,7 +8187,7 @@ mod tests {
         assert_eq!(anthropic.label(), "anthropic/claude-opus-5-5 high");
 
         let meta = ProviderChoice::default_for_provider_name("meta").unwrap();
-        assert_eq!(meta.label(), "meta/muse-spark-1.3");
+        assert_eq!(meta.label(), "meta/muse-spark-1.3 medium");
 
         let google = ProviderChoice::default_for_provider_name("google").unwrap();
         assert_eq!(google.label(), "google/gemini-3.8-flash");
@@ -10184,6 +10184,7 @@ mod tests {
                 ReasoningEffort::Medium,
                 ReasoningEffort::High,
                 ReasoningEffort::Xhigh,
+                ReasoningEffort::Max,
             ]
         );
 
@@ -10217,8 +10218,8 @@ mod tests {
 
     /// The real muse-spark id accepts its catalog-verified scale before the
     /// first discovery and keeps it after the driver records its fixed
-    /// low/medium/high fallback. `max` stays unoffered: it has no
-    /// `ReasoningEffort` variant yet.
+    /// low/medium/high fallback, `max` included now that `ReasoningEffort`
+    /// has the variant.
     #[test]
     fn muse_spark_uses_catalog_levels_before_and_after_discovery() {
         let cold = ProviderChoice::default_openrouter()
@@ -10230,7 +10231,7 @@ mod tests {
                 .into_iter()
                 .map(|option| option.value)
                 .collect::<Vec<_>>(),
-            vec!["minimal", "low", "medium", "high", "xhigh"]
+            vec!["minimal", "low", "medium", "high", "xhigh", "max"]
         );
 
         // What the driver records for every reasoning model: the fixed scale,
@@ -10270,13 +10271,14 @@ mod tests {
                 .into_iter()
                 .map(|option| option.value)
                 .collect::<Vec<_>>(),
-            vec!["minimal", "low", "medium", "high", "xhigh"]
+            vec!["minimal", "low", "medium", "high", "xhigh", "max"]
         );
-        assert!(
+        assert_eq!(
             ProviderChoice::default_openrouter()
                 .resolve_model_spec("meta/muse-spark-1.3-contributor max")
-                .is_err(),
-            "max has no ReasoningEffort variant yet, so it stays unoffered"
+                .expect("max is offered now that it has a variant")
+                .reasoning_effort(),
+            Some("max")
         );
     }
 
