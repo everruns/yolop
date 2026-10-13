@@ -159,6 +159,25 @@ class AnalyzeTests(unittest.TestCase):
         _, failures, _ = analyzer.analyze({"cases": cases})
         self.assertFalse(any("command/tool failures" in f for f in failures))
 
+    def test_one_missed_focused_trial_is_sampling_noise(self):
+        cases = control_cases()
+        for sample in sorted(analyzer.FOCUSED):
+            for trial in range(3):
+                cases.append(case(sample, "baseline", True, tools=4))
+                cases.append(case(sample, "candidate", trial != 0, tools=4))
+        _, failures, _ = analyzer.analyze_reports([{"cases": cases}])
+        self.assertFalse(any("correctness regressed" in f for f in failures))
+        self.assertFalse(any("focused pass rate" in f for f in failures))
+
+    def test_stray_control_failures_in_half_the_trials_are_noise(self):
+        cases = focused_cases()
+        for trial in range(5):
+            cases.append(case("add-fn", "baseline", True, failures=1 if trial < 3 else 0))
+            cases.append(case("add-fn", "candidate", True, failures=1 if trial < 3 else 0))
+        cases += [c for c in control_cases() if c["sample"] != "add-fn"]
+        _, failures, _ = analyzer.analyze_reports([{"cases": cases}])
+        self.assertFalse(any("command/tool failures" in f for f in failures))
+
     def test_systematic_tool_failures_still_regress(self):
         cases = self._focused_with_failures([0, 0, 0], [1, 1, 1])
         _, failures, _ = analyzer.analyze({"cases": cases})
