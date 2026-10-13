@@ -1542,10 +1542,14 @@ fn tui_smoke(options: TuiSpawnOptions, mode: &str, fullscreen: bool) {
     // Poll it rather than snapshotting once: publishing a transcript block
     // scrolls the terminal and clears the viewport, so a grid sampled between
     // the publish and the repaint that follows it legitimately has no status
-    // bar on it. `wait_for_screen` returns the settled frame.
+    // bar on it. `wait_for_screen` returns the settled frame. Waiting for the
+    // idle composer hint as well means the turn has finished, not just
+    // streamed its last words: the transcript keeps the answer only once the
+    // turn completes, and the exit reprint below reads it from there.
     let screen = tui
         .wait_for_screen(Duration::from_secs(5), |screen| {
             screen.iter().any(|line| line.contains("llmsim"))
+                && screen.iter().any(|line| line.contains("Enter to send"))
         })
         .join("\n");
     assert!(

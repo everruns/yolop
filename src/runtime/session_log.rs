@@ -836,28 +836,16 @@ impl JsonlEventEmitter {
             event.ts = Utc::now();
         }
 
-        // Persist before the event becomes visible, so a failed write leaves
-        // no trace a reader or a conditional append could observe.
-        if is_replay_relevant(&event.event_type) {
-            // yolop's per-session JSONL is the local session store; we
-            // persist `thinking` / `thinking_signature` and opaque
-            // `reason.item` content as-is so provider continuation
-            // (e.g. OpenAI Responses replays encrypted reasoning via
-            // `thinking_signature`) works after `--session <id>` resume.
-            // Privacy lives in the 0o600 file mode and per-user
-            // platform data dir, not in field stripping.
-            let line = serde_json::to_string(&event).map_err(|e| {
-                AgentLoopError::config(format!("serialize event for session log: {e}"))
-            })?;
-            let mut file = self.ensure_log_file().await?;
-            let file = file.as_mut().expect("session log initialized");
-            writeln!(file, "{line}")
-                .map_err(|e| AgentLoopError::config(format!("write session log line: {e}")))?;
-            file.flush()
-                .map_err(|e| AgentLoopError::config(format!("flush session log: {e}")))?;
-            self.persisted_sequence.fetch_max(seq_val, Ordering::AcqRel);
-        }
+        // Visible before it is written, so concurrent appends land in the
+        // in-memory log in sequence order; a failed write takes the event back
+        // out, so a reader or a conditional append never observes it.
         self.events.write().await.push(event.clone());
+        if is_replay_relevant(&event.event_type)
+            && let Err(error) = self.persist(&event, seq_val).await
+        {
+            self.events.write().await.retain(|kept| kept.id != event.id);
+            return Err(error);
+        }
 
         if let EventData::SessionTitleUpdated(data) = &event.data
             && let Err(error) = update_session_workspace_title(&self.session_dir, &data.title)
@@ -870,6 +858,27 @@ impl JsonlEventEmitter {
         }
 
         Ok(event)
+    }
+
+    /// Append one replay-relevant event to the session JSONL.
+    async fn persist(&self, event: &Event, seq_val: i32) -> Result<()> {
+        // yolop's per-session JSONL is the local session store; we
+        // persist `thinking` / `thinking_signature` and opaque
+        // `reason.item` content as-is so provider continuation
+        // (e.g. OpenAI Responses replays encrypted reasoning via
+        // `thinking_signature`) works after `--session <id>` resume.
+        // Privacy lives in the 0o600 file mode and per-user
+        // platform data dir, not in field stripping.
+        let line = serde_json::to_string(&event)
+            .map_err(|e| AgentLoopError::config(format!("serialize event for session log: {e}")))?;
+        let mut file = self.ensure_log_file().await?;
+        let file = file.as_mut().expect("session log initialized");
+        writeln!(file, "{line}")
+            .map_err(|e| AgentLoopError::config(format!("write session log line: {e}")))?;
+        file.flush()
+            .map_err(|e| AgentLoopError::config(format!("flush session log: {e}")))?;
+        self.persisted_sequence.fetch_max(seq_val, Ordering::AcqRel);
+        Ok(())
     }
 
     /// Events on the branch currently visible to the model, in sequence order.
