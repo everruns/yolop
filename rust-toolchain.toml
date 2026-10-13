@@ -1,6 +1,7 @@
-# Pinned to everruns' declared MSRV (rust-version = 1.94.0). everruns-core
-# 0.17.13 briefly required 1.96.0 for `if let` match guards; 0.17.14 dropped
-# them, restoring 1.94.0 compatibility. Keep in sync with the everruns-* MSRV.
+# everruns-llmsim 0.48.0 depends on llmsim 0.6, which uses
+# `AtomicU64::try_update` (stable since 1.95), so the everruns graph no longer
+# builds on its declared 1.94.0 MSRV. Matches the toolchain everruns itself
+# builds with. Keep in sync with what the everruns-* dependency graph needs.
 [toolchain]
-channel = "1.94.0"
+channel = "1.96.0"
 components = ["rustfmt", "clippy"]

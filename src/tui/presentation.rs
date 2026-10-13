@@ -950,6 +950,7 @@ mod tests {
                 display_name: Some("Wait Task".to_string()),
                 narration: Some(wait_narration.clone()),
                 tool_call_fingerprint: None,
+                side_effect_class: None,
             },
         );
         assert_eq!(

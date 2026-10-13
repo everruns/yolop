@@ -25,7 +25,7 @@ structural-rewrite tasks:
 | **binary** | `candidate` · `baseline` · `parallel-only` · `policy-only` · `dependency-baseline` | `BINARIES`; configured by the matching `HARNESS_BASIC_*_BIN` variable |
 | **target** (model) | Anthropic Sonnet 5.5, Opus 4.8, Sonnet 5; OpenAI GPT-5.5 and GPT-5.6 Terra; OpenRouter GLM 5.2 and Muse 1.3 Contributor; optional local model | `targets()` in `src/main.rs` |
 | **effort** | `default` (yolop's per-model default; no flag) · `low` · `high` | `EFFORTS` |
-| **harness** | `default` (out-of-the-box yolop) · `with-ast-edit` (opt-in `ast_edit` capability) · `no-progress-guard` · `no-ast-grep` · `no-tool-reveal` · `native-edit-tools` (opt-in model-native edit tools) | `HARNESS_VARIANTS` |
+| **harness** | `default` (out-of-the-box yolop) · `with-ast-edit` (opt-in `ast_edit` capability) · `no-progress-guard` · `no-ast-grep` · `native-edit-tools` (opt-in model-native edit tools) | `HARNESS_VARIANTS` |
 
 Every target gates on its provider key env var (`ANTHROPIC_API_KEY`,
 `OPENAI_API_KEY`, `OPENROUTER_API_KEY`) and is *skipped* (not failed) when the
@@ -101,10 +101,7 @@ edits back from it). `default` adds nothing, it is yolop out of the box.
 `with-ast-edit` enables the opt-in `ast_edit` capability for previewed
 structural rewrites. `no-progress-guard` disables the progress-guard capability
 so guardrail changes can be compared against the same binary with that
-capability removed. `no-tool-reveal` disables reveal gating, restoring the
-always-on `config` and `memory` prompt prose that the gate otherwise withholds
-until `tool_search` loads one of those tools, the A/B for whether deferring
-that prose costs task success. `native-edit-tools` enables the opt-in
+capability removed. `native-edit-tools` enables the opt-in
 `native_edit_tools` capability, which gives OpenAI models Codex's
 `apply_patch` and leaves Claude models unchanged; the `edit-tools-compare`
 preset runs it on the `edit-tools` samples and reads `edit_tool_calls_failed`

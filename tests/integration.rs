@@ -1154,6 +1154,11 @@ fn windows_startup_warnings_follow_the_sandbox_mode_from_the_real_binary() {
     assert!(!sandboxed.contains("UNSAFE HOST"), "stderr={sandboxed}");
 }
 
+/// Readiness bound for the TUI's first frame. It only waits for a ready
+/// state, so a generous bound weakens no assertion; 3s was tight enough to
+/// time out under coverage instrumentation with the suite running in parallel.
+const TUI_STARTUP_TIMEOUT: Duration = Duration::from_secs(15);
+
 #[cfg(not(windows))]
 #[test]
 fn unsafe_sandbox_opt_out_is_visible_in_tui_transcript_and_status() {
@@ -1173,7 +1178,7 @@ fn unsafe_sandbox_opt_out_is_visible_in_tui_transcript_and_status() {
         tui.output_text()
     );
     assert!(
-        tui.wait_for_output("type /help", Duration::from_secs(3)),
+        tui.wait_for_output("type /help", TUI_STARTUP_TIMEOUT),
         "TUI did not finish startup: {}",
         tui.output_text()
     );
@@ -1387,7 +1392,7 @@ fn llmsim_unknown_session_id_is_invalid() {
 fn tui_escape_does_not_exit_and_ctrl_c_exits() {
     let mut tui = spawn_tui_llmsim(&yolop_binary());
     assert!(
-        tui.wait_for_output("type /help", Duration::from_secs(3)),
+        tui.wait_for_output("type /help", TUI_STARTUP_TIMEOUT),
         "TUI did not render startup banner: {}",
         tui.output_text()
     );
@@ -1542,10 +1547,14 @@ fn tui_smoke(options: TuiSpawnOptions, mode: &str, fullscreen: bool) {
     // Poll it rather than snapshotting once: publishing a transcript block
     // scrolls the terminal and clears the viewport, so a grid sampled between
     // the publish and the repaint that follows it legitimately has no status
-    // bar on it. `wait_for_screen` returns the settled frame.
+    // bar on it. `wait_for_screen` returns the settled frame. Waiting for the
+    // idle composer hint as well means the turn has finished, not just
+    // streamed its last words: the transcript keeps the answer only once the
+    // turn completes, and the exit reprint below reads it from there.
     let screen = tui
         .wait_for_screen(Duration::from_secs(5), |screen| {
             screen.iter().any(|line| line.contains("llmsim"))
+                && screen.iter().any(|line| line.contains("Enter to send"))
         })
         .join("\n");
     assert!(
@@ -1598,7 +1607,7 @@ fn tui_smoke(options: TuiSpawnOptions, mode: &str, fullscreen: bool) {
 fn tui_alt_enter_sequence_submits_like_enter() {
     let mut tui = spawn_tui_llmsim(&yolop_binary());
     assert!(
-        tui.wait_for_output("type /help", Duration::from_secs(3)),
+        tui.wait_for_output("type /help", TUI_STARTUP_TIMEOUT),
         "TUI did not render startup banner: {}",
         tui.output_text()
     );
@@ -1640,7 +1649,7 @@ fn tui_alt_enter_sequence_submits_like_enter() {
 fn tui_ghostty_shift_enter_sequence_inserts_newline() {
     let mut tui = spawn_tui_llmsim(&yolop_binary());
     assert!(
-        tui.wait_for_output("type /help", Duration::from_secs(3)),
+        tui.wait_for_output("type /help", TUI_STARTUP_TIMEOUT),
         "TUI did not render startup banner: {}",
         tui.output_text()
     );
@@ -1723,7 +1732,7 @@ fn tui_raw_lf_shift_enter_inserts_newline() {
     // composer, not submit (and not be ignored).
     let mut tui = spawn_tui_llmsim(&yolop_binary());
     assert!(
-        tui.wait_for_output("type /help", Duration::from_secs(3)),
+        tui.wait_for_output("type /help", TUI_STARTUP_TIMEOUT),
         "TUI did not render startup banner: {}",
         tui.output_text()
     );
@@ -1764,7 +1773,7 @@ fn tui_survives_slow_cursor_position_reply_after_resize() {
     // That transient failure must not exit the TUI.
     let mut tui = spawn_tui_llmsim(&yolop_binary());
     assert!(
-        tui.wait_for_output("type /help", Duration::from_secs(3)),
+        tui.wait_for_output("type /help", TUI_STARTUP_TIMEOUT),
         "TUI did not render startup banner: {}",
         tui.output_text()
     );
@@ -1808,7 +1817,7 @@ fn tui_survives_slow_cursor_position_reply_after_resize() {
 fn tui_resize_with_wrapped_input_keeps_cursor_inside_new_frame() {
     let mut tui = spawn_tui_llmsim(&yolop_binary());
     assert!(
-        tui.wait_for_output("type /help", Duration::from_secs(3)),
+        tui.wait_for_output("type /help", TUI_STARTUP_TIMEOUT),
         "TUI did not render startup banner: {}",
         tui.output_text()
     );
@@ -1860,7 +1869,7 @@ fn tui_resize_grow_reanchors_composer_to_bottom() {
         },
     );
     assert!(
-        tui.wait_for_output("type /help", Duration::from_secs(3)),
+        tui.wait_for_output("type /help", TUI_STARTUP_TIMEOUT),
         "TUI did not render startup banner: {}",
         tui.output_text()
     );
@@ -1896,7 +1905,7 @@ fn tui_resize_grow_reanchors_composer_to_bottom() {
 fn tui_resize_shrink_width_reanchors_composer_to_bottom() {
     let mut tui = spawn_tui_llmsim(&yolop_binary());
     assert!(
-        tui.wait_for_output("type /help", Duration::from_secs(3)),
+        tui.wait_for_output("type /help", TUI_STARTUP_TIMEOUT),
         "TUI did not render startup banner: {}",
         tui.output_text()
     );
@@ -1931,7 +1940,7 @@ fn tui_resize_shrink_width_reanchors_composer_to_bottom() {
 #[test]
 fn tui_combined_resize_reconstructs_composer_at_screen_bottom() {
     let mut tui = spawn_tui_llmsim(&yolop_binary());
-    assert!(tui.wait_for_output("type /help", Duration::from_secs(3)));
+    assert!(tui.wait_for_output("type /help", TUI_STARTUP_TIMEOUT));
 
     tui.clear_output();
     tui.resize(60, 40);
@@ -2056,7 +2065,7 @@ fn tui_startup_anchors_composer_from_top_in_tall_terminal() {
         },
     );
     assert!(
-        tui.wait_for_output("type /help", Duration::from_secs(3)),
+        tui.wait_for_output("type /help", TUI_STARTUP_TIMEOUT),
         "TUI did not render startup banner: {}",
         tui.output_text()
     );
@@ -2076,7 +2085,7 @@ fn tui_turn_keeps_recent_transcript_adjacent_to_composer() {
         },
     );
     assert!(
-        tui.wait_for_output("type /help", Duration::from_secs(3)),
+        tui.wait_for_output("type /help", TUI_STARTUP_TIMEOUT),
         "TUI did not render startup banner: {}",
         tui.output_text()
     );
@@ -2117,7 +2126,7 @@ fn tui_startup_anchors_composer_when_prompt_is_already_near_bottom() {
         },
     );
     assert!(
-        tui.wait_for_output("type /help", Duration::from_secs(3)),
+        tui.wait_for_output("type /help", TUI_STARTUP_TIMEOUT),
         "TUI did not render startup banner: {}",
         tui.output_text()
     );
@@ -2137,7 +2146,7 @@ fn tui_startup_anchors_composer_in_short_terminal() {
         },
     );
     assert!(
-        tui.wait_for_output("type /help", Duration::from_secs(3)),
+        tui.wait_for_output("type /help", TUI_STARTUP_TIMEOUT),
         "TUI did not render startup banner: {}",
         tui.output_text()
     );
@@ -2149,7 +2158,7 @@ fn tui_startup_anchors_composer_in_short_terminal() {
 fn tui_setup_overlay_renders_in_real_pty() {
     let mut tui = spawn_tui_llmsim(&yolop_binary());
     assert!(
-        tui.wait_for_output("type /help", Duration::from_secs(3)),
+        tui.wait_for_output("type /help", TUI_STARTUP_TIMEOUT),
         "TUI did not render startup banner: {}",
         tui.output_text()
     );
@@ -2214,7 +2223,7 @@ fn tui_browser_login_can_be_cancelled_after_browser_closes() {
             ..TuiSpawnOptions::default()
         },
     );
-    assert!(tui.wait_for_output("type /help", Duration::from_secs(3)));
+    assert!(tui.wait_for_output("type /help", TUI_STARTUP_TIMEOUT));
 
     tui.write_input(b"/setup\r2");
     assert!(tui.wait_for_output("Sign in with browser", Duration::from_secs(3)));
@@ -2252,7 +2261,7 @@ fn tui_setup_selects_model_for_connected_provider_in_real_pty() {
         "provider = \"llmsim\"\n\n[tokens]\nopenai = \"sk-test\"\n",
     );
     assert!(
-        tui.wait_for_output("type /help", Duration::from_secs(3)),
+        tui.wait_for_output("type /help", TUI_STARTUP_TIMEOUT),
         "TUI did not render startup banner: {}",
         tui.output_text()
     );
@@ -2472,7 +2481,7 @@ fn print_mode_attaches_images_to_provider_request() {
 fn tui_submit_turn_renders_assistant_in_scrollback() {
     let mut tui = spawn_tui_llmsim(&yolop_binary());
     assert!(
-        tui.wait_for_output("type /help", Duration::from_secs(3)),
+        tui.wait_for_output("type /help", TUI_STARTUP_TIMEOUT),
         "TUI did not render startup banner: {}",
         tui.output_text()
     );
@@ -2518,7 +2527,7 @@ fn tui_bang_shell_runs_shell_without_model_turn() {
         },
     );
     assert!(
-        tui.wait_for_output("type /help", Duration::from_secs(3)),
+        tui.wait_for_output("type /help", TUI_STARTUP_TIMEOUT),
         "TUI did not render startup banner: {}",
         tui.output_text()
     );
@@ -2698,7 +2707,7 @@ fn tui_shell_session_approval_skips_later_prompts_for_the_same_scope() {
         "provider = \"llmsim\"\napproval_policy = \"untrusted\"\n",
     );
     assert!(
-        tui.wait_for_output("type /help", Duration::from_secs(3)),
+        tui.wait_for_output("type /help", TUI_STARTUP_TIMEOUT),
         "TUI did not render startup banner: {}",
         tui.output_text()
     );
@@ -2799,7 +2808,7 @@ fn shell_commands_have_full_host_access_by_default() {
         tui.output_text()
     );
     assert!(
-        tui.wait_for_output("type /help", Duration::from_secs(3)),
+        tui.wait_for_output("type /help", TUI_STARTUP_TIMEOUT),
         "TUI did not finish startup: {}",
         tui.output_text()
     );
@@ -2956,7 +2965,7 @@ fn tui_bang_shell_can_create_toolchain_home() {
         },
     );
     assert!(
-        tui.wait_for_output("type /help", Duration::from_secs(3)),
+        tui.wait_for_output("type /help", TUI_STARTUP_TIMEOUT),
         "TUI did not render startup banner: {}",
         tui.output_text()
     );
@@ -2998,7 +3007,7 @@ fn tui_bang_shell_can_redirect_to_dev_null() {
         },
     );
     assert!(
-        tui.wait_for_output("type /help", Duration::from_secs(3)),
+        tui.wait_for_output("type /help", TUI_STARTUP_TIMEOUT),
         "TUI did not render startup banner: {}",
         tui.output_text()
     );
@@ -3100,7 +3109,7 @@ fn tui_agents_context_cannot_bypass_native_shell_sandbox() {
 fn tui_double_ctrl_c_exits() {
     let mut tui = spawn_tui_llmsim(&yolop_binary());
     assert!(
-        tui.wait_for_output("type /help", Duration::from_secs(3)),
+        tui.wait_for_output("type /help", TUI_STARTUP_TIMEOUT),
         "TUI did not render startup banner: {}",
         tui.output_text()
     );
@@ -3118,7 +3127,7 @@ fn tui_double_ctrl_c_exits() {
 fn tui_startup_does_not_enable_mouse_capture() {
     let mut tui = spawn_tui_llmsim(&yolop_binary());
     assert!(
-        tui.wait_for_output("type /help", Duration::from_secs(3)),
+        tui.wait_for_output("type /help", TUI_STARTUP_TIMEOUT),
         "TUI did not render startup banner: {}",
         tui.output_text()
     );

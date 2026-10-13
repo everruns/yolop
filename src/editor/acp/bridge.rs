@@ -616,6 +616,7 @@ mod tests {
             tool_call_fingerprint: None,
             display_name: Some("Bash".into()),
             narration: Some("Listing files".into()),
+            side_effect_class: None,
         })));
         assert_eq!(
             updates,
@@ -664,6 +665,7 @@ mod tests {
             tool_call_fingerprint: None,
             display_name: Some("Build repo map".into()),
             narration: Some("Build repo map: src".into()),
+            side_effect_class: None,
         })));
 
         let serialized = serde_json::to_value(&updates[0]).unwrap();
@@ -691,6 +693,8 @@ mod tests {
             acted_as: None,
             executed_arguments: None,
             executed_arguments_truncated: false,
+            details: None,
+            severity: None,
         })));
         assert_eq!(updates.len(), 1);
         match &updates[0] {
@@ -757,6 +761,8 @@ mod tests {
             acted_as: None,
             executed_arguments: None,
             executed_arguments_truncated: false,
+            details: None,
+            severity: None,
         })));
         assert_eq!(updates.len(), 1);
         match &updates[0] {
@@ -797,6 +803,7 @@ mod tests {
             tool_call_fingerprint: None,
             display_name: None,
             narration: None,
+            side_effect_class: None,
         })));
         assert_eq!(
             updates,
@@ -901,6 +908,7 @@ mod tests {
             tool_call_fingerprint: None,
             display_name: Some("Bash".into()),
             narration: Some("Listing files".into()),
+            side_effect_class: None,
         }));
 
         assert_eq!(t.on_event(&completed).len(), 1);
@@ -927,6 +935,8 @@ mod tests {
             acted_as: None,
             executed_arguments: None,
             executed_arguments_truncated: false,
+            details: None,
+            severity: None,
         })));
 
         assert_eq!(updates.len(), 2);

@@ -369,6 +369,7 @@ mod tests {
             reasoning: Vec::new(),
             native_tool_calls: Vec::new(),
             configuration_update: None,
+            tool_changes: None,
         }
     }
 

@@ -616,6 +616,7 @@ mod tests {
                     llm_call_count: Some(1),
                     status: Some("completed".to_string()),
                     stop_reason: None,
+                    issue_count: None,
                 },
             ))
             .expect("send turn completed");

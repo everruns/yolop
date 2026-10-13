@@ -785,34 +785,66 @@ impl JsonlEventEmitter {
                 Some(sequence.saturating_add(1))
             })
             .expect("sequence update closure always succeeds");
-        let seq_val = previous.saturating_add(1);
+        self.commit_at(request, previous.saturating_add(1)).await
+    }
 
+    /// Commit only when the last assigned sequence is `expected` (`None`: no
+    /// event yet). The compare-and-swap on the counter is the atomic check: of
+    /// concurrent callers presenting the same expectation, one claims the next
+    /// sequence and the rest see a conflict before anything is written.
+    async fn commit_conditional(
+        &self,
+        request: EventRequest,
+        expected: Option<i32>,
+    ) -> std::result::Result<Event, EventLogError> {
+        let expected_raw = expected.unwrap_or(0);
+        if let Err(actual) = self.sequence.compare_exchange(
+            expected_raw,
+            expected_raw.saturating_add(1),
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            return Err(EventLogError::SequenceConflict {
+                session_id: request.session_id,
+                expected,
+                actual: (actual > 0).then_some(actual),
+            });
+        }
+        let claimed = expected_raw.saturating_add(1);
+        self.commit_at(request, claimed).await.map_err(|error| {
+            // Nothing was recorded (see `commit_at`), so hand the claimed
+            // sequence back: a retry with the same expectation must not see a
+            // conflict for an event that does not exist. If another append
+            // has already moved past it, the gap is harmless and stays.
+            let _ = self.sequence.compare_exchange(
+                claimed,
+                expected_raw,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
+            EventLogError::Backend {
+                detail: error.to_string(),
+            }
+        })
+    }
+
+    async fn commit_at(&self, request: EventRequest, seq_val: i32) -> Result<Event> {
         let mut event = request.into_event(EventId::new(), seq_val);
         // `into_event` may have set its own timestamp; ensure we always
         // record one for replay ordering.
         if event.ts.timestamp() == 0 {
             event.ts = Utc::now();
         }
-        self.events.write().await.push(event.clone());
 
-        if is_replay_relevant(&event.event_type) {
-            // yolop's per-session JSONL is the local session store; we
-            // persist `thinking` / `thinking_signature` and opaque
-            // `reason.item` content as-is so provider continuation
-            // (e.g. OpenAI Responses replays encrypted reasoning via
-            // `thinking_signature`) works after `--session <id>` resume.
-            // Privacy lives in the 0o600 file mode and per-user
-            // platform data dir, not in field stripping.
-            let line = serde_json::to_string(&event).map_err(|e| {
-                AgentLoopError::config(format!("serialize event for session log: {e}"))
-            })?;
-            let mut file = self.ensure_log_file().await?;
-            let file = file.as_mut().expect("session log initialized");
-            writeln!(file, "{line}")
-                .map_err(|e| AgentLoopError::config(format!("write session log line: {e}")))?;
-            file.flush()
-                .map_err(|e| AgentLoopError::config(format!("flush session log: {e}")))?;
-            self.persisted_sequence.fetch_max(seq_val, Ordering::AcqRel);
+        // Visible before it is written, so concurrent appends land in the
+        // in-memory log in sequence order; a failed write takes the event back
+        // out, so a reader or a conditional append never observes it.
+        self.events.write().await.push(event.clone());
+        if is_replay_relevant(&event.event_type)
+            && let Err(error) = self.persist(&event, seq_val).await
+        {
+            self.events.write().await.retain(|kept| kept.id != event.id);
+            return Err(error);
         }
 
         if let EventData::SessionTitleUpdated(data) = &event.data
@@ -826,6 +858,27 @@ impl JsonlEventEmitter {
         }
 
         Ok(event)
+    }
+
+    /// Append one replay-relevant event to the session JSONL.
+    async fn persist(&self, event: &Event, seq_val: i32) -> Result<()> {
+        // yolop's per-session JSONL is the local session store; we
+        // persist `thinking` / `thinking_signature` and opaque
+        // `reason.item` content as-is so provider continuation
+        // (e.g. OpenAI Responses replays encrypted reasoning via
+        // `thinking_signature`) works after `--session <id>` resume.
+        // Privacy lives in the 0o600 file mode and per-user
+        // platform data dir, not in field stripping.
+        let line = serde_json::to_string(&event)
+            .map_err(|e| AgentLoopError::config(format!("serialize event for session log: {e}")))?;
+        let mut file = self.ensure_log_file().await?;
+        let file = file.as_mut().expect("session log initialized");
+        writeln!(file, "{line}")
+            .map_err(|e| AgentLoopError::config(format!("write session log line: {e}")))?;
+        file.flush()
+            .map_err(|e| AgentLoopError::config(format!("flush session log: {e}")))?;
+        self.persisted_sequence.fetch_max(seq_val, Ordering::AcqRel);
+        Ok(())
     }
 
     /// Events on the branch currently visible to the model, in sequence order.
@@ -936,6 +989,15 @@ impl EventLog for JsonlEventEmitter {
             .map_err(|error| EventLogError::Backend {
                 detail: error.to_string(),
             })
+    }
+
+    async fn append_conditional(
+        &self,
+        request: EventRequest,
+        expected_last_sequence: Option<i32>,
+    ) -> std::result::Result<Event, EventLogError> {
+        self.commit_conditional(request, expected_last_sequence)
+            .await
     }
 
     /// Replay-relevant events are written and flushed before the append is
@@ -1063,6 +1125,107 @@ mod tests {
             ))
             .await
             .expect("append")
+    }
+
+    fn input_request(session_id: SessionId, text: &str) -> EventRequest {
+        EventRequest::new(
+            session_id,
+            EventContext::default(),
+            InputMessageData::new(RuntimeMessage::user(text)),
+        )
+    }
+
+    /// `None` means "the log is empty": it succeeds once on a fresh log, and
+    /// a stale expectation reports the real last sequence without writing.
+    #[tokio::test]
+    async fn conditional_append_commits_only_on_the_expected_last_sequence() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let session_id = SessionId::from_seed(9913);
+        let path = session_log_path(&session_dir_path(dir.path(), session_id));
+        let emitter = JsonlEventEmitter::open(&path, 1).expect("open");
+
+        let first = emitter
+            .append_conditional(input_request(session_id, "first"), None)
+            .await
+            .expect("an empty log matches None");
+        assert_eq!(first.sequence, Some(1));
+
+        let second = emitter
+            .append_conditional(input_request(session_id, "second"), Some(1))
+            .await
+            .expect("the log ends at 1");
+        assert_eq!(second.sequence, Some(2));
+
+        for stale in [None, Some(1)] {
+            let error = emitter
+                .append_conditional(input_request(session_id, "stale"), stale)
+                .await
+                .expect_err("a stale expectation must conflict");
+            assert!(
+                matches!(
+                    error,
+                    EventLogError::SequenceConflict { expected, actual: Some(2), .. }
+                        if expected == stale
+                ),
+                "{error:?}"
+            );
+        }
+        assert_eq!(
+            read_all(&emitter, session_id).await.len(),
+            2,
+            "nothing written"
+        );
+    }
+
+    /// A resumed log is not empty, so `None` conflicts with the replayed tail.
+    #[tokio::test]
+    async fn conditional_append_on_a_resumed_log_expects_the_replayed_tail() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let session_id = SessionId::from_seed(9914);
+        let path = session_log_path(&session_dir_path(dir.path(), session_id));
+        let emitter = JsonlEventEmitter::open(&path, 6).expect("open");
+
+        assert!(matches!(
+            emitter
+                .append_conditional(input_request(session_id, "x"), None)
+                .await,
+            Err(EventLogError::SequenceConflict {
+                actual: Some(5),
+                ..
+            })
+        ));
+        let event = emitter
+            .append_conditional(input_request(session_id, "x"), Some(5))
+            .await
+            .expect("the resumed log ends at 5");
+        assert_eq!(event.sequence, Some(6));
+    }
+
+    /// A failed write must not consume the expectation: the retry with the
+    /// same expected sequence succeeds once the disk recovers.
+    #[tokio::test]
+    async fn failed_conditional_write_leaves_the_expectation_usable() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let session_id = SessionId::from_seed(9915);
+        let path = session_log_path(&session_dir_path(dir.path(), session_id));
+        let emitter = JsonlEventEmitter::open(&path, 1).expect("open");
+
+        // A directory where the log file should go makes the lazy open fail.
+        std::fs::create_dir_all(&path).expect("block the log path");
+        assert!(matches!(
+            emitter
+                .append_conditional(input_request(session_id, "lost"), None)
+                .await,
+            Err(EventLogError::Backend { .. })
+        ));
+        assert!(read_all(&emitter, session_id).await.is_empty());
+
+        std::fs::remove_dir(&path).expect("unblock the log path");
+        let event = emitter
+            .append_conditional(input_request(session_id, "kept"), None)
+            .await
+            .expect("the retry keeps its expectation");
+        assert_eq!(event.sequence, Some(1));
     }
 
     /// The property that lets rewind survive an append-only canonical log: the
