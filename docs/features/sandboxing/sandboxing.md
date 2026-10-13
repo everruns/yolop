@@ -90,6 +90,12 @@ process permissions are outside this policy.
 | Windows | No native containment yet; every mode warns and runs unsandboxed | Run Yolop inside trusted containment |
 | Other platforms | Sandboxed modes fail closed | Run Yolop inside trusted containment before choosing full access |
 
+On Linux, both sandboxed modes deny `io_uring_setup`, `io_uring_enter`, and
+`io_uring_register` with `EACCES`, alongside direct internet and packet socket
+creation. Programs that depend on io_uring need a synchronous fallback.
+Direct local Unix sockets remain available. This syscall policy does not isolate
+communication through local host services or shared temporary files.
+
 If the required operating-system primitive is unavailable, Yolop returns a
 sandbox setup error. It never silently retries the command on the host.
 
