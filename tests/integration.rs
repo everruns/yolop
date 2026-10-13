@@ -1154,12 +1154,12 @@ fn windows_startup_warnings_follow_the_sandbox_mode_from_the_real_binary() {
     assert!(!sandboxed.contains("UNSAFE HOST"), "stderr={sandboxed}");
 }
 
-#[cfg(not(windows))]
 /// Readiness bound for the TUI's first frame. It only waits for a ready
 /// state, so a generous bound weakens no assertion; 3s was tight enough to
 /// time out under coverage instrumentation with the suite running in parallel.
 const TUI_STARTUP_TIMEOUT: Duration = Duration::from_secs(15);
 
+#[cfg(not(windows))]
 #[test]
 fn unsafe_sandbox_opt_out_is_visible_in_tui_transcript_and_status() {
     let mut tui = spawn_tui_llmsim_with_settings(
