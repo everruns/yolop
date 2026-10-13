@@ -169,14 +169,34 @@ class AnalyzeTests(unittest.TestCase):
         self.assertFalse(any("correctness regressed" in f for f in failures))
         self.assertFalse(any("focused pass rate" in f for f in failures))
 
-    def test_stray_control_failures_in_half_the_trials_are_noise(self):
+    def _add_fn_failures(self, base, cand):
         cases = focused_cases()
-        for trial in range(5):
-            cases.append(case("add-fn", "baseline", True, failures=1 if trial < 3 else 0))
-            cases.append(case("add-fn", "candidate", True, failures=1 if trial < 3 else 0))
+        for base_failed, cand_failed in zip(base, cand):
+            cases.append(case("add-fn", "baseline", True, failures=base_failed))
+            cases.append(case("add-fn", "candidate", True, failures=cand_failed))
         cases += [c for c in control_cases() if c["sample"] != "add-fn"]
         _, failures, _ = analyzer.analyze_reports([{"cases": cases}])
+        return failures
+
+    def test_stray_control_failures_in_half_the_trials_are_noise(self):
+        # The 2026-10-13 nightly shape: baseline 3 -> candidate 6 over five
+        # passing trials. The old +1 tolerance failed this.
+        failures = self._add_fn_failures([1, 1, 1, 0, 0], [2, 2, 2, 0, 0])
         self.assertFalse(any("command/tool failures" in f for f in failures))
+
+    def test_control_failures_past_the_noise_allowance_still_regress(self):
+        failures = self._add_fn_failures([1, 1, 1, 0, 0], [2, 2, 2, 1, 0])
+        self.assertTrue(any("command/tool failures" in f for f in failures))
+
+    def test_two_missed_focused_trials_still_regress(self):
+        cases = control_cases()
+        for sample in sorted(analyzer.FOCUSED):
+            for trial in range(3):
+                cases.append(case(sample, "baseline", True, tools=4))
+                cases.append(case(sample, "candidate", trial == 0, tools=4))
+        _, failures, _ = analyzer.analyze_reports([{"cases": cases}])
+        self.assertTrue(any("correctness regressed" in f for f in failures))
+        self.assertTrue(any("focused pass rate" in f for f in failures))
 
     def test_systematic_tool_failures_still_regress(self):
         cases = self._focused_with_failures([0, 0, 0], [1, 1, 1])
