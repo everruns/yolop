@@ -810,11 +810,22 @@ impl JsonlEventEmitter {
                 actual: (actual > 0).then_some(actual),
             });
         }
-        self.commit_at(request, expected_raw.saturating_add(1))
-            .await
-            .map_err(|error| EventLogError::Backend {
+        let claimed = expected_raw.saturating_add(1);
+        self.commit_at(request, claimed).await.map_err(|error| {
+            // Nothing was recorded (see `commit_at`), so hand the claimed
+            // sequence back: a retry with the same expectation must not see a
+            // conflict for an event that does not exist. If another append
+            // has already moved past it, the gap is harmless and stays.
+            let _ = self.sequence.compare_exchange(
+                claimed,
+                expected_raw,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
+            EventLogError::Backend {
                 detail: error.to_string(),
-            })
+            }
+        })
     }
 
     async fn commit_at(&self, request: EventRequest, seq_val: i32) -> Result<Event> {
@@ -824,8 +835,9 @@ impl JsonlEventEmitter {
         if event.ts.timestamp() == 0 {
             event.ts = Utc::now();
         }
-        self.events.write().await.push(event.clone());
 
+        // Persist before the event becomes visible, so a failed write leaves
+        // no trace a reader or a conditional append could observe.
         if is_replay_relevant(&event.event_type) {
             // yolop's per-session JSONL is the local session store; we
             // persist `thinking` / `thinking_signature` and opaque
@@ -845,6 +857,7 @@ impl JsonlEventEmitter {
                 .map_err(|e| AgentLoopError::config(format!("flush session log: {e}")))?;
             self.persisted_sequence.fetch_max(seq_val, Ordering::AcqRel);
         }
+        self.events.write().await.push(event.clone());
 
         if let EventData::SessionTitleUpdated(data) = &event.data
             && let Err(error) = update_session_workspace_title(&self.session_dir, &data.title)
@@ -1103,6 +1116,107 @@ mod tests {
             ))
             .await
             .expect("append")
+    }
+
+    fn input_request(session_id: SessionId, text: &str) -> EventRequest {
+        EventRequest::new(
+            session_id,
+            EventContext::default(),
+            InputMessageData::new(RuntimeMessage::user(text)),
+        )
+    }
+
+    /// `None` means "the log is empty": it succeeds once on a fresh log, and
+    /// a stale expectation reports the real last sequence without writing.
+    #[tokio::test]
+    async fn conditional_append_commits_only_on_the_expected_last_sequence() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let session_id = SessionId::from_seed(9913);
+        let path = session_log_path(&session_dir_path(dir.path(), session_id));
+        let emitter = JsonlEventEmitter::open(&path, 1).expect("open");
+
+        let first = emitter
+            .append_conditional(input_request(session_id, "first"), None)
+            .await
+            .expect("an empty log matches None");
+        assert_eq!(first.sequence, Some(1));
+
+        let second = emitter
+            .append_conditional(input_request(session_id, "second"), Some(1))
+            .await
+            .expect("the log ends at 1");
+        assert_eq!(second.sequence, Some(2));
+
+        for stale in [None, Some(1)] {
+            let error = emitter
+                .append_conditional(input_request(session_id, "stale"), stale)
+                .await
+                .expect_err("a stale expectation must conflict");
+            assert!(
+                matches!(
+                    error,
+                    EventLogError::SequenceConflict { expected, actual: Some(2), .. }
+                        if expected == stale
+                ),
+                "{error:?}"
+            );
+        }
+        assert_eq!(
+            read_all(&emitter, session_id).await.len(),
+            2,
+            "nothing written"
+        );
+    }
+
+    /// A resumed log is not empty, so `None` conflicts with the replayed tail.
+    #[tokio::test]
+    async fn conditional_append_on_a_resumed_log_expects_the_replayed_tail() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let session_id = SessionId::from_seed(9914);
+        let path = session_log_path(&session_dir_path(dir.path(), session_id));
+        let emitter = JsonlEventEmitter::open(&path, 6).expect("open");
+
+        assert!(matches!(
+            emitter
+                .append_conditional(input_request(session_id, "x"), None)
+                .await,
+            Err(EventLogError::SequenceConflict {
+                actual: Some(5),
+                ..
+            })
+        ));
+        let event = emitter
+            .append_conditional(input_request(session_id, "x"), Some(5))
+            .await
+            .expect("the resumed log ends at 5");
+        assert_eq!(event.sequence, Some(6));
+    }
+
+    /// A failed write must not consume the expectation: the retry with the
+    /// same expected sequence succeeds once the disk recovers.
+    #[tokio::test]
+    async fn failed_conditional_write_leaves_the_expectation_usable() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let session_id = SessionId::from_seed(9915);
+        let path = session_log_path(&session_dir_path(dir.path(), session_id));
+        let emitter = JsonlEventEmitter::open(&path, 1).expect("open");
+
+        // A directory where the log file should go makes the lazy open fail.
+        std::fs::create_dir_all(&path).expect("block the log path");
+        assert!(matches!(
+            emitter
+                .append_conditional(input_request(session_id, "lost"), None)
+                .await,
+            Err(EventLogError::Backend { .. })
+        ));
+        assert!(read_all(&emitter, session_id).await.is_empty());
+
+        std::fs::remove_dir(&path).expect("unblock the log path");
+        let event = emitter
+            .append_conditional(input_request(session_id, "kept"), None)
+            .await
+            .expect("the retry keeps its expectation");
+        assert_eq!(event.sequence, Some(1));
     }
 
     /// The property that lets rewind survive an append-only canonical log: the
