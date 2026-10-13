@@ -13,6 +13,44 @@ pub(crate) struct ApprovalRequest {
     pub scope: ApprovalScope,
 }
 
+pub(crate) const MAX_APPROVAL_TEXT_BYTES: usize = 32 * 1024;
+
+impl ApprovalRequest {
+    pub(crate) fn validate(&self) -> anyhow::Result<()> {
+        self.validate_with_limit(MAX_APPROVAL_TEXT_BYTES)
+    }
+
+    fn validate_with_limit(&self, limit: usize) -> anyhow::Result<()> {
+        // THREAT[TM-BASH]: authorization text must never be shortened for review.
+        for (field, text) in [("command", &self.command), ("reason", &self.reason)] {
+            anyhow::ensure!(
+                text.len() <= limit,
+                "approval {field} exceeds {limit} bytes"
+            );
+        }
+        Ok(())
+    }
+
+    pub(crate) fn digest(&self) -> [u8; 32] {
+        use sha2::{Digest, Sha256};
+        let mut hash = Sha256::new();
+        hash.update(b"yolop.approval.v1");
+        for text in [
+            self.command.as_str(),
+            self.reason.as_str(),
+            self.scope.as_str(),
+        ] {
+            hash.update((text.len() as u64).to_le_bytes());
+            hash.update(text.as_bytes());
+        }
+        hash.finalize().into()
+    }
+
+    pub(crate) fn matches_digest(&self, digest: Option<&[u8]>) -> bool {
+        self.validate().is_ok() && digest == Some(self.digest().as_slice())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ApprovalScope {
     Sandboxed,
@@ -70,6 +108,9 @@ impl ApprovalGate {
     }
 
     pub(crate) async fn approve(&self, request: ApprovalRequest) -> bool {
+        if request.validate().is_err() {
+            return false;
+        }
         let Self::Channel {
             tx,
             approved_scopes,
@@ -102,6 +143,7 @@ impl ApprovalGate {
     /// on a thread's behalf; the thread's gate applies the answer. `None` when
     /// nothing here can answer.
     pub(crate) async fn ask(&self, request: ApprovalRequest) -> Option<ApprovalDecision> {
+        request.validate().ok()?;
         let Self::Channel { tx, .. } = self else {
             return None;
         };
@@ -157,6 +199,98 @@ pub(crate) fn denied_receiver() -> ApprovalReceiver {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn dummy_request() -> ApprovalRequest {
+        ApprovalRequest {
+            command: "dummy".into(),
+            reason: "review".into(),
+            scope: ApprovalScope::FullAccess,
+        }
+    }
+
+    #[test]
+    fn approval_request_validates_utf8_bytes_with_a_small_limit() {
+        for command in ["12345678", "éééé"] {
+            let request = ApprovalRequest {
+                command: command.into(),
+                ..dummy_request()
+            };
+            assert!(request.validate_with_limit(8).is_ok());
+        }
+        for command in ["123456789", "ééééx"] {
+            let request = ApprovalRequest {
+                command: command.into(),
+                ..dummy_request()
+            };
+            assert!(request.validate_with_limit(8).is_err());
+        }
+        let request = ApprovalRequest {
+            reason: "123456789".into(),
+            ..dummy_request()
+        };
+        assert!(request.validate_with_limit(8).is_err());
+    }
+
+    #[test]
+    fn approval_request_digest_preserves_field_identity() {
+        let request = dummy_request();
+        assert!(request.matches_digest(Some(&request.digest())));
+        assert!(!request.matches_digest(None));
+        for other in [
+            ApprovalRequest {
+                command: "other".into(),
+                ..request.clone()
+            },
+            ApprovalRequest {
+                reason: "other".into(),
+                ..request.clone()
+            },
+            ApprovalRequest {
+                scope: ApprovalScope::Sandboxed,
+                ..request.clone()
+            },
+        ] {
+            assert_ne!(request.digest(), other.digest());
+        }
+        let left = ApprovalRequest {
+            command: "ab".into(),
+            reason: "c".into(),
+            ..request.clone()
+        };
+        let right = ApprovalRequest {
+            command: "a".into(),
+            reason: "bc".into(),
+            ..request
+        };
+        assert_ne!(left.digest(), right.digest());
+    }
+
+    #[tokio::test]
+    async fn oversized_approval_text_never_prompts_or_uses_a_session_grant() {
+        let (gate, mut rx) = ApprovalGate::channel();
+        let approve = gate.approve(dummy_request());
+        let respond = async {
+            let (_, reply) = rx.recv().await.unwrap();
+            reply.send(ApprovalDecision::ApproveForSession).unwrap();
+        };
+        let (approved, ()) = tokio::join!(approve, respond);
+        assert!(approved);
+        for request in [
+            ApprovalRequest {
+                command: "x".repeat(MAX_APPROVAL_TEXT_BYTES + 1),
+                ..dummy_request()
+            },
+            ApprovalRequest {
+                reason: "x".repeat(MAX_APPROVAL_TEXT_BYTES + 1),
+                ..dummy_request()
+            },
+        ] {
+            assert!(!gate.approve(request.clone()).await);
+            assert!(gate.ask(request).await.is_none());
+            assert!(rx.try_recv().is_err());
+        }
+        assert!(gate.approve(dummy_request()).await);
+    }
 
     #[tokio::test]
     async fn deny_gate_fails_closed() {

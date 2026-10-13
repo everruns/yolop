@@ -25,6 +25,12 @@ those requests fail closed. ACP's separate general tool-permission gate remains
 available to compatible editor clients. The default **Auto** preset is
 `workspace-write × on-request`.
 
+Commands and reasons that need hard approval must each fit within 32 KiB of
+UTF-8 text. Larger requests are denied, including after a session grant,
+rather than shortened for review. Ask the agent to split the work into smaller
+commands. Thread approvals preserve the full command and reason; upgrading
+denies pending approvals from older hosts, which must submit a fresh request.
+
 Soft approval is guidance to the model, not a hard permission gate. yolop is
 prompted to batch safe work, pause before critical actions, ask one short
 approval question, record the approval, and then continue. There is no separate

@@ -354,6 +354,9 @@ impl BashTool {
                 ApprovalScope::Sandboxed
             },
         };
+        request
+            .validate()
+            .map_err(|error| ToolExecutionResult::tool_error(error.to_string()))?;
         if self.approval_gate.approve(request).await {
             Ok(())
         } else {
@@ -703,6 +706,23 @@ impl BackgroundExecutableTool for BashTool {
 
 #[cfg(test)]
 mod tests {
+
+    #[tokio::test]
+    async fn oversized_shell_approval_returns_a_length_error() {
+        let tool = BashTool::new(Workspace::from_path(std::env::current_dir().unwrap()));
+        let oversized = "x".repeat(crate::sandbox_approval::MAX_APPROVAL_TEXT_BYTES + 1);
+        for (command, reason, field) in [
+            (oversized.as_str(), "review", "command"),
+            ("dummy", oversized.as_str(), "reason"),
+        ] {
+            let error = tool
+                .request_approval(command, reason.into(), true)
+                .await
+                .unwrap_err();
+            assert!(matches!(error, ToolExecutionResult::ToolError(message)
+                if message == format!("approval {field} exceeds 32768 bytes")));
+        }
+    }
 
     /// The Bash description must stay free of control-resource vocabulary: it
     /// was hardcoded to `yolop extensions`, which named one of the session's

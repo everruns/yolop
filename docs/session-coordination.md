@@ -73,6 +73,11 @@ the usual approval prompt, naming the thread. An approval for the session
 covers the thread's session only. A coordinator in an editor or in `--print`
 mode cannot show that prompt, so it denies, as it does for its own commands.
 
+The command and reason are preserved in full. Requests over the hard approval
+text limit are denied rather than shortened. After upgrading, a pending
+approval from an older thread host is denied; restart that host and request
+approval again.
+
 Threads belong to the coordinator that started them. Several coordinators can
 run at once, and none of them sees or steers another's threads.
 
