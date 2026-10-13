@@ -1,5 +1,12 @@
 # Knowledge Log
 
+## 2026-10-13, Linux asynchronous syscall policy
+
+Both native shell modes deny all three io_uring entry syscalls before bash
+starts, while preserving the direct socket rules and synchronous toolchain
+operations. Numeric compiled-policy tests are distinct from kernel enforcement
+proof. See [sandboxing](specs/sandboxing.md#linux).
+
 ## 2026-10-13, Reveal gating reads the engine's tool disclosure
 
 Memory's how-to now waits on the revealed tools that everruns 0.48 reads from

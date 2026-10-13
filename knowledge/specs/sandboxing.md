@@ -115,9 +115,22 @@ model rather than an implied guarantee.
 The native provider re-executes Yolop as a small policy worker. The worker uses
 Landlock to grant host reads plus writes only below the active workspace,
 `/tmp`, and private temp, then installs a seccomp-BPF filter that denies internet
-and packet socket creation before replacing itself with bash. Restrictions are
-inherited by descendants. A kernel that cannot enforce Landlock is an error,
-never an unsandboxed fallback.
+and packet socket creation before replacing itself with bash. The same filter
+unconditionally denies `io_uring_setup`, `io_uring_enter`, and
+`io_uring_register` with `EACCES` in both native modes. Blocking setup alone
+would leave submission and registration through inherited ring descriptors
+available. Direct Unix sockets and ordinary synchronous filesystem syscalls
+remain available. Restrictions are inherited by descendants. A kernel that
+cannot enforce Landlock or install the seccomp filter is an error, never an
+unsandboxed fallback.
+
+TM-BASH: asynchronous kernel operations can create sockets without passing
+through the direct socket syscall. Denying the three io_uring entry points
+closes that alternate path; applications requiring io_uring must use a
+synchronous fallback or separately approved full access. This is a syscall
+policy, not a network namespace or a universal guarantee against other host
+communication channels. Host reads, local Unix sockets and shared temporary
+files retain their documented limitations.
 
 The policy requires full Landlock ABI v3 enforcement (Linux 6.2 or a backport)
 so direct truncate operations cannot bypass the write boundary.
@@ -301,6 +314,12 @@ The automated suite exercises the real `BashTool` launch path and asserts:
   workspace through `!shell`;
 - denial output carries provider metadata and an explicit user-facing
   containment explanation.
+
+Offline Linux policy tests interpret the compiled seccomp filter using only
+numeric syscall and argument fixtures. They cover unconditional io_uring denial,
+the existing socket families, permitted Unix sockets and ordinary syscalls, and
+rejection of a foreign architecture. These assertions prove compiled policy
+admission, not kernel enforcement or packaged-worker behavior.
 
 Platform CI runs the black-box contract suite on both macOS and Linux. Release
 validation also includes the normal llmsim packaged-binary smoke and a live

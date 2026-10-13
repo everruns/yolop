@@ -295,7 +295,7 @@ fn native_command(
 }
 
 /// Landlock leaves Unix-socket connects alone and the seccomp filter blocks
-/// only internet and packet sockets, so the attached control socket needs no
+/// internet and packet socket creation and io_uring, so the control socket needs no
 /// grant here.
 #[cfg(target_os = "linux")]
 fn native_command(
@@ -338,11 +338,6 @@ pub(crate) fn run_linux_worker(
         ABI, Access, AccessFs, PathBeneath, PathFd, Ruleset, RulesetAttr, RulesetCreatedAttr,
         RulesetStatus,
     };
-    use seccompiler::{
-        BpfProgram, SeccompAction, SeccompCmpArgLen, SeccompCmpOp, SeccompCondition, SeccompFilter,
-        SeccompRule,
-    };
-    use std::convert::TryInto;
     use std::os::unix::process::CommandExt;
 
     if mode == SandboxMode::DangerFullAccess {
@@ -391,6 +386,23 @@ pub(crate) fn run_linux_worker(
         );
     }
 
+    let filter = linux_network_filter()?;
+    seccompiler::apply_filter(&filter)?;
+
+    Err(std::process::Command::new("/bin/bash")
+        .arg("-lc")
+        .arg(script)
+        .exec()
+        .into())
+}
+
+#[cfg(target_os = "linux")]
+fn linux_network_filter() -> std::result::Result<seccompiler::BpfProgram, seccompiler::BackendError>
+{
+    use seccompiler::{
+        SeccompAction, SeccompCmpArgLen, SeccompCmpOp, SeccompCondition, SeccompFilter, SeccompRule,
+    };
+    use std::convert::TryInto;
     // Internet and packet sockets are denied. Unix sockets remain available
     // for local toolchains and agents; the sanitized environment removes
     // credential-bearing agent socket paths before this worker starts.
@@ -405,20 +417,22 @@ pub(crate) fn run_linux_worker(
             )?])
         })
         .collect::<std::result::Result<Vec<_>, _>>()?;
-    let filter: BpfProgram = SeccompFilter::new(
-        [(libc::SYS_socket, socket_rules)].into_iter().collect(),
+    SeccompFilter::new(
+        [
+            (libc::SYS_socket, socket_rules),
+            // TM-BASH: asynchronous operations are not mediated by SYS_socket.
+            // Deny setup, submission and registration, including inherited rings.
+            (libc::SYS_io_uring_setup, vec![]),
+            (libc::SYS_io_uring_enter, vec![]),
+            (libc::SYS_io_uring_register, vec![]),
+        ]
+        .into_iter()
+        .collect(),
         SeccompAction::Allow,
         SeccompAction::Errno(libc::EACCES as u32),
         std::env::consts::ARCH.try_into()?,
     )?
-    .try_into()?;
-    seccompiler::apply_filter(&filter)?;
-
-    Err(std::process::Command::new("/bin/bash")
-        .arg("-lc")
-        .arg(script)
-        .exec()
-        .into())
+    .try_into()
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
@@ -592,6 +606,85 @@ pub(crate) fn configure_stdio(command: &mut Command) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Interpret only the instructions emitted by this policy on inert data.
+    // No filter is installed and no syscall is submitted by these tests.
+    #[cfg(target_os = "linux")]
+    fn linux_policy_action(syscall: i64, first_arg: u64, valid_arch: bool) -> u32 {
+        let arch = match std::env::consts::ARCH {
+            "x86_64" => 0xc000003e,
+            "aarch64" => 0xc00000b7,
+            "riscv64" => 0xc00000f3,
+            other => panic!("unsupported seccomp architecture: {other}"),
+        };
+        let mut data = [0_u32; 16];
+        data[0] = syscall as u32;
+        data[1] = if valid_arch { arch } else { 0 };
+        data[4] = first_arg as u32;
+        data[5] = (first_arg >> 32) as u32;
+        let program = linux_network_filter().unwrap();
+        let mut accumulator = 0;
+        let mut pc = 0;
+        for _ in 0..program.len() {
+            let instruction = &program[pc];
+            pc += 1;
+            match instruction.code {
+                0x20 => accumulator = data[instruction.k as usize / 4],
+                0x15 => {
+                    pc += if accumulator == instruction.k {
+                        instruction.jt
+                    } else {
+                        instruction.jf
+                    } as usize;
+                }
+                0x05 => pc += instruction.k as usize,
+                0x06 => return instruction.k,
+                other => panic!("unexpected policy instruction: {other:#x}"),
+            }
+        }
+        panic!("policy did not return an action");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_network_policy_denies_async_syscall_numbers() {
+        for syscall in [
+            libc::SYS_io_uring_setup,
+            libc::SYS_io_uring_enter,
+            libc::SYS_io_uring_register,
+        ] {
+            for argument in [0, u64::MAX] {
+                assert_eq!(
+                    linux_policy_action(syscall, argument, true),
+                    libc::SECCOMP_RET_ERRNO | libc::EACCES as u32,
+                    "syscall {syscall}, argument {argument}"
+                );
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_network_policy_preserves_direct_socket_and_normal_syscall_rules() {
+        for family in [libc::AF_INET, libc::AF_INET6, libc::AF_PACKET] {
+            assert_eq!(
+                linux_policy_action(libc::SYS_socket, family as u64, true),
+                libc::SECCOMP_RET_ERRNO | libc::EACCES as u32,
+            );
+        }
+        assert_eq!(
+            linux_policy_action(libc::SYS_socket, libc::AF_UNIX as u64, true),
+            libc::SECCOMP_RET_ALLOW,
+        );
+        assert_eq!(
+            linux_policy_action(libc::SYS_getpid, 0, true),
+            libc::SECCOMP_RET_ALLOW,
+        );
+        assert_eq!(
+            linux_policy_action(libc::SYS_getpid, 0, false),
+            libc::SECCOMP_RET_KILL_PROCESS,
+        );
+    }
 
     #[cfg(unix)]
     #[test]
