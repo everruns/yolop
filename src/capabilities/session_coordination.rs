@@ -559,10 +559,14 @@ impl CoordinationStore {
         Ok(approvals
             .into_iter()
             .filter_map(|(approval_id, thread_id, command, reason, scope, digest)| {
+                let Some(scope) = ApprovalScope::parse(&scope) else {
+                    let _ = self.answer_approval(approval_id, ApprovalDecision::Deny);
+                    return None;
+                };
                 let request = ApprovalRequest {
                     command,
                     reason,
-                    scope: ApprovalScope::parse(&scope)?,
+                    scope,
                 };
                 if !request.matches_digest(digest.as_deref()) {
                     let _ = self.answer_approval(approval_id, ApprovalDecision::Deny);
@@ -2146,6 +2150,41 @@ mod tests {
                 .unwrap(),
             Some(ApprovalDecision::Deny)
         );
+    }
+
+    #[test]
+    fn unrecognized_approval_scope_is_denied_without_repeated_presentation() {
+        let (store, _tasks) = test_store();
+        let coordinator = SessionId::new();
+        let thread = SessionId::new();
+        store
+            .register_host(thread, "host_t", "p", Path::new("/repo"), true)
+            .unwrap();
+        let id = store
+            .db
+            .with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO yolop_thread_approvals
+                 (thread_id, coordinator_session_id, host_id, command, reason, scope, created_at_ms)
+                 VALUES (?1, ?2, 'host_t', 'dummy', 'review', 'unknown_scope', ?3)",
+                    params![thread.to_string(), coordinator.to_string(), now_ms()],
+                )?;
+                Ok(conn.last_insert_rowid())
+            })
+            .unwrap();
+        assert!(store.pending_approvals(coordinator).unwrap().is_empty());
+        let decision = store
+            .db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT decision FROM yolop_thread_approvals WHERE approval_id = ?1",
+                    params![id],
+                    |row| row.get::<_, Option<String>>(0),
+                )
+            })
+            .unwrap();
+        assert_eq!(decision.as_deref(), Some("deny"));
+        assert!(store.pending_approvals(coordinator).unwrap().is_empty());
     }
 
     #[tokio::test]
