@@ -5533,6 +5533,7 @@ mod tests {
                 tool_call_fingerprint: None,
                 display_name: Some("Write Todos".to_string()),
                 narration: None,
+                side_effect_class: None,
             },
         );
         let completed = RuntimeEvent::new(

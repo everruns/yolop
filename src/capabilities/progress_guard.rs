@@ -1942,6 +1942,7 @@ mod tests {
             error: None,
             connection_required: None,
             raw_output: None,
+            details: None,
         }
     }
 

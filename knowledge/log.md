@@ -1,5 +1,12 @@
 # Knowledge Log
 
+## 2026-10-13, Reveal gating reads the engine's tool disclosure
+
+Memory's how-to now waits on the revealed tools that everruns 0.48 reads from
+the transcript, instead of a process-local registry fed by a `tool_reveal`
+hook, and rides as its own paragraph so a reveal keeps the cached prompt. See
+[system prompt composition](specs/system-prompt.md).
+
 ## 2026-10-12, Complete hard approval requests
 
 Hard approval rejects oversized text instead of shortening it, and the thread

@@ -75,15 +75,20 @@ capability block therefore splits in two:
   Contributed only once `tool_search` has revealed one of the capability's
   tools, because until the schema loads the model cannot act on it anyway.
 
-`capabilities::tool_reveal` implements the gate. A `PostToolExecHook` reads
-`tool_search`'s structured `loaded` field into a session-keyed registry, and
-gated capabilities consult it in `system_prompt_contribution`. Reads come from
-what the model was actually shown rather than a mirror of upstream state, so the
-two cannot drift. Reveals are per session and the registry is bounded.
+The revealed set comes from the engine. Context assembly reads `tool_search`
+results back from the transcript into `SystemPromptContext::tool_disclosure`,
+and `capabilities::tool_reveal::any_revealed` checks it, treating an entry that
+ends in `__` as a whole MCP server. The transcript survives a resume and is what
+the model was actually shown, so the gate cannot drift from it.
 
-`config` and `memory` are gated. `memory` splits along the line above: titles
-disclose every turn, the framing paragraph waits for a reveal, and empty memory
-with no reveal contributes nothing.
+A gated block keeps its discovery text byte-identical and adds the how-to as a
+separate paragraph after a blank line. The engine records a system prompt change
+as a note when only new paragraphs appear and keeps the cached prompt prefix; a
+rewritten paragraph makes it resend the whole prompt.
+
+`memory` is gated: titles disclose every turn in `<memory>`, the how-to (with
+both memory file paths) follows in `<memory_usage>` once a memory tool is
+revealed, and empty memory with no reveal contributes nothing.
 
 ### The host's rendering is a fact the model cannot infer
 
@@ -293,8 +298,8 @@ before they are trusted.
 
 Lean-versus-verbose is a **binary** comparison, not a harness variant, the
 verbose prompt is an earlier revision of yolop, so it is the `baseline` arm
-against `candidate`. Reveal gating is a **harness** variant (`no-tool-reveal`),
-because it is a capability toggle on one binary.
+against `candidate`. Reveal gating was A/B'd as a harness variant before it
+became part of prompt assembly and was kept (`prompt_composition_baseline.json`).
 
 Tool-round orchestration uses the four binary arms in the
 `orchestration-efficiency` preset: unchanged baseline, provider preference

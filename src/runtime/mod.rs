@@ -18,9 +18,6 @@ pub(crate) mod speed;
 
 use crate::capabilities::mcp::McpCapability as YolopMcpCapability;
 use crate::capabilities::memory::{GlobalMemoryCapability, MEMORY_CAPABILITY_ID, MemoryStore};
-use crate::capabilities::tool_reveal::{
-    RevealedTools, TOOL_REVEAL_CAPABILITY_ID, ToolRevealCapability,
-};
 use crate::capabilities::yolop::{YOLOP_CAPABILITY_ID, YolopCapability};
 use crate::capabilities::{
     AGENT_COMMANDS_CAPABILITY_ID, AST_GREP_CAPABILITY_ID, ATTRIBUTION_CAPABILITY_ID,
@@ -2763,11 +2760,6 @@ fn default_coding_harness_capabilities(client_commands: bool) -> Vec<CapabilityR
         // `tool_search` tool. Works on every model. Default threshold is 15
         // tools (see DEFAULT_TOOL_SEARCH_THRESHOLD).
         CapabilityRef::new(TOOL_SEARCH_CAPABILITY_ID),
-        // Records what `tool_search` loaded so reveal-gated prompt blocks
-        // (`config`, `memory`) can stay silent until their tools are callable.
-        // Pairs with TOOL_SEARCH_CAPABILITY_ID above — gating is meaningless
-        // without deferral.
-        CapabilityRef::new(TOOL_REVEAL_CAPABILITY_ID),
         CapabilityRef::new(TOOL_OUTPUT_PERSISTENCE_CAPABILITY_ID),
         CapabilityRef::new(MODEL_RUNTIME_CONTEXT_CAPABILITY_ID),
         CapabilityRef::new(SESSION_TASKS_CAPABILITY_ID),
@@ -4269,10 +4261,6 @@ pub async fn build_with_options(
     // Threads run in their own yolop processes through `ThreadRouting`.
     capabilities
         .register(everruns_capabilities::capabilities::coordination::CoordinationCapability);
-    // Shared across every reveal-gated capability: `tool_reveal` writes it from
-    // `tool_search` results, `config` and `memory` read it when deciding whether
-    // their how-to prose has earned its place this turn.
-    let tool_reveals = Arc::new(RevealedTools::new());
     let environment_context = EnvironmentContextRegistry::default();
     set_sandbox_environment_context(&environment_context, sandbox_mode);
     if let Some(coordinator) = thread_coordinator {
@@ -4286,7 +4274,6 @@ pub async fn build_with_options(
         &options.extra_environment_context,
         options.editor_context_value.as_deref(),
     );
-    capabilities.register(ToolRevealCapability::new(tool_reveals.clone()));
     capabilities.register(SessionCapability);
     capabilities.register(AgentInstructionsCapability);
     capabilities.register(FileSystemCapability);
@@ -4661,7 +4648,6 @@ pub async fn build_with_options(
                 .unwrap_or_else(|| effective_root.to_path_buf())
                 .join(".yolop/memories.json"),
         )),
-        reveals: tool_reveals.clone(),
         approval_gate: sandbox_approval_gate.clone(),
     });
     // `yolop` is registered at session setup with the routes actually present,
@@ -5971,7 +5957,9 @@ mod tests {
             built
                 .handles
                 .runtime
-                .connection_resolver()
+                .connection_resolver(everruns_core::host::in_process_internal_org_id(
+                    everruns_core::DEFAULT_ORG_PUBLIC_ID,
+                ))
                 .expect("connection resolver")
                 .get_connection_token(built.handles.session_id, "daytona")
                 .await
@@ -11546,50 +11534,6 @@ mod tests {
                 < position(ENVIRONMENT_CONTEXT_CAPABILITY_ID)
         );
         assert_eq!(position(ENVIRONMENT_CONTEXT_CAPABILITY_ID), ids.len() - 1);
-    }
-
-    /// Reveal gating only means anything alongside deferral, so both
-    /// capabilities ship enabled by default.
-    ///
-    /// The literal ref is asserted because an unknown `ref` in a capability
-    /// override is silently ignored — a typo would not fail, it would quietly
-    /// disable nothing. `evals/harness_basic`'s `no-tool-reveal` variant spells
-    /// this same string in a separate crate that cannot import the constant.
-    #[test]
-    fn tool_reveal_ships_with_tool_search_and_is_toggleable_by_ref() {
-        let ids = coding_harness_capabilities(true, None, &Settings::default());
-        let enabled = |id: &str| ids.iter().any(|cap| cap.capability_id() == id);
-
-        assert!(enabled(TOOL_SEARCH_CAPABILITY_ID));
-        assert!(enabled(TOOL_REVEAL_CAPABILITY_ID));
-        assert_eq!(
-            TOOL_REVEAL_CAPABILITY_ID, "tool_reveal",
-            "the eval variant's `ref` string tracks this constant"
-        );
-
-        // Go through the same catalog-validated path the settings file uses, so
-        // the ref is proven to resolve rather than assumed.
-        let mut catalog = crate::config::capability_settings::CapabilityCatalog::new();
-        catalog.register_arc(Arc::new(ToolRevealCapability::new(Arc::new(
-            RevealedTools::new(),
-        ))));
-        let override_entry = crate::config::capability_settings::build_capability_override(
-            &catalog,
-            TOOL_REVEAL_CAPABILITY_ID,
-            Some(false),
-            false,
-            None,
-        )
-        .expect("`tool_reveal` should resolve in the capability catalog");
-
-        let disabled =
-            crate::config::capability_settings::apply_capability_settings(ids, &[override_entry]);
-        assert!(
-            !disabled
-                .iter()
-                .any(|cap| cap.capability_id() == TOOL_REVEAL_CAPABILITY_ID),
-            "disabling the ref must actually drop the capability"
-        );
     }
 
     /// System prompt is paid on every turn — keep it small enough that the

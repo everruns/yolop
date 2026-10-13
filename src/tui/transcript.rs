@@ -914,6 +914,8 @@ mod tests {
             acted_as: None,
             executed_arguments: None,
             executed_arguments_truncated: false,
+            details: None,
+            severity: None,
         };
         let summary = summarize_tool_result(&data);
         assert!(
@@ -954,6 +956,8 @@ mod tests {
             acted_as: None,
             executed_arguments: None,
             executed_arguments_truncated: false,
+            details: None,
+            severity: None,
         };
         let summary = summarize_tool_result(&data);
         assert!(
@@ -986,6 +990,8 @@ mod tests {
             acted_as: None,
             executed_arguments: None,
             executed_arguments_truncated: false,
+            details: None,
+            severity: None,
         };
         assert!(summarize_tool_result(&data).contains("pre_tool_use hook"));
     }
@@ -1022,6 +1028,7 @@ mod tests {
             display_name: Some("Hardcoded label".to_owned()),
             narration: None,
             tool_call_fingerprint: None,
+            side_effect_class: None,
         }
     }
 
@@ -1117,6 +1124,8 @@ mod tests {
             acted_as: None,
             executed_arguments: None,
             executed_arguments_truncated: false,
+            details: None,
+            severity: None,
         };
 
         assert_eq!(

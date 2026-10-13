@@ -181,6 +181,7 @@ mod tests {
             error: None,
             connection_required: None,
             raw_output: None,
+            details: None,
         };
         for hook in ContextCostControlCapability.post_tool_exec_hooks() {
             hook.after_exec(&call, &def, &mut result, &context).await;

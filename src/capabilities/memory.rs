@@ -14,7 +14,7 @@
 // See knowledge/specs/memory.md for the design and configuration knobs.
 
 use crate::capabilities::narration::stable_labeled;
-use crate::capabilities::tool_reveal::RevealedTools;
+use crate::capabilities::tool_reveal::any_revealed;
 use crate::config::SettingsStore;
 use crate::sandbox_approval::{ApprovalGate, ApprovalRequest, ApprovalScope};
 use anyhow::{Context, Result};
@@ -644,34 +644,17 @@ fn save_to(path: &Path, memories: &[Memory]) -> Result<()> {
 
 // ---------- system prompt ----------
 
-/// Render the `<memory>` block: framing plus the disclosed titles (newest
-/// first). Bodies are never injected — they are fetched on demand via `recall`.
-/// Pure so the branch logic is unit-testable.
-fn render_memory_block(
-    memory_path: &Path,
-    titles: &[(String, String, DateTime<Utc>)],
-    total: usize,
-    detailed: bool,
-) -> String {
+/// Render the `<memory>` block: the disclosed titles (newest first). Bodies are
+/// never injected, they are fetched on demand via `recall`. Pure so the branch
+/// logic is unit-testable.
+///
+/// The block is discovery only and must not change when a memory tool is
+/// revealed: the how-to rides as its own paragraph ([`render_memory_how_to`]),
+/// so a reveal adds a prompt part instead of rewriting this one, and the
+/// cached prompt prefix survives it.
+fn render_memory_block(titles: &[(String, String, DateTime<Utc>)], total: usize) -> String {
     let mut out = String::new();
     out.push_str("<memory>\n");
-    // The framing paragraph is how-to for `recall`/`remember`/`forget` — all
-    // deferred, and all three tool descriptions already say what they do and that
-    // memory is global rather than project guidance. It is worth its tokens only
-    // once one of them has been revealed. The titles below are different: they
-    // are the disclosure itself, and nothing else in context carries them.
-    if detailed {
-        out.push_str(
-            "Global, durable user memory across all yolop sessions — preferences, facts, and \
-             conventions about the user (\"prefer terse answers\", \"my name is Mike\"). Only \
-             memory TITLES are shown here: call `recall` with an id or a search query to read a \
-             memory's full text, `remember` to add or update one, and `forget` to delete one. \
-             This is GLOBAL personalization about the user, NOT project guidance (that belongs \
-             in the repo's AGENTS.md).\n",
-        );
-        out.push_str(&format!("memory file: {}\n", memory_path.display()));
-    }
-
     if total == 0 {
         out.push_str("memory is empty — use `remember` to store a durable preference or fact.\n");
     } else {
@@ -696,12 +679,32 @@ fn render_memory_block(
     out
 }
 
+/// How-to for `recall`/`remember`/`forget`. All three are deferred, and their
+/// descriptions already say what they do, so this is worth its tokens only once
+/// one of them has been revealed. It has no blank lines and the caller appends
+/// it after one, so it is a single prompt part of its own.
+fn render_memory_how_to(global_path: &Path, repository_path: &Path) -> String {
+    format!(
+        "<memory_usage>\n\
+         Durable memory across yolop sessions: preferences, facts, and conventions about the \
+         user (\"prefer terse answers\", \"my name is Mike\"). Only memory TITLES are shown in \
+         <memory>: call `recall` with an id or a search query to read a memory's full text, \
+         `remember` to add or update one, and `forget` to delete one. Global memory is \
+         personalization about the user, NOT project guidance (that belongs in the repo's \
+         AGENTS.md); repository memory holds facts scoped to this repository.\n\
+         global memory file: {}\n\
+         repository memory file: {}\n\
+         </memory_usage>",
+        global_path.display(),
+        repository_path.display()
+    )
+}
+
 // ---------- capability ----------
 
 pub(crate) struct GlobalMemoryCapability {
     pub(crate) memory: Arc<MemoryStore>,
     pub(crate) repository_memory: Arc<MemoryStore>,
-    pub(crate) reveals: Arc<RevealedTools>,
     pub(crate) approval_gate: Arc<ApprovalGate>,
 }
 
@@ -779,27 +782,30 @@ impl Capability for GlobalMemoryCapability {
         let (global_titles, global_total) = self.memory.titles(cfg.disclosed_titles);
         let (repository_titles, repository_total) =
             self.repository_memory.titles(cfg.disclosed_titles);
-        let detailed = self
-            .reveals
-            .any_revealed(ctx.session_id, &["recall", "remember", "forget"]);
+        let detailed = any_revealed(&ctx.tool_disclosure, &["recall", "remember", "forget"]);
         // Empty memory with nothing revealed has neither disclosure nor
         // actionable how-to to offer; `remember`'s description is enough for the
         // model to find it.
         if global_total == 0 && repository_total == 0 && !detailed {
             return None;
         }
-        let mut global =
-            render_memory_block(self.memory.path(), &global_titles, global_total, detailed);
+        let mut global = render_memory_block(&global_titles, global_total);
         global = global.replacen("<memory>\n", "<memory>\nscope: global\n", 1);
         global.truncate(global.len() - "</memory>".len());
-        let repository = render_memory_block(
-            self.repository_memory.path(),
-            &repository_titles,
-            repository_total,
-            detailed,
-        )
-        .replacen("<memory>\n", "scope: repository\n", 1);
-        Some(global + &repository)
+        let repository = render_memory_block(&repository_titles, repository_total).replacen(
+            "<memory>\n",
+            "scope: repository\n",
+            1,
+        );
+        let mut prompt = global + &repository;
+        if detailed {
+            prompt.push_str("\n\n");
+            prompt.push_str(&render_memory_how_to(
+                self.memory.path(),
+                self.repository_memory.path(),
+            ));
+        }
+        Some(prompt)
     }
 
     fn system_prompt_preview(&self) -> Option<String> {
@@ -1407,41 +1413,35 @@ mod tests {
 
     #[test]
     fn render_block_handles_empty_and_overflow() {
-        let empty = render_memory_block(Path::new("/cfg/MEMORY.md"), &[], 0, true);
+        let empty = render_memory_block(&[], 0);
         assert!(empty.starts_with("<memory>\n"));
         assert!(empty.contains("memory is empty"));
         assert!(empty.ends_with("</memory>"));
 
         let now = Utc::now();
         let titles = vec![("m-1".to_string(), "Prefer terse".to_string(), now)];
-        let block = render_memory_block(Path::new("/cfg/MEMORY.md"), &titles, 9, true);
+        let block = render_memory_block(&titles, 9);
         assert!(block.contains("known memories (most recent first, 1 of 9)"));
         assert!(block.contains("- [m-1] Prefer terse"));
         assert!(block.contains("more memories exist than shown"));
     }
 
-    /// Until a memory tool is revealed the block discloses titles and nothing
-    /// else: the how-to is in the tool descriptions, and repeating it every turn
-    /// is what the reveal gate exists to avoid.
+    /// The how-to is its own paragraph with no blank lines: a reveal must add
+    /// a prompt part, never rewrite the titles block, or the engine resends the
+    /// whole system prompt and the cached prefix is lost.
     #[test]
-    fn undisclosed_block_keeps_titles_and_drops_the_how_to() {
-        let now = Utc::now();
-        let titles = vec![("m-1".to_string(), "Prefer terse".to_string(), now)];
-
-        let lean = render_memory_block(Path::new("/cfg/MEMORY.md"), &titles, 1, false);
-        assert!(
-            lean.contains("- [m-1] Prefer terse"),
-            "titles still disclose"
+    fn how_to_is_a_single_separate_paragraph() {
+        let how_to = render_memory_how_to(
+            Path::new("/cfg/MEMORY.md"),
+            Path::new("/repo/.yolop/MEMORY.md"),
         );
-        assert!(!lean.contains("Global, durable user memory"));
-        assert!(!lean.contains("memory file:"));
-
-        let full = render_memory_block(Path::new("/cfg/MEMORY.md"), &titles, 1, true);
-        assert!(full.contains("Global, durable user memory"));
-        assert!(full.contains("memory file:"));
+        assert!(how_to.contains("Durable memory across yolop sessions"));
+        assert!(how_to.contains("global memory file: /cfg/MEMORY.md"));
+        assert!(how_to.contains("repository memory file: /repo/.yolop/MEMORY.md"));
+        assert!(!how_to.contains("\n\n"), "one prompt part, no blank lines");
         assert!(
-            full.len() > lean.len() + 300,
-            "the gated framing is the bulk of the block"
+            how_to.len() > 300,
+            "the gated how-to is the bulk of the text"
         );
     }
 
@@ -1482,7 +1482,6 @@ mod tests {
         let cap = GlobalMemoryCapability {
             memory: Arc::new(MemoryStore::open(store.path().to_path_buf())),
             repository_memory: Arc::new(store),
-            reveals: Arc::new(RevealedTools::new()),
             approval_gate: ApprovalGate::deny(),
         };
         assert!(cap.config_schema().is_some());
@@ -1623,7 +1622,6 @@ mod tests {
         let capability = GlobalMemoryCapability {
             memory: Arc::new(MemoryStore::open(store.path().to_path_buf())),
             repository_memory: Arc::new(store),
-            reveals: Arc::new(RevealedTools::new()),
             approval_gate: ApprovalGate::deny(),
         };
         let names: Vec<String> = capability
@@ -1635,20 +1633,18 @@ mod tests {
         assert!(capability.commands().is_empty());
     }
 
-    /// Titles are disclosure and always ride; the framing paragraph is how-to for
-    /// three deferred tools and waits for a reveal. Empty memory with no reveal
-    /// has neither, so the block disappears entirely.
+    /// Titles are disclosure and always ride; the how-to is for three deferred
+    /// tools and waits for a reveal, read from the transcript the engine hands
+    /// over. Empty memory with no reveal has neither, so the block disappears.
     #[tokio::test]
-    async fn memory_block_discloses_titles_but_gates_the_framing() {
+    async fn memory_block_discloses_titles_but_gates_the_how_to() {
         let (_tmp, store) = store_in_tmp();
-        let reveals = Arc::new(RevealedTools::new());
         let session = everruns_contracts::typed_id::SessionId::new();
-        let ctx = SystemPromptContext::without_file_store(session);
+        let mut ctx = SystemPromptContext::without_file_store(session);
 
         let capability = GlobalMemoryCapability {
             memory: Arc::new(MemoryStore::open(store.path().to_path_buf())),
             repository_memory: Arc::new(store),
-            reveals: reveals.clone(),
             approval_gate: ApprovalGate::deny(),
         };
         assert!(
@@ -1666,17 +1662,23 @@ mod tests {
             .await
             .expect("stored titles are always disclosed");
         assert!(gated.contains("Prefer terse"));
-        assert!(!gated.contains("Global, durable user memory"));
+        assert!(!gated.contains("Durable memory across yolop sessions"));
 
-        reveals.record(session, ["recall".to_string()]);
+        ctx.tool_disclosure.deferring = true;
+        ctx.tool_disclosure.revealed.insert("recall".to_string());
 
         let full = capability
             .system_prompt_contribution(&ctx)
             .await
             .expect("revealed");
-        assert!(full.contains("Prefer terse"));
-        assert!(full.contains("Global, durable user memory"));
+        assert!(full.contains("Durable memory across yolop sessions"));
+        assert_eq!(
+            full.split_once("\n\n").map(|(titles, _)| titles),
+            Some(gated.as_str()),
+            "a reveal appends a paragraph and leaves the titles block byte-identical"
+        );
     }
+
     #[tokio::test]
     async fn tools_route_and_isolate_memory_scopes() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1720,7 +1722,6 @@ mod tests {
         let capability = GlobalMemoryCapability {
             memory: global,
             repository_memory: repository,
-            reveals: Arc::new(RevealedTools::new()),
             approval_gate: ApprovalGate::deny(),
         };
         let ctx =

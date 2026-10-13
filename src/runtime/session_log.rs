@@ -785,8 +785,39 @@ impl JsonlEventEmitter {
                 Some(sequence.saturating_add(1))
             })
             .expect("sequence update closure always succeeds");
-        let seq_val = previous.saturating_add(1);
+        self.commit_at(request, previous.saturating_add(1)).await
+    }
 
+    /// Commit only when the last assigned sequence is `expected` (`None`: no
+    /// event yet). The compare-and-swap on the counter is the atomic check: of
+    /// concurrent callers presenting the same expectation, one claims the next
+    /// sequence and the rest see a conflict before anything is written.
+    async fn commit_conditional(
+        &self,
+        request: EventRequest,
+        expected: Option<i32>,
+    ) -> std::result::Result<Event, EventLogError> {
+        let expected_raw = expected.unwrap_or(0);
+        if let Err(actual) = self.sequence.compare_exchange(
+            expected_raw,
+            expected_raw.saturating_add(1),
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            return Err(EventLogError::SequenceConflict {
+                session_id: request.session_id,
+                expected,
+                actual: (actual > 0).then_some(actual),
+            });
+        }
+        self.commit_at(request, expected_raw.saturating_add(1))
+            .await
+            .map_err(|error| EventLogError::Backend {
+                detail: error.to_string(),
+            })
+    }
+
+    async fn commit_at(&self, request: EventRequest, seq_val: i32) -> Result<Event> {
         let mut event = request.into_event(EventId::new(), seq_val);
         // `into_event` may have set its own timestamp; ensure we always
         // record one for replay ordering.
@@ -936,6 +967,15 @@ impl EventLog for JsonlEventEmitter {
             .map_err(|error| EventLogError::Backend {
                 detail: error.to_string(),
             })
+    }
+
+    async fn append_conditional(
+        &self,
+        request: EventRequest,
+        expected_last_sequence: Option<i32>,
+    ) -> std::result::Result<Event, EventLogError> {
+        self.commit_conditional(request, expected_last_sequence)
+            .await
     }
 
     /// Replay-relevant events are written and flushed before the append is
