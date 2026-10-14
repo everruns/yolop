@@ -470,6 +470,8 @@ pub(crate) async fn ping_model(
     }
     let driver = registry.create_chat_driver(&config)?;
     let mut call = LlmCallConfig::new(target.model);
+    // Reasoning tokens share this allowance on some providers. Tiny answer-only
+    // caps can exhaust it before a reasoning model emits even a short pong.
     call.max_tokens = Some(1024);
     call.reasoning_effort = choice
         .reasoning_effort()

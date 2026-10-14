@@ -217,7 +217,8 @@ yolop config models add openrouter nvidia/nemotron-3-ultra-550b-a55b:free
 ```
 
 Search prints provider and model arguments for `config models add`, a name, and
-context length when advertised. The test sends one small prompt without tools,
+context length when advertised. Broad results are bounded and report the total
+so you can narrow the query. The test sends one small prompt without tools,
 reports `ok` and latency, and exits nonzero on provider failure. It may incur a
 provider charge. Neither command edits the model menu. `-m` accepts a menu label,
 a unique listed model id, or `provider/model`. A qualified reference selects that

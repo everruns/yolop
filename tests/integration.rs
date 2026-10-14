@@ -4415,3 +4415,52 @@ fn model_ping_rejects_empty_provider_response() {
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("no answer text"));
 }
+
+#[test]
+fn model_search_bounds_output_and_reports_all_matches() {
+    for long_names in [false, true] {
+        let data: Vec<_> = (0..80)
+            .map(|n| {
+                serde_json::json!({
+                    "id": format!("vendor/model-{n:03}"),
+                    "name": if long_names { "model".repeat(800) } else { format!("Model {n}") },
+                })
+            })
+            .collect();
+        let (base, task) = model_catalog_server(serde_json::json!({"data":data}));
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("settings.toml"),
+            format!("[base_urls]\ncustom = {base:?}\n"),
+        )
+        .unwrap();
+        let output = yolop_command()
+            .env("YOLOP_CONFIG_DIR", dir.path())
+            .args([
+                "config",
+                "models",
+                "search",
+                "model",
+                "--provider",
+                "custom",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("of 80 matches"), "{stdout}");
+        assert!(
+            stdout
+                .lines()
+                .filter(|line| line.starts_with("custom "))
+                .count()
+                <= 50
+        );
+        assert!(serde_json::to_string(stdout.as_ref()).unwrap().len() < 20 * 1024);
+        task.join().unwrap();
+    }
+}

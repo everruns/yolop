@@ -103,7 +103,9 @@ providers is what the list is for.
 catalog by id or display name, case-insensitively. With no provider it uses the
 configured provider or environment selection. Results show separate provider
 and model arguments usable with `config models add`, plus name and advertised
-context length. Unsupported catalogs and failed discovery return actionable
+context length. Result count and encoded bytes are bounded for the attached
+control channel; a truncated result reports the total and asks for a narrower
+query. Unsupported catalogs and failed discovery return actionable
 errors; suggestions are not presented as discovered models.
 
 `config models test <reference>` sends one short prompt through the normal chat
@@ -118,8 +120,9 @@ recognized provider prefix selects that provider; gateway model ids whose first
 segment is also a provider name must include their gateway prefix, for example
 `openrouter/openai/gpt-6.1-sol`. Bare provider-relative specs remain accepted.
 Ambiguous listed ids, malformed specs, and an explicit model missing from a
-successfully fetched catalog fail before session startup. Catalog reconciliation
-may repair implicit defaults, but never substitutes a different explicit model.
+successfully fetched catalog fail before session startup. Provider/model controls apply the same distinction when a model spec is
+supplied explicitly. Catalog reconciliation may repair implicit defaults, but
+never substitutes a different explicit model.
 
 ### Service tiers are a setting, not entries
 

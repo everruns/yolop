@@ -35,6 +35,10 @@ use std::sync::Arc;
 
 pub(crate) const MODEL_LIST_CAPABILITY_ID: &str = "model_list";
 
+const MAX_SEARCH_RESULTS: usize = 50;
+// Keep room for the attached-control envelope and rendered output.
+const MAX_SEARCH_RESULT_BYTES: usize = 16 * 1024;
+
 /// A constant so the shared `yolop` prompt block can be measured against
 /// the always-on prompt budget without constructing a session.
 pub(crate) const MODEL_LIST_CONTROL_ROUTE: ControlRoute = ControlRoute {
@@ -460,25 +464,7 @@ impl ModelListCapability {
                             choice.provider_name()
                         )
                     })?;
-                    let matches: Vec<Value> = catalog
-                        .into_iter()
-                        .filter(|model| {
-                            model.model_id.to_lowercase().contains(&query)
-                                || model
-                                    .display_name
-                                    .as_ref()
-                                    .is_some_and(|name| name.to_lowercase().contains(&query))
-                        })
-                        .map(|model| {
-                            json!({
-                                "provider": choice.provider_name(),
-                                "model": model.model_id,
-                                "name": model.display_name,
-                                "context_length": model.context_length,
-                            })
-                        })
-                        .collect();
-                    Ok::<_, anyhow::Error>(json!({ "matches": matches }))
+                    Ok::<_, anyhow::Error>(search_results(choice.provider_name(), &query, catalog))
                 }
                 .await;
                 match result {
@@ -560,6 +546,43 @@ impl ControlCapability for ModelListCapability {
     }
 }
 
+fn search_results(
+    provider: &str,
+    query: &str,
+    catalog: Vec<crate::capabilities::model_discovery::DiscoveredProviderModel>,
+) -> Value {
+    let mut matches = Vec::new();
+    let mut total = 0;
+    let mut bytes = 0;
+    for model in catalog {
+        if !model.model_id.to_lowercase().contains(query)
+            && !model
+                .display_name
+                .as_ref()
+                .is_some_and(|name| name.to_lowercase().contains(query))
+        {
+            continue;
+        }
+        total += 1;
+        if matches.len() == MAX_SEARCH_RESULTS {
+            continue;
+        }
+        let row = json!({
+            "provider": provider,
+            "model": model.model_id,
+            "name": model.display_name.map(|name| terminal_text(&name)),
+            "context_length": model.context_length,
+        });
+        let size = row.to_string().len();
+        if bytes + size > MAX_SEARCH_RESULT_BYTES {
+            continue;
+        }
+        bytes += size;
+        matches.push(row);
+    }
+    json!({ "total": total, "matches": matches })
+}
+
 fn render_response(action: &ModelListAction, response: &ControlResponse) -> String {
     if !response.ok {
         return terminal_text(&response.render_default());
@@ -586,6 +609,13 @@ fn render_response(action: &ModelListAction, response: &ControlResponse) -> Stri
                 model["context_length"]
                     .as_u64()
                     .map_or_else(|| "unknown".to_string(), |n| n.to_string()),
+            ));
+        }
+        let total = value["total"].as_u64().unwrap_or(matches.len() as u64);
+        if total > matches.len() as u64 {
+            lines.push(format!(
+                "Showing {} of {total} matches; narrow the query.",
+                matches.len()
             ));
         }
         return lines.join("\n");

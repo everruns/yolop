@@ -968,8 +968,16 @@ impl SetupController {
                 Err(err) => return Ok(failed_result(format!("setup provider failed: {err}"))),
             }
         };
-        let (next, reconcile_notes) =
-            super::model_discovery::reconcile_provider_with_catalog(next, &snapshot, false).await?;
+        let (next, reconcile_notes) = match super::model_discovery::reconcile_provider_with_catalog(
+            next,
+            &snapshot,
+            !model_spec.is_empty(),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(error) => return Ok(failed_result(format!("setup provider failed: {error}"))),
+        };
         notes.extend(reconcile_notes);
         if next.model_id().trim().is_empty() {
             return Ok(failed_result(format!(
@@ -1572,6 +1580,85 @@ pub(crate) mod test_support {
 mod tests {
     use super::*;
     use test_support::test_controller;
+
+    #[test]
+    fn setup_preserves_explicit_model_identity_and_repairs_only_implicit_defaults() {
+        let _guard = crate::testing::test_env::lock();
+        let keys = ["CUSTOM_BASE_URL", "CUSTOM_API_KEY", "EVERRUNS_CLI_MODEL"];
+        let saved: Vec<_> = keys
+            .iter()
+            .map(|key| (*key, std::env::var_os(key)))
+            .collect();
+        for key in keys {
+            unsafe {
+                std::env::remove_var(key);
+            }
+        }
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                for explicit in [true, false] {
+                    let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+                    let base = format!("http://{}/v1", server.server_addr());
+                    let request = std::thread::spawn(move || {
+                        let request = server
+                            .recv_timeout(std::time::Duration::from_secs(10))
+                            .unwrap()
+                            .unwrap();
+                        assert_eq!(request.url(), "/v1/models");
+                        request
+                            .respond(tiny_http::Response::from_string(
+                                r#"{"data":[{"id":"available-model"}]}"#,
+                            ))
+                            .unwrap();
+                    });
+                    let (controller, provider, _dir) = test_controller(ProviderChoice::Sim);
+                    controller
+                        .settings
+                        .set_base_url("custom".into(), base)
+                        .unwrap();
+                    controller
+                        .settings
+                        .set_model("custom".into(), "missing-model".into())
+                        .unwrap();
+                    let result = controller
+                        .change_provider(if explicit {
+                            "custom missing-model"
+                        } else {
+                            "custom"
+                        })
+                        .await
+                        .unwrap();
+                    if explicit {
+                        assert!(!result.success, "{}", result.message);
+                        assert!(
+                            result.message.contains("not available"),
+                            "{}",
+                            result.message
+                        );
+                        assert_eq!(provider.read().unwrap().provider_name(), "llmsim");
+                    } else {
+                        assert!(result.success, "{}", result.message);
+                        assert_eq!(provider.read().unwrap().model_id(), "available-model");
+                    }
+                    assert_eq!(
+                        controller.settings.snapshot().model_for("custom"),
+                        Some("missing-model")
+                    );
+                    request.join().unwrap();
+                }
+            });
+        for (key, value) in saved {
+            unsafe {
+                match value {
+                    Some(value) => std::env::set_var(key, value),
+                    None => std::env::remove_var(key),
+                }
+            }
+        }
+    }
 
     // ---------- live-config persistence (via SetupController; tools removed) ----------
 
