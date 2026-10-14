@@ -63,6 +63,12 @@ cargo build --release
 
 Prefer a prebuilt binary, including accelerated local inference builds (`metal` on macOS, `cuda` on Linux)? Grab one from [releases](https://github.com/everruns/yolop/releases).
 
+On macOS, sandboxed attached administration requires the Yolop executable to
+be outside the shell's writable directories. A source build inside the active
+workspace therefore cannot run shell commands in `workspace-write` mode.
+Install or build it in a protected location, or use `read-only` when appropriate.
+See [sandbox setup requirements](docs/features/sandboxing/sandboxing.md#macos-executable-location).
+
 ## Quickstart
 
 ```bash

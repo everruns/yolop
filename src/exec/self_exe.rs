@@ -11,8 +11,26 @@
 
 use std::path::PathBuf;
 
-/// Path that executes this process's own binary, valid for the process
-/// lifetime even if the file on disk is replaced.
+#[cfg(any(target_os = "macos", test))]
+pub(super) fn admit_control_location(
+    executable: &std::path::Path,
+    write_roots: &[PathBuf],
+    links: u64,
+) -> anyhow::Result<()> {
+    // TM-BASH: credentials authenticate descendants, not executable content.
+    // A canonical pathname is trusted here only because none of this shell's
+    // write grants can modify it or an ancestor. Multiple hard links would
+    // leave another pathname outside that check.
+    anyhow::ensure!(
+        links == 1 && !write_roots.iter().any(|root| executable.starts_with(root)),
+        "macOS attached control requires a single-link executable outside every sandbox write root; install or build Yolop in a protected location and restart"
+    );
+    Ok(())
+}
+
+/// Linux's running image survives replacement. Other platforms return a
+/// mutable pathname, which needs admission before a contained client can
+/// cause the host to execute it.
 pub(crate) fn reexec_path() -> std::io::Result<PathBuf> {
     #[cfg(target_os = "linux")]
     {
@@ -24,9 +42,129 @@ pub(crate) fn reexec_path() -> std::io::Result<PathBuf> {
     std::env::current_exe()
 }
 
+/// Capture the control parser's target before exposing an endpoint. macOS
+/// retains the first canonical target for the process lifetime, including
+/// shells without an endpoint, so a later command cannot choose a new alias.
+pub(crate) fn control_reexec_path() -> std::io::Result<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        static TARGET: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+        if let Some(path) = TARGET.get() {
+            return Ok(path.clone());
+        }
+        let path = std::fs::canonicalize(reexec_path()?)?;
+        Ok(TARGET.get_or_init(|| path).clone())
+    }
+    #[cfg(not(target_os = "macos"))]
+    reexec_path()
+}
+
+#[cfg(any(target_os = "macos", all(test, unix)))]
+pub(crate) fn admit_control_path(
+    executable: &std::path::Path,
+    write_roots: &[PathBuf],
+) -> anyhow::Result<()> {
+    use std::os::unix::fs::MetadataExt;
+
+    let metadata = std::fs::symlink_metadata(executable)?;
+    anyhow::ensure!(
+        metadata.is_file(),
+        "control parser target must be a regular file"
+    );
+    anyhow::ensure!(
+        std::fs::canonicalize(executable)? == executable,
+        "control parser target must be a captured canonical path"
+    );
+    let roots = write_roots
+        .iter()
+        .map(std::fs::canonicalize)
+        .collect::<std::io::Result<Vec<_>>>()?;
+    admit_control_location(executable, &roots, metadata.nlink())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn control_image_admission_rejects_workspace_and_temp_locations() {
+        let roots =
+            ["/workspace", "/private/tmp", "/private/sandbox", "/skills"].map(PathBuf::from);
+        for image in [
+            "/workspace/target/debug/yolop",
+            "/private/tmp/build/yolop",
+            "/private/sandbox/yolop",
+            "/skills/compiler/yolop",
+        ] {
+            assert!(admit_control_location(std::path::Path::new(image), &roots, 1).is_err());
+        }
+    }
+
+    #[test]
+    fn control_image_admission_preserves_protected_installations() {
+        let roots = ["/workspace", "/private/tmp"].map(PathBuf::from);
+        for image in [
+            "/opt/homebrew/Cellar/yolop/bin/yolop",
+            "/home/user/.cargo/bin/yolop",
+            "/workspace-other/yolop",
+        ] {
+            assert!(admit_control_location(std::path::Path::new(image), &roots, 1).is_ok());
+        }
+        for links in [0, 2] {
+            assert!(
+                admit_control_location(std::path::Path::new("/opt/bin/yolop"), &roots, links)
+                    .is_err()
+            );
+        }
+        assert!(
+            admit_control_location(
+                std::path::Path::new("/opt/bin/yolop"),
+                &[PathBuf::from("/")],
+                1
+            )
+            .is_err()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn control_image_admission_checks_ordinary_file_metadata() {
+        // Regular data files only. Nothing is executable or launched.
+        let root = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(root.path()).unwrap();
+        let trusted = root.join("trusted");
+        let workspace = root.join("workspace");
+        std::fs::create_dir(&trusted).unwrap();
+        std::fs::create_dir(&workspace).unwrap();
+        let image = trusted.join("image.data");
+        std::fs::write(&image, b"ordinary data").unwrap();
+        let roots = [workspace.clone()];
+        assert!(admit_control_path(&image, &roots).is_ok());
+        assert!(admit_control_path(&trusted, &roots).is_err());
+        assert!(admit_control_path(&image, &[root.join("missing")]).is_err());
+        assert!(admit_control_path(&trusted.join("../trusted/image.data"), &roots).is_err());
+
+        let linked = trusted.join("linked.data");
+        std::fs::hard_link(&image, &linked).unwrap();
+        assert!(admit_control_path(&image, &roots).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn control_image_admission_resolves_ordinary_path_aliases() {
+        let root = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(root.path()).unwrap();
+        let trusted = root.join("trusted");
+        std::fs::create_dir(&trusted).unwrap();
+        let image = trusted.join("image.data");
+        std::fs::write(&image, b"ordinary data").unwrap();
+        let directory_alias = root.join("directory-alias");
+        std::os::unix::fs::symlink(&trusted, &directory_alias).unwrap();
+        assert!(admit_control_path(&image, &[directory_alias]).is_err());
+        let file_alias = root.join("file-alias");
+        std::os::unix::fs::symlink(&image, &file_alias).unwrap();
+        assert!(admit_control_path(&file_alias, &[]).is_err());
+    }
 
     #[test]
     fn reexec_path_executes_this_binary() {

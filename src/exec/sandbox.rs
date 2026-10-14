@@ -277,11 +277,19 @@ fn native_command(
     // covers macOS path canonicalization through the /tmp symlink.
     let temp = sandbox_temp_dir()?;
     let home = sandbox_home_dir(&temp)?;
-    if mode == SandboxMode::WorkspaceWrite {
-        prepared_global_skills_dir()?;
-    }
+    let skills = if mode == SandboxMode::WorkspaceWrite {
+        prepared_global_skills_dir()?
+    } else {
+        None
+    };
+    let cwd = std::fs::canonicalize(cwd).context("canonicalize sandbox workspace")?;
+    let write_roots = macos_write_roots(&cwd, &temp, mode, skills.as_deref());
+    let parser_target = match control {
+        Some(control) => control.reexec_target().to_path_buf(),
+        None => crate::exec::self_exe::control_reexec_path()?,
+    };
     let control_socket = control.and_then(ControlEndpoint::socket_path);
-    let profile = macos_profile(cwd, &temp, mode, control_socket);
+    let profile = macos_control_profile(&cwd, &write_roots, control_socket, &parser_target)?;
     let mut command = Command::new(executable);
     command
         .arg("-p")
@@ -289,7 +297,7 @@ fn native_command(
         .arg("/bin/bash")
         .arg("-lc")
         .arg(script)
-        .current_dir(cwd);
+        .current_dir(&cwd);
     apply_native_environment(&mut command, &home, &temp);
     Ok(command)
 }
@@ -536,30 +544,45 @@ pub(super) fn safe_environment_key(key: &str) -> bool {
     ) || key.starts_with("LC_")
 }
 
-#[cfg(target_os = "macos")]
-fn macos_profile(
+#[cfg(any(target_os = "macos", test))]
+fn macos_write_roots(
     cwd: &Path,
     temp: &Path,
     mode: SandboxMode,
+    skills: Option<&Path>,
+) -> Vec<PathBuf> {
+    let mut roots = vec![temp.to_path_buf()];
+    if mode == SandboxMode::WorkspaceWrite {
+        roots.extend([
+            cwd.to_path_buf(),
+            PathBuf::from("/tmp"),
+            PathBuf::from("/private/tmp"),
+        ]);
+        roots.extend(skills.map(Path::to_path_buf));
+    }
+    roots
+}
+
+#[cfg(any(target_os = "macos", all(test, unix)))]
+fn macos_control_profile(
+    cwd: &Path,
+    write_roots: &[PathBuf],
     control_socket: Option<&Path>,
-) -> String {
-    let workspace_write = if mode == SandboxMode::WorkspaceWrite {
-        format!(" (subpath \"{}\")", seatbelt_escape(cwd))
-    } else {
-        String::new()
-    };
-    let shared_temp_write = if mode == SandboxMode::WorkspaceWrite {
-        " (subpath \"/tmp\") (subpath \"/private/tmp\")"
-    } else {
-        ""
-    };
-    let global_skills_write = if mode == SandboxMode::WorkspaceWrite {
-        global_skills_dir()
-            .map(|path| format!(" (subpath \"{}\")", seatbelt_escape(&path)))
-            .unwrap_or_default()
-    } else {
-        String::new()
-    };
+    parser_target: &Path,
+) -> Result<String> {
+    // Admission and Seatbelt consume the same grants, before credentials or
+    // a launch plan reach a shell. This also protects future attachments when
+    // the current shell has no endpoint.
+    crate::exec::self_exe::admit_control_path(parser_target, write_roots)?;
+    Ok(macos_profile(cwd, write_roots, control_socket))
+}
+
+#[cfg(any(target_os = "macos", all(test, unix)))]
+fn macos_profile(cwd: &Path, write_roots: &[PathBuf], control_socket: Option<&Path>) -> String {
+    let writes = write_roots
+        .iter()
+        .map(|path| format!(" (subpath \"{}\")", seatbelt_escape(path)))
+        .collect::<String>();
     // The one network exception: connecting to this execution's attached
     // `yolop` control socket. Listed under both spellings because /tmp is a
     // symlink to /private/tmp.
@@ -578,18 +601,15 @@ fn macos_profile(
         })
         .unwrap_or_default();
     format!(
-        "(version 1)\n(deny default)\n(allow process*)\n(allow file-read*)\n(allow sysctl-read)\n(allow mach-lookup)\n(allow file-write-data (require-all (path \"/dev/null\") (vnode-type CHARACTER-DEVICE)))\n(allow file-write*{} (subpath \"{}\"){}{})\n(deny network*){}\n(deny file-write* (literal \"{}\") (subpath \"{}\"))",
-        workspace_write,
-        seatbelt_escape(temp),
-        shared_temp_write,
-        global_skills_write,
+        "(version 1)\n(deny default)\n(allow process*)\n(allow file-read*)\n(allow sysctl-read)\n(allow mach-lookup)\n(allow file-write-data (require-all (path \"/dev/null\") (vnode-type CHARACTER-DEVICE)))\n(allow file-write*{})\n(deny network*){}\n(deny file-write* (literal \"{}\") (subpath \"{}\"))",
+        writes,
         control_connect,
         seatbelt_escape(&cwd.join(".git")),
         seatbelt_escape(&cwd.join(".git")),
     )
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", all(test, unix)))]
 fn seatbelt_escape(path: &Path) -> String {
     path.to_string_lossy()
         .replace('\\', "\\\\")
@@ -606,6 +626,92 @@ pub(crate) fn configure_stdio(command: &mut Command) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "macos")]
+    fn test_macos_profile(
+        cwd: &Path,
+        temp: &Path,
+        mode: SandboxMode,
+        socket: Option<&Path>,
+    ) -> String {
+        let skills = global_skills_dir();
+        macos_profile(
+            cwd,
+            &macos_write_roots(cwd, temp, mode, skills.as_deref()),
+            socket,
+        )
+    }
+
+    #[test]
+    fn macos_control_admission_uses_every_write_grant() {
+        let cwd = Path::new("/workspace");
+        let temp = Path::new("/private/sandbox");
+        let skills = Path::new("/skills");
+        let roots = macos_write_roots(cwd, temp, SandboxMode::WorkspaceWrite, Some(skills));
+        for image in [
+            "/workspace/target/yolop",
+            "/tmp/yolop",
+            "/private/tmp/yolop",
+            "/private/sandbox/yolop",
+            "/skills/yolop",
+        ] {
+            assert!(
+                super::super::self_exe::admit_control_location(Path::new(image), &roots, 1)
+                    .is_err()
+            );
+        }
+        assert!(
+            super::super::self_exe::admit_control_location(Path::new("/opt/bin/yolop"), &roots, 1)
+                .is_ok()
+        );
+
+        let roots = macos_write_roots(cwd, temp, SandboxMode::ReadOnly, Some(skills));
+        assert_eq!(roots, vec![temp.to_path_buf()]);
+        assert!(
+            super::super::self_exe::admit_control_location(
+                Path::new("/workspace/target/yolop"),
+                &roots,
+                1
+            )
+            .is_ok()
+        );
+        assert!(
+            super::super::self_exe::admit_control_location(
+                Path::new("/private/sandbox/yolop"),
+                &roots,
+                1
+            )
+            .is_err()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn macos_control_plan_admits_before_compiling_the_profile() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(fixture.path()).unwrap();
+        let trusted = root.join("trusted");
+        let private_temp = root.join("private-temp");
+        std::fs::create_dir(&trusted).unwrap();
+        std::fs::create_dir(&private_temp).unwrap();
+        let image = trusted.join("image.data");
+        std::fs::write(&image, b"ordinary data").unwrap();
+        let socket = private_temp.join("unused.sock");
+        let writes = macos_write_roots(&root, &private_temp, SandboxMode::ReadOnly, None);
+        let profile = macos_control_profile(&root, &writes, Some(&socket), &image).unwrap();
+        assert!(profile.contains(&format!("(subpath \"{}\")", seatbelt_escape(&private_temp))));
+        assert!(profile.contains(&format!("(path-literal \"{}\")", seatbelt_escape(&socket))));
+
+        // Changing the granted workspace would expose the parser. Neither
+        // an endpoint nor its absence may turn that into an admitted plan.
+        for socket in [Some(socket.as_path()), None] {
+            let error =
+                macos_control_profile(&root, std::slice::from_ref(&trusted), socket, &image)
+                    .unwrap_err()
+                    .to_string();
+            assert!(error.contains("outside every sandbox write root"));
+        }
+    }
 
     // Interpret only the instructions emitted by this policy on inert data.
     // No filter is installed and no syscall is submitted by these tests.
@@ -711,7 +817,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn macos_policy_allows_only_dev_null_device_writes() {
-        let profile = macos_profile(
+        let profile = test_macos_profile(
             Path::new("/workspace"),
             Path::new("/private/tmp/sandbox"),
             SandboxMode::WorkspaceWrite,
@@ -727,13 +833,13 @@ mod tests {
     #[test]
     fn macos_workspace_write_policy_allows_global_skills_only_when_writable() {
         let skills = global_skills_dir().expect("home directory should resolve");
-        let writable = macos_profile(
+        let writable = test_macos_profile(
             Path::new("/workspace"),
             Path::new("/private/tmp/sandbox"),
             SandboxMode::WorkspaceWrite,
             None,
         );
-        let read_only = macos_profile(
+        let read_only = test_macos_profile(
             Path::new("/workspace"),
             Path::new("/private/tmp/sandbox"),
             SandboxMode::ReadOnly,
@@ -754,7 +860,7 @@ mod tests {
             std::fs::canonicalize(&temp).expect("sandbox temp should remain canonical")
         );
 
-        let profile = macos_profile(
+        let profile = test_macos_profile(
             Path::new("/workspace"),
             &temp,
             SandboxMode::WorkspaceWrite,
@@ -767,7 +873,7 @@ mod tests {
     #[test]
     fn macos_sandbox_admits_only_the_attached_control_socket() {
         let socket = Path::new("/tmp/yolop-control-1-abc/control.sock");
-        let profile = macos_profile(
+        let profile = test_macos_profile(
             Path::new("/workspace"),
             Path::new("/private/tmp/sandbox"),
             SandboxMode::WorkspaceWrite,
@@ -777,7 +883,7 @@ mod tests {
             r#"(allow network-outbound (remote unix-socket (path-literal "/tmp/yolop-control-1-abc/control.sock")) (remote unix-socket (path-literal "/private/tmp/yolop-control-1-abc/control.sock")))"#
         ));
         assert!(profile.contains("(deny network*)"));
-        let without = macos_profile(
+        let without = test_macos_profile(
             Path::new("/workspace"),
             Path::new("/private/tmp/sandbox"),
             SandboxMode::WorkspaceWrite,
