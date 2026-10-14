@@ -143,6 +143,29 @@ class AnalyzeTests(unittest.TestCase):
         self.assertTrue(any("correctness regressed" in failure for failure in failures))
         self.assertTrue(any("input_tokens regressed" in failure for failure in failures))
 
+    def _control_with_llm_calls(self, base, cand):
+        cases = focused_cases()
+        for sample in sorted(analyzer.CONTROLS):
+            for _ in range(5):
+                cases += [
+                    case(sample, "baseline", True, metrics={"llm_calls": base}),
+                    case(sample, "candidate", True, metrics={"llm_calls": cand}),
+                ]
+        return cases
+
+    def test_one_extra_control_call_is_sampling_noise(self):
+        # 8 -> 9 llm calls failed the nightly of 2026-10-14: one call is 12.5% of 8.
+        _, failures, _ = analyzer.analyze(
+            {"cases": self._control_with_llm_calls(8, 9)}
+        )
+        self.assertEqual(failures, [])
+
+    def test_two_extra_control_calls_still_regress(self):
+        _, failures, _ = analyzer.analyze(
+            {"cases": self._control_with_llm_calls(8, 10)}
+        )
+        self.assertTrue(any("llm_calls regressed" in failure for failure in failures))
+
     def _focused_with_failures(self, base, cand):
         cases = control_cases()
         sample = sorted(analyzer.FOCUSED)[0]
