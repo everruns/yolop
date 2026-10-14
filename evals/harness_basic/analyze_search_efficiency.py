@@ -287,7 +287,12 @@ def analyze_reports(reports: list[dict]) -> tuple[list[str], list[str], list[str
             for metric in ("tool_calls", "llm_calls", "input_tokens", "cost_usd"):
                 base = medians[("baseline", metric)]
                 candidate_value = medians[("candidate", metric)]
-                limit = base * 1.10 if base else 0
+                # Call counts are small integers: at a median of 8, a single extra
+                # call is already +12.5% (nightly 2026-10-14, 8 -> 9) on identical
+                # behavior. Count metrics get one call of slack; tokens and cost
+                # are continuous and keep the strict 10%.
+                slack_calls = 1 if metric in ("tool_calls", "llm_calls") else 0
+                limit = base * 1.10 + slack_calls if base else 0
                 if candidate_value > limit:
                     failures.append(
                         f"{sample}: control {metric} regressed >10% "
