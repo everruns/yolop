@@ -969,7 +969,7 @@ impl SetupController {
             }
         };
         let (next, reconcile_notes) =
-            super::model_discovery::reconcile_provider_with_catalog(next, &snapshot).await;
+            super::model_discovery::reconcile_provider_with_catalog(next, &snapshot, false).await?;
         notes.extend(reconcile_notes);
         if next.model_id().trim().is_empty() {
             return Ok(failed_result(format!(

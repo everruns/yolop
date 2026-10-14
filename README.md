@@ -208,6 +208,22 @@ Pick per run with `--provider` and `-m`, persist choices with `/setup` or `yolop
 <details>
 <summary>Codex, OpenRouter, custom endpoints, and local inference</summary>
 
+Search a provider's catalog and test a model before adding it to your menu:
+
+```bash
+yolop config models search nemotron --provider openrouter
+yolop config models test openrouter/nvidia/nemotron-3-ultra-550b-a55b:free
+yolop config models add openrouter nvidia/nemotron-3-ultra-550b-a55b:free
+```
+
+Search prints provider and model arguments for `config models add`, a name, and
+context length when advertised. The test sends one small prompt without tools,
+reports `ok` and latency, and exits nonzero on provider failure. It may incur a
+provider charge. Neither command edits the model menu. `-m` accepts a menu label,
+a unique listed model id, or `provider/model`. A qualified reference selects that
+provider, including gateway ids such as `openrouter/openai/gpt-6.1-sol`.
+Invalid explicit selections fail without substituting another model.
+
 **Codex.** `--provider codex` uses your ChatGPT plan via a browser or device login (`/setup` walks through it). Pin a model with `yolop config model set codex <id>`, tune reasoning with `/effort`. The Codex route signs in with the Codex CLI's public OAuth client; to use a different client there, set `yolop config set chatgpt_client_id <id>` or `YOLOP_CHATGPT_CLIENT_ID` and log in again. An existing login keeps refreshing with the client that issued it. A browser sign-in uses OpenAI's open-source Sign in with ChatGPT by default, which needs no borrowed client: yolop registers a client for your account on the first sign-in and runs turns on the public Responses API, still billed to your ChatGPT plan. It is a preview route, so a few request options (output token cap, temperature, `speed`) do not apply there. To use the Codex route instead, run `yolop config set chatgpt_sign_in codex` (or set `YOLOP_CHATGPT_SIGN_IN=codex`) and sign in again. A device login uses the Codex route unless `open-source` is set explicitly.
 
 **OpenRouter.** Sign in from the browser or set `OPENROUTER_API_KEY`. The default model is `openai/gpt-6.1-sol`; any `provider/model` id works with `-m`.

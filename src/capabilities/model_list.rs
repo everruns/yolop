@@ -17,10 +17,13 @@
 //! [`SetupController::change_provider`], the same call `/setup provider <name> <model>` makes.
 
 use crate::capabilities::host::SetupController;
-use crate::capabilities::model_discovery::provider_is_usable;
+use crate::capabilities::model_discovery::{
+    discover_provider_models, ping_model, provider_is_usable,
+};
 use crate::config::SettingsStore;
 use crate::config::model_list::{ModelEntry, default_models};
 use crate::control::{ControlCapability, ControlRequest, ControlResponse, ControlRoute};
+use crate::runtime::ProviderChoice;
 use crate::runtime::SUPPORTED_PROVIDERS;
 use async_trait::async_trait;
 use clap::{Args, Subcommand};
@@ -37,7 +40,7 @@ pub(crate) const MODEL_LIST_CAPABILITY_ID: &str = "model_list";
 pub(crate) const MODEL_LIST_CONTROL_ROUTE: ControlRoute = ControlRoute {
     resource: "models",
     cli_subcommand: "config",
-    read_only_operations: &["list"],
+    read_only_operations: &["list", "search"],
     summary: "inspect or change persistent settings and manage models",
 };
 
@@ -77,6 +80,24 @@ pub(crate) enum ModelsCliCommand {
         model: String,
         /// New 1-based position.
         position: usize,
+    },
+    /// Search a provider catalog by model id or name.
+    #[command(
+        after_help = "Examples:\n  Discover exact IDs in a provider catalog:\n    yolop config models search nemotron --provider openrouter"
+    )]
+    Search {
+        query: String,
+        /// Provider to search (default: configured or auto-detected provider).
+        #[arg(long)]
+        provider: Option<String>,
+    },
+    /// Send one small, chargeable ping without tools or session history.
+    #[command(
+        after_help = "Examples:\n  Test an exact provider/model target:\n    yolop config models test openrouter/nvidia/nemotron-3-ultra-550b-a55b:free\n\n  Test a model from your menu by label:\n    yolop config models test review"
+    )]
+    Test {
+        /// A listed reference or label, or an unlisted `provider/model`.
+        model: String,
     },
     /// Restore the built-in default list.
     #[command(after_help = "Examples:\n  Throw away menu edits:\n    yolop config models reset")]
@@ -129,6 +150,13 @@ pub(crate) enum ModelListAction {
     Use {
         model: String,
     },
+    Search {
+        query: String,
+        provider: Option<String>,
+    },
+    Test {
+        model: String,
+    },
     Reset,
 }
 
@@ -145,6 +173,8 @@ impl From<ModelsCliCommand> for ModelListAction {
             },
             ModelsCliCommand::Rm { model } => Self::Rm { model },
             ModelsCliCommand::Move { model, position } => Self::Move { model, position },
+            ModelsCliCommand::Search { query, provider } => Self::Search { query, provider },
+            ModelsCliCommand::Test { model } => Self::Test { model },
             ModelsCliCommand::Reset => Self::Reset,
         }
     }
@@ -408,6 +438,76 @@ impl ModelListCapability {
                     Err(error) => ToolExecutionResult::tool_error(error.to_string()),
                 }
             }
+            ModelListAction::Search { query, provider } => {
+                let snapshot = self.settings.snapshot();
+                let result = async {
+                    let choice = match provider.as_deref().or(snapshot.default_provider.as_deref())
+                    {
+                        Some(name) => ProviderChoice::default_for_provider_name(name)?,
+                        None => ProviderChoice::from_env_or_settings(&snapshot),
+                    };
+                    let query = query.trim().to_lowercase();
+                    anyhow::ensure!(!query.is_empty(), "search query is required");
+                    let catalog = tokio::time::timeout(
+                        std::time::Duration::from_secs(10),
+                        discover_provider_models(&choice, &snapshot),
+                    )
+                    .await
+                    .map_err(|_| anyhow::anyhow!("model catalog search timed out after 10s"))??
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "{} does not expose a model catalog; run `yolop config models list`",
+                            choice.provider_name()
+                        )
+                    })?;
+                    let matches: Vec<Value> = catalog
+                        .into_iter()
+                        .filter(|model| {
+                            model.model_id.to_lowercase().contains(&query)
+                                || model
+                                    .display_name
+                                    .as_ref()
+                                    .is_some_and(|name| name.to_lowercase().contains(&query))
+                        })
+                        .map(|model| {
+                            json!({
+                                "provider": choice.provider_name(),
+                                "model": model.model_id,
+                                "name": model.display_name,
+                                "context_length": model.context_length,
+                            })
+                        })
+                        .collect();
+                    Ok::<_, anyhow::Error>(json!({ "matches": matches }))
+                }
+                .await;
+                match result {
+                    Ok(value) => ToolExecutionResult::Success(value),
+                    Err(error) => {
+                        ToolExecutionResult::tool_error(format!("search model catalog: {error:#}"))
+                    }
+                }
+            }
+            ModelListAction::Test { model } => {
+                let start = std::time::Instant::now();
+                let result = async {
+                    let choice = resolve_reference(model, &self.settings.snapshot(), None, None)?;
+                    ping_model(&choice, self.settings.clone()).await?;
+                    Ok::<_, anyhow::Error>(json!({
+                        "tested": format!("{}/{}", choice.provider_name(), choice.model_id()),
+                        "latency_ms": start.elapsed().as_millis() as u64,
+                    }))
+                }
+                .await;
+                match result {
+                    Ok(value) => ToolExecutionResult::Success(value),
+                    Err(error) => ToolExecutionResult::tool_error(format!(
+                        "failed {} ({} ms): {error:#}",
+                        terminal_text(model),
+                        start.elapsed().as_millis()
+                    )),
+                }
+            }
             ModelListAction::Reset => {
                 if let Err(error) = self.write(Vec::new()) {
                     return ToolExecutionResult::tool_error(error);
@@ -462,18 +562,49 @@ impl ControlCapability for ModelListCapability {
 
 fn render_response(action: &ModelListAction, response: &ControlResponse) -> String {
     if !response.ok {
-        return response.render_default();
+        return terminal_text(&response.render_default());
     }
     let value = response.value.as_ref().unwrap_or(&Value::Null);
     if let ModelListAction::List { json: true, .. } = action {
         return response.render_default();
+    }
+    if let ModelListAction::Search { .. } = action {
+        let Some(matches) = value["matches"].as_array() else {
+            return response.render_default();
+        };
+        if matches.is_empty() {
+            return "No matching models in the provider catalog.".to_string();
+        }
+        let mut lines =
+            vec!["PROVIDER MODEL\tNAME\tCONTEXT TOKENS (unknown if unreported)".to_string()];
+        for model in matches {
+            lines.push(format!(
+                "{} {}\t{}\t{}",
+                terminal_text(model["provider"].as_str().unwrap_or("?")),
+                terminal_text(model["model"].as_str().unwrap_or("?")),
+                terminal_text(model["name"].as_str().unwrap_or("")),
+                model["context_length"]
+                    .as_u64()
+                    .map_or_else(|| "unknown".to_string(), |n| n.to_string()),
+            ));
+        }
+        return lines.join("\n");
+    }
+    if let ModelListAction::Test { .. } = action {
+        return format!(
+            "ok {} ({} ms)",
+            value["tested"].as_str().unwrap_or("model"),
+            value["latency_ms"].as_u64().unwrap_or_default()
+        );
     }
     let Some(models) = value.get("models").and_then(Value::as_array) else {
         return response.render_default();
     };
     let mut lines = Vec::new();
     match action {
-        ModelListAction::List { .. } => {}
+        ModelListAction::List { .. }
+        | ModelListAction::Search { .. }
+        | ModelListAction::Test { .. } => {}
         ModelListAction::Add { .. } => lines.push(format!(
             "added {}",
             value["added"].as_str().unwrap_or("model")
@@ -534,6 +665,94 @@ fn render_response(action: &ModelListAction, response: &ControlResponse) -> Stri
     lines.join("\n")
 }
 
+fn terminal_text(text: &str) -> String {
+    text.chars().filter(|c| !c.is_control()).collect()
+}
+
+/// Resolve the same explicit target for one-shot tests and CLI model selection.
+/// Known provider prefixes are qualified refs; gateway ids beginning with a
+/// provider name therefore need the gateway prefix too.
+pub(crate) fn resolve_reference(
+    reference: &str,
+    settings: &crate::config::Settings,
+    base: Option<&ProviderChoice>,
+    effort_override: Option<&str>,
+) -> anyhow::Result<ProviderChoice> {
+    anyhow::ensure!(
+        !reference.chars().any(char::is_control),
+        "model id must not contain control characters"
+    );
+    let reference = reference.trim();
+    let models = settings.model_list();
+    let whole_reference = models
+        .iter()
+        .any(|entry| entry.label.as_deref() == Some(reference));
+    let (name, spec_effort) = if whole_reference {
+        // Labels are display text and may contain spaces; resolve them before
+        // interpreting the optional provider-relative effort argument.
+        (reference, None)
+    } else {
+        let mut parts = reference.split_whitespace();
+        let name = parts.next().unwrap_or_default();
+        let effort = parts.next();
+        anyhow::ensure!(
+            !name.is_empty() && parts.next().is_none(),
+            "expected a model id or `provider/model`, optionally followed by a reasoning effort"
+        );
+        (name, effort)
+    };
+    let listed = models.iter().any(|entry| {
+        entry.model == name
+            || entry.label.as_deref() == Some(name)
+            || entry.key() == name
+            || format!("{}/{}", entry.provider, entry.model) == name
+    });
+    let (choice, model, pinned_effort) = if listed {
+        let index = match ModelListCapability::find(&models, name) {
+            Ok(index) => index,
+            Err(error) => {
+                // An existing `--provider p -m id` remains provider-relative
+                // when the same id is on the menu for several providers.
+                let qualified = base
+                    .filter(|_| {
+                        !models
+                            .iter()
+                            .any(|entry| entry.label.as_deref() == Some(name))
+                    })
+                    .and_then(|base| {
+                        models.iter().position(|entry| {
+                            entry.model == name && entry.provider == base.provider_name()
+                        })
+                    });
+                qualified.ok_or_else(|| anyhow::Error::msg(error))?
+            }
+        };
+        let entry = &models[index];
+        (
+            ProviderChoice::default_for_provider_name(&entry.provider)?,
+            entry.model.as_str(),
+            entry.effort.as_deref(),
+        )
+    } else if let Some((provider, model)) = name.split_once('/').or_else(|| name.split_once(':'))
+        && SUPPORTED_PROVIDERS.contains(&provider)
+    {
+        (
+            ProviderChoice::default_for_provider_name(provider)?,
+            model,
+            None,
+        )
+    } else if let Some(base) = base {
+        (base.clone(), name, None)
+    } else {
+        anyhow::bail!(
+            "name a listed model or qualify the target as `provider/model`; run `yolop config models list`"
+        );
+    };
+    let effort = effort_override.or(spec_effort).or(pinned_effort);
+    let spec = effort.map_or_else(|| model.to_string(), |effort| format!("{model} {effort}"));
+    choice.resolve_model_spec(&spec)
+}
+
 /// The list as the pickers and ACP should offer it: configured order, entries
 /// whose provider has no credential dropped, and the currently selected model
 /// kept even when its provider looks unusable (dropping the model in use would
@@ -573,6 +792,97 @@ fn offer(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explicit_reference_resolution_preserves_namespaces_and_rejects_ambiguity() {
+        let settings = crate::config::Settings::default();
+        let base = ProviderChoice::default_for_provider_name("openrouter").unwrap();
+        for reference in [
+            "openrouter/nvidia/model:free",
+            "openrouter/nvidia/model:high",
+            "openrouter/openai/gpt-6.1-sol",
+            "vendor/model:free",
+        ] {
+            let choice = resolve_reference(reference, &settings, Some(&base), None).unwrap();
+            assert_eq!(choice.provider_name(), "openrouter");
+            assert_eq!(
+                choice.model_id(),
+                reference.strip_prefix("openrouter/").unwrap_or(reference)
+            );
+        }
+        for reference in ["ollama/model:high", "ollama:model:high"] {
+            let choice = resolve_reference(reference, &settings, Some(&base), None).unwrap();
+            assert_eq!(choice.provider_name(), "ollama");
+            assert_eq!(choice.model_id(), "model:high");
+        }
+        let choice =
+            resolve_reference("codex/gpt-6.1-sol", &settings, Some(&base), Some("high")).unwrap();
+        assert_eq!(choice.provider_name(), "codex");
+        assert_eq!(choice.model_id(), "gpt-6.1-sol");
+        assert_eq!(choice.reasoning_effort(), Some("high"));
+        assert!(resolve_reference("openrouter/", &settings, Some(&base), None).is_err());
+        assert!(resolve_reference("vendor/model\n", &settings, Some(&base), None).is_err());
+        let settings = crate::config::Settings {
+            models: vec![
+                ModelEntry::new("openai", "shared"),
+                ModelEntry::new("codex", "shared"),
+            ],
+            ..Default::default()
+        };
+        assert!(
+            resolve_reference("shared", &settings, Some(&base), None)
+                .unwrap_err()
+                .to_string()
+                .contains("qualify")
+        );
+    }
+
+    #[test]
+    fn explicit_reference_resolves_labels_with_spaces_and_keeps_effort() {
+        let mut entry = ModelEntry::new("custom", "vendor/reasoner");
+        entry.label = Some("Review work".into());
+        entry.effort = Some("high".into());
+        let settings = crate::config::Settings {
+            models: vec![entry.clone()],
+            ..Default::default()
+        };
+        let choice = resolve_reference("Review work", &settings, None, None).unwrap();
+        assert_eq!(choice.model_id(), "vendor/reasoner");
+        assert_eq!(choice.reasoning_effort(), Some("high"));
+        assert_eq!(
+            resolve_reference("Review work", &settings, None, Some("low"))
+                .unwrap()
+                .reasoning_effort(),
+            Some("low")
+        );
+        let settings = crate::config::Settings {
+            models: vec![entry.clone(), entry],
+            ..Default::default()
+        };
+        assert!(resolve_reference("Review work", &settings, None, None).is_err());
+    }
+
+    #[test]
+    fn search_renderer_does_not_emit_provider_terminal_controls() {
+        let action = ModelListAction::Search {
+            query: "model".into(),
+            provider: None,
+        };
+        let response = ControlResponse::from_tool_result(ToolExecutionResult::Success(json!({
+            "matches": [{"provider":"custom", "model":"model", "name":"name\u{1b}[31m\n", "context_length":1024}]
+        })));
+        let rendered = render_response(&action, &response);
+        assert!(!rendered.contains('\u{1b}'));
+        assert!(rendered.contains("custom model"));
+        assert!(rendered.contains("1024"));
+        assert_eq!(rendered.lines().count(), 2);
+        let failure = ControlResponse::from_tool_result(ToolExecutionResult::tool_error(
+            "provider error \u{1b}[31m",
+        ));
+        let rendered = render_response(&action, &failure);
+        assert!(!rendered.contains('\u{1b}'));
+        assert!(rendered.contains("provider error"));
+    }
 
     fn capability() -> (tempfile::TempDir, ModelListCapability) {
         let dir = tempfile::tempdir().expect("tempdir");

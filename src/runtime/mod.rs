@@ -1735,6 +1735,20 @@ pub(crate) struct ResolvedModel {
     pub provider_metadata: Option<everruns_contracts::driver_registry::ProviderMetadata>,
 }
 
+pub(crate) fn registered_drivers(settings: Arc<SettingsStore>) -> DriverRegistry {
+    let mut driver_registry = DriverRegistry::new();
+    everruns_drivers::anthropic::register_driver(&mut driver_registry);
+    everruns_drivers::meta::register_driver(&mut driver_registry);
+    everruns_drivers::openai::register_driver(&mut driver_registry);
+    // OpenRouter moved to its own crate in everruns 0.13.0; register its
+    // first-class DriverId::OpenRouter driver here (was bundled with openai).
+    everruns_drivers::openrouter::register_driver(&mut driver_registry);
+    crate::drivers::codex::register_driver(&mut driver_registry, settings);
+    #[cfg(feature = "local-inference")]
+    crate::drivers::local::register_driver(&mut driver_registry);
+    driver_registry
+}
+
 impl ResolvedModel {
     pub(crate) fn provider_key(&self) -> everruns_contracts::runtime_provider::ProviderKey {
         self.provider_metadata
@@ -4747,16 +4761,7 @@ pub async fn build_with_options(
     session_control_registry.replace(config_capability.clone())?;
     capabilities.register_arc(config_capability);
 
-    let mut driver_registry = DriverRegistry::new();
-    everruns_drivers::anthropic::register_driver(&mut driver_registry);
-    everruns_drivers::meta::register_driver(&mut driver_registry);
-    everruns_drivers::openai::register_driver(&mut driver_registry);
-    // OpenRouter moved to its own crate in everruns 0.13.0; register its
-    // first-class DriverId::OpenRouter driver here (was bundled with openai).
-    everruns_drivers::openrouter::register_driver(&mut driver_registry);
-    crate::drivers::codex::register_driver(&mut driver_registry, settings.clone());
-    #[cfg(feature = "local-inference")]
-    crate::drivers::local::register_driver(&mut driver_registry);
+    let driver_registry = registered_drivers(settings.clone());
     let mut setup_recommended = ModelsCapability::needs_onboarding(&settings_snapshot);
     let active_provider = provider_state
         .read()

@@ -103,7 +103,8 @@ struct Cli {
     #[arg(short = 'C', long = "cwd")]
     cwd: Option<PathBuf>,
 
-    /// Force a provider (auto-detected from env vars otherwise)
+    /// Choose a base provider (auto-detected from env vars otherwise).
+    /// A qualified --model reference selects its named provider.
     #[arg(long, value_enum)]
     provider: Option<ProviderArg>,
 
@@ -122,7 +123,8 @@ struct Cli {
     #[arg(long, conflicts_with = "serve")]
     coordinator: bool,
 
-    /// Override the model id
+    /// Select a provider-relative model id, menu label, or `provider/model`.
+    /// Invalid explicit selections fail without substituting another model.
     #[arg(short, long)]
     model: Option<String>,
 
@@ -806,7 +808,7 @@ fn ensure_provider_is_built_in(provider: &ProviderChoice) -> Result<()> {
     Ok(())
 }
 
-fn pick_provider(cli: &Cli, settings: &SettingsStore) -> (ProviderChoice, Vec<String>) {
+fn pick_provider(cli: &Cli, settings: &SettingsStore) -> Result<(ProviderChoice, Vec<String>)> {
     let snapshot = settings.snapshot();
     let cli_reasoning_effort = runtime::normalize_reasoning_effort(cli.reasoning_effort.clone());
     let mut notes = Vec::new();
@@ -838,21 +840,16 @@ fn pick_provider(cli: &Cli, settings: &SettingsStore) -> (ProviderChoice, Vec<St
         })
     };
 
-    notes.extend(resolved.notes);
     let base = resolved.choice;
-    let selected = if let Some(model) = cli.model.clone() {
-        let spec = match cli_reasoning_effort.clone() {
-            Some(effort) => format!("{model} {effort}"),
-            None => model,
-        };
-        match base.resolve_model_spec(&spec) {
-            Ok(selected) => selected,
-            Err(err) => {
-                notes.push(format!("model override ignored: {err}"));
-                base
-            }
-        }
+    let selected = if let Some(model) = &cli.model {
+        capabilities::model_list::resolve_reference(
+            model,
+            &snapshot,
+            Some(&base),
+            cli_reasoning_effort.as_deref(),
+        )?
     } else {
+        notes.extend(resolved.notes);
         base
     };
     let selected = match (selected, cli_reasoning_effort) {
@@ -944,7 +941,7 @@ fn pick_provider(cli: &Cli, settings: &SettingsStore) -> (ProviderChoice, Vec<St
         },
         (other, _) => other,
     };
-    (selected, notes)
+    Ok((selected, notes))
 }
 
 fn main() -> Result<()> {
@@ -1128,12 +1125,17 @@ async fn async_main(crash_reporter: &crash_report::CrashReporter) -> Result<()> 
     let sandbox_mode_override = cli.sandbox.then_some(config::SandboxMode::WorkspaceWrite);
     let effective_sandbox_mode =
         sandbox_mode_override.unwrap_or_else(|| settings.snapshot().sandbox_mode());
-    let provider_was_explicit = cli.provider.is_some();
-    let (mut provider, mut notes) = pick_provider(&cli, &settings);
+    let provider_was_explicit = cli.provider.is_some() || cli.model.is_some();
+    let (mut provider, mut notes) = pick_provider(&cli, &settings)?;
     ensure_provider_is_built_in(&provider)?;
     let snapshot = settings.snapshot();
     let (reconciled, catalog_notes) =
-        capabilities::model_discovery::reconcile_provider_with_catalog(provider, &snapshot).await;
+        capabilities::model_discovery::reconcile_provider_with_catalog(
+            provider,
+            &snapshot,
+            cli.model.is_some(),
+        )
+        .await?;
     provider = reconciled;
     notes.extend(catalog_notes);
     for note in notes {
@@ -3416,7 +3418,7 @@ mod tests {
         let settings = SettingsStore::open(tmp.path().join("settings.toml"));
 
         let (provider, _notes) =
-            pick_provider(&cli_with_reasoning_effort(Some(" HIGH ")), &settings);
+            pick_provider(&cli_with_reasoning_effort(Some(" HIGH ")), &settings).unwrap();
 
         assert_eq!(
             provider.label(),
@@ -3429,7 +3431,8 @@ mod tests {
         let tmp = tempfile::tempdir().expect("settings tempdir");
         let settings = SettingsStore::open(tmp.path().join("settings.toml"));
 
-        let (provider, _notes) = pick_provider(&cli_with_reasoning_effort(Some("  ")), &settings);
+        let (provider, _notes) =
+            pick_provider(&cli_with_reasoning_effort(Some("  ")), &settings).unwrap();
 
         assert_eq!(
             provider.label(),
@@ -3478,7 +3481,7 @@ mod tests {
             sandbox: false,
         };
 
-        let (provider, _notes) = pick_provider(&cli, &settings);
+        let (provider, _notes) = pick_provider(&cli, &settings).unwrap();
 
         assert_eq!(provider.label(), "openai/gpt-5.4 high");
     }

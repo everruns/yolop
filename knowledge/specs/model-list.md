@@ -59,7 +59,7 @@ job".
 | `/model`, status-bar click | Opens the list. A trailing "Browse all models…" row falls through to the provider picker and that provider's catalog. |
 | `/model <id>` | Applies the entry directly when the id is on the list; otherwise the pre-list per-provider picker, as before. |
 | ACP `configOptions` | The `model` select option serves the list, filtered to entries whose provider is usable, plus the model in use. |
-| `yolop config models …` | Shows and edits the list: bare `models` or `list`, plus `add`, `rm`, `move`, `edit`, `reset`. |
+| `yolop config models …` | Shows and edits the list: bare `models` or `list`, plus `add`, `rm`, `move`, `reset`, catalog `search`, and a model `test`. |
 
 Credential filtering differs by surface on purpose. ACP hides entries whose
 provider has no credential, because an editor cannot run a login wizard and an
@@ -83,8 +83,8 @@ them in a catalog.
 
 `yolop config` is a `CliCapability` available both detached and through the
 attached control plane. This lets the agent edit configuration on request without
-schemas costing prompt budget every turn. `models list` is read-only; every other
-catalog operation is consequential. `config model show|set|clear` reads and
+schemas costing prompt budget every turn. `models list` and catalog `search` are read-only; list mutations and the
+chargeable model `test` are consequential. `config model show|set|clear` reads and
 writes the persistent default model in either mode. Live session switching stays
 with `/model`, `/setup`, and the runtime model controls.
 
@@ -96,6 +96,30 @@ A model reference resolves as `provider/model`, `provider:model`, or a bare
 model id when it names exactly one entry. Ambiguity is an error naming the
 candidate providers, never a guess: distinguishing one model across two
 providers is what the list is for.
+
+### Discovery, smoke testing, and explicit selection
+
+`config models search <query> [--provider <name>]` searches the existing provider
+catalog by id or display name, case-insensitively. With no provider it uses the
+configured provider or environment selection. Results show separate provider
+and model arguments usable with `config models add`, plus name and advertised
+context length. Unsupported catalogs and failed discovery return actionable
+errors; suggestions are not presented as discovered models.
+
+`config models test <reference>` sends one short prompt through the normal chat
+driver, without tools, session history, or menu writes. It accepts a listed
+reference or label, or an unlisted `provider/model` target, applies pinned
+reasoning effort, and reports success and elapsed milliseconds. Provider errors,
+incomplete or empty responses, and a bounded timeout fail with nonzero CLI
+status. The call is chargeable and retains response-size and wall-clock limits.
+
+Explicit `-m` selection shares reference resolution with the smoke test. A
+recognized provider prefix selects that provider; gateway model ids whose first
+segment is also a provider name must include their gateway prefix, for example
+`openrouter/openai/gpt-6.1-sol`. Bare provider-relative specs remain accepted.
+Ambiguous listed ids, malformed specs, and an explicit model missing from a
+successfully fetched catalog fail before session startup. Catalog reconciliation
+may repair implicit defaults, but never substitutes a different explicit model.
 
 ### Service tiers are a setting, not entries
 
