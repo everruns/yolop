@@ -733,6 +733,9 @@ mod spawn_tests {
             let status = std::process::Command::new("cargo")
                 .args(["build", "--manifest-path"])
                 .arg(out.dir.join("Cargo.toml"))
+                // The outer test build may select a protected target directory.
+                .arg("--target-dir")
+                .arg(out.dir.join("target"))
                 .status()
                 .expect("cargo build");
             assert!(status.success(), "scaffolded Rust crate must build");
