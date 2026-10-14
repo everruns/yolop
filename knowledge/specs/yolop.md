@@ -29,7 +29,11 @@ to administer the session it is attached to.
 The CLI remains ordinary shell software. Session attachment survives scripts,
 pipelines, redirection, command substitution, and background expressions. A
 child sends raw argv over an authenticated local endpoint before parsing them;
-the host's exact executable owns the canonical grammar and typed request.
+the host's captured parser executable owns the canonical grammar and typed
+request. macOS sandbox admission requires its canonical, single-link pathname
+to be outside every shell write root before attachment credentials are passed
+to Bash. See [sandboxing](sandboxing.md#macos) for installed and development
+configuration requirements.
 
 ## What
 

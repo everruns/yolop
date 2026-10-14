@@ -1,5 +1,14 @@
 # Knowledge Log
 
+## 2026-10-13, Attached control parser admission
+
+The endpoint captures its parser target before shell attachment. macOS native
+admission checks that canonical, single-link target against the same write
+grants used by Seatbelt before delivering control credentials to a shell.
+Writable source/temp builds fail setup with protected-location guidance.
+Path and metadata fixtures remain distinct from OS enforcement proof. See
+[sandboxing](specs/sandboxing.md#macos).
+
 ## 2026-10-13, Linux asynchronous syscall policy
 
 Both native shell modes deny all three io_uring entry syscalls before bash

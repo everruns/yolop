@@ -23,8 +23,8 @@ One narrow exception is not arbitrary host shell execution: an attached
 `yolop <subcommand> ...` invocation is typed administration of the current
 session. A private local endpoint is inherited by the shell, so pipelines,
 redirects, substitutions, scripts, and background expressions stay attached.
-The child sends raw argv and the exact running Yolop executable parses them on
-the host. Read-only operations run directly; mutations still pass the shell
+The child sends raw argv and the host's captured parser executable decodes them.
+Read-only operations run directly; mutations still pass the shell
 approval boundary, and transport failure never falls back to global mutation.
 
 The modes are:
@@ -35,9 +35,10 @@ The modes are:
 | `workspace-write` | Host reads plus writes in the active workspace and temporary directories; network denied. |
 | `danger-full-access` | Unrestricted host execution. This is the default, and Yolop marks this `UNSAFE HOST`. |
 
-With `workspace-write` mode:
+On macOS and Linux, with `workspace-write` mode:
 
-- the active workspace, `/tmp`, and a private temporary directory are writable;
+- the active workspace, `/tmp`, private temp, and the global skills directory
+  are writable;
 - writes outside those locations are denied;
 - internet and packet-network sockets are denied;
 - restrictions are inherited by child processes; and
@@ -87,7 +88,7 @@ process permissions are outside this policy.
 |---|---|---|
 | macOS | Seatbelt | `/usr/bin/sandbox-exec`, included with supported macOS versions |
 | Linux | Landlock filesystem rules and seccomp-BPF network filtering | Full Landlock ABI v3 support: Linux 6.2 or a vendor backport |
-| Windows | No native containment yet; every mode warns and runs unsandboxed | Run Yolop inside trusted containment |
+| Windows | MXC process container | Windows 11 24H2 or later; unsupported builds fail closed |
 | Other platforms | Sandboxed modes fail closed | Run Yolop inside trusted containment before choosing full access |
 
 On Linux, both sandboxed modes deny `io_uring_setup`, `io_uring_enter`, and
@@ -152,6 +153,32 @@ Yolop marks this state as `UNSAFE HOST` in configuration output, startup
 warnings, the TUI transcript, and the status bar.
 
 ## Troubleshooting
+
+### macOS executable location
+
+Before a sandboxed shell receives its attached-control credentials, Yolop checks
+the canonical parser executable against the same write roots used by Seatbelt.
+The target must be a regular file with one hard link, outside every write root.
+In `workspace-write`, those roots are the active workspace, shared `/tmp` and
+`/private/tmp`, private sandbox temp, and writable global skills directory. In
+`read-only`, only private sandbox temp is writable.
+Overlapping roots, including their canonical aliases, and multiple hard links
+fail shell setup before the command starts. A launcher symlink remains usable
+when its captured target is outside every write root.
+
+Homebrew and Cargo installations outside those roots work normally. For a
+development build inside the active workspace, install or build Yolop elsewhere
+and restart, or use `read-only` if workspace writes are unnecessary. Changing
+workspaces causes admission to run again for the next shell command. This check
+does not require switching to unrestricted host access.
+
+The macOS target is captured once for the process lifetime, including commands
+without an endpoint. It is a protected pathname, not an immutable running image.
+Trusted host updates can still change that file; restart if an update removes
+the captured location. Linux uses `/proc/<pid>/exe` when available to refer to
+the running image. Other platforms retain their
+existing containment requirements; this admission check adds no OS sandbox
+support.
 
 ### Native sandbox unavailable on Linux
 

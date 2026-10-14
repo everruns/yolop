@@ -368,6 +368,8 @@ pub(crate) struct ControlEndpoint {
     token: String,
     routes: String,
     bin_dir: PathBuf,
+    #[cfg(target_os = "macos")]
+    reexec_target: PathBuf,
     task: tokio::task::JoinHandle<()>,
 }
 
@@ -380,6 +382,7 @@ impl ControlEndpoint {
     ) -> anyhow::Result<Self> {
         use rand::RngExt;
 
+        let reexec_target = crate::exec::self_exe::control_reexec_path()?;
         let nonce = format!("{:032x}", rand::rng().random::<u128>());
         let token = format!("{:032x}", rand::rng().random::<u128>());
         #[cfg(unix)]
@@ -395,7 +398,7 @@ impl ControlEndpoint {
         }
         let bin_dir = root.join("bin");
         std::fs::create_dir(&bin_dir)?;
-        install_current_executable_shim(&bin_dir, sandbox_mode)?;
+        install_current_executable_shim(&bin_dir, sandbox_mode, &reexec_target)?;
 
         let routes = service
             .routes()
@@ -410,15 +413,18 @@ impl ControlEndpoint {
             let listener = tokio::net::UnixListener::bind(&path)?;
             let address = format!("unix:{}", path.display());
             let expected_token = token.clone();
+            let executable = reexec_target.clone();
             let task = tokio::spawn(async move {
                 while let Ok((stream, _)) = listener.accept().await {
                     let service = service.clone();
                     let token = expected_token.clone();
                     let gate = approval_gate.clone();
+                    let executable = executable.clone();
                     tokio::spawn(async move {
                         let _ = handle_endpoint_stream(
                             stream,
                             &token,
+                            executable,
                             service,
                             approval_policy,
                             gate,
@@ -441,6 +447,7 @@ impl ControlEndpoint {
             let mut server = control_pipe::create(&name, true)?;
             let address = format!("pipe:{name}");
             let expected_token = token.clone();
+            let executable = reexec_target.clone();
             let task = tokio::spawn(async move {
                 while server.connect().await.is_ok() {
                     let connected = server;
@@ -453,10 +460,12 @@ impl ControlEndpoint {
                     let service = service.clone();
                     let token = expected_token.clone();
                     let gate = approval_gate.clone();
+                    let executable = executable.clone();
                     tokio::spawn(async move {
                         let _ = handle_endpoint_stream(
                             connected,
                             &token,
+                            executable,
                             service,
                             approval_policy,
                             gate,
@@ -474,6 +483,8 @@ impl ControlEndpoint {
             token,
             routes,
             bin_dir,
+            #[cfg(target_os = "macos")]
+            reexec_target,
             task,
         })
     }
@@ -512,6 +523,11 @@ impl ControlEndpoint {
         }
     }
 
+    #[cfg(target_os = "macos")]
+    pub(crate) fn reexec_target(&self) -> &Path {
+        &self.reexec_target
+    }
+
     pub(crate) fn wrap_shell_script(&self, script: &str) -> String {
         #[cfg(unix)]
         {
@@ -539,13 +555,16 @@ impl Drop for ControlEndpoint {
 fn install_current_executable_shim(
     bin_dir: &Path,
     sandbox_mode: crate::config::SandboxMode,
+    reexec_target: &Path,
 ) -> anyhow::Result<()> {
     // Uncontained shells follow `/proc/<pid>/exe`, which survives an upgrade
     // replacing the binary. A Landlock-contained shell may not resolve another
     // process's `/proc` links (ptrace scoping), so contained shells get the
     // executable's own path instead.
-    let target = if sandbox_mode == crate::config::SandboxMode::DangerFullAccess {
-        crate::exec::self_exe::reexec_path()?
+    let target = if !cfg!(target_os = "linux")
+        || sandbox_mode == crate::config::SandboxMode::DangerFullAccess
+    {
+        reexec_target.to_path_buf()
     } else {
         std::env::current_exe()?
     };
@@ -557,11 +576,11 @@ fn install_current_executable_shim(
 fn install_current_executable_shim(
     bin_dir: &Path,
     _sandbox_mode: crate::config::SandboxMode,
+    reexec_target: &Path,
 ) -> anyhow::Result<()> {
-    let target = std::env::current_exe()?;
     std::fs::write(
         bin_dir.join("yolop.cmd"),
-        format!("@\"{}\" %*\r\n", target.display()),
+        format!("@\"{}\" %*\r\n", reexec_target.display()),
     )?;
     Ok(())
 }
@@ -597,6 +616,7 @@ async fn relay_plain_cli_child(
 async fn handle_endpoint_stream<S>(
     stream: S,
     expected_token: &str,
+    executable: PathBuf,
     service: Arc<dyn ControlService>,
     approval_policy: crate::config::ApprovalPolicy,
     approval_gate: Arc<crate::sandbox_approval::ApprovalGate>,
@@ -634,7 +654,14 @@ where
         let args = request.argv.into_iter().map(OsString::from).collect();
         match tokio::time::timeout(
             CONTROL_TIMEOUT,
-            invoke_attached_inner(args, service, approval_policy, approval_gate, sandbox_mode),
+            invoke_attached_inner(
+                args,
+                executable,
+                service,
+                approval_policy,
+                approval_gate,
+                sandbox_mode,
+            ),
         )
         .await
         {
@@ -668,12 +695,12 @@ where
 
 async fn invoke_attached_inner(
     args: Vec<OsString>,
+    executable: PathBuf,
     service: Arc<dyn ControlService>,
     approval_policy: crate::config::ApprovalPolicy,
     approval_gate: Arc<crate::sandbox_approval::ApprovalGate>,
     sandbox_mode: crate::config::SandboxMode,
 ) -> anyhow::Result<AttachedCommandOutput> {
-    let executable = crate::exec::self_exe::reexec_path()?;
     let mut child = tokio::process::Command::new(executable)
         .arg("--__attached-control-child")
         .args(&args)
@@ -984,6 +1011,7 @@ mod tests {
         let task = tokio::spawn(handle_endpoint_stream(
             server,
             "expected-token",
+            PathBuf::from("/unused/yolop"),
             Arc::new(service()),
             crate::config::ApprovalPolicy::Never,
             crate::sandbox_approval::ApprovalGate::deny(),

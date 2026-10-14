@@ -37,7 +37,7 @@ An attached `yolop <subcommand> ...` invocation uses a special typed host
 broker, not arbitrary host shell execution. Each shell call receives a private,
 short-lived local endpoint and random token. Its descendants may use the CLI in
 scripts, pipelines, redirection, substitutions, and background expressions.
-The child sends raw argv before parsing; the host invokes its exact Yolop
+The child sends raw argv before parsing; the host invokes its captured parser
 executable to parse the canonical CLI grammar, then routes the typed request.
 Read-only operations run directly. Mutating operations cross the arbitrary-shell
 sandbox only after the existing approval gate accepts them, and endpoint or
@@ -97,11 +97,30 @@ retried on the host. See [Windows](#windows) for its requirements.
 
 ### macOS
 
+TM-BASH: an authenticated descendant remains untrusted. The control endpoint
+captures one canonical parser target for the process lifetime before exposing
+its credentials. The native provider also protects that target for shells
+without an endpoint, and admits this regular, single-link file against the exact
+write roots used to compile Seatbelt, before delivering the endpoint to a shell.
+Overlap with any root or writable ancestor, including global skills and private temp,
+fails setup. Canonical roots catch aliases; rejecting multiple hard links
+prevents trusting one protected spelling of a multiply linked file. Requests
+never resolve a new parser target after authentication.
+
+Protected Homebrew/Cargo locations remain supported. A development binary in
+the active writable workspace or shared temp needs a protected build location,
+or read-only mode where its location is outside private temp. Admission runs
+again after a workspace switch. macOS uses a pathname protected from these
+shell grants, not a pinned running image; unrelated trusted host updates remain
+outside that guarantee. Linux retains its available `/proc/<pid>/exe` reference.
+Unsupported native providers still fail closed, and full access retains its
+explicit uncontained semantics.
+
 The native provider launches `/usr/bin/sandbox-exec` with a Seatbelt profile:
 
 - processes and host reads are allowed for compiler/SDK compatibility;
-- writes are allowed only below the active workspace, `/tmp`, and Yolop
-  sandbox temp;
+- workspace-write grants cover the active workspace, shared `/tmp`, Yolop
+  sandbox temp, and global skills; read-only grants cover only private temp;
 - `.git` below the active workspace is read-only; and
 - all network access is denied.
 
@@ -320,6 +339,11 @@ numeric syscall and argument fixtures. They cover unconditional io_uring denial,
 the existing socket families, permitted Unix sockets and ordinary syscalls, and
 rejection of a foreign architecture. These assertions prove compiled policy
 admission, not kernel enforcement or packaged-worker behavior.
+
+Offline control-image fixtures check write-root overlap, component boundaries,
+canonical directory aliases, regular-file metadata and single-link admission
+using tiny ordinary data files. They do not execute or replace a binary, submit
+an endpoint request, or prove Seatbelt enforcement.
 
 Platform CI runs the black-box contract suite on both macOS and Linux. Release
 validation also includes the normal llmsim packaged-binary smoke and a live
