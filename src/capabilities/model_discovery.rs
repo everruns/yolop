@@ -29,6 +29,7 @@ pub(crate) struct DiscoveredProviderModel {
     pub model_id: String,
     pub display_name: Option<String>,
     pub description: Option<String>,
+    pub context_length: Option<u64>,
 }
 
 /// Query the provider's models API for the given choice. Returns `Ok(None)`
@@ -102,7 +103,12 @@ fn limit_discovered_models(models: Vec<DiscoveredModel>) -> Vec<DiscoveredModel>
     models
         .into_iter()
         .filter(|model| {
-            model.model_id.len() <= MAX_MODEL_METADATA_BYTES
+            !model.model_id.is_empty()
+                && !model
+                    .model_id
+                    .chars()
+                    .any(|c| c.is_control() || c.is_whitespace())
+                && model.model_id.len() <= MAX_MODEL_METADATA_BYTES
                 && model
                     .display_name
                     .as_ref()
@@ -195,13 +201,13 @@ fn bare_model_id_from_spec(spec: &str) -> &str {
     spec.split_whitespace().next().unwrap_or(spec)
 }
 
-/// When the provider exposes a models catalog, verify the resolved model id
-/// is still offered. Falls back to the provider default, a curated pick, or
-/// the newest discovered model, and returns a human-readable note.
+/// Repair implicit defaults against a provider catalog. An explicitly requested
+/// model fails if absent, so a typo cannot run a different, chargeable model.
 pub(crate) async fn reconcile_provider_with_catalog(
     choice: ProviderChoice,
     settings: &Settings,
-) -> (ProviderChoice, Vec<String>) {
+    explicit: bool,
+) -> Result<(ProviderChoice, Vec<String>)> {
     let discovered = tokio::time::timeout(
         DISCOVERY_TIMEOUT,
         discover_provider_models(&choice, settings),
@@ -209,25 +215,32 @@ pub(crate) async fn reconcile_provider_with_catalog(
     .await;
 
     let Ok(Ok(Some(models))) = discovered else {
-        return (choice, vec![]);
+        return Ok((choice, vec![]));
     };
-    if models.is_empty() {
-        return (choice, vec![]);
+    if models.is_empty() && !explicit {
+        return Ok((choice, vec![]));
     }
 
     let ids: HashSet<String> = models.iter().map(|m| m.model_id.clone()).collect();
     let model_id = choice.model_id().to_string();
     if ids.contains(&model_id) {
-        return (choice, vec![]);
+        return Ok((choice, vec![]));
     }
 
+    if explicit {
+        return Err(anyhow!(
+            "model `{model_id}` is not available from {}; use `yolop config models search <query> --provider {}` to choose an advertised model",
+            choice.provider_name(),
+            choice.provider_name()
+        ));
+    }
     let fallback = pick_catalog_fallback(&choice, &ids, &models);
     let note = format!(
         "model \"{model_id}\" not available on {}; using {} instead",
         choice.provider_name(),
         fallback.label()
     );
-    (fallback, vec![note])
+    Ok((fallback, vec![note]))
 }
 
 fn pick_catalog_fallback(
@@ -287,10 +300,17 @@ fn enrich_with_profiles(
                         .as_ref()
                         .and_then(|profile| profile.description.clone())
                 });
+            let context_length = api_profile
+                .as_ref()
+                .and_then(|p| p.limits.as_ref())
+                .or_else(|| core_profile.as_ref().and_then(|p| p.limits.as_ref()))
+                .and_then(|limits| u64::try_from(limits.context).ok())
+                .filter(|n| *n > 0);
             DiscoveredProviderModel {
                 model_id: model.model_id,
                 display_name,
                 description,
+                context_length,
             }
         })
         .collect()
@@ -304,6 +324,10 @@ struct OpenAiCompatibleModelsResponse {
 #[derive(serde::Deserialize)]
 struct OpenAiCompatibleModel {
     id: String,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    context_length: Option<i32>,
     #[serde(default)]
     created: Option<i64>,
     #[serde(default)]
@@ -355,13 +379,22 @@ async fn list_openai_compatible_models(
             created_at: model
                 .created
                 .and_then(|ts| chrono::DateTime::from_timestamp(ts, 0)),
-            display_name: None,
+            display_name: model.name,
             owned_by: model.owned_by,
-            model_id: model.id,
+            model_id: model.id.clone(),
             // The bare OpenAI-compatible `/models` shape reports no service
             // capabilities; leave it empty so `retain_chat_models` keeps them.
             capabilities: Vec::new(),
-            discovered_profile: None,
+            discovered_profile: model.context_length.filter(|n| *n > 0).map(|context| {
+                let mut profile = everruns_contracts::ModelProfile::minimal(&model.id);
+                profile.limits = Some(everruns_contracts::ModelLimits {
+                    context,
+                    input: None,
+                    output: 0,
+                    max_media: None,
+                });
+                profile
+            }),
         })
         .take(MAX_DISCOVERED_MODELS)
         .collect();
@@ -413,6 +446,64 @@ fn provider_env_present(provider: &str) -> bool {
             .map(|value| !value.is_empty())
             .unwrap_or(false)
     })
+}
+
+/// One bounded chat request using the host's drivers, without a tool loop.
+pub(crate) async fn ping_model(
+    choice: &ProviderChoice,
+    settings: std::sync::Arc<crate::config::SettingsStore>,
+) -> Result<()> {
+    use everruns_contracts::{LlmCallConfig, Message, MessageRole};
+    crate::ensure_provider_is_built_in(choice)?;
+    let target = choice.model_with_provider(&settings.snapshot())?;
+    let mut registry = crate::runtime::registered_drivers(settings);
+    everruns_llmsim::register_driver(&mut registry);
+    let mut config = ProviderConfig::new(target.provider_type);
+    if let Some(key) = target.api_key {
+        config = config.with_api_key(key);
+    }
+    if let Some(base) = target.base_url {
+        config = config.with_base_url(base);
+    }
+    if let Some(metadata) = target.provider_metadata {
+        config = config.with_metadata(metadata);
+    }
+    let driver = registry.create_chat_driver(&config)?;
+    let mut call = LlmCallConfig::new(target.model);
+    // Reasoning tokens share this allowance on some providers. Tiny answer-only
+    // caps can exhaust it before a reasoning model emits even a short pong.
+    call.max_tokens = Some(1024);
+    call.reasoning_effort = choice
+        .reasoning_effort()
+        .map(|effort| {
+            everruns_contracts::ReasoningEffort::parse(effort)
+                .ok_or_else(|| anyhow!("unknown reasoning effort `{effort}`"))
+        })
+        .transpose()?;
+    call.limits = everruns_contracts::turn_collector::TurnLimits::default()
+        .with_total(std::time::Duration::from_secs(60))
+        .with_first_event(std::time::Duration::from_secs(30))
+        .with_max_response_bytes(64 * 1024)
+        .requiring_terminal_event();
+    let response = tokio::time::timeout(
+        std::time::Duration::from_secs(60),
+        driver.chat_completion(
+            &ProviderEndpoint::default(),
+            vec![Message::text(MessageRole::User, "Reply briefly with pong.")],
+            &call,
+        ),
+    )
+    .await
+    .map_err(|_| anyhow!("model ping timed out after 60s"))??;
+    anyhow::ensure!(
+        !response.text.trim().is_empty(),
+        "model ping returned no answer text"
+    );
+    anyhow::ensure!(
+        response.tool_calls.as_ref().is_none_or(Vec::is_empty),
+        "model ping returned tool calls without tools"
+    );
+    Ok(())
 }
 
 #[cfg(test)]
@@ -573,11 +664,13 @@ mod tests {
                 model_id: "gpt-4o".to_string(),
                 display_name: None,
                 description: None,
+                context_length: None,
             },
             DiscoveredProviderModel {
                 model_id: "gpt-6.1-sol".to_string(),
                 display_name: None,
                 description: None,
+                context_length: None,
             },
         ];
 
@@ -598,6 +691,7 @@ mod tests {
             model_id: malicious_id.to_string(),
             display_name: None,
             description: None,
+            context_length: None,
         }];
 
         let fallback = pick_catalog_fallback(&choice, &ids, &models);

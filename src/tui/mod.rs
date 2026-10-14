@@ -11406,6 +11406,7 @@ flowchart TD
             model_id: model_id.to_string(),
             display_name: display_name.map(str::to_string),
             description: None,
+            context_length: None,
         }
     }
 

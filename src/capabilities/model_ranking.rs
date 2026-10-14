@@ -120,6 +120,7 @@ mod tests {
             model_id: id.to_string(),
             display_name: None,
             description: None,
+            context_length: None,
         }
     }
 

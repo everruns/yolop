@@ -4153,3 +4153,314 @@ fn utils_rg_files_lists_searchable_files() {
     assert!(stdout.contains("a.txt"), "unexpected stdout: {stdout}");
     assert!(!stdout.contains("skip.me"), "unexpected stdout: {stdout}");
 }
+
+#[test]
+fn model_management_commands_are_registered_in_the_binary() {
+    let output = yolop_command()
+        .args(["config", "models", "--help"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success());
+    assert!(stdout.contains("search"), "{stdout}");
+    assert!(stdout.contains("test"), "{stdout}");
+}
+
+#[test]
+fn model_ping_uses_the_qualified_target_and_preserves_settings() {
+    let dir = tempfile::tempdir().unwrap();
+    let server = MockOpenAiServer::spawn("pong");
+    let settings = format!(
+        "default_provider = \"llmsim\"\n[base_urls]\ncustom = {:?}\n",
+        server.base_url
+    );
+    fs::write(dir.path().join("settings.toml"), &settings).unwrap();
+    let output = yolop_command()
+        .env("YOLOP_CONFIG_DIR", dir.path())
+        .args(["config", "models", "test", "custom/vendor/ping-model"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stdout}{stderr}");
+    assert!(stdout.contains("ok custom/vendor/ping-model"), "{stdout}");
+    assert!(stdout.contains("ms"), "{stdout}");
+    let request = server.next_request(Duration::from_secs(5));
+    assert_eq!(request["model"], "vendor/ping-model");
+    assert!(request["tools"].is_null() || request["tools"].as_array().unwrap().is_empty());
+    assert_eq!(
+        fs::read_to_string(dir.path().join("settings.toml")).unwrap(),
+        settings
+    );
+}
+
+#[test]
+fn explicit_invalid_model_fails_without_starting_a_session() {
+    let dir = tempfile::tempdir().unwrap();
+    let output = yolop_command()
+        .env("YOLOP_CONFIG_DIR", dir.path())
+        .env("YOLOP_DATA_DIR", dir.path().join("data"))
+        .args(["--provider", "llmsim", "-m", "invalid-model", "-p", "hi"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("llmsim only supports"));
+    let sessions = dir.path().join("data/sessions");
+    assert!(
+        fs::read_dir(sessions)
+            .map(|mut entries| !entries.any(|entry| {
+                entry
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("session_")
+            }))
+            .unwrap_or(true),
+        "invalid selection must not create a session"
+    );
+}
+
+fn model_catalog_server(catalog: serde_json::Value) -> (String, thread::JoinHandle<()>) {
+    let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+    let base = format!("http://{}/v1", server.server_addr());
+    let task = thread::spawn(move || {
+        if let Some(request) = server.recv_timeout(Duration::from_secs(15)).unwrap() {
+            assert_eq!(request.method(), &tiny_http::Method::Get);
+            assert_eq!(request.url(), "/v1/models");
+            request
+                .respond(
+                    tiny_http::Response::from_string(catalog.to_string()).with_header(
+                        tiny_http::Header::from_bytes("Content-Type", "application/json").unwrap(),
+                    ),
+                )
+                .unwrap();
+        }
+    });
+    (base, task)
+}
+
+#[test]
+fn model_search_queries_catalog_and_returns_add_arguments_without_writes() {
+    let (base, task) = model_catalog_server(serde_json::json!({"data": [
+        {"id":"nvidia/nemotron-3-ultra-550b-a55b:free", "name":"Nemotron Ultra", "context_length":262144, "created":1},
+        {"id":"other/chat", "created":2}
+    ]}));
+    let dir = tempfile::tempdir().unwrap();
+    let settings = format!("[base_urls]\ncustom = {base:?}\n");
+    fs::write(dir.path().join("settings.toml"), &settings).unwrap();
+    let output = yolop_command()
+        .env("YOLOP_CONFIG_DIR", dir.path())
+        .args([
+            "config",
+            "models",
+            "search",
+            "NEMOTRON",
+            "--provider",
+            "custom",
+        ])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        stdout.contains("custom nvidia/nemotron-3-ultra-550b-a55b:free"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("other/chat"), "{stdout}");
+    assert!(
+        stdout.contains("Nemotron Ultra") && stdout.contains("262144"),
+        "{stdout}"
+    );
+    assert_eq!(
+        fs::read_to_string(dir.path().join("settings.toml")).unwrap(),
+        settings
+    );
+    task.join().unwrap();
+}
+
+#[test]
+fn model_ping_reports_provider_failure_with_nonzero_status() {
+    let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+    let base = format!("http://{}/v1", server.server_addr());
+    let task = thread::spawn(move || {
+        let request = server
+            .recv_timeout(Duration::from_secs(15))
+            .unwrap()
+            .unwrap();
+        assert_eq!(request.url(), "/v1/chat/completions");
+        request.respond(tiny_http::Response::from_string(
+            r#"{"error":{"message":"Insufficient credits for ping","type":"billing_error"}}"#
+        ).with_status_code(402)).unwrap();
+    });
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(
+        dir.path().join("settings.toml"),
+        format!("[base_urls]\ncustom = {base:?}\n"),
+    )
+    .unwrap();
+    let output = yolop_command()
+        .env("YOLOP_CONFIG_DIR", dir.path())
+        .args(["config", "models", "test", "custom/billing-probe"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Insufficient credits"), "{stderr}");
+    assert!(stderr.contains("custom/billing-probe"), "{stderr}");
+    assert!(stderr.contains("ms"), "{stderr}");
+    task.join().unwrap();
+}
+
+#[test]
+fn model_explicit_selection_rejects_absent_catalog_model_without_fallback() {
+    let (base, task) = model_catalog_server(serde_json::json!({"data":[{"id":"fallback-model"}]}));
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(
+        dir.path().join("settings.toml"),
+        format!("[base_urls]\ncustom = {base:?}\n"),
+    )
+    .unwrap();
+    let output = yolop_command()
+        .env("YOLOP_CONFIG_DIR", dir.path())
+        .env("YOLOP_DATA_DIR", dir.path().join("data"))
+        .args(["--provider", "custom", "-m", "missing-model", "-p", "hi"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("missing-model") && stderr.contains("not available"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("using fallback-model"), "{stderr}");
+    let sessions = dir.path().join("data/sessions");
+    assert!(
+        fs::read_dir(sessions)
+            .map(|mut entries| !entries.any(|entry| {
+                entry
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("session_")
+            }))
+            .unwrap_or(true),
+        "invalid selection must not create a session"
+    );
+    task.join().unwrap();
+}
+
+#[test]
+fn model_qualified_cli_selection_switches_provider() {
+    let dir = tempfile::tempdir().unwrap();
+    let output = yolop_command()
+        .env("YOLOP_CONFIG_DIR", dir.path())
+        .env("YOLOP_DATA_DIR", dir.path().join("data"))
+        .args([
+            "--provider",
+            "openai",
+            "-m",
+            "llmsim/llmsim-yolop",
+            "-p",
+            "hi",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!String::from_utf8_lossy(&output.stdout).trim().is_empty());
+}
+
+#[test]
+fn model_ping_applies_menu_label_and_pinned_reasoning_effort() {
+    let dir = tempfile::tempdir().unwrap();
+    let server = MockOpenAiServer::spawn("pong");
+    fs::write(dir.path().join("settings.toml"), format!(
+        "[base_urls]\ncustom = {:?}\n\n[[models]]\nprovider = \"custom\"\nmodel = \"vendor/reasoner\"\neffort = \"high\"\nlabel = \"Review work\"\n", server.base_url)).unwrap();
+    let output = yolop_command()
+        .env("YOLOP_CONFIG_DIR", dir.path())
+        .args(["config", "models", "test", "Review work"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let request = server.next_request(Duration::from_secs(5));
+    assert_eq!(request["model"], "vendor/reasoner");
+    assert_eq!(request["reasoning_effort"], "high");
+}
+
+#[test]
+fn model_ping_rejects_empty_provider_response() {
+    let dir = tempfile::tempdir().unwrap();
+    let server = MockOpenAiServer::spawn("");
+    fs::write(
+        dir.path().join("settings.toml"),
+        format!("[base_urls]\ncustom = {:?}\n", server.base_url),
+    )
+    .unwrap();
+    let output = yolop_command()
+        .env("YOLOP_CONFIG_DIR", dir.path())
+        .args(["config", "models", "test", "custom/empty-probe"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("no answer text"));
+}
+
+#[test]
+fn model_search_bounds_output_and_reports_all_matches() {
+    for long_names in [false, true] {
+        let data: Vec<_> = (0..80)
+            .map(|n| {
+                serde_json::json!({
+                    "id": format!("vendor/model-{n:03}"),
+                    "name": if long_names { "model".repeat(800) } else { format!("Model {n}") },
+                })
+            })
+            .collect();
+        let (base, task) = model_catalog_server(serde_json::json!({"data":data}));
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("settings.toml"),
+            format!("[base_urls]\ncustom = {base:?}\n"),
+        )
+        .unwrap();
+        let output = yolop_command()
+            .env("YOLOP_CONFIG_DIR", dir.path())
+            .args([
+                "config",
+                "models",
+                "search",
+                "model",
+                "--provider",
+                "custom",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("of 80 matches"), "{stdout}");
+        assert!(
+            stdout
+                .lines()
+                .filter(|line| line.starts_with("custom "))
+                .count()
+                <= 50
+        );
+        assert!(serde_json::to_string(stdout.as_ref()).unwrap().len() < 20 * 1024);
+        task.join().unwrap();
+    }
+}

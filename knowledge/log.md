@@ -1,5 +1,17 @@
 # Knowledge Log
 
+## 2026-10-14, Windows sandbox fixture isolation
+
+Native Windows CI fixtures run serially because MXC's DACL fallback mutates
+shared toolchain-directory permissions. Assertions and deadlines stay intact.
+See [sandboxing](specs/sandboxing.md#windows).
+
+## 2026-10-13, Model discovery and explicit selection
+
+Model administration adds provider-catalog search and a bounded, tool-free model
+ping. Explicit `-m` references share model-list resolution and fail rather than
+falling back to another catalog model. See [Model list](specs/model-list.md).
+
 ## 2026-10-13, Attached control parser admission
 
 The endpoint captures its parser target before shell attachment. macOS native
