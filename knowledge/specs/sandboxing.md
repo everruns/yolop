@@ -193,6 +193,11 @@ start each command slowly, and the startup notice says so. All network is denied
 the shared allowlist plus the variables Windows programs need to start, with
 `HOME`, `TEMP`, and `TMP` pointed at the private sandbox directories.
 
+Windows CI runs native sandbox fixtures serially: the DACL tier mutates ACLs on
+shared toolchain directories, whose SDK path mutexes otherwise contend across
+fixtures. This isolates the fixtures without changing enforcement assertions or
+deadlines.
+
 Attached `yolop` subcommands reach the session over a local named pipe
 whose ACL admits AppContainers (plus a low-integrity label), authenticated by
 the per-execution token as on Unix. The shim directory and the Yolop

@@ -360,8 +360,10 @@ jobs:
       - name: Build the yolop binary
         run: cargo build --locked -p yolop
 
+      # The DACL fallback mutates shared PATH-directory ACLs. Parallel native
+      # fixtures contend for MXC's path mutexes; keep every assertion, in sequence.
       - name: Sandbox + shell tests
-        run: cargo test --locked -p yolop sandbox -- --nocapture
+        run: cargo test --locked -p yolop sandbox -- --nocapture --test-threads=1
 
       - name: Offline smoke (PowerShell shell)
         run: cargo run -p yolop -- --provider llmsim -p "hi"
