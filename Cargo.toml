@@ -50,7 +50,7 @@ metal = ["local-inference", "mistralrs/metal"]
 cuda = ["local-inference", "mistralrs/cuda"]
 
 [dependencies]
-agent-client-protocol = "2.0.0"
+agent-client-protocol = "3.3.0"
 anyhow = "1.0"
 ast-grep-core = "0.45"
 ast-grep-language = { version = "0.45", default-features = false, features = [
