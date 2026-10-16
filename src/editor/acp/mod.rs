@@ -2365,6 +2365,77 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn continuation_exhaustion_requests_approval_and_yes_resets_budget() {
+        use everruns_llmsim::OnExhausted;
+        let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut turns: Vec<_> = (0..7)
+            .flat_map(|_| {
+                [
+                    SimTurn::Assistant("Work remains.".into()),
+                    SimTurn::Assistant(
+                        r#"{"state":"in_progress","reason":"verification remains"}"#.into(),
+                    ),
+                ]
+            })
+            .collect();
+        turns.extend([
+            SimTurn::Assistant("Verification complete.".into()),
+            SimTurn::Assistant(r#"{"state":"achieved","reason":"verified"}"#.into()),
+        ]);
+        let config = LlmSimConfig::scripted(turns)
+            .with_on_exhausted(OnExhausted::Error)
+            .with_message_capture(captured.clone());
+        let sessions = tempfile::tempdir().unwrap();
+        let factory = Arc::new(ScriptedFactory {
+            config,
+            sessions_dir: sessions.path().to_path_buf(),
+            settings: Arc::new(SettingsStore::open(sessions.path().join("settings.toml"))),
+        });
+        let (paused, resumed) = with_factory(factory, |client| async move {
+            let mut session = client.new_session().await?;
+            let paused = SdkClient::prompt(&mut session, "Finish verification.").await?;
+            let resumed = SdkClient::prompt(&mut session, "yes").await?;
+            Ok((paused, resumed))
+        })
+        .await;
+        assert!(
+            paused
+                .assistant_text()
+                .contains("5 automatic continuations")
+        );
+        assert!(paused.assistant_text().contains("Approve to resume"));
+        assert!(resumed.assistant_text().contains("Verification complete."));
+        assert!(!resumed.assistant_text().contains("budget exhausted"));
+        let log_path = std::fs::read_dir(sessions.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path().join("events.jsonl"))
+            .find(|path| path.is_file())
+            .unwrap();
+        let events: Vec<everruns_core::Event> = std::fs::read_to_string(log_path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        let resets: Vec<_> = events
+            .iter()
+            .filter(|event| event.event_type == "budget.resumed")
+            .collect();
+        assert_eq!(resets.len(), 1);
+        let diagnostic = &resets[0].metadata.as_ref().unwrap()["yolop.task_completion"];
+        assert_eq!(diagnostic["action"], "reset");
+        assert_eq!(diagnostic["previous_used_turns"], 5);
+        assert_eq!(diagnostic["used_turns"], 0);
+        assert_eq!(diagnostic["used_tokens"], 0);
+        assert!(diagnostic["previous_turn_id"].is_string());
+        assert_eq!(
+            captured.lock().unwrap().len(),
+            16,
+            "initial plus five continuations, then approval plus one continuation, each reviewed"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn failed_command_evidence_reaches_provider_and_unfinished_work_continues() {
         use everruns_llmsim::OnExhausted;
         let captured = Arc::new(std::sync::Mutex::new(Vec::new()));

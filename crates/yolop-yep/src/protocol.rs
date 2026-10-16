@@ -401,6 +401,9 @@ pub struct TraceEventParams {
     /// Event-type-specific payload, carried verbatim.
     #[serde(default, skip_serializing_if = "Value::is_null")]
     pub data: Value,
+    /// Host event metadata, including continuation decisions and budget counters.
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    pub metadata: Value,
 }
 
 impl TraceEventParams {

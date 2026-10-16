@@ -631,7 +631,7 @@ async fn print_does_not_report_success_for_known_unfinished_work() {
             "required outside input",
         ),
     ] {
-        let turns = (0..4)
+        let turns = (0..6)
             .flat_map(|_| {
                 [
                     SimTurn::Assistant("Validation still needs repair.".into()),
@@ -648,6 +648,118 @@ async fn print_does_not_report_success_for_known_unfinished_work() {
             .expect_err("unfinished print work must exit unsuccessfully");
         assert!(error.to_string().contains(expected), "{error}");
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn print_enforces_configured_continuation_limit() {
+    for (limit, label) in [
+        (1, "1 automatic continuation"),
+        (7, "7 automatic continuations"),
+    ] {
+        let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let turns = (0..=limit)
+            .flat_map(|_| {
+                [
+                    SimTurn::Assistant("Work remains.".into()),
+                    SimTurn::Assistant(
+                        r#"{"state":"in_progress","reason":"verify remaining work"}"#.into(),
+                    ),
+                ]
+            })
+            .collect();
+        let (runtime, _) = build_scripted_runtime(
+            LlmSimConfig::scripted(turns)
+                .with_on_exhausted(OnExhausted::Error)
+                .with_message_capture(captured.clone()),
+        )
+        .await;
+        runtime
+            .settings
+            .set_continuation_max_turns(Some(limit))
+            .unwrap();
+        let log_path = runtime.startup.session_log_path.clone();
+        let session_id = runtime.handles.session_id;
+        let error = crate::run_print_mode(runtime, "Complete verification".into(), vec![], None)
+            .await
+            .expect_err("unfinished work must pause at the configured limit");
+        assert!(error.to_string().contains(label), "{error}");
+        assert!(error.to_string().contains("Approve to resume"), "{error}");
+        assert_eq!(captured.lock().unwrap().len() as u64, (limit + 1) * 2);
+        let events: Vec<everruns_core::Event> = std::fs::read_to_string(&log_path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.event_type == "budget.warning")
+                .count() as u64,
+            limit
+        );
+        let replayed = crate::runtime::session_log::replay(&log_path, session_id).unwrap();
+        assert!(
+            replayed
+                .events
+                .iter()
+                .any(|event| event.event_type == "budget.exhausted")
+        );
+        let exhausted = events
+            .iter()
+            .find(|event| event.event_type == "budget.exhausted")
+            .unwrap();
+        let diagnostic = &exhausted.metadata.as_ref().unwrap()["yolop.task_completion"];
+        assert_eq!(diagnostic["state"], "in_progress");
+        assert_eq!(diagnostic["action"], "exhausted");
+        assert_eq!(diagnostic["reason"], "verify remaining work");
+        assert_eq!(diagnostic["used_turns"], limit);
+        assert_eq!(diagnostic["max_turns"], limit);
+        assert_eq!(diagnostic["exhausted_limit"], "turns");
+        assert!(exhausted.context.turn_id.is_some());
+        assert_eq!(diagnostic["turn_stop_reason"], "end_turn");
+        let params = crate::extensions::trace::trace_event_params(exhausted);
+        assert_eq!(params["metadata"]["yolop.task_completion"], *diagnostic);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn completion_review_failure_is_durable() {
+    let (runtime, _) = build_scripted_runtime(
+        LlmSimConfig::scripted(vec![
+            SimTurn::Assistant("Work remains.".into()),
+            SimTurn::Assistant("invalid review JSON".into()),
+        ])
+        .with_on_exhausted(OnExhausted::Error),
+    )
+    .await;
+    let result = run_single_turn(&runtime, "Finish verification").await;
+    let mut controller = crate::session_state::task_completion::CompletionController::default();
+    let error = controller
+        .after_turn(&runtime.handles, &result, false, runtime.settings.as_ref())
+        .await
+        .err()
+        .expect("review must fail");
+    assert!(error.to_string().contains("invalid completion review"));
+    let events: Vec<everruns_core::Event> =
+        std::fs::read_to_string(&runtime.startup.session_log_path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+    let paused = events
+        .iter()
+        .find(|event| event.event_type == "budget.paused")
+        .unwrap();
+    let diagnostic = &paused.metadata.as_ref().unwrap()["yolop.task_completion"];
+    assert_eq!(diagnostic["action"], "review_failed");
+    assert_eq!(diagnostic["state"], "failed");
+    assert!(
+        diagnostic["reason"]
+            .as_str()
+            .unwrap()
+            .contains("invalid completion review")
+    );
+    assert_eq!(paused.context.turn_id, Some(result.turn_id));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

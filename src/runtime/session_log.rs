@@ -21,6 +21,8 @@
 //   its prior mode on resume. Session logs contain prompts, tool
 //   arguments, and tool output, plus the reasoning artifacts described
 //   below.
+// * Durable diagnostics retain turn outcomes, recovery, and budget events.
+//   They carry reasons and usage without becoming conversation messages.
 // * Replay keeps event types that (a) round-trip into the conversation
 //   (`input.message`, `output.message.completed`, `tool.completed`) and
 //   (b) the agent needs to restore the live transcript view and provider
@@ -466,7 +468,8 @@ pub fn replay(path: &Path, expected: SessionId) -> Result<ReplayedSession> {
 /// resume (`reason.completed` carries the safe `text_preview` narration,
 /// `reason.item` carries opaque/encrypted reasoning context curated by the
 /// provider), plus semantic title updates used to repair workspace metadata.
-/// Streaming `*.delta` events and pure lifecycle markers
+/// Turn lifecycle, recovery, and budget events also survive for diagnostics.
+/// Streaming `*.delta` events and intermediate lifecycle markers
 /// (`reason.started`, `reason.thinking.*`, `output.message.started`) are
 /// dropped — they are live status signals only and the delta types would
 /// bloat the log O(n²) since each delta carries the accumulated text so
@@ -480,6 +483,16 @@ fn is_replay_relevant(event_type: &str) -> bool {
             | REASON_COMPLETED
             | REASON_ITEM
             | SESSION_TITLE_UPDATED
+            | "turn.started"
+            | "turn.completed"
+            | "turn.failed"
+            | "turn.cancelled"
+            | "turn.sealed"
+            | "reason.recovered"
+            | "budget.warning"
+            | "budget.paused"
+            | "budget.exhausted"
+            | "budget.resumed"
     )
 }
 

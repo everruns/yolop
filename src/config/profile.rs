@@ -17,6 +17,9 @@ const PROFILEABLE_KEYS: &[&str] = &[
     "base_urls",
     "approval_mode",
     "approval_policy",
+    "continuation_max_turns",
+    "continuation_max_tokens",
+    "continuation_max_seconds",
     "worktrees",
     "sandbox_mode",
     "capabilities",
@@ -39,6 +42,9 @@ const REWRITTEN_KEYS: &[&str] = &[
     "base_urls",
     "approval_mode",
     "approval_policy",
+    "continuation_max_turns",
+    "continuation_max_tokens",
+    "continuation_max_seconds",
     "worktrees",
     "sandbox_mode",
     "capabilities",
@@ -129,6 +135,9 @@ pub struct SettingsOverlay {
     pub base_urls: BTreeMap<String, Option<String>>,
     pub approval_mode: Option<ApprovalMode>,
     pub approval_policy: Option<ApprovalPolicy>,
+    pub continuation_max_turns: Option<u64>,
+    pub continuation_max_tokens: Option<u64>,
+    pub continuation_max_seconds: Option<u64>,
     pub worktrees: Option<WorktreesMode>,
     pub sandbox: Option<SandboxMode>,
     /// Harness capability overrides applied after the global ones (or instead
@@ -166,6 +175,15 @@ impl SettingsOverlay {
         }
         if let Some(policy) = self.approval_policy {
             settings.approval_policy = policy;
+        }
+        if let Some(value) = self.continuation_max_turns {
+            settings.continuation_max_turns = value;
+        }
+        if let Some(value) = self.continuation_max_tokens {
+            settings.continuation_max_tokens = value;
+        }
+        if let Some(value) = self.continuation_max_seconds {
+            settings.continuation_max_seconds = value;
         }
         if let Some(mode) = self.worktrees {
             settings.worktrees = mode;
@@ -298,6 +316,15 @@ impl SettingsOverlay {
                 base_urls,
                 approval_mode,
                 approval_policy,
+                continuation_max_turns: optional_positive_integer(table, "continuation_max_turns")?,
+                continuation_max_tokens: optional_positive_integer(
+                    table,
+                    "continuation_max_tokens",
+                )?,
+                continuation_max_seconds: optional_positive_integer(
+                    table,
+                    "continuation_max_seconds",
+                )?,
                 worktrees,
                 sandbox,
                 capabilities,
@@ -335,6 +362,24 @@ impl SettingsOverlay {
             table.insert(
                 "approval_policy".to_string(),
                 Value::String(policy.as_str().to_string()),
+            );
+        }
+        if let Some(value) = self.continuation_max_turns {
+            table.insert(
+                "continuation_max_turns".to_string(),
+                Value::Integer(value as i64),
+            );
+        }
+        if let Some(value) = self.continuation_max_tokens {
+            table.insert(
+                "continuation_max_tokens".to_string(),
+                Value::Integer(value as i64),
+            );
+        }
+        if let Some(value) = self.continuation_max_seconds {
+            table.insert(
+                "continuation_max_seconds".to_string(),
+                Value::Integer(value as i64),
             );
         }
         if let Some(mode) = self.worktrees {
@@ -543,6 +588,15 @@ fn insert_map(table: &mut Table, key: &str, values: &BTreeMap<String, Option<Str
     if !entries.is_empty() {
         table.insert(key.to_string(), Value::Table(entries));
     }
+}
+
+fn optional_positive_integer(table: &Table, key: &str) -> Result<Option<u64>> {
+    if !table.contains_key(key) {
+        return Ok(None);
+    }
+    super::positive_integer(table, key)
+        .map(Some)
+        .ok_or_else(|| anyhow::anyhow!("`{key}` expects a positive integer"))
 }
 
 #[cfg(test)]

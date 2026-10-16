@@ -64,3 +64,10 @@ bound the work.
 
 Export is best-effort: a slow or unreachable Logfire never stalls the agent (the
 host never awaits `trace/event`), and spans are exported as they end.
+
+Continuation decisions are exported as `budget.*` point spans. The
+`yolop.completion.*` attributes report the action, reason, consumed turns and
+tokens, elapsed time, configured limits, and which limit was exhausted. These
+spans correlate to the completed turn even when completion review finishes
+after the turn span closes. The same events remain in Yolop's private session
+log when no exporter is configured.

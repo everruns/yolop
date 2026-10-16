@@ -1,4 +1,7 @@
 //! One bounded completion policy for ACP, TUI, and print hosts.
+mod diagnostics;
+
+use crate::config::{Settings, service::ConfigService};
 use anyhow::{Context, Result};
 use everruns_core::command_host::{CommandHost, SessionCompletionRequest};
 use everruns_core::host::{RuntimeHostAdapter, StoreCommandHost};
@@ -20,9 +23,6 @@ pub(crate) fn has_pending_execution(tasks: &[everruns_core::SessionTask]) -> boo
             )
     })
 }
-const MAX_REPAIR_TURNS: u32 = 3;
-const MAX_REPAIR_TOKENS: u64 = 256_000;
-const MAX_REPAIR_ELAPSED: Duration = Duration::from_secs(600);
 const REVIEW_PROMPT: &str = r#"Review the assistant's candidate final against the user's conversation.
 Subsequent user messages steer the ongoing request; they do not erase its original objective.
 Return exactly JSON: {"state":"achieved|in_progress|blocked", "reason":"short explanation"}.
@@ -74,8 +74,10 @@ pub(crate) fn continuation_prompt(reason: &str) -> String {
 #[derive(Default)]
 pub(crate) struct CompletionController {
     repair_started: Option<Instant>,
-    repairs: u32,
+    repairs: u64,
     tokens: u64,
+    last_turn: Option<everruns_contracts::typed_id::TurnId>,
+    pending_reset: Option<diagnostics::PendingReset>,
 }
 pub(crate) struct CompletionDecision {
     pub state: CompletionState,
@@ -84,60 +86,116 @@ pub(crate) struct CompletionDecision {
 }
 impl CompletionController {
     pub(crate) fn reset(&mut self) {
-        *self = Self::default();
+        let pending_reset = self
+            .last_turn
+            .map(|previous_turn_id| diagnostics::PendingReset {
+                ts: chrono::Utc::now(),
+                previous_turn_id,
+                used_turns: self.repairs,
+                used_tokens: self.tokens,
+                elapsed_ms: self.elapsed_ms(),
+            })
+            .or_else(|| self.pending_reset.take());
+        *self = Self {
+            pending_reset,
+            ..Default::default()
+        };
     }
     pub(crate) async fn after_turn(
         &mut self,
         handles: &crate::runtime::RuntimeHandles,
         result: &everruns_core::host::TurnResult,
         background: bool,
+        settings: &dyn ConfigService,
     ) -> Result<CompletionDecision> {
+        self.record_reset(handles, result.turn_id, &settings.snapshot())
+            .await?;
+        self.last_turn = Some(result.turn_id);
         // Charge only automatic repairs. A long original turn must still get a recovery chance.
         let tokens = if self.repairs > 0 {
             handles.turn_tokens(result.turn_id).await
         } else {
             0
         };
-        let (state, reason) = match gate_turn(result, background) {
-            GateDecision::Conclusive(state) => (
-                state,
-                "turn stopped before completing the request".to_string(),
-            ),
-            GateDecision::Evaluate => {
-                let runtime = handles.runtime.as_ref();
-                let org = everruns_core::host::in_process_internal_org_id(
-                    everruns_core::DEFAULT_ORG_PUBLIC_ID,
-                );
-                let host = StoreCommandHost::new(
-                    handles.session_id,
-                    runtime.harness_store(org),
-                    runtime.agent_store(org),
-                    runtime.session_store(org),
-                    runtime.message_store(),
-                    runtime.provider_store(org),
-                    runtime.capability_registry(),
-                    runtime.driver_registry(),
-                )
-                .with_file_store(runtime.file_store(org));
-                let context = host.turn_context().await?;
-                let evidence = review_evidence(&context.messages, &result.response);
-                let request = SessionCompletionRequest {
-                    system_prompts: vec![REVIEW_PROMPT.to_string()],
-                    messages: vec![RuntimeMessage::user(evidence)],
-                    metadata: [("purpose".to_string(), "completion_review".to_string())].into(),
-                    ..Default::default()
-                };
-                let response =
-                    tokio::time::timeout(Duration::from_secs(45), host.completion(request))
-                        .await
-                        .context("completion review timed out")?
-                        .map_err(|err| anyhow::anyhow!("completion review failed: {err:?}"))?;
-                parse_review(&response.text)?
+        let review: Result<(CompletionState, String)> = async {
+            Ok(match gate_turn(result, background) {
+                GateDecision::Conclusive(state) => (
+                    state,
+                    match state {
+                        CompletionState::Blocked => "turn cancelled".to_string(),
+                        CompletionState::Failed => bounded(
+                            result
+                                .error
+                                .as_deref()
+                                .unwrap_or("provider failed or refused the request"),
+                            2000,
+                        ),
+                        CompletionState::WaitingOnBackground => {
+                            "background execution is still pending".to_string()
+                        }
+                        _ => format!("turn requires continuation: {:?}", result.stop_reason),
+                    },
+                ),
+                GateDecision::Evaluate => {
+                    let runtime = handles.runtime.as_ref();
+                    let org = everruns_core::host::in_process_internal_org_id(
+                        everruns_core::DEFAULT_ORG_PUBLIC_ID,
+                    );
+                    let host = StoreCommandHost::new(
+                        handles.session_id,
+                        runtime.harness_store(org),
+                        runtime.agent_store(org),
+                        runtime.session_store(org),
+                        runtime.message_store(),
+                        runtime.provider_store(org),
+                        runtime.capability_registry(),
+                        runtime.driver_registry(),
+                    )
+                    .with_file_store(runtime.file_store(org));
+                    let context = host.turn_context().await?;
+                    let evidence = review_evidence(&context.messages, &result.response);
+                    let request = SessionCompletionRequest {
+                        system_prompts: vec![REVIEW_PROMPT.to_string()],
+                        messages: vec![RuntimeMessage::user(evidence)],
+                        metadata: [("purpose".to_string(), "completion_review".to_string())].into(),
+                        ..Default::default()
+                    };
+                    let response =
+                        tokio::time::timeout(Duration::from_secs(45), host.completion(request))
+                            .await
+                            .context("completion review timed out")?
+                            .map_err(|err| anyhow::anyhow!("completion review failed: {err:?}"))?;
+                    parse_review(&response.text)?
+                }
+            })
+        }
+        .await;
+        let settings = settings.snapshot();
+        let used_turns = self.repairs;
+        let (state, reason) = match review {
+            Ok(review) => review,
+            Err(error) => {
+                self.tokens = self.tokens.saturating_add(tokens);
+                let mut diagnostic =
+                    self.diagnostic(&settings, used_turns, "failed", &format!("{error:#}"));
+                diagnostic.action = "review_failed";
+                diagnostic.turn_stop_reason = Some(result.stop_reason);
+                diagnostics::emit(handles, result.turn_id, diagnostic).await?;
+                return Err(error);
             }
         };
-        Ok(self.decide(state, &reason, tokens))
+        let decision = self.decide(state, &reason, tokens, &settings);
+        self.record_decision(handles, result, &settings, used_turns, &reason, &decision)
+            .await?;
+        Ok(decision)
     }
-    fn decide(&mut self, state: CompletionState, reason: &str, tokens: u64) -> CompletionDecision {
+    fn decide(
+        &mut self,
+        state: CompletionState,
+        reason: &str,
+        tokens: u64,
+        settings: &Settings,
+    ) -> CompletionDecision {
         self.tokens = self.tokens.saturating_add(tokens);
         let mut decision = CompletionDecision {
             state,
@@ -148,13 +206,28 @@ impl CompletionController {
             return decision;
         }
         let started = self.repair_started.get_or_insert_with(Instant::now);
-        if self.repairs >= MAX_REPAIR_TURNS
-            || self.tokens >= MAX_REPAIR_TOKENS
-            || started.elapsed() >= MAX_REPAIR_ELAPSED
+        if self.repairs >= settings.continuation_max_turns
+            || self.tokens >= settings.continuation_max_tokens
+            || started.elapsed() >= Duration::from_secs(settings.continuation_max_seconds)
         {
-            decision.notice = Some(
-                "Automatic continuation budget exhausted; send a message to resume.".to_string(),
-            );
+            decision.notice = Some(format!(
+                "Automatic continuation budget exhausted ({}). Approve to resume with a fresh budget.",
+                if self.repairs >= settings.continuation_max_turns {
+                    format!(
+                        "{} automatic continuation{}",
+                        settings.continuation_max_turns,
+                        if settings.continuation_max_turns == 1 {
+                            ""
+                        } else {
+                            "s"
+                        }
+                    )
+                } else if self.tokens >= settings.continuation_max_tokens {
+                    format!("{} tokens", settings.continuation_max_tokens)
+                } else {
+                    format!("time limit: {}s", settings.continuation_max_seconds)
+                }
+            ));
         } else {
             self.repairs += 1;
             decision.followup = Some(continuation_prompt(reason));
@@ -270,50 +343,95 @@ mod tests {
         );
     }
     #[test]
-    fn repairs_are_bounded_without_charging_the_initial_turn() {
+    fn continuation_defaults_allow_five_repairs_then_request_approval() {
+        let settings = Settings::default();
         let mut controller = CompletionController::default();
-        assert!(
-            controller
-                .decide(CompletionState::InProgress, "fix tests", 0)
-                .followup
-                .is_some()
+        for _ in 0..5 {
+            assert!(
+                controller
+                    .decide(CompletionState::InProgress, "fix tests", 0, &settings)
+                    .followup
+                    .is_some()
+            );
+        }
+        let stopped = controller.decide(CompletionState::InProgress, "fix tests", 0, &settings);
+        assert!(stopped.followup.is_none());
+        let notice = stopped.notice.unwrap();
+        assert!(notice.contains("5 automatic continuations"), "{notice}");
+        assert_eq!(
+            notice,
+            "Automatic continuation budget exhausted (5 automatic continuations). Approve to resume with a fresh budget."
         );
         assert!(
             controller
-                .decide(CompletionState::InProgress, "fix tests", 1)
-                .followup
-                .is_some()
-        );
-        assert!(
-            controller
-                .decide(CompletionState::InProgress, "fix tests", 1)
-                .followup
-                .is_some()
-        );
-        assert!(
-            controller
-                .decide(CompletionState::InProgress, "fix tests", 1)
-                .notice
-                .is_some()
-        );
-        assert!(
-            controller
-                .decide(CompletionState::Achieved, "done", 500_000)
+                .decide(CompletionState::Achieved, "done", 500_000, &settings)
                 .notice
                 .is_none()
         );
         controller.reset();
         assert!(
             controller
-                .decide(CompletionState::InProgress, "retry", 0)
+                .decide(CompletionState::InProgress, "retry", 0, &settings)
+                .followup
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn continuation_uses_live_limits_without_resetting_usage() {
+        let mut settings = Settings {
+            continuation_max_turns: 1,
+            ..Default::default()
+        };
+        let mut controller = CompletionController::default();
+        assert!(
+            controller
+                .decide(CompletionState::InProgress, "retry", 0, &settings)
                 .followup
                 .is_some()
         );
         assert!(
             controller
-                .decide(CompletionState::InProgress, "retry", MAX_REPAIR_TOKENS)
-                .notice
+                .decide(CompletionState::InProgress, "retry", 0, &settings)
+                .followup
+                .is_none()
+        );
+        settings.continuation_max_turns = 2;
+        assert!(
+            controller
+                .decide(CompletionState::InProgress, "retry", 0, &settings)
+                .followup
                 .is_some()
+        );
+        assert_eq!(controller.repairs, 2);
+    }
+
+    #[test]
+    fn token_and_time_limits_stop_recovery_but_accept_completion() {
+        let settings = Settings {
+            continuation_max_tokens: 10,
+            continuation_max_seconds: 1,
+            ..Default::default()
+        };
+        let mut controller = CompletionController::default();
+        controller.decide(CompletionState::InProgress, "retry", 0, &settings);
+        assert!(
+            controller
+                .decide(CompletionState::InProgress, "retry", 9, &settings)
+                .followup
+                .is_some()
+        );
+        let stopped = controller.decide(CompletionState::InProgress, "retry", 1, &settings);
+        assert!(stopped.notice.unwrap().contains("10 tokens"));
+        controller.reset();
+        controller.repair_started = Some(Instant::now() - Duration::from_secs(2));
+        let stopped = controller.decide(CompletionState::InProgress, "retry", 0, &settings);
+        assert!(stopped.notice.unwrap().contains("time limit: 1s"));
+        assert!(
+            controller
+                .decide(CompletionState::Achieved, "done", 10, &settings)
+                .notice
+                .is_none()
         );
     }
     #[test]

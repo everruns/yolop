@@ -176,7 +176,7 @@ forwarder task (`src/extensions/trace.rs`) filtered to the session; the facet is
 eager-spawned so early events aren't missed, and high-frequency streaming deltas
 are dropped (the paired `*.started`/`*.completed` events already bound the work).
 The wire type is `TraceEventParams` (event type, ids, timestamp, and the event
-`context`/`data` carried verbatim); the SDK exposes it as `Server::on_trace`
+`context`/`data`/`metadata` carried verbatim); the SDK exposes it as `Server::on_trace`
 (a stateful `FnMut` so an exporter can pair spans across events). The reference
 consumer is the `yolop-extension-logfire` crate, a capability server on the SDK
 that folds the events into OpenTelemetry spans and POSTs OTLP/HTTP to Logfire,
@@ -219,6 +219,13 @@ model, provider, token, and cache fields instead of showing them empty. The
 constants are copied into the extension with their upstream source cited rather
 than imported, since depending on `everruns-core` for a set of `&'static str`
 names would pull its whole dependency tree into a small extension binary.
+
+Completion-budget diagnostics use the same trace facet. The Logfire exporter
+emits `budget.*` point spans with `yolop.completion.*` attributes from host
+metadata, including action, reason, usage, configured limits, and exhaustion.
+It retains only the latest closed turn's parent context for decisions emitted
+after the model turn ends. It does not retain every completed turn. The local
+session JSONL also preserves these diagnostics independently of exporter setup.
 
 Trace forwarding has a teardown contract. `trace/event` is fire-and-forget and
 a server is `kill_on_drop`, so ending a session by dropping the runtime killed

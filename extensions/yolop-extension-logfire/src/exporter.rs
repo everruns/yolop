@@ -59,6 +59,7 @@ struct Parsed<'a> {
     ts: SystemTime,
     context: &'a Value,
     data: &'a Value,
+    metadata: &'a Value,
     event_type: &'a str,
     event_id: &'a str,
     session_id: &'a str,
@@ -86,6 +87,10 @@ pub struct TraceExporter {
     /// Ids registered during a turn, so the whole trace's contexts are dropped
     /// when the turn closes rather than accumulating for the session's life.
     turn_ids: HashMap<String, Vec<String>>,
+    // Completion review happens after turn.completed. Retain one closed root
+    // so its host decision still belongs to the same trace, without retaining
+    // every completed turn for the session's lifetime.
+    last_closed_turn: Option<(String, Context)>,
 }
 
 impl TraceExporter {
@@ -96,6 +101,7 @@ impl TraceExporter {
             open: HashMap::new(),
             span_cx: HashMap::new(),
             turn_ids: HashMap::new(),
+            last_closed_turn: None,
         }
     }
 
@@ -113,7 +119,7 @@ impl TraceExporter {
             // `llm.generation` is a point event under the turn, carrying
             // model/token attributes. Its span covers `metadata.duration_ms`
             // when the host reports one, so Logfire can derive tok/s.
-            ("llm", _) => self.point_span(&parsed),
+            ("llm" | "budget", _) => self.point_span(&parsed),
             _ => {}
         }
     }
@@ -154,6 +160,11 @@ impl TraceExporter {
             && let Some(turn) = parsed.turn_id
             && let Some(ids) = self.turn_ids.remove(turn)
         {
+            self.last_closed_turn = self
+                .span_cx
+                .get(turn)
+                .cloned()
+                .map(|cx| (turn.to_string(), cx));
             for id in ids {
                 self.span_cx.remove(&id);
             }
@@ -237,6 +248,12 @@ impl TraceExporter {
                     .and_then(|e| self.span_cx.get(e).cloned())
             })
             .or_else(|| parsed.turn_id.and_then(|t| self.span_cx.get(t).cloned()))
+            .or_else(|| {
+                self.last_closed_turn
+                    .as_ref()
+                    .filter(|(turn, _)| Some(turn.as_str()) == parsed.turn_id)
+                    .map(|(_, cx)| cx.clone())
+            })
             .unwrap_or_default()
     }
 }
@@ -262,6 +279,7 @@ fn parse(params: &yolop_yep::TraceEventParams) -> Option<Parsed<'_>> {
         ts,
         context: &params.context,
         data: &params.data,
+        metadata: &params.metadata,
         event_type: &params.event_type,
         event_id: &params.id,
         session_id: &params.session_id,
@@ -443,6 +461,26 @@ fn gen_ai_attributes(parsed: &Parsed) -> Vec<KeyValue> {
 /// scalar `data` fields (tool name, exit code, …) namespaced under `yolop.`.
 fn attributes(parsed: &Parsed) -> Vec<KeyValue> {
     let mut attrs = gen_ai_attributes(parsed);
+    if let Some(diagnostic) = parsed
+        .metadata
+        .get("yolop.task_completion")
+        .and_then(Value::as_object)
+    {
+        for (key, value) in diagnostic {
+            let name = format!("yolop.completion.{key}");
+            match value {
+                Value::String(value) => attrs.push(KeyValue::new(name, value.clone())),
+                Value::Number(value) => {
+                    if let Some(value) = value.as_i64() {
+                        attrs.push(KeyValue::new(name, value));
+                    } else {
+                        attrs.push(KeyValue::new(name, value.to_string()));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
     attrs.push(KeyValue::new(
         "yolop.event_type",
         parsed.event_type.to_string(),
@@ -516,7 +554,71 @@ mod tests {
             session_id: "sess-1".to_string(),
             context: ctx,
             data,
+            metadata: Value::Null,
         }
+    }
+
+    #[test]
+    fn completion_budget_spans_export_metadata_after_the_turn_closes() {
+        let (mut exp, mem) = exporter();
+        exp.handle(&ev(
+            "turn.started",
+            "2024-01-01T00:00:00Z",
+            serde_json::json!({"turn_id":"t1"}),
+            serde_json::json!({}),
+        ));
+        exp.handle(&ev(
+            "turn.completed",
+            "2024-01-01T00:00:01Z",
+            serde_json::json!({"turn_id":"t1"}),
+            serde_json::json!({}),
+        ));
+        for event_type in [
+            "budget.warning",
+            "budget.paused",
+            "budget.exhausted",
+            "budget.resumed",
+        ] {
+            let mut event = ev(
+                event_type,
+                "2024-01-01T00:00:02Z",
+                serde_json::json!({"turn_id":"t1", "parent_span_id":"t1"}),
+                serde_json::json!({"budget_id":"yolop.automatic_continuation"}),
+            );
+            event.metadata = serde_json::json!({"yolop.task_completion": {
+                "action":"exhausted", "reason":"verification remains", "used_turns":5,
+                "used_tokens":u64::MAX, "max_turns":5, "exhausted_limit":"turns"
+            }});
+            exp.handle(&event);
+        }
+        let spans = mem.get_finished_spans().unwrap();
+        assert_eq!(spans.len(), 5);
+        let root = &spans[0];
+        for span in &spans[1..] {
+            assert_eq!(span.span_context.trace_id(), root.span_context.trace_id());
+            assert_eq!(span.parent_span_id, root.span_context.span_id());
+            assert!(
+                span.attributes
+                    .iter()
+                    .any(|attr| attr.key.as_str() == "yolop.completion.reason"
+                        && attr.value.to_string() == "verification remains")
+            );
+            assert!(
+                span.attributes
+                    .iter()
+                    .any(|attr| attr.key.as_str() == "yolop.completion.used_turns"
+                        && attr.value.to_string() == "5")
+            );
+            assert!(
+                span.attributes
+                    .iter()
+                    .any(|attr| attr.key.as_str() == "yolop.completion.used_tokens"
+                        && attr.value.to_string() == u64::MAX.to_string())
+            );
+        }
+        assert!(exp.open.is_empty());
+        assert!(exp.span_cx.is_empty());
+        assert!(exp.turn_ids.is_empty());
     }
 
     /// Context shapes copied from a real Anthropic session: the host computes

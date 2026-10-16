@@ -521,6 +521,30 @@ fn scan_session(path: &Path, query_lower: Option<&str>) -> SessionScan {
             }
             continue;
         }
+        if event_type.is_some_and(|kind| kind.starts_with("budget."))
+            && let Some(diagnostic) = event
+                .get("metadata")
+                .and_then(|metadata| metadata.get("yolop.task_completion"))
+            && let (Some(action), Some(reason)) =
+                (diagnostic["action"].as_str(), diagnostic["reason"].as_str())
+        {
+            let mut text = format!("continuation {action}: {reason}");
+            if let Some(limit) = diagnostic["exhausted_limit"].as_str() {
+                text.push_str(&format!(" (limit: {limit})"));
+            }
+            has_discoverable_content = true;
+            let review_failed = diagnostic["state"].as_str() == Some("failed");
+            reason_failed |= review_failed;
+            failed |= review_failed;
+            if query_lower.is_some_and(|query| text.to_lowercase().contains(query)) {
+                matched_failure = Some(MessageHit {
+                    timestamp: event.get("ts").and_then(Value::as_str).map(str::to_string),
+                    role: Some("diagnostic".to_string()),
+                    text: Some(text),
+                });
+            }
+            continue;
+        }
         if event_type == Some("reason.completed") {
             let error = event
                 .get("data")
@@ -679,6 +703,60 @@ mod tests {
         let unmatched =
             search_sessions(dir.path(), current, &json!({"query":"\"QUASAR-9182"})).unwrap();
         assert_eq!(unmatched["count"], 0);
+    }
+
+    #[test]
+    fn searches_persisted_completion_stops_without_marking_exhaustion_as_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        write_session(
+            dir.path(),
+            "session_00000000000000000000000000000004",
+            &[json!({
+                "type":"budget.exhausted", "ts":"2026-10-16T00:00:00Z",
+                "metadata":{"yolop.task_completion":{
+                    "action":"exhausted", "reason":"verification remains", "exhausted_limit":"turns"
+                }}
+            })],
+        );
+        let result = search_sessions(
+            dir.path(),
+            SessionId::new(),
+            &json!({"query":"continuation exhausted"}),
+        )
+        .unwrap();
+        assert_eq!(result["count"], 1);
+        assert_eq!(result["sessions"][0]["role"], "diagnostic");
+        assert_eq!(result["sessions"][0]["failed"], false);
+        assert!(
+            result["sessions"][0]["snippet"]
+                .as_str()
+                .unwrap()
+                .contains("verification remains (limit: turns)")
+        );
+    }
+
+    #[test]
+    fn completion_review_failures_are_searchable_as_diagnostics() {
+        let dir = tempfile::tempdir().unwrap();
+        write_session(
+            dir.path(),
+            "session_00000000000000000000000000000005",
+            &[json!({
+                "type":"budget.paused", "metadata":{"yolop.task_completion":{
+                    "action":"review_failed", "state":"failed", "reason":"invalid completion review"
+                }}
+            })],
+        );
+        let result = search_sessions(
+            dir.path(),
+            SessionId::new(),
+            &json!({"query":"review_failed"}),
+        )
+        .unwrap();
+        assert_eq!(result["count"], 1);
+        assert_eq!(result["sessions"][0]["role"], "diagnostic");
+        assert_eq!(result["sessions"][0]["failed"], true);
+        assert_eq!(result["sessions"][0]["failure_source"], "model");
     }
 
     #[test]

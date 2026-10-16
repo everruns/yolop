@@ -167,3 +167,95 @@ mod manifest_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod otlp_tests {
+    use super::*;
+    use std::io::Read;
+    use std::net::TcpListener;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn completion_diagnostics_reach_an_otlp_http_collector() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}/v1/traces", listener.local_addr().unwrap());
+        listener.set_nonblocking(true).unwrap();
+        let collector = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error)
+                        if error.kind() == std::io::ErrorKind::WouldBlock
+                            && Instant::now() < deadline =>
+                    {
+                        std::thread::sleep(Duration::from_millis(10))
+                    }
+                    Err(error) => panic!("OTLP collector did not receive a request: {error}"),
+                }
+            };
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut headers = Vec::new();
+            while !headers.ends_with(b"\r\n\r\n") {
+                assert!(headers.len() < 16 * 1024);
+                let mut byte = [0];
+                stream.read_exact(&mut byte).unwrap();
+                headers.push(byte[0]);
+            }
+            let headers = String::from_utf8(headers).unwrap().to_ascii_lowercase();
+            assert!(headers.starts_with("post /v1/traces "));
+            assert!(headers.contains("application/x-protobuf"));
+            let length = headers
+                .lines()
+                .find_map(|line| line.strip_prefix("content-length:"))
+                .unwrap()
+                .trim()
+                .parse::<usize>()
+                .unwrap();
+            assert!(length <= 1024 * 1024);
+            let mut body = vec![0; length];
+            stream.read_exact(&mut body).unwrap();
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .unwrap();
+            body
+        });
+        let provider = build_provider(
+            Some("local-test-token".into()),
+            endpoint,
+            "yolop-otlp-test".into(),
+        );
+        let tracer = provider.tracer("completion-test");
+        let mut exporter = TraceExporter::new(tracer, provider);
+        exporter.handle(&yolop_yep::TraceEventParams {
+            event_type: "budget.exhausted".into(),
+            id: "event-completion-test".into(),
+            ts: "2026-10-16T00:00:00Z".into(),
+            session_id: "session-completion-test".into(),
+            context: serde_json::json!({"turn_id":"turn-completion-test"}),
+            data: serde_json::json!({"budget_id":"yolop.automatic_continuation"}),
+            metadata: serde_json::json!({"yolop.task_completion":{
+                "action":"exhausted", "reason":"verification remains", "used_turns":5,
+                "exhausted_limit":"turns"
+            }}),
+        });
+        let body = collector.join().unwrap();
+        // OTLP protobuf strings are length-delimited. Exact attribute values
+        // and parenting are asserted by the in-memory exporter tests.
+        for expected in [
+            "budget.exhausted",
+            "yolop.completion.reason",
+            "verification remains",
+            "yolop.completion.used_turns",
+            "session-completion-test",
+        ] {
+            assert!(
+                body.windows(expected.len())
+                    .any(|window| window == expected.as_bytes()),
+                "missing {expected} in OTLP request"
+            );
+        }
+    }
+}

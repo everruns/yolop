@@ -1,5 +1,16 @@
 # Knowledge Log
 
+## 2026-10-16, Configurable continuation budgets
+
+Automatic recovery defaults to five turns. Schema-backed turn, token, and time
+limits support profile overrides and live attached changes. Completion decisions
+and native turn outcomes survive in the private session event log; trace
+extensions receive the same metadata and Logfire emits OTel budget spans.
+Exhaustion names
+the limit and asks for conversational approval to resume with a fresh budget.
+See [Task completion](specs/task-completion.md) and
+[Configuration](specs/configuration.md).
+
 ## 2026-10-16, Verify conversational MCP setup
 
 MCP setup distinguishes saved configuration, pending browser authorization,
