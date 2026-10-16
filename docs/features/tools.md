@@ -86,7 +86,19 @@ allowlist of well-known public resources.
   completed result with `accepted: false`, a `status`, and an actionable
   `message`, so the agent can continue without retrying a failed tool call.
 - Unfinished work receives bounded automatic continuation in terminal, ACP, and
-  print sessions. Failing tests remain diagnostic evidence to investigate.
+  print sessions. Defaults are five automatic turns, 256000 tokens, and 600 seconds
+  from the first continuation. The first reached limit pauses and asks you to
+  approve resuming with a fresh budget. Failing tests remain
+  diagnostic evidence to investigate.
+
+  Use `yolop config set continuation_max_turns 10`,
+  `yolop config set continuation_max_tokens 512000`, or
+  `yolop config set continuation_max_seconds 3600` to change the limits. Values
+  must be positive integers; `yolop config clear <key>` restores the inherited
+  value or default. Named profiles can override these settings. You can also ask
+  Yolop in plain language, for example "allow ten automatic continuations".
+  Changes in an attached session apply at the next continuation check without
+  resetting the budget already consumed.
 - `/btw` asks a side question without touching history.
 
 ## Conversation control plane

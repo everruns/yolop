@@ -2598,7 +2598,7 @@ async fn run_print_mode(
                 handles.flush_trace_exporters().await;
                 anyhow::bail!("completion review canceled");
             }
-            decision = completion.after_turn(&handles, &turn.result, background) => decision,
+            decision = completion.after_turn(&handles, &turn.result, background, settings.as_ref()) => decision,
         };
         let mut completion_error = None;
         match decision {

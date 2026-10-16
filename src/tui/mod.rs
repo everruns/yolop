@@ -4098,6 +4098,7 @@ impl App {
         let handles = self.session.handles().clone();
         let registry = self.task_registry.clone();
         let mut controller = std::mem::take(&mut self.completion);
+        let settings = self.settings.clone();
         self.busy = true;
         self.turn_activity = Some("checking task completion".into());
         self.turn_started_at = Some(Instant::now());
@@ -4107,7 +4108,9 @@ impl App {
                     let background = crate::session_state::task_completion::has_pending_execution(
                         &registry.list(handles.session_id, None).await?,
                     );
-                    controller.after_turn(&handles, &result, background).await
+                    controller
+                        .after_turn(&handles, &result, background, settings.as_ref())
+                        .await
                 }
                 .await;
                 (controller, outcome)

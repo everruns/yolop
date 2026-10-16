@@ -210,6 +210,15 @@ impl std::fmt::Display for ApprovalMode {
     }
 }
 
+/// TOML integers are signed; zero and negative limits are invalid.
+pub(super) fn positive_integer(table: &Table, key: &str) -> Option<u64> {
+    table
+        .get(key)?
+        .as_integer()
+        .filter(|value| *value > 0)
+        .map(|value| value as u64)
+}
+
 #[derive(Debug, Clone)]
 pub struct Settings {
     /// The default provider, used when no `--provider` flag is given. A value
@@ -242,6 +251,12 @@ pub struct Settings {
     /// Whether the TUI auto-starts a turn when a background task finishes while
     /// idle (proactive wake). On by default; disable for a quieter session.
     pub proactive_wake: bool,
+    /// Maximum automatic continuation turns after the original turn.
+    pub continuation_max_turns: u64,
+    /// Provider-reported token budget across automatic continuations.
+    pub continuation_max_tokens: u64,
+    /// Elapsed time budget from the first automatic continuation, in seconds.
+    pub continuation_max_seconds: u64,
     /// Whether `--acp` offers the loopback provider setup page: an extra ACP
     /// authentication method, and a link posted when a session opens with no
     /// provider connected. Off by default; the page binds a local HTTP
@@ -299,6 +314,9 @@ impl Default for Settings {
             approval_mode: ApprovalMode::Normal,
             approval_policy: ApprovalPolicy::OnRequest,
             proactive_wake: true,
+            continuation_max_turns: 5,
+            continuation_max_tokens: 256_000,
+            continuation_max_seconds: 600,
             acp_setup_page: false,
             worktrees: WorktreesMode::Auto,
             sandbox: SandboxMode::DangerFullAccess,
@@ -420,6 +438,12 @@ impl Settings {
             approval_mode,
             approval_policy,
             proactive_wake,
+            continuation_max_turns: positive_integer(table, "continuation_max_turns")
+                .unwrap_or(Self::default().continuation_max_turns),
+            continuation_max_tokens: positive_integer(table, "continuation_max_tokens")
+                .unwrap_or(Self::default().continuation_max_tokens),
+            continuation_max_seconds: positive_integer(table, "continuation_max_seconds")
+                .unwrap_or(Self::default().continuation_max_seconds),
             acp_setup_page,
             worktrees,
             sandbox,
@@ -447,6 +471,24 @@ impl Settings {
         // Only persist when disabled so settings.toml stays sparse.
         if !self.proactive_wake {
             table.insert("proactive_wake".to_string(), Value::Boolean(false));
+        }
+        if self.continuation_max_turns != Self::default().continuation_max_turns {
+            table.insert(
+                "continuation_max_turns".to_string(),
+                Value::Integer(self.continuation_max_turns as i64),
+            );
+        }
+        if self.continuation_max_tokens != Self::default().continuation_max_tokens {
+            table.insert(
+                "continuation_max_tokens".to_string(),
+                Value::Integer(self.continuation_max_tokens as i64),
+            );
+        }
+        if self.continuation_max_seconds != Self::default().continuation_max_seconds {
+            table.insert(
+                "continuation_max_seconds".to_string(),
+                Value::Integer(self.continuation_max_seconds as i64),
+            );
         }
         // Off by default, so only an opt-in is worth writing.
         if self.acp_setup_page {
@@ -1062,6 +1104,9 @@ impl SettingsStore {
             schema::KeyTarget::DefaultProvider => overlay.default_provider.is_some(),
             schema::KeyTarget::ApprovalMode => overlay.approval_mode.is_some(),
             schema::KeyTarget::ApprovalPolicy => overlay.approval_policy.is_some(),
+            schema::KeyTarget::ContinuationMaxTurns => overlay.continuation_max_turns.is_some(),
+            schema::KeyTarget::ContinuationMaxTokens => overlay.continuation_max_tokens.is_some(),
+            schema::KeyTarget::ContinuationMaxSeconds => overlay.continuation_max_seconds.is_some(),
             schema::KeyTarget::Worktrees => overlay.worktrees.is_some(),
             schema::KeyTarget::Sandbox => overlay.sandbox.is_some(),
             schema::KeyTarget::Model(provider) => overlay.default_models.contains_key(provider),
@@ -1211,6 +1256,54 @@ impl SettingsStore {
         let mut guard = self.lock_fresh_for_update()?;
         guard.base.proactive_wake = enabled;
         self.save_base_locked(&mut guard)
+    }
+
+    pub fn set_continuation_max_turns(&self, value: Option<u64>) -> Result<()> {
+        if value.is_some_and(|value| value == 0 || value > i64::MAX as u64) {
+            anyhow::bail!(
+                "continuation_max_turns expects a positive integer up to {}",
+                i64::MAX
+            );
+        }
+        self.update_profileable(
+            |settings| {
+                settings.continuation_max_turns =
+                    value.unwrap_or(Settings::default().continuation_max_turns)
+            },
+            |profile| profile.continuation_max_turns = value,
+        )
+    }
+
+    pub fn set_continuation_max_tokens(&self, value: Option<u64>) -> Result<()> {
+        if value.is_some_and(|value| value == 0 || value > i64::MAX as u64) {
+            anyhow::bail!(
+                "continuation_max_tokens expects a positive integer up to {}",
+                i64::MAX
+            );
+        }
+        self.update_profileable(
+            |settings| {
+                settings.continuation_max_tokens =
+                    value.unwrap_or(Settings::default().continuation_max_tokens)
+            },
+            |profile| profile.continuation_max_tokens = value,
+        )
+    }
+
+    pub fn set_continuation_max_seconds(&self, value: Option<u64>) -> Result<()> {
+        if value.is_some_and(|value| value == 0 || value > i64::MAX as u64) {
+            anyhow::bail!(
+                "continuation_max_seconds expects a positive integer up to {}",
+                i64::MAX
+            );
+        }
+        self.update_profileable(
+            |settings| {
+                settings.continuation_max_seconds =
+                    value.unwrap_or(Settings::default().continuation_max_seconds)
+            },
+            |profile| profile.continuation_max_seconds = value,
+        )
     }
 
     pub fn set_acp_setup_page(&self, enabled: bool) -> Result<()> {
@@ -1628,6 +1721,89 @@ mod tests {
         std::fs::create_dir_all(&profiles).expect("profiles dir");
         std::fs::write(profiles.join(format!("{name}.toml")), body).expect("profile");
         SettingsStore::open_with_profile(dir.join("settings.toml"), name).expect("open")
+    }
+
+    #[test]
+    fn continuation_limits_round_trip_and_clear_profile_overrides() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("settings.toml");
+        let global = SettingsStore::open(path.clone());
+        assert_eq!(global.snapshot().continuation_max_turns, 5);
+        global.set_continuation_max_turns(Some(8)).unwrap();
+        global.set_continuation_max_tokens(Some(100_000)).unwrap();
+        global.set_continuation_max_seconds(Some(1200)).unwrap();
+        let reloaded = SettingsStore::open(path.clone()).snapshot();
+        assert_eq!(reloaded.continuation_max_turns, 8);
+        assert_eq!(reloaded.continuation_max_tokens, 100_000);
+        assert_eq!(reloaded.continuation_max_seconds, 1200);
+        let profile = store_with_profile(tmp.path(), "long", "");
+        profile.set_continuation_max_turns(Some(10)).unwrap();
+        profile.set_continuation_max_tokens(Some(200_000)).unwrap();
+        profile.set_continuation_max_seconds(Some(2400)).unwrap();
+        let reloaded = SettingsStore::open_with_profile(path.clone(), "long")
+            .unwrap()
+            .snapshot();
+        assert_eq!(reloaded.continuation_max_turns, 10);
+        assert_eq!(reloaded.continuation_max_tokens, 200_000);
+        assert_eq!(reloaded.continuation_max_seconds, 2400);
+        for key in [
+            "continuation_max_turns",
+            "continuation_max_tokens",
+            "continuation_max_seconds",
+        ] {
+            assert_eq!(
+                profile.source_for(&schema::parse_key(key).unwrap()),
+                "profile:long"
+            );
+        }
+        assert_eq!(
+            SettingsStore::open(path).snapshot().continuation_max_turns,
+            8
+        );
+        profile.set_continuation_max_turns(None).unwrap();
+        profile.set_continuation_max_tokens(None).unwrap();
+        profile.set_continuation_max_seconds(None).unwrap();
+        assert_eq!(profile.snapshot().continuation_max_turns, 8);
+        assert_eq!(profile.snapshot().continuation_max_tokens, 100_000);
+        assert_eq!(profile.snapshot().continuation_max_seconds, 1200);
+        assert_eq!(
+            profile.source_for(&schema::KeyTarget::ContinuationMaxTurns),
+            "global"
+        );
+        global.set_continuation_max_turns(None).unwrap();
+        global.set_continuation_max_tokens(None).unwrap();
+        global.set_continuation_max_seconds(None).unwrap();
+        assert!(
+            !global
+                .snapshot()
+                .to_table()
+                .contains_key("continuation_max_turns")
+        );
+    }
+
+    #[test]
+    fn invalid_continuation_limits_default_globally_and_fail_profiles() {
+        for key in [
+            "continuation_max_turns",
+            "continuation_max_tokens",
+            "continuation_max_seconds",
+        ] {
+            for value in ["0", "-1", "1.5", "'5'", "true"] {
+                let table: Table = toml::from_str(&format!("{key} = {value}")).unwrap();
+                let settings = Settings::from_table(&table);
+                assert_eq!(settings.continuation_max_turns, 5);
+                assert_eq!(settings.continuation_max_tokens, 256_000);
+                assert_eq!(settings.continuation_max_seconds, 600);
+                assert!(profile::SettingsOverlay::from_table(&table, Path::new(".")).is_err());
+            }
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let store = SettingsStore::open(tmp.path().join("settings.toml"));
+        for value in [0, u64::MAX] {
+            assert!(store.set_continuation_max_turns(Some(value)).is_err());
+            assert!(store.set_continuation_max_tokens(Some(value)).is_err());
+            assert!(store.set_continuation_max_seconds(Some(value)).is_err());
+        }
     }
 
     #[test]

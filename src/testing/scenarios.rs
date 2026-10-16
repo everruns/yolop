@@ -631,7 +631,7 @@ async fn print_does_not_report_success_for_known_unfinished_work() {
             "required outside input",
         ),
     ] {
-        let turns = (0..4)
+        let turns = (0..6)
             .flat_map(|_| {
                 [
                     SimTurn::Assistant("Validation still needs repair.".into()),
@@ -647,6 +647,42 @@ async fn print_does_not_report_success_for_known_unfinished_work() {
             .await
             .expect_err("unfinished print work must exit unsuccessfully");
         assert!(error.to_string().contains(expected), "{error}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn print_enforces_configured_continuation_limit() {
+    for (limit, label) in [
+        (1, "1 automatic continuation"),
+        (7, "7 automatic continuations"),
+    ] {
+        let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let turns = (0..=limit)
+            .flat_map(|_| {
+                [
+                    SimTurn::Assistant("Work remains.".into()),
+                    SimTurn::Assistant(
+                        r#"{"state":"in_progress","reason":"verify remaining work"}"#.into(),
+                    ),
+                ]
+            })
+            .collect();
+        let (runtime, _) = build_scripted_runtime(
+            LlmSimConfig::scripted(turns)
+                .with_on_exhausted(OnExhausted::Error)
+                .with_message_capture(captured.clone()),
+        )
+        .await;
+        runtime
+            .settings
+            .set_continuation_max_turns(Some(limit))
+            .unwrap();
+        let error = crate::run_print_mode(runtime, "Complete verification".into(), vec![], None)
+            .await
+            .expect_err("unfinished work must pause at the configured limit");
+        assert!(error.to_string().contains(label), "{error}");
+        assert!(error.to_string().contains("Approve to resume"), "{error}");
+        assert_eq!(captured.lock().unwrap().len() as u64, (limit + 1) * 2);
     }
 }
 

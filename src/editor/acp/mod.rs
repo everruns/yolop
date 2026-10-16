@@ -2365,6 +2365,49 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn continuation_exhaustion_requests_approval_and_yes_resets_budget() {
+        use everruns_llmsim::OnExhausted;
+        let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut turns: Vec<_> = (0..7)
+            .flat_map(|_| {
+                [
+                    SimTurn::Assistant("Work remains.".into()),
+                    SimTurn::Assistant(
+                        r#"{"state":"in_progress","reason":"verification remains"}"#.into(),
+                    ),
+                ]
+            })
+            .collect();
+        turns.extend([
+            SimTurn::Assistant("Verification complete.".into()),
+            SimTurn::Assistant(r#"{"state":"achieved","reason":"verified"}"#.into()),
+        ]);
+        let config = LlmSimConfig::scripted(turns)
+            .with_on_exhausted(OnExhausted::Error)
+            .with_message_capture(captured.clone());
+        let (paused, resumed) = with_sdk_client_completion(config, |client| async move {
+            let mut session = client.new_session().await?;
+            let paused = SdkClient::prompt(&mut session, "Finish verification.").await?;
+            let resumed = SdkClient::prompt(&mut session, "yes").await?;
+            Ok((paused, resumed))
+        })
+        .await;
+        assert!(
+            paused
+                .assistant_text()
+                .contains("5 automatic continuations")
+        );
+        assert!(paused.assistant_text().contains("Approve to resume"));
+        assert!(resumed.assistant_text().contains("Verification complete."));
+        assert!(!resumed.assistant_text().contains("budget exhausted"));
+        assert_eq!(
+            captured.lock().unwrap().len(),
+            16,
+            "initial plus five continuations, then approval plus one continuation, each reviewed"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn failed_command_evidence_reaches_provider_and_unfinished_work_continues() {
         use everruns_llmsim::OnExhausted;
         let captured = Arc::new(std::sync::Mutex::new(Vec::new()));

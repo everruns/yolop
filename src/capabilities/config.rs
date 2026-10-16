@@ -401,7 +401,7 @@ impl ConfigCapability {
             ConfigAction::Set { key, value, json } => {
                 let mut arguments = json!({ "key": key });
                 if let Some(value) = value {
-                    arguments["value"] = parse_cli_value(&value);
+                    arguments["value"] = Value::String(value);
                 }
                 if let Some(json) = json {
                     arguments["json"] = json;
@@ -455,10 +455,6 @@ impl ConfigCapability {
             }
         }
     }
-}
-
-fn parse_cli_value(value: &str) -> Value {
-    serde_json::from_str(value).unwrap_or_else(|_| Value::String(value.to_string()))
 }
 
 // ---------- field rendering ----------
@@ -656,6 +652,9 @@ fn is_profileable_target(target: &KeyTarget) -> bool {
         KeyTarget::DefaultProvider
             | KeyTarget::ApprovalMode
             | KeyTarget::ApprovalPolicy
+            | KeyTarget::ContinuationMaxTurns
+            | KeyTarget::ContinuationMaxTokens
+            | KeyTarget::ContinuationMaxSeconds
             | KeyTarget::Worktrees
             | KeyTarget::Sandbox
             | KeyTarget::Model(_)
@@ -831,6 +830,18 @@ impl SetConfigTool {
         let path = path.display().to_string();
         let saved = |what: String| format!("{what} (saved to {path})");
         let map_err = |e: anyhow::Error| format!("could not save settings: {e}");
+        let continuation_limit = || {
+            if clearing {
+                Ok(None)
+            } else {
+                value
+                    .parse::<u64>()
+                    .ok()
+                    .filter(|value| *value > 0 && *value <= i64::MAX as u64)
+                    .map(Some)
+                    .ok_or_else(|| format!("{} expects a positive integer", target.field().key))
+            }
+        };
 
         match target {
             KeyTarget::DefaultProvider => {
@@ -863,6 +874,33 @@ impl SetConfigTool {
                     .ok_or_else(|| "attribution expects on/off (true/false, yes/no)".to_string())?;
                 self.settings.set_attribution(enabled).map_err(map_err)?;
                 Ok(saved(format!("attribution = {}", on_off(enabled))))
+            }
+            KeyTarget::ContinuationMaxTurns => {
+                self.settings
+                    .set_continuation_max_turns(continuation_limit()?)
+                    .map_err(map_err)?;
+                Ok(saved(format!(
+                    "continuation_max_turns = {}; applies at the next continuation check",
+                    self.settings.snapshot().continuation_max_turns
+                )))
+            }
+            KeyTarget::ContinuationMaxTokens => {
+                self.settings
+                    .set_continuation_max_tokens(continuation_limit()?)
+                    .map_err(map_err)?;
+                Ok(saved(format!(
+                    "continuation_max_tokens = {}; applies at the next continuation check",
+                    self.settings.snapshot().continuation_max_tokens
+                )))
+            }
+            KeyTarget::ContinuationMaxSeconds => {
+                self.settings
+                    .set_continuation_max_seconds(continuation_limit()?)
+                    .map_err(map_err)?;
+                Ok(saved(format!(
+                    "continuation_max_seconds = {}; applies at the next continuation check",
+                    self.settings.snapshot().continuation_max_seconds
+                )))
             }
             KeyTarget::ProactiveWake => {
                 // `clear` reverts to the default (on), keeping settings.toml sparse.
@@ -1513,6 +1551,75 @@ mod tests {
             .execute(json!({ "key": "approval_policy", "value": "sometimes" }))
             .await;
         assert!(matches!(bad, ToolExecutionResult::ToolError(_)));
+    }
+
+    #[tokio::test]
+    async fn config_cli_preserves_integer_and_boolean_scalar_values() {
+        let (tmp, settings) = store();
+        let capability = ConfigCapability {
+            hooks_store: Arc::new(HooksStore::beside_settings(&settings, tmp.path().into())),
+            settings: settings.clone(),
+            catalog: catalog(),
+            model_list: Arc::new(ModelListCapability::new(settings.clone(), None)),
+        };
+        for (key, value) in [
+            ("continuation_max_turns", "10"),
+            ("proactive_wake", "false"),
+        ] {
+            let request = cli_request(&["config", "set", key, value]);
+            let response = ControlResponse::from_tool_result(
+                capability.execute_control(&request.action).await,
+            );
+            assert!(response.ok, "{key}: {response:?}");
+        }
+        assert_eq!(settings.snapshot().continuation_max_turns, 10);
+        assert!(!settings.snapshot().proactive_wake);
+    }
+
+    #[tokio::test]
+    async fn continuation_config_is_discoverable_editable_and_clearable() {
+        let (tmp, settings) = store();
+        let tool = set_config_tool(settings.clone());
+        for (key, value, default) in [
+            ("continuation_max_turns", 12, 5),
+            ("continuation_max_tokens", 512_000, 256_000),
+            ("continuation_max_seconds", 3600, 600),
+        ] {
+            let target = parse_key(key).unwrap();
+            assert_eq!(target.field().kind, ValueKind::Integer);
+            assert_eq!(
+                crate::config::service::current_value(&settings.snapshot(), &target),
+                json!(default)
+            );
+            let result = tool
+                .execute(json!({"key":key, "value":value.to_string()}))
+                .await;
+            assert!(
+                matches!(result, ToolExecutionResult::Success(_)),
+                "{result:?}"
+            );
+            let reloaded = SettingsStore::open(tmp.path().join("settings.toml"));
+            assert_eq!(
+                crate::config::service::current_value(&reloaded.snapshot(), &target),
+                json!(value)
+            );
+            for invalid in ["0", "-1", "1.5", "no", "18446744073709551615"] {
+                let result = tool.execute(json!({"key":key, "value":invalid})).await;
+                assert!(
+                    matches!(result, ToolExecutionResult::ToolError(_)),
+                    "{result:?}"
+                );
+                assert_eq!(
+                    crate::config::service::current_value(&settings.snapshot(), &target),
+                    json!(value)
+                );
+            }
+            tool.execute(json!({"key":key, "value":"clear"})).await;
+            assert_eq!(
+                crate::config::service::current_value(&settings.snapshot(), &target),
+                json!(default)
+            );
+        }
     }
 
     #[tokio::test]

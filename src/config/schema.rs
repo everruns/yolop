@@ -24,6 +24,8 @@ pub enum ValueKind {
     Text,
     /// An on/off boolean.
     Bool,
+    /// A positive integer.
+    Integer,
     /// A secret string (an API token). `get_config` never echoes the value,
     /// only whether one is stored.
     Secret,
@@ -36,6 +38,7 @@ impl ValueKind {
         match self {
             ValueKind::Text => "text",
             ValueKind::Bool => "bool",
+            ValueKind::Integer => "integer",
             ValueKind::Secret => "secret",
             ValueKind::List => "list",
         }
@@ -177,6 +180,42 @@ pub fn schema() -> &'static [ConfigField] {
             kind: ValueKind::Bool,
             default: Some("on"),
             examples: &["on", "off"],
+            provider_scoped: false,
+        },
+        ConfigField {
+            key: "continuation_max_turns",
+            aliases: &[],
+            title: "Automatic continuation turns",
+            description: "Maximum automatic turns after the original turn. Positive integer, read live \
+                          before each continuation. Use yolop config set or clear; profile overrides \
+                          are supported.",
+            kind: ValueKind::Integer,
+            default: Some("5"),
+            examples: &["5", "10"],
+            provider_scoped: false,
+        },
+        ConfigField {
+            key: "continuation_max_tokens",
+            aliases: &[],
+            title: "Automatic continuation tokens",
+            description: "Provider-reported token budget across automatic continuations, excluding the \
+                          original turn. Positive integer, read live before each continuation. \
+                          Use yolop config set or clear; profile overrides are supported.",
+            kind: ValueKind::Integer,
+            default: Some("256000"),
+            examples: &["256000", "512000"],
+            provider_scoped: false,
+        },
+        ConfigField {
+            key: "continuation_max_seconds",
+            aliases: &[],
+            title: "Automatic continuation time (seconds)",
+            description: "Elapsed seconds from the first automatic continuation. Positive integer, read \
+                          live before each continuation. Use yolop config set or clear; profile \
+                          overrides are supported.",
+            kind: ValueKind::Integer,
+            default: Some("600"),
+            examples: &["600", "1200"],
             provider_scoped: false,
         },
         ConfigField {
@@ -331,6 +370,9 @@ pub enum KeyTarget {
     ApprovalMode,
     ApprovalPolicy,
     ProactiveWake,
+    ContinuationMaxTurns,
+    ContinuationMaxTokens,
+    ContinuationMaxSeconds,
     /// Loopback provider setup page for ACP clients.
     AcpSetupPage,
     Worktrees,
@@ -368,6 +410,9 @@ impl KeyTarget {
             KeyTarget::ApprovalMode => "approval_mode",
             KeyTarget::ApprovalPolicy => "approval_policy",
             KeyTarget::ProactiveWake => "proactive_wake",
+            KeyTarget::ContinuationMaxTurns => "continuation_max_turns",
+            KeyTarget::ContinuationMaxTokens => "continuation_max_tokens",
+            KeyTarget::ContinuationMaxSeconds => "continuation_max_seconds",
             KeyTarget::AcpSetupPage => "acp_setup_page",
             KeyTarget::Worktrees => "worktrees",
             KeyTarget::Sandbox => "sandbox_mode",
@@ -428,6 +473,9 @@ pub fn parse_key(input: &str) -> Result<KeyTarget, String> {
         "approval_mode" | "approval" => scalar(KeyTarget::ApprovalMode),
         "approval_policy" | "sandbox_approval" => scalar(KeyTarget::ApprovalPolicy),
         "proactive_wake" | "background_wake" | "wake" => scalar(KeyTarget::ProactiveWake),
+        "continuation_max_turns" => scalar(KeyTarget::ContinuationMaxTurns),
+        "continuation_max_tokens" => scalar(KeyTarget::ContinuationMaxTokens),
+        "continuation_max_seconds" => scalar(KeyTarget::ContinuationMaxSeconds),
         "acp_setup_page" | "setup_page" => scalar(KeyTarget::AcpSetupPage),
         "worktrees" | "worktree" => scalar(KeyTarget::Worktrees),
         "sandbox_mode" | "sandbox" | "containment" => scalar(KeyTarget::Sandbox),

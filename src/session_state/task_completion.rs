@@ -1,4 +1,5 @@
 //! One bounded completion policy for ACP, TUI, and print hosts.
+use crate::config::{Settings, service::ConfigService};
 use anyhow::{Context, Result};
 use everruns_core::command_host::{CommandHost, SessionCompletionRequest};
 use everruns_core::host::{RuntimeHostAdapter, StoreCommandHost};
@@ -20,9 +21,6 @@ pub(crate) fn has_pending_execution(tasks: &[everruns_core::SessionTask]) -> boo
             )
     })
 }
-const MAX_REPAIR_TURNS: u32 = 3;
-const MAX_REPAIR_TOKENS: u64 = 256_000;
-const MAX_REPAIR_ELAPSED: Duration = Duration::from_secs(600);
 const REVIEW_PROMPT: &str = r#"Review the assistant's candidate final against the user's conversation.
 Subsequent user messages steer the ongoing request; they do not erase its original objective.
 Return exactly JSON: {"state":"achieved|in_progress|blocked", "reason":"short explanation"}.
@@ -74,7 +72,7 @@ pub(crate) fn continuation_prompt(reason: &str) -> String {
 #[derive(Default)]
 pub(crate) struct CompletionController {
     repair_started: Option<Instant>,
-    repairs: u32,
+    repairs: u64,
     tokens: u64,
 }
 pub(crate) struct CompletionDecision {
@@ -91,6 +89,7 @@ impl CompletionController {
         handles: &crate::runtime::RuntimeHandles,
         result: &everruns_core::host::TurnResult,
         background: bool,
+        settings: &dyn ConfigService,
     ) -> Result<CompletionDecision> {
         // Charge only automatic repairs. A long original turn must still get a recovery chance.
         let tokens = if self.repairs > 0 {
@@ -135,9 +134,15 @@ impl CompletionController {
                 parse_review(&response.text)?
             }
         };
-        Ok(self.decide(state, &reason, tokens))
+        Ok(self.decide(state, &reason, tokens, &settings.snapshot()))
     }
-    fn decide(&mut self, state: CompletionState, reason: &str, tokens: u64) -> CompletionDecision {
+    fn decide(
+        &mut self,
+        state: CompletionState,
+        reason: &str,
+        tokens: u64,
+        settings: &Settings,
+    ) -> CompletionDecision {
         self.tokens = self.tokens.saturating_add(tokens);
         let mut decision = CompletionDecision {
             state,
@@ -148,13 +153,28 @@ impl CompletionController {
             return decision;
         }
         let started = self.repair_started.get_or_insert_with(Instant::now);
-        if self.repairs >= MAX_REPAIR_TURNS
-            || self.tokens >= MAX_REPAIR_TOKENS
-            || started.elapsed() >= MAX_REPAIR_ELAPSED
+        if self.repairs >= settings.continuation_max_turns
+            || self.tokens >= settings.continuation_max_tokens
+            || started.elapsed() >= Duration::from_secs(settings.continuation_max_seconds)
         {
-            decision.notice = Some(
-                "Automatic continuation budget exhausted; send a message to resume.".to_string(),
-            );
+            decision.notice = Some(format!(
+                "Automatic continuation budget exhausted ({}). Approve to resume with a fresh budget.",
+                if self.repairs >= settings.continuation_max_turns {
+                    format!(
+                        "{} automatic continuation{}",
+                        settings.continuation_max_turns,
+                        if settings.continuation_max_turns == 1 {
+                            ""
+                        } else {
+                            "s"
+                        }
+                    )
+                } else if self.tokens >= settings.continuation_max_tokens {
+                    format!("{} tokens", settings.continuation_max_tokens)
+                } else {
+                    format!("time limit: {}s", settings.continuation_max_seconds)
+                }
+            ));
         } else {
             self.repairs += 1;
             decision.followup = Some(continuation_prompt(reason));
@@ -270,50 +290,95 @@ mod tests {
         );
     }
     #[test]
-    fn repairs_are_bounded_without_charging_the_initial_turn() {
+    fn continuation_defaults_allow_five_repairs_then_request_approval() {
+        let settings = Settings::default();
         let mut controller = CompletionController::default();
-        assert!(
-            controller
-                .decide(CompletionState::InProgress, "fix tests", 0)
-                .followup
-                .is_some()
+        for _ in 0..5 {
+            assert!(
+                controller
+                    .decide(CompletionState::InProgress, "fix tests", 0, &settings)
+                    .followup
+                    .is_some()
+            );
+        }
+        let stopped = controller.decide(CompletionState::InProgress, "fix tests", 0, &settings);
+        assert!(stopped.followup.is_none());
+        let notice = stopped.notice.unwrap();
+        assert!(notice.contains("5 automatic continuations"), "{notice}");
+        assert_eq!(
+            notice,
+            "Automatic continuation budget exhausted (5 automatic continuations). Approve to resume with a fresh budget."
         );
         assert!(
             controller
-                .decide(CompletionState::InProgress, "fix tests", 1)
-                .followup
-                .is_some()
-        );
-        assert!(
-            controller
-                .decide(CompletionState::InProgress, "fix tests", 1)
-                .followup
-                .is_some()
-        );
-        assert!(
-            controller
-                .decide(CompletionState::InProgress, "fix tests", 1)
-                .notice
-                .is_some()
-        );
-        assert!(
-            controller
-                .decide(CompletionState::Achieved, "done", 500_000)
+                .decide(CompletionState::Achieved, "done", 500_000, &settings)
                 .notice
                 .is_none()
         );
         controller.reset();
         assert!(
             controller
-                .decide(CompletionState::InProgress, "retry", 0)
+                .decide(CompletionState::InProgress, "retry", 0, &settings)
+                .followup
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn continuation_uses_live_limits_without_resetting_usage() {
+        let mut settings = Settings {
+            continuation_max_turns: 1,
+            ..Default::default()
+        };
+        let mut controller = CompletionController::default();
+        assert!(
+            controller
+                .decide(CompletionState::InProgress, "retry", 0, &settings)
                 .followup
                 .is_some()
         );
         assert!(
             controller
-                .decide(CompletionState::InProgress, "retry", MAX_REPAIR_TOKENS)
-                .notice
+                .decide(CompletionState::InProgress, "retry", 0, &settings)
+                .followup
+                .is_none()
+        );
+        settings.continuation_max_turns = 2;
+        assert!(
+            controller
+                .decide(CompletionState::InProgress, "retry", 0, &settings)
+                .followup
                 .is_some()
+        );
+        assert_eq!(controller.repairs, 2);
+    }
+
+    #[test]
+    fn token_and_time_limits_stop_recovery_but_accept_completion() {
+        let settings = Settings {
+            continuation_max_tokens: 10,
+            continuation_max_seconds: 1,
+            ..Default::default()
+        };
+        let mut controller = CompletionController::default();
+        controller.decide(CompletionState::InProgress, "retry", 0, &settings);
+        assert!(
+            controller
+                .decide(CompletionState::InProgress, "retry", 9, &settings)
+                .followup
+                .is_some()
+        );
+        let stopped = controller.decide(CompletionState::InProgress, "retry", 1, &settings);
+        assert!(stopped.notice.unwrap().contains("10 tokens"));
+        controller.reset();
+        controller.repair_started = Some(Instant::now() - Duration::from_secs(2));
+        let stopped = controller.decide(CompletionState::InProgress, "retry", 0, &settings);
+        assert!(stopped.notice.unwrap().contains("time limit: 1s"));
+        assert!(
+            controller
+                .decide(CompletionState::Achieved, "done", 10, &settings)
+                .notice
+                .is_none()
         );
     }
     #[test]

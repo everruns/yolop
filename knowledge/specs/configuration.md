@@ -30,7 +30,7 @@ forcing slash-command syntax.
 
 `src/config/schema.rs` is a compile-time registry of `ConfigField`s. Each field
 carries a canonical `key`, `aliases`, `title`, `description`, value `kind`
-(`text` / `bool` / `secret`), effective `default`, `examples`, and whether it is
+(`text` / `bool` / `integer` / `secret` / `list`), effective `default`, `examples`, and whether it is
 `provider_scoped` (addressed as `<key>.<provider>`). This one registry feeds
 every configuration surface and the `yolop-config` skill, so
 there is no second place to keep in sync.
@@ -47,6 +47,9 @@ Keys are addressed the way a human would name them:
 | `approval_mode`           | text   | Soft-approval paranoia level (`protective` / `normal` / `off`). |
 | `approval_policy`         | text   | Hard shell approval policy (`untrusted` / `on-failure` / `on-request` / `never`). |
 | `attribution`             | bool   | Commit/PR attribution on/off.                                  |
+| `continuation_max_turns` | integer | Maximum automatic continuations, default 5. |
+| `continuation_max_tokens` | integer | Provider-reported tokens across continuations, default 256000. |
+| `continuation_max_seconds` | integer | Seconds from the first continuation, default 600. |
 | `proactive_wake`          | bool   | Auto-start a turn when a background task finishes (TUI); on by default. |
 | `acp_setup_page`          | bool   | Offer the loopback provider setup page to ACP clients; off by default (see [ACP](acp.md)). |
 | `worktrees`               | text   | Worktree isolation (`auto` / `always` / `off`).             |
@@ -83,6 +86,12 @@ the other forms. `clear capabilities` removes all stored overrides.
 The same command also owns `model show|set|clear` and the `models` list editor.
 It replaces the former `get_config` and `set_config` agent tools, which are no
 longer registered.
+
+Continuation limits accept positive TOML integers. Global loading falls back to
+the defaults for invalid values; config writes and profile loading reject them.
+Attached config writes take effect at the next continuation check, retaining
+consumed turns, tokens, and elapsed time. Natural-language requests use the same
+config command through the bundled skill. They do not implicitly change limits.
 
 ### Where the global directories live
 
@@ -130,6 +139,7 @@ session.
 
 The profileable keys are `default_provider`, `models`, `default_models`, `base_urls`,
 `approval_mode`, `approval_policy`, `sandbox_mode`, `worktrees`,
+`continuation_max_turns`, `continuation_max_tokens`, `continuation_max_seconds`,
 `capabilities`, `capabilities_mode`, `mcp`, `mcp_mode`, `instructions`,
 `instructions_file`, and `skills_dir`. Credentials (`tokens`, `codex_auth`, and
 the ChatGPT sign-in keys beside them: `chatgpt_client_id`, `chatgpt_sign_in`,

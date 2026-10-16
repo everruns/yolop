@@ -31,11 +31,19 @@ candidate final. It must respect authorized scope and completed analysis work;
 it must not invent implementation or shipping requirements. Review errors or
 invalid responses stop recovery with a visible notice rather than retry blindly.
 
-Recovery allows up to three automatic turns, 256,000 provider-reported tokens,
-and ten minutes from the first repair. The original turn is not charged against
-that budget. The controller checks completion before reporting exhaustion, so a
-completed repair is accepted even if it used the remaining budget. A new human
-message resets recovery. Background execution retains its own task limits.
+Recovery defaults to five automatic turns, 256,000 provider-reported tokens,
+and ten minutes from the first repair. The schema-backed settings
+`continuation_max_turns`, `continuation_max_tokens`, and
+`continuation_max_seconds` accept positive integers and support named profile
+overrides. The controller reads effective settings after each review, so an
+attached `yolop config set` changes the current recovery budget without resetting
+usage. Raising one limit leaves the other two in force. The original turn is
+not charged against that budget. The controller checks completion before reporting exhaustion, so a
+completed repair is accepted even if it used the remaining budget. Exhaustion
+names the reached limit and asks the user to approve resuming with a fresh
+budget. Approval is conversational, following the
+existing approval convention. A new human message resets recovery and can also
+redirect or cancel the task. Background execution retains its own task limits.
 
 Print waits for background completion, bounded by ten minutes from its first
 wait, and emits the accepted or terminal response. Interactive hosts stream candidate

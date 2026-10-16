@@ -1,6 +1,6 @@
 ---
 name: yolop-config
-description: Manage yolop's persistent default model and ordered model catalog through the config command.
+description: Manage Yolop settings, continuation budgets, persistent default model, and model catalog through the config command.
 user-invocable: true
 ---
 
@@ -16,6 +16,24 @@ redirection, substitutions, and background execution.
 - `yolop config set <key> <value>` sets scalar and provider-scoped fields.
 - `yolop config set capabilities --json '<object>'` appends one capability override; `--json` preserves the former structured configuration semantics.
 - `yolop config clear <key>` clears a field, or all capability overrides when the key is `capabilities`.
+
+## Automatic continuation budget
+
+When the user asks to extend the budget, use the matching setting:
+
+- `yolop config set continuation_max_turns 10`, default 5 automatic turns.
+- `yolop config set continuation_max_tokens 512000`, default 256000 tokens.
+- `yolop config set continuation_max_seconds 3600`, default 600 seconds.
+
+Values must be positive integers. The first reached limit pauses continuation.
+The original user turn is excluded. Attached changes apply at the next
+continuation check without resetting usage; change the relevant limits when the
+user asks for longer work. These are persistent settings, with named profile
+overrides supported by `yolop config --profile <name> set|clear`.
+
+At exhaustion Yolop asks the user to approve resuming with a fresh budget.
+Approval is conversational and requires no specific words; approval alone does
+not increase the persistent limits. Do not send approval on the user's behalf.
 
 ## Persistent default model
 

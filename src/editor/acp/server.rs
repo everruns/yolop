@@ -1974,7 +1974,12 @@ async fn completion_followup(
         .completion
         .lock()
         .await
-        .after_turn(&session.handles, result, background)
+        .after_turn(
+            &session.handles,
+            result,
+            background,
+            session.settings.as_ref(),
+        )
         .await
     {
         Ok(decision) => {
