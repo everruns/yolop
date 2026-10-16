@@ -175,19 +175,11 @@ pub(super) async fn emit(
         "reset" => EventData::BudgetResumed(data),
         _ => EventData::BudgetPaused(data),
     };
-    let mut context = handles
-        .runtime
-        .events()
-        .await?
-        .iter()
-        .rev()
-        .find(|event| event.context.turn_id == Some(turn_id))
-        .map(|event| event.context.clone())
-        .unwrap_or_else(EventContext::empty);
-    context.turn_id = Some(turn_id);
-    context.exec_id = None;
-    context.span_id = None;
-    context.parent_span_id = Some(turn_id.to_string());
+    let context = EventContext {
+        turn_id: Some(turn_id),
+        parent_span_id: Some(turn_id.to_string()),
+        ..EventContext::empty()
+    };
     let request = EventRequest::new(handles.session_id, context, data)
         .with_metadata(json!({ METADATA_KEY: diagnostic }));
     handles
