@@ -620,6 +620,31 @@ const PROVIDER_OPTIONS: &[ProviderOption] = &[
         hint: "many hosted models",
     },
     ProviderOption {
+        name: "mistral",
+        label: "Mistral AI",
+        hint: "Mistral models",
+    },
+    ProviderOption {
+        name: "fireworks",
+        label: "Fireworks AI",
+        hint: "open-weight models",
+    },
+    ProviderOption {
+        name: "vercel",
+        label: "Vercel AI Gateway",
+        hint: "many hosted models",
+    },
+    ProviderOption {
+        name: "cloudflare",
+        label: "Cloudflare Workers AI",
+        hint: "Workers AI models",
+    },
+    ProviderOption {
+        name: "mai",
+        label: "Microsoft MAI",
+        hint: "Azure AI Foundry deployments",
+    },
+    ProviderOption {
         name: "ollama",
         label: "Ollama local",
         hint: "local OpenAI-compatible server",
@@ -7336,7 +7361,7 @@ flowchart TD
     }
 
     fn setup_overlay_text(app: &App) -> Vec<String> {
-        setup_overlay_content(app)
+        setup_overlay_content(app, None)
             .0
             .iter()
             .map(|line| spans_plain_text(&line.spans))
@@ -11063,9 +11088,20 @@ flowchart TD
             !rows.iter().any(|line| line.contains("recommended")),
             "setup should not recommend a specific provider: {rows:?}"
         );
+        // Short viewports window the list instead of clipping the footer: the
+        // footer stays visible and the window follows the selection, so every
+        // choice (including the last) is reachable.
+        assert!(
+            rows.iter().any(|line| line.contains("Esc cancel")),
+            "footer should not be clipped: {rows:?}"
+        );
+
+        let last = PROVIDER_OPTIONS.len() - 1;
+        app.setup = Some(SetupStep::Provider { selected: last });
+        let rows = render_app_lines(app, 110, COMPOSER_VIEWPORT_HEIGHT);
         assert!(
             rows.iter().any(|line| line.contains("Offline demo mode")),
-            "last provider choice should not be clipped: {rows:?}"
+            "selected last choice should scroll into view: {rows:?}"
         );
         assert!(
             rows.iter().any(|line| line.contains("Esc cancel")),

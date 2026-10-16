@@ -1144,11 +1144,16 @@ const DEFAULT_OPENAI_MODEL: &str = "gpt-6.1-sol";
 const DEFAULT_CODEX_MODEL: &str = "gpt-6.1-sol";
 const DEFAULT_ANTHROPIC_MODEL: &str = "claude-opus-5-5";
 const DEFAULT_META_MODEL: &str = "muse-spark-1.3";
+const DEFAULT_MISTRAL_MODEL: &str = "mistral-large-4";
+const DEFAULT_FIREWORKS_MODEL: &str = "accounts/fireworks/models/llama-v3p1-70b";
+const DEFAULT_VERCEL_MODEL: &str = "anthropic/claude-opus-5-5";
+const DEFAULT_CLOUDFLARE_MODEL: &str = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
+const DEFAULT_MAI_MODEL: &str = "mai-1-preview";
 const DEFAULT_GOOGLE_MODEL: &str = "gemini-3.8-flash";
-// Gemini exposes an OpenAI-compatible surface at this base URL, driven through
-// `everruns_drivers::openai`. (OpenRouter has its own first-class driver since
-// everruns 0.10 — see `model_with_provider`.)
-const DEFAULT_GOOGLE_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta/openai";
+// Native Gemini endpoint, driven through `everruns_drivers::gemini` since the
+// 0.48 provider adoption (previously the OpenAI-compatible shim at
+// .../v1beta/openai; `default_google` still migrates stored shim URLs).
+const DEFAULT_GEMINI_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta";
 const DEFAULT_OPENROUTER_MODEL: &str = "openai/gpt-6.1-sol";
 const DEFAULT_OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
 const DEFAULT_OLLAMA_MODEL: &str = "llama3.2";
@@ -1235,6 +1240,26 @@ pub enum ProviderChoice {
         model: String,
         reasoning_effort: Option<String>,
     },
+    Mistral {
+        model: String,
+        reasoning_effort: Option<String>,
+    },
+    Fireworks {
+        model: String,
+        reasoning_effort: Option<String>,
+    },
+    Vercel {
+        model: String,
+        reasoning_effort: Option<String>,
+    },
+    Cloudflare {
+        model: String,
+        reasoning_effort: Option<String>,
+    },
+    Mai {
+        model: String,
+        reasoning_effort: Option<String>,
+    },
     OpenAi {
         model: String,
         reasoning_effort: Option<String>,
@@ -1298,6 +1323,11 @@ pub enum Provider {
     Meta,
     Google,
     OpenRouter,
+    Mistral,
+    Fireworks,
+    Vercel,
+    Cloudflare,
+    Mai,
     Ollama,
     /// In-process inference: no endpoint, no second process. Served by the
     /// `local-inference` build's own driver (`src/drivers/local.rs`); a build
@@ -1309,13 +1339,18 @@ pub enum Provider {
 
 impl Provider {
     /// Every provider, in the user-visible suggestion order.
-    pub const ALL: [Provider; 10] = [
+    pub const ALL: [Provider; 15] = [
         Provider::OpenAi,
         Provider::Codex,
         Provider::Anthropic,
         Provider::Meta,
         Provider::Google,
         Provider::OpenRouter,
+        Provider::Mistral,
+        Provider::Fireworks,
+        Provider::Vercel,
+        Provider::Cloudflare,
+        Provider::Mai,
         Provider::Ollama,
         Provider::Local,
         Provider::Custom,
@@ -1331,6 +1366,11 @@ impl Provider {
             Provider::Meta => "meta",
             Provider::Google => "google",
             Provider::OpenRouter => "openrouter",
+            Provider::Mistral => "mistral",
+            Provider::Fireworks => "fireworks",
+            Provider::Vercel => "vercel",
+            Provider::Cloudflare => "cloudflare",
+            Provider::Mai => "mai",
             Provider::Ollama => "ollama",
             Provider::Local => "local",
             Provider::Custom => "custom",
@@ -1354,8 +1394,14 @@ impl Provider {
         match self {
             Provider::Anthropic => Some(DriverId::Anthropic),
             Provider::Meta => Some(DriverId::Meta),
-            Provider::OpenAi | Provider::Google => Some(DriverId::OpenAI),
+            Provider::OpenAi => Some(DriverId::OpenAI),
+            Provider::Google => Some(DriverId::Gemini),
             Provider::OpenRouter => Some(DriverId::OpenRouter),
+            Provider::Mistral => Some(DriverId::Mistral),
+            Provider::Fireworks => Some(DriverId::Fireworks),
+            Provider::Vercel => Some(DriverId::Vercel),
+            Provider::Cloudflare => Some(DriverId::Cloudflare),
+            Provider::Mai => Some(DriverId::Mai),
             Provider::Codex
             | Provider::Ollama
             | Provider::Local
@@ -1374,6 +1420,11 @@ impl Provider {
             | Provider::Meta
             | Provider::Google
             | Provider::OpenRouter
+            | Provider::Mistral
+            | Provider::Fireworks
+            | Provider::Vercel
+            | Provider::Cloudflare
+            | Provider::Mai
             | Provider::Ollama
             | Provider::Custom => true,
             Provider::Codex | Provider::Local | Provider::Sim => false,
@@ -1397,6 +1448,11 @@ impl Provider {
             Provider::Meta => &["MODEL_API_KEY"],
             Provider::Google => &["GEMINI_API_KEY", "GOOGLE_API_KEY"],
             Provider::OpenRouter => &["OPENROUTER_API_KEY"],
+            Provider::Mistral => &["MISTRAL_API_KEY"],
+            Provider::Fireworks => &["FIREWORKS_API_KEY"],
+            Provider::Vercel => &["AI_GATEWAY_API_KEY"],
+            Provider::Cloudflare => &["CLOUDFLARE_API_TOKEN"],
+            Provider::Mai => &["AZURE_AI_API_KEY"],
             Provider::Ollama => &["OLLAMA_API_KEY"],
             Provider::Local | Provider::Sim => &[],
             Provider::Custom => &["CUSTOM_API_KEY"],
@@ -1453,6 +1509,11 @@ pub const SUPPORTED_PROVIDERS: &[&str] = &[
     Provider::Meta.as_str(),
     Provider::Google.as_str(),
     Provider::OpenRouter.as_str(),
+    Provider::Mistral.as_str(),
+    Provider::Fireworks.as_str(),
+    Provider::Vercel.as_str(),
+    Provider::Cloudflare.as_str(),
+    Provider::Mai.as_str(),
     Provider::Ollama.as_str(),
     Provider::Local.as_str(),
     Provider::Custom.as_str(),
@@ -1487,6 +1548,30 @@ impl ProviderChoice {
             || settings.has_token(Provider::OpenRouter.as_str())
         {
             return Self::default_openrouter();
+        }
+        if has_any_env(Provider::Mistral.token_env_vars())
+            || settings.has_token(Provider::Mistral.as_str())
+        {
+            return Self::default_mistral();
+        }
+        if has_any_env(Provider::Fireworks.token_env_vars())
+            || settings.has_token(Provider::Fireworks.as_str())
+        {
+            return Self::default_fireworks();
+        }
+        if has_any_env(Provider::Vercel.token_env_vars())
+            || settings.has_token(Provider::Vercel.as_str())
+        {
+            return Self::default_vercel();
+        }
+        if has_any_env(Provider::Cloudflare.token_env_vars())
+            || settings.has_token(Provider::Cloudflare.as_str())
+        {
+            return Self::default_cloudflare();
+        }
+        if has_any_env(Provider::Mai.token_env_vars()) || settings.has_token(Provider::Mai.as_str())
+        {
+            return Self::default_mai();
         }
         if google_api_key().is_some() || settings.has_token(Provider::Google.as_str()) {
             return Self::default_google();
@@ -1540,6 +1625,41 @@ impl ProviderChoice {
             model,
         }
     }
+    fn default_mistral() -> Self {
+        let model = env_or_default("EVERRUNS_CLI_MODEL", DEFAULT_MISTRAL_MODEL);
+        Self::Mistral {
+            reasoning_effort: default_reasoning_effort(&DriverId::Mistral, &model),
+            model,
+        }
+    }
+    fn default_fireworks() -> Self {
+        let model = env_or_default("EVERRUNS_CLI_MODEL", DEFAULT_FIREWORKS_MODEL);
+        Self::Fireworks {
+            reasoning_effort: default_reasoning_effort(&DriverId::Fireworks, &model),
+            model,
+        }
+    }
+    fn default_vercel() -> Self {
+        let model = env_or_default("EVERRUNS_CLI_MODEL", DEFAULT_VERCEL_MODEL);
+        Self::Vercel {
+            reasoning_effort: default_reasoning_effort(&DriverId::Vercel, &model),
+            model,
+        }
+    }
+    fn default_cloudflare() -> Self {
+        let model = env_or_default("EVERRUNS_CLI_MODEL", DEFAULT_CLOUDFLARE_MODEL);
+        Self::Cloudflare {
+            reasoning_effort: default_reasoning_effort(&DriverId::Cloudflare, &model),
+            model,
+        }
+    }
+    fn default_mai() -> Self {
+        let model = env_or_default("EVERRUNS_CLI_MODEL", DEFAULT_MAI_MODEL);
+        Self::Mai {
+            reasoning_effort: default_reasoning_effort(&DriverId::Mai, &model),
+            model,
+        }
+    }
 
     fn default_meta() -> Self {
         let model = env_or_default("EVERRUNS_CLI_MODEL", DEFAULT_META_MODEL);
@@ -1551,9 +1671,21 @@ impl ProviderChoice {
 
     fn default_google() -> Self {
         let model = env_or_default("EVERRUNS_CLI_MODEL", DEFAULT_GOOGLE_MODEL);
+        // Native Gemini driver: GEMINI_BASE_URL overrides the endpoint, and
+        // GOOGLE_BASE_URL stays as the legacy OpenAI-compatible shim override.
+        // A stored shim URL (ending in /openai) is migrated by stripping the
+        // suffix, since the native driver speaks the /v1beta API.
+        let base_url = env_non_empty("GEMINI_BASE_URL")
+            .or_else(|| env_non_empty("GOOGLE_BASE_URL"))
+            .map(|url| {
+                url.strip_suffix("/openai")
+                    .unwrap_or(url.as_str())
+                    .to_owned()
+            })
+            .unwrap_or_else(|| DEFAULT_GEMINI_BASE_URL.to_owned());
         Self::Google {
-            base_url: env_or_default("GOOGLE_BASE_URL", DEFAULT_GOOGLE_BASE_URL),
-            reasoning_effort: default_reasoning_effort(&DriverId::OpenAI, &model),
+            base_url,
+            reasoning_effort: default_reasoning_effort(&DriverId::Gemini, &model),
             model,
         }
     }
@@ -1610,6 +1742,11 @@ impl ProviderChoice {
             Self::Codex { .. } => Provider::Codex,
             Self::Google { .. } => Provider::Google,
             Self::OpenRouter { .. } => Provider::OpenRouter,
+            Self::Mistral { .. } => Provider::Mistral,
+            Self::Fireworks { .. } => Provider::Fireworks,
+            Self::Vercel { .. } => Provider::Vercel,
+            Self::Cloudflare { .. } => Provider::Cloudflare,
+            Self::Mai { .. } => Provider::Mai,
             Self::Ollama { .. } => Provider::Ollama,
             Self::Local { .. } => Provider::Local,
             Self::Custom { .. } => Provider::Custom,
@@ -1639,6 +1776,11 @@ impl ProviderChoice {
             Provider::Meta => Ok(Self::default_meta()),
             Provider::Google => Ok(Self::default_google()),
             Provider::OpenRouter => Ok(Self::default_openrouter()),
+            Provider::Mistral => Ok(Self::default_mistral()),
+            Provider::Fireworks => Ok(Self::default_fireworks()),
+            Provider::Vercel => Ok(Self::default_vercel()),
+            Provider::Cloudflare => Ok(Self::default_cloudflare()),
+            Provider::Mai => Ok(Self::default_mai()),
             Provider::Ollama => Ok(Self::default_ollama()),
             Provider::Local => Ok(Self::default_local()),
             // No sensible default model exists for an arbitrary endpoint; an
@@ -1754,6 +1896,12 @@ pub(crate) fn registered_drivers(settings: Arc<SettingsStore>) -> DriverRegistry
     // OpenRouter moved to its own crate in everruns 0.13.0; register its
     // first-class DriverId::OpenRouter driver here (was bundled with openai).
     everruns_drivers::openrouter::register_driver(&mut driver_registry);
+    everruns_drivers::mistral::register_driver(&mut driver_registry);
+    everruns_drivers::gemini::register_driver(&mut driver_registry);
+    everruns_drivers::fireworks::register_driver(&mut driver_registry);
+    everruns_drivers::vercel::register_driver(&mut driver_registry);
+    everruns_drivers::cloudflare::register_driver(&mut driver_registry);
+    everruns_drivers::mai::register_driver(&mut driver_registry);
     crate::drivers::codex::register_driver(&mut driver_registry, settings);
     #[cfg(feature = "local-inference")]
     crate::drivers::local::register_driver(&mut driver_registry);
@@ -1791,6 +1939,11 @@ impl ProviderChoice {
             | Self::Codex { model, .. }
             | Self::Google { model, .. }
             | Self::OpenRouter { model, .. }
+            | Self::Mistral { model, .. }
+            | Self::Fireworks { model, .. }
+            | Self::Vercel { model, .. }
+            | Self::Cloudflare { model, .. }
+            | Self::Mai { model, .. }
             | Self::Ollama { model, .. }
             | Self::Local { model }
             | Self::Custom { model, .. } => model,
@@ -1837,6 +1990,21 @@ impl ProviderChoice {
                 reasoning_effort, ..
             }
             | Self::OpenRouter {
+                reasoning_effort, ..
+            }
+            | Self::Mistral {
+                reasoning_effort, ..
+            }
+            | Self::Fireworks {
+                reasoning_effort, ..
+            }
+            | Self::Vercel {
+                reasoning_effort, ..
+            }
+            | Self::Cloudflare {
+                reasoning_effort, ..
+            }
+            | Self::Mai {
                 reasoning_effort, ..
             }
             | Self::Ollama {
@@ -1938,6 +2106,23 @@ impl ProviderChoice {
                 "anthropic/claude-fable-5-1",
                 "nvidia/nemotron-3-super-120b-a12b high",
             ],
+            // Mistral AI, verified against everruns-drivers 0.48.0.
+            "mistral" => &[
+                "mistral-large-4",
+                "mistral-medium-2604",
+                "mistral-small-2603",
+                "magistral-medium-latest",
+            ],
+            // Fireworks AI: full IDs; only the driver example is verifiable
+            // offline, the picker fills the rest via runtime discovery.
+            "fireworks" => &["accounts/fireworks/models/llama-v3p1-70b"],
+            // Vercel AI Gateway: provider/model IDs passed through to the gateway.
+            "vercel" => &["anthropic/claude-opus-5-5", "openai/gpt-6-astra"],
+            // Cloudflare Workers AI model ID.
+            "cloudflare" => &["@cf/meta/llama-3.3-70b-instruct-fp8-fast"],
+            // Microsoft MAI deployment on Azure AI Foundry; operators use their
+            // own deployment names, this is the documented example.
+            "mai" => &["mai-1-preview"],
             "ollama" => &["llama3.2"],
             "llmsim" => &["llmsim-yolop"],
             _ => &[],
@@ -1971,6 +2156,46 @@ impl ProviderChoice {
                 let reasoning_effort =
                     self.resolve_model_reasoning_effort(&model, reasoning_effort)?;
                 Ok(Self::Anthropic {
+                    model,
+                    reasoning_effort,
+                })
+            }
+            Self::Mistral { .. } => {
+                let reasoning_effort =
+                    self.resolve_model_reasoning_effort(&model, reasoning_effort)?;
+                Ok(Self::Mistral {
+                    model,
+                    reasoning_effort,
+                })
+            }
+            Self::Fireworks { .. } => {
+                let reasoning_effort =
+                    self.resolve_model_reasoning_effort(&model, reasoning_effort)?;
+                Ok(Self::Fireworks {
+                    model,
+                    reasoning_effort,
+                })
+            }
+            Self::Vercel { .. } => {
+                let reasoning_effort =
+                    self.resolve_model_reasoning_effort(&model, reasoning_effort)?;
+                Ok(Self::Vercel {
+                    model,
+                    reasoning_effort,
+                })
+            }
+            Self::Cloudflare { .. } => {
+                let reasoning_effort =
+                    self.resolve_model_reasoning_effort(&model, reasoning_effort)?;
+                Ok(Self::Cloudflare {
+                    model,
+                    reasoning_effort,
+                })
+            }
+            Self::Mai { .. } => {
+                let reasoning_effort =
+                    self.resolve_model_reasoning_effort(&model, reasoning_effort)?;
+                Ok(Self::Mai {
                     model,
                     reasoning_effort,
                 })
@@ -2158,6 +2383,81 @@ impl ProviderChoice {
                     base_url: None,
                 })
             }
+            ProviderChoice::Mistral { model, .. } => {
+                let key = resolve_token(
+                    settings,
+                    Provider::Mistral.as_str(),
+                    Provider::Mistral.token_env_vars(),
+                )
+                .ok_or_else(|| anyhow!("MISTRAL_API_KEY not set (and no token stored)"))?;
+                Ok(ResolvedModel {
+                    model: model.clone(),
+                    provider_type: DriverId::Mistral,
+                    provider_metadata: None,
+                    api_key: Some(key),
+                    base_url: None,
+                })
+            }
+            ProviderChoice::Fireworks { model, .. } => {
+                let key = resolve_token(
+                    settings,
+                    Provider::Fireworks.as_str(),
+                    Provider::Fireworks.token_env_vars(),
+                )
+                .ok_or_else(|| anyhow!("FIREWORKS_API_KEY not set (and no token stored)"))?;
+                Ok(ResolvedModel {
+                    model: model.clone(),
+                    provider_type: DriverId::Fireworks,
+                    provider_metadata: None,
+                    api_key: Some(key),
+                    base_url: None,
+                })
+            }
+            ProviderChoice::Vercel { model, .. } => {
+                let key = resolve_token(
+                    settings,
+                    Provider::Vercel.as_str(),
+                    Provider::Vercel.token_env_vars(),
+                )
+                .ok_or_else(|| anyhow!("AI_GATEWAY_API_KEY not set (and no token stored)"))?;
+                Ok(ResolvedModel {
+                    model: model.clone(),
+                    provider_type: DriverId::Vercel,
+                    provider_metadata: None,
+                    api_key: Some(key),
+                    base_url: None,
+                })
+            }
+            ProviderChoice::Cloudflare { model, .. } => {
+                let key = resolve_token(
+                    settings,
+                    Provider::Cloudflare.as_str(),
+                    Provider::Cloudflare.token_env_vars(),
+                )
+                .ok_or_else(|| anyhow!("CLOUDFLARE_API_TOKEN not set (and no token stored)"))?;
+                Ok(ResolvedModel {
+                    model: model.clone(),
+                    provider_type: DriverId::Cloudflare,
+                    provider_metadata: None,
+                    api_key: Some(key),
+                    base_url: None,
+                })
+            }
+            ProviderChoice::Mai { model, .. } => {
+                let key = resolve_token(
+                    settings,
+                    Provider::Mai.as_str(),
+                    Provider::Mai.token_env_vars(),
+                )
+                .ok_or_else(|| anyhow!("AZURE_AI_API_KEY not set (and no token stored)"))?;
+                Ok(ResolvedModel {
+                    model: model.clone(),
+                    provider_type: DriverId::Mai,
+                    provider_metadata: None,
+                    api_key: Some(key),
+                    base_url: None,
+                })
+            }
             ProviderChoice::Meta { model, .. } => {
                 let key = resolve_token(
                     settings,
@@ -2244,7 +2544,7 @@ impl ProviderChoice {
                 })?;
                 Ok(ResolvedModel {
                     model: model.clone(),
-                    provider_type: DriverId::OpenAI,
+                    provider_type: DriverId::Gemini,
                     provider_metadata: None,
                     api_key: Some(key),
                     base_url: Some(base_url.clone()),
@@ -2337,6 +2637,41 @@ impl ProviderChoice {
                 api_key: None,
                 base_url: None,
             },
+            ProviderChoice::Mistral { model, .. } => ResolvedModel {
+                model: model.clone(),
+                provider_type: DriverId::Mistral,
+                provider_metadata: None,
+                api_key: None,
+                base_url: None,
+            },
+            ProviderChoice::Fireworks { model, .. } => ResolvedModel {
+                model: model.clone(),
+                provider_type: DriverId::Fireworks,
+                provider_metadata: None,
+                api_key: None,
+                base_url: None,
+            },
+            ProviderChoice::Vercel { model, .. } => ResolvedModel {
+                model: model.clone(),
+                provider_type: DriverId::Vercel,
+                provider_metadata: None,
+                api_key: None,
+                base_url: None,
+            },
+            ProviderChoice::Cloudflare { model, .. } => ResolvedModel {
+                model: model.clone(),
+                provider_type: DriverId::Cloudflare,
+                provider_metadata: None,
+                api_key: None,
+                base_url: None,
+            },
+            ProviderChoice::Mai { model, .. } => ResolvedModel {
+                model: model.clone(),
+                provider_type: DriverId::Mai,
+                provider_metadata: None,
+                api_key: None,
+                base_url: None,
+            },
             ProviderChoice::Meta { model, .. } => ResolvedModel {
                 model: model.clone(),
                 provider_type: DriverId::Meta,
@@ -2362,7 +2697,7 @@ impl ProviderChoice {
                 model, base_url, ..
             } => ResolvedModel {
                 model: model.clone(),
-                provider_type: DriverId::OpenAI,
+                provider_type: DriverId::Gemini,
                 provider_metadata: None,
                 api_key: None,
                 base_url: Some(base_url.clone()),
@@ -2579,7 +2914,7 @@ fn env_non_empty(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|value| !value.is_empty())
 }
 
-/// Gemini's OpenAI-compatible API accepts either `GEMINI_API_KEY` or
+/// Gemini API (native driver) accepts either `GEMINI_API_KEY` or
 /// `GOOGLE_API_KEY`; the Google docs lean on `GEMINI_API_KEY` so it wins.
 fn google_api_key() -> Option<String> {
     Provider::Google
@@ -4784,6 +5119,11 @@ pub async fn build_with_options(
         | ProviderChoice::Codex { .. }
         | ProviderChoice::Google { .. }
         | ProviderChoice::OpenRouter { .. }
+        | ProviderChoice::Mistral { .. }
+        | ProviderChoice::Fireworks { .. }
+        | ProviderChoice::Vercel { .. }
+        | ProviderChoice::Cloudflare { .. }
+        | ProviderChoice::Mai { .. }
         | ProviderChoice::Ollama { .. }
         | ProviderChoice::Local { .. }
         | ProviderChoice::Custom { .. } => {
@@ -8265,7 +8605,7 @@ mod tests {
     fn model_spec_accepts_google_model_id() {
         let provider = ProviderChoice::Google {
             model: "gemini-2.5-flash".to_string(),
-            base_url: DEFAULT_GOOGLE_BASE_URL.to_string(),
+            base_url: DEFAULT_GEMINI_BASE_URL.to_string(),
             reasoning_effort: None,
         };
         let next = provider.resolve_model_spec("gemini-2.5-pro").unwrap();
@@ -8322,8 +8662,13 @@ mod tests {
         assert_eq!(Provider::Anthropic.driver_id(), Some(DriverId::Anthropic));
         assert_eq!(Provider::Meta.driver_id(), Some(DriverId::Meta));
         assert_eq!(Provider::OpenAi.driver_id(), Some(DriverId::OpenAI));
-        assert_eq!(Provider::Google.driver_id(), Some(DriverId::OpenAI));
+        assert_eq!(Provider::Google.driver_id(), Some(DriverId::Gemini));
         assert_eq!(Provider::OpenRouter.driver_id(), Some(DriverId::OpenRouter));
+        assert_eq!(Provider::Mistral.driver_id(), Some(DriverId::Mistral));
+        assert_eq!(Provider::Fireworks.driver_id(), Some(DriverId::Fireworks));
+        assert_eq!(Provider::Vercel.driver_id(), Some(DriverId::Vercel));
+        assert_eq!(Provider::Cloudflare.driver_id(), Some(DriverId::Cloudflare));
+        assert_eq!(Provider::Mai.driver_id(), Some(DriverId::Mai));
         assert_eq!(Provider::Codex.driver_id(), None);
         assert_eq!(Provider::Ollama.driver_id(), None);
         assert_eq!(Provider::Custom.driver_id(), None);
@@ -8340,6 +8685,11 @@ mod tests {
                 "meta",
                 "google",
                 "openrouter",
+                "mistral",
+                "fireworks",
+                "vercel",
+                "cloudflare",
+                "mai",
                 "ollama",
                 "custom"
             ]
@@ -8595,13 +8945,43 @@ mod tests {
         }
         let provider = ProviderChoice::Google {
             model: "gemini-2.5-flash".to_string(),
-            base_url: DEFAULT_GOOGLE_BASE_URL.to_string(),
+            base_url: DEFAULT_GEMINI_BASE_URL.to_string(),
             reasoning_effort: None,
         };
         let err = provider
             .model_with_provider(&Settings::default())
             .unwrap_err();
         assert!(err.to_string().contains("GEMINI_API_KEY"));
+    }
+
+    #[test]
+    fn default_google_migrates_legacy_shim_base_url() {
+        let _guard = crate::testing::test_env::lock();
+        unsafe {
+            std::env::remove_var("GEMINI_BASE_URL");
+            std::env::set_var(
+                "GOOGLE_BASE_URL",
+                "https://generativelanguage.googleapis.com/v1beta/openai",
+            );
+        }
+
+        match ProviderChoice::default_google() {
+            ProviderChoice::Google { base_url, .. } => {
+                assert_eq!(base_url, "https://generativelanguage.googleapis.com/v1beta");
+            }
+            _ => panic!("expected Google choice"),
+        }
+
+        // No override resolves to the native default.
+        unsafe {
+            std::env::remove_var("GOOGLE_BASE_URL");
+        }
+        match ProviderChoice::default_google() {
+            ProviderChoice::Google { base_url, .. } => {
+                assert_eq!(base_url, DEFAULT_GEMINI_BASE_URL);
+            }
+            _ => panic!("expected Google choice"),
+        }
     }
 
     #[test]
@@ -8658,6 +9038,42 @@ mod tests {
             provider.model_without_stored_key().provider_type,
             DriverId::OpenRouter
         );
+    }
+
+    #[test]
+    fn mistral_requires_api_key() {
+        let _guard = crate::testing::test_env::lock();
+        unsafe {
+            std::env::remove_var("MISTRAL_API_KEY");
+        }
+
+        let provider = ProviderChoice::Mistral {
+            model: "mistral-large-4".to_string(),
+            reasoning_effort: None,
+        };
+
+        let err = provider
+            .model_with_provider(&Settings::default())
+            .expect_err("missing key must fail");
+        assert!(err.to_string().contains("MISTRAL_API_KEY"));
+    }
+
+    // Mistral routes through the first-class Mistral driver (everruns
+    // 0.48): no compatibility shim, native auth and discovery.
+    #[test]
+    fn mistral_uses_first_class_mistral_driver() {
+        let _guard = crate::testing::test_env::lock();
+        unsafe {
+            std::env::set_var("MISTRAL_API_KEY", "test-key");
+        }
+
+        let provider = ProviderChoice::default_mistral();
+        assert_eq!(provider.provider(), Provider::Mistral);
+        let model = provider
+            .model_with_provider(&Settings::default())
+            .expect("resolve Mistral");
+        assert_eq!(model.provider_type, DriverId::Mistral);
+        assert_eq!(model.api_key.as_deref(), Some("test-key"));
     }
 
     #[test]

@@ -287,7 +287,15 @@ impl SetupCliCapability {
                     json!({ "message": "logged in to codex; default provider is now codex" }),
                 )
             }
-            Provider::OpenAi | Provider::Anthropic | Provider::Meta | Provider::Google => {
+            Provider::OpenAi
+            | Provider::Anthropic
+            | Provider::Meta
+            | Provider::Google
+            | Provider::Mistral
+            | Provider::Fireworks
+            | Provider::Vercel
+            | Provider::Cloudflare
+            | Provider::Mai => {
                 let key = match api_key {
                     Some(key) => {
                         let key = key.trim().to_string();
@@ -379,6 +387,11 @@ fn detached_env_present(provider: &str) -> bool {
         "meta" => &["MODEL_API_KEY"],
         "google" => &["GEMINI_API_KEY", "GOOGLE_API_KEY"],
         "openrouter" => &["OPENROUTER_API_KEY"],
+        "mistral" => &["MISTRAL_API_KEY"],
+        "fireworks" => &["FIREWORKS_API_KEY"],
+        "vercel" => &["AI_GATEWAY_API_KEY"],
+        "cloudflare" => &["CLOUDFLARE_API_TOKEN"],
+        "mai" => &["AZURE_AI_API_KEY"],
         "ollama" => &["OLLAMA_BASE_URL", "OLLAMA_API_KEY"],
         "custom" => &["CUSTOM_API_KEY"],
         _ => &[],

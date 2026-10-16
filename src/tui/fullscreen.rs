@@ -460,7 +460,7 @@ fn draw_setup_overlay(f: &mut Frame, area: Rect, app: &App) {
     if let Some(picker) = render::setup_picker(app) {
         draw_setup_picker(f, area, picker);
     } else {
-        let (lines, cursor) = render::setup_overlay_content(app);
+        let (lines, cursor) = render::setup_overlay_content(app, None);
         draw_panel_overlay(f, area, lines, cursor);
     }
 }

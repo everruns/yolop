@@ -2272,6 +2272,13 @@ fn tui_setup_selects_model_for_connected_provider_in_real_pty() {
         "/setup should render the provider picker: {}",
         tui.output_text()
     );
+    // The picker preselects the current provider (the offline demo here) and
+    // windows long lists, so scroll to the top; selection clamps at the first
+    // row regardless of how many providers exist.
+    for _ in 0..20 {
+        tui.write_input(b"\x1b[A");
+    }
+    thread::sleep(Duration::from_millis(200));
     assert!(
         tui.wait_for_output("saved key", Duration::from_secs(3)),
         "OpenAI should show as connected via the saved key: {}",

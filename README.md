@@ -183,7 +183,7 @@ Transparent authorship: commits yolop creates keep your git identity with a `Co-
 
 ## Providers and models
 
-Nine backends, one switch. Set a key once with `/setup`, override per run with flags.
+Fourteen backends, one switch. Set a key once with `/setup`, override per run with flags.
 
 | Provider | Default model | Key |
 | -------- | ------------- | --- |
@@ -193,6 +193,11 @@ Nine backends, one switch. Set a key once with `/setup`, override per run with f
 | `meta` | `muse-spark-1.3` | `MODEL_API_KEY` |
 | `openrouter` | `openai/gpt-6.1-sol` | browser login, or `OPENROUTER_API_KEY` |
 | `google` | `gemini-3.8-flash` | `GEMINI_API_KEY` or `GOOGLE_API_KEY` |
+| `mistral` | `mistral-large-4` | `MISTRAL_API_KEY` |
+| `fireworks` | `accounts/fireworks/models/llama-v3p1-70b` | `FIREWORKS_API_KEY` |
+| `vercel` | `anthropic/claude-opus-5-5` | `AI_GATEWAY_API_KEY` |
+| `cloudflare` | `@cf/meta/llama-3.3-70b-instruct-fp8-fast` | `CLOUDFLARE_API_TOKEN` plus `CLOUDFLARE_ACCOUNT_ID` |
+| `mai` | `mai-1-preview` | `AZURE_AI_API_KEY` plus `AZURE_AI_ENDPOINT` |
 | `ollama` | `llama3.2` | none; `OLLAMA_BASE_URL` / `OLLAMA_API_KEY` for remote servers |
 | `local` | Qwen3-30B-A3B, Q4 (`~19 GB`) | none; weights via `yolop weights pull` |
 | `custom` | provider default | `CUSTOM_BASE_URL` plus optional `CUSTOM_API_KEY` |
