@@ -2385,7 +2385,13 @@ mod tests {
         let config = LlmSimConfig::scripted(turns)
             .with_on_exhausted(OnExhausted::Error)
             .with_message_capture(captured.clone());
-        let (paused, resumed) = with_sdk_client_completion(config, |client| async move {
+        let sessions = tempfile::tempdir().unwrap();
+        let factory = Arc::new(ScriptedFactory {
+            config,
+            sessions_dir: sessions.path().to_path_buf(),
+            settings: Arc::new(SettingsStore::open(sessions.path().join("settings.toml"))),
+        });
+        let (paused, resumed) = with_factory(factory, |client| async move {
             let mut session = client.new_session().await?;
             let paused = SdkClient::prompt(&mut session, "Finish verification.").await?;
             let resumed = SdkClient::prompt(&mut session, "yes").await?;
@@ -2400,6 +2406,28 @@ mod tests {
         assert!(paused.assistant_text().contains("Approve to resume"));
         assert!(resumed.assistant_text().contains("Verification complete."));
         assert!(!resumed.assistant_text().contains("budget exhausted"));
+        let log_path = std::fs::read_dir(sessions.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path().join("events.jsonl"))
+            .find(|path| path.is_file())
+            .unwrap();
+        let events: Vec<everruns_core::Event> = std::fs::read_to_string(log_path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        let resets: Vec<_> = events
+            .iter()
+            .filter(|event| event.event_type == "budget.resumed")
+            .collect();
+        assert_eq!(resets.len(), 1);
+        let diagnostic = &resets[0].metadata.as_ref().unwrap()["yolop.task_completion"];
+        assert_eq!(diagnostic["action"], "reset");
+        assert_eq!(diagnostic["previous_used_turns"], 5);
+        assert_eq!(diagnostic["used_turns"], 0);
+        assert_eq!(diagnostic["used_tokens"], 0);
+        assert!(diagnostic["previous_turn_id"].is_string());
         assert_eq!(
             captured.lock().unwrap().len(),
             16,

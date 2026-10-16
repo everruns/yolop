@@ -40,6 +40,7 @@ pub(crate) fn trace_event_params(event: &Event) -> Value {
         "session_id": event.session_id.to_string(),
         "context": serde_json::to_value(&event.context).unwrap_or(Value::Null),
         "data": serde_json::to_value(&event.data).unwrap_or(Value::Null),
+        "metadata": event.metadata,
     })
 }
 
@@ -213,11 +214,18 @@ mod tests {
                 "tool.completed".into(),
                 serde_json::json!({ "tool_name": "bash" }),
             ),
-            metadata: None,
+            metadata: Some(
+                serde_json::json!({"yolop.task_completion":{"action":"continue","used_turns":2}}),
+            ),
             tags: None,
         };
         let event = request.into_event(everruns_contracts::typed_id::EventId::new(), 1);
         let params = trace_event_params(&event);
+        assert_eq!(
+            params["metadata"]["yolop.task_completion"]["action"],
+            "continue"
+        );
+        assert_eq!(params["metadata"]["yolop.task_completion"]["used_turns"], 2);
         assert_eq!(params["event_type"], "tool.completed");
         assert_eq!(params["session_id"], session.to_string());
         assert_eq!(params["id"], event.id.to_string());

@@ -52,5 +52,20 @@ Limits and unavailable reviews are reported explicitly; they never claim that
 unfinished work succeeded. Print returns a failure exit status for exhausted
 recovery or required outside input. The same limits apply to all models.
 
+Completion decisions use the existing budget event protocol in the private
+session event log. Metadata records the decision, short reason, turn stop
+reason, consumed turns/tokens/time, effective limits, and the exhausted limit.
+A continuation is a budget warning, a terminal or waiting decision pauses the
+recovery budget, and exhaustion has its own event. Human resets are recorded
+when the next turn is observed, with the original reset timestamp and previous
+usage. Review failures are also recorded. Native turn outcomes and provider
+recovery events remain durable, so stopping and retrying can be investigated
+after restart. These records do not become model conversation messages.
+
+Trace extensions receive the same metadata. The bundled Logfire exporter emits
+budget point spans with completion attributes and preserves correlation to the
+most recently completed turn. Exporting remains opt-in and does not block the
+agent loop. See [extensions](extensions.md).
+
 See [background execution](background.md), [tool output](tool-output.md), and
 [progress guard](progress-guard.md).

@@ -99,6 +99,11 @@ allowlist of well-known public resources.
   Yolop in plain language, for example "allow ten automatic continuations".
   Changes in an attached session apply at the next continuation check without
   resetting the budget already consumed.
+  Decisions, retry reasons, consumed budget, and exhausted limits are saved in
+  the session's private `events.jsonl`. Enabled trace extensions receive the same
+  diagnostics. Use `yolop sessions search --query "continuation exhausted"` to
+  find earlier budget stops. The Logfire exporter sends them as OpenTelemetry budget spans
+  with `yolop.completion.*` attributes.
 - `/btw` asks a side question without touching history.
 
 ## Conversation control plane

@@ -280,6 +280,9 @@
           "description": "Stable event id from the host's session event log.",
           "type": "string"
         },
+        "metadata": {
+          "description": "Host event metadata, including continuation decisions and budget counters."
+        },
         "session_id": {
           "default": "",
           "description": "Session the event belongs to.",

@@ -1,4 +1,6 @@
 //! One bounded completion policy for ACP, TUI, and print hosts.
+mod diagnostics;
+
 use crate::config::{Settings, service::ConfigService};
 use anyhow::{Context, Result};
 use everruns_core::command_host::{CommandHost, SessionCompletionRequest};
@@ -74,6 +76,8 @@ pub(crate) struct CompletionController {
     repair_started: Option<Instant>,
     repairs: u64,
     tokens: u64,
+    last_turn: Option<everruns_contracts::typed_id::TurnId>,
+    pending_reset: Option<diagnostics::PendingReset>,
 }
 pub(crate) struct CompletionDecision {
     pub state: CompletionState,
@@ -82,7 +86,20 @@ pub(crate) struct CompletionDecision {
 }
 impl CompletionController {
     pub(crate) fn reset(&mut self) {
-        *self = Self::default();
+        let pending_reset = self
+            .last_turn
+            .map(|previous_turn_id| diagnostics::PendingReset {
+                ts: chrono::Utc::now(),
+                previous_turn_id,
+                used_turns: self.repairs,
+                used_tokens: self.tokens,
+                elapsed_ms: self.elapsed_ms(),
+            })
+            .or_else(|| self.pending_reset.take());
+        *self = Self {
+            pending_reset,
+            ..Default::default()
+        };
     }
     pub(crate) async fn after_turn(
         &mut self,
@@ -91,50 +108,86 @@ impl CompletionController {
         background: bool,
         settings: &dyn ConfigService,
     ) -> Result<CompletionDecision> {
+        self.record_reset(handles, result.turn_id, &settings.snapshot())
+            .await?;
+        self.last_turn = Some(result.turn_id);
         // Charge only automatic repairs. A long original turn must still get a recovery chance.
         let tokens = if self.repairs > 0 {
             handles.turn_tokens(result.turn_id).await
         } else {
             0
         };
-        let (state, reason) = match gate_turn(result, background) {
-            GateDecision::Conclusive(state) => (
-                state,
-                "turn stopped before completing the request".to_string(),
-            ),
-            GateDecision::Evaluate => {
-                let runtime = handles.runtime.as_ref();
-                let org = everruns_core::host::in_process_internal_org_id(
-                    everruns_core::DEFAULT_ORG_PUBLIC_ID,
-                );
-                let host = StoreCommandHost::new(
-                    handles.session_id,
-                    runtime.harness_store(org),
-                    runtime.agent_store(org),
-                    runtime.session_store(org),
-                    runtime.message_store(),
-                    runtime.provider_store(org),
-                    runtime.capability_registry(),
-                    runtime.driver_registry(),
-                )
-                .with_file_store(runtime.file_store(org));
-                let context = host.turn_context().await?;
-                let evidence = review_evidence(&context.messages, &result.response);
-                let request = SessionCompletionRequest {
-                    system_prompts: vec![REVIEW_PROMPT.to_string()],
-                    messages: vec![RuntimeMessage::user(evidence)],
-                    metadata: [("purpose".to_string(), "completion_review".to_string())].into(),
-                    ..Default::default()
-                };
-                let response =
-                    tokio::time::timeout(Duration::from_secs(45), host.completion(request))
-                        .await
-                        .context("completion review timed out")?
-                        .map_err(|err| anyhow::anyhow!("completion review failed: {err:?}"))?;
-                parse_review(&response.text)?
+        let review: Result<(CompletionState, String)> = async {
+            Ok(match gate_turn(result, background) {
+                GateDecision::Conclusive(state) => (
+                    state,
+                    match state {
+                        CompletionState::Blocked => "turn cancelled".to_string(),
+                        CompletionState::Failed => bounded(
+                            result
+                                .error
+                                .as_deref()
+                                .unwrap_or("provider failed or refused the request"),
+                            2000,
+                        ),
+                        CompletionState::WaitingOnBackground => {
+                            "background execution is still pending".to_string()
+                        }
+                        _ => format!("turn requires continuation: {:?}", result.stop_reason),
+                    },
+                ),
+                GateDecision::Evaluate => {
+                    let runtime = handles.runtime.as_ref();
+                    let org = everruns_core::host::in_process_internal_org_id(
+                        everruns_core::DEFAULT_ORG_PUBLIC_ID,
+                    );
+                    let host = StoreCommandHost::new(
+                        handles.session_id,
+                        runtime.harness_store(org),
+                        runtime.agent_store(org),
+                        runtime.session_store(org),
+                        runtime.message_store(),
+                        runtime.provider_store(org),
+                        runtime.capability_registry(),
+                        runtime.driver_registry(),
+                    )
+                    .with_file_store(runtime.file_store(org));
+                    let context = host.turn_context().await?;
+                    let evidence = review_evidence(&context.messages, &result.response);
+                    let request = SessionCompletionRequest {
+                        system_prompts: vec![REVIEW_PROMPT.to_string()],
+                        messages: vec![RuntimeMessage::user(evidence)],
+                        metadata: [("purpose".to_string(), "completion_review".to_string())].into(),
+                        ..Default::default()
+                    };
+                    let response =
+                        tokio::time::timeout(Duration::from_secs(45), host.completion(request))
+                            .await
+                            .context("completion review timed out")?
+                            .map_err(|err| anyhow::anyhow!("completion review failed: {err:?}"))?;
+                    parse_review(&response.text)?
+                }
+            })
+        }
+        .await;
+        let settings = settings.snapshot();
+        let used_turns = self.repairs;
+        let (state, reason) = match review {
+            Ok(review) => review,
+            Err(error) => {
+                self.tokens = self.tokens.saturating_add(tokens);
+                let mut diagnostic =
+                    self.diagnostic(&settings, used_turns, "failed", &format!("{error:#}"));
+                diagnostic.action = "review_failed";
+                diagnostic.turn_stop_reason = Some(result.stop_reason);
+                diagnostics::emit(handles, result.turn_id, diagnostic).await?;
+                return Err(error);
             }
         };
-        Ok(self.decide(state, &reason, tokens, &settings.snapshot()))
+        let decision = self.decide(state, &reason, tokens, &settings);
+        self.record_decision(handles, result, &settings, used_turns, &reason, &decision)
+            .await?;
+        Ok(decision)
     }
     fn decide(
         &mut self,
