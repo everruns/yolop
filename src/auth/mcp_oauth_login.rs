@@ -73,15 +73,27 @@ pub(crate) async fn complete_login(prepared: PreparedLogin) -> Result<McpOAuthTo
         },
     ) = wait_for_callback(prepared.listener, &prepared.oauth.state, &server_url).await?;
     let egress = crate::auth::mcp_oauth::oauth_egress();
-    match everruns_core::mcp::oauth::complete_login(
+    let tokens = everruns_core::mcp::oauth::complete_login(
         egress.as_ref(),
         &prepared.oauth,
         &code,
         &state,
         issuer.as_deref(),
     )
-    .await
-    {
+    .await;
+    respond_after_exchange(&mut socket, &server_url, issuer.as_deref(), tokens).await
+}
+
+/// Writes the browser result page once the token exchange has settled: the
+/// success page only when tokens exist, an error page otherwise. Split out
+/// so both branches stay drivable without a network exchange.
+async fn respond_after_exchange(
+    socket: &mut TcpStream,
+    server_url: &str,
+    issuer: Option<&str>,
+    tokens: Result<McpOAuthTokenSet>,
+) -> Result<McpOAuthTokenSet> {
+    match tokens {
         Ok(tokens) => {
             // The token response carries no user identity, so the page shows
             // what the exchange granted: scope and expiry.
@@ -89,8 +101,8 @@ pub(crate) async fn complete_login(prepared: PreparedLogin) -> Result<McpOAuthTo
                 .expires_at
                 .map(|at| at.format("%Y-%m-%d %H:%M UTC").to_string());
             let details = connection_details(
-                &server_url,
-                issuer.as_deref(),
+                server_url,
+                issuer,
                 tokens.scope.as_deref(),
                 expiry.as_deref(),
             );
@@ -99,7 +111,7 @@ pub(crate) async fn complete_login(prepared: PreparedLogin) -> Result<McpOAuthTo
                 .map(|(label, value)| (label.as_str(), value.as_str()))
                 .collect();
             write_response(
-                &mut socket,
+                socket,
                 "200 OK",
                 "MCP login complete. You can return to the client.",
                 &details,
@@ -108,16 +120,16 @@ pub(crate) async fn complete_login(prepared: PreparedLogin) -> Result<McpOAuthTo
             Ok(tokens)
         }
         Err(error) => {
-            let details = connection_details(&server_url, issuer.as_deref(), None, None);
+            let details = connection_details(server_url, issuer, None, None);
             let details: Vec<(&str, &str)> = details
                 .iter()
                 .map(|(label, value)| (label.as_str(), value.as_str()))
                 .collect();
             // Best effort: the CLI still reports the real error below.
             let _ = write_response(
-                &mut socket,
+                socket,
                 "500 Login failed",
-                "Login failed while saving the connection. Check the client output and retry.",
+                "Login failed while requesting access. Check the client output and retry.",
                 &details,
             )
             .await;
@@ -358,6 +370,73 @@ mod tests {
         browser.read_to_string(&mut response).await.unwrap();
         assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
         assert!(response.contains("MCP server is connected."));
+        assert!(response.contains("https://mcp.example.com/mcp"));
+    }
+
+    #[tokio::test]
+    async fn success_page_lists_granted_scope_and_expiry() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let tokens = McpOAuthTokenSet {
+                access_token: "access-1".to_string(),
+                refresh_token: None,
+                token_type: "Bearer".to_string(),
+                expires_at: Some(
+                    chrono::DateTime::parse_from_rfc3339("2026-10-16T12:00:00Z")
+                        .unwrap()
+                        .with_timezone(&chrono::Utc),
+                ),
+                scope: Some("read write".to_string()),
+                token_endpoint: None,
+                client_id: Some("client-1".to_string()),
+                client_secret: None,
+            };
+            let stored = respond_after_exchange(
+                &mut socket,
+                "https://mcp.example.com/mcp",
+                Some("https://auth.example.com"),
+                Ok(tokens),
+            )
+            .await;
+            assert!(stored.is_ok());
+        });
+
+        let mut browser = TcpStream::connect(address).await.unwrap();
+        server.await.unwrap();
+        let mut response = String::new();
+        browser.read_to_string(&mut response).await.unwrap();
+        assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
+        assert!(response.contains("https://mcp.example.com/mcp"));
+        assert!(response.contains("https://auth.example.com"));
+        assert!(response.contains("read write"));
+        assert!(response.contains("2026-10-16 12:00 UTC"));
+    }
+
+    #[tokio::test]
+    async fn exchange_failure_serves_error_page() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let stored = respond_after_exchange(
+                &mut socket,
+                "https://mcp.example.com/mcp",
+                None,
+                Err(anyhow::anyhow!("token exchange failed")),
+            )
+            .await;
+            assert!(stored.is_err());
+        });
+
+        let mut browser = TcpStream::connect(address).await.unwrap();
+        server.await.unwrap();
+        let mut response = String::new();
+        browser.read_to_string(&mut response).await.unwrap();
+        assert!(response.starts_with("HTTP/1.1 500"));
+        assert!(response.contains("Almost there."));
+        assert!(response.contains("No changes were made."));
         assert!(response.contains("https://mcp.example.com/mcp"));
     }
 
