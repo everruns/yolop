@@ -61,13 +61,19 @@ pub(crate) async fn prepare_login(
 }
 
 pub(crate) async fn complete_login(prepared: PreparedLogin) -> Result<McpOAuthTokenSet> {
-    let Callback {
-        code,
-        state,
-        issuer,
-    } = wait_for_callback(prepared.listener, &prepared.oauth.state).await?;
+    let server_url = prepared.oauth.resource.clone();
+    // The browser callback stays open until the token exchange finishes, so
+    // the page only claims success once the connection is actually usable.
+    let (
+        mut socket,
+        Callback {
+            code,
+            state,
+            issuer,
+        },
+    ) = wait_for_callback(prepared.listener, &prepared.oauth.state, &server_url).await?;
     let egress = crate::auth::mcp_oauth::oauth_egress();
-    everruns_core::mcp::oauth::complete_login(
+    match everruns_core::mcp::oauth::complete_login(
         egress.as_ref(),
         &prepared.oauth,
         &code,
@@ -75,6 +81,76 @@ pub(crate) async fn complete_login(prepared: PreparedLogin) -> Result<McpOAuthTo
         issuer.as_deref(),
     )
     .await
+    {
+        Ok(tokens) => {
+            // The token response carries no user identity, so the page shows
+            // what the exchange granted: scope and expiry.
+            let expiry = tokens
+                .expires_at
+                .map(|at| at.format("%Y-%m-%d %H:%M UTC").to_string());
+            let details = connection_details(
+                &server_url,
+                issuer.as_deref(),
+                tokens.scope.as_deref(),
+                expiry.as_deref(),
+            );
+            let details: Vec<(&str, &str)> = details
+                .iter()
+                .map(|(label, value)| (label.as_str(), value.as_str()))
+                .collect();
+            write_response(
+                &mut socket,
+                "200 OK",
+                "MCP login complete. You can return to the client.",
+                &details,
+            )
+            .await?;
+            Ok(tokens)
+        }
+        Err(error) => {
+            let details = connection_details(&server_url, issuer.as_deref(), None, None);
+            let details: Vec<(&str, &str)> = details
+                .iter()
+                .map(|(label, value)| (label.as_str(), value.as_str()))
+                .collect();
+            // Best effort: the CLI still reports the real error below.
+            let _ = write_response(
+                &mut socket,
+                "500 Login failed",
+                "Login failed while saving the connection. Check the client output and retry.",
+                &details,
+            )
+            .await;
+            Err(error)
+        }
+    }
+}
+
+/// Detail rows for the login result page: server identity plus what the token
+/// exchange granted. Pure so the issuer/scope/expiry rules stay testable
+/// without a network callback.
+fn connection_details(
+    server_url: &str,
+    callback_issuer: Option<&str>,
+    scope: Option<&str>,
+    expiry: Option<&str>,
+) -> Vec<(String, String)> {
+    let mut details = Vec::new();
+    if !server_url.is_empty() {
+        details.push(("Server".to_string(), server_url.to_string()));
+    }
+    if let Some(issuer) = callback_issuer.filter(|issuer| !issuer.is_empty())
+        && issuer != server_url
+    {
+        details.push(("Authorization server".to_string(), issuer.to_string()));
+    }
+    if let Some(scope) = scope.filter(|scope| !scope.is_empty()) {
+        details.push(("Access scope".to_string(), scope.to_string()));
+    }
+    if let Some(expiry) = expiry.filter(|expiry| !expiry.is_empty()) {
+        details.push(("Credentials expire".to_string(), expiry.to_string()));
+    }
+    details
 }
 
 struct Callback {
@@ -83,7 +159,16 @@ struct Callback {
     issuer: Option<String>,
 }
 
-async fn wait_for_callback(listener: TcpListener, expected_state: &str) -> Result<Callback> {
+async fn wait_for_callback(
+    listener: TcpListener,
+    expected_state: &str,
+    server_url: &str,
+) -> Result<(TcpStream, Callback)> {
+    let server_details: &[(&str, &str)] = if server_url.is_empty() {
+        &[]
+    } else {
+        &[("Server", server_url)]
+    };
     loop {
         let (mut socket, _) = listener.accept().await.context("accept OAuth callback")?;
         let request = read_request_line(&mut socket).await?;
@@ -96,7 +181,13 @@ async fn wait_for_callback(listener: TcpListener, expected_state: &str) -> Resul
         let params: HashMap<_, _> = parsed.query_pairs().into_owned().collect();
 
         if parsed.path() != CALLBACK_PATH {
-            write_response(&mut socket, "404 Not Found", "Unexpected callback path.").await?;
+            write_response(
+                &mut socket,
+                "404 Not Found",
+                "Unexpected callback path.",
+                server_details,
+            )
+            .await?;
             continue;
         }
         let state = params.get("state").cloned().unwrap_or_default();
@@ -105,32 +196,33 @@ async fn wait_for_callback(listener: TcpListener, expected_state: &str) -> Resul
                 &mut socket,
                 "400 Bad Request",
                 "Login rejected: the state did not match.",
+                server_details,
             )
             .await?;
             return Err(anyhow!("OAuth callback state mismatch"));
         }
         if let Some(error) = params.get("error") {
             let message = format!("Authorization failed: {error}.");
-            write_response(&mut socket, "400 Bad Request", &message).await?;
+            write_response(&mut socket, "400 Bad Request", &message, server_details).await?;
             return Err(anyhow!("authorization server returned error: {error}"));
         }
         if let Some(code) = params.get("code") {
-            write_response(
-                &mut socket,
-                "200 OK",
-                "MCP login complete. You can return to the client.",
-            )
-            .await?;
-            return Ok(Callback {
-                code: code.clone(),
-                state,
-                issuer: params.get("iss").cloned(),
-            });
+            // The success page waits until complete_login finishes the token
+            // exchange, so the browser only sees success once tokens exist.
+            return Ok((
+                socket,
+                Callback {
+                    code: code.clone(),
+                    state,
+                    issuer: params.get("iss").cloned(),
+                },
+            ));
         }
         write_response(
             &mut socket,
             "400 Bad Request",
             "Callback had no authorization code.",
+            server_details,
         )
         .await?;
         return Err(anyhow!("OAuth callback missing authorization code"));
@@ -147,8 +239,14 @@ async fn read_request_line(socket: &mut TcpStream) -> Result<String> {
     Ok(request.lines().next().unwrap_or_default().to_string())
 }
 
-async fn write_response(socket: &mut TcpStream, status: &str, message: &str) -> Result<()> {
-    let body = crate::auth::oauth_flow::callback_page(status, message, "MCP server");
+async fn write_response(
+    socket: &mut TcpStream,
+    status: &str,
+    message: &str,
+    details: &[(&str, &str)],
+) -> Result<()> {
+    let body =
+        crate::auth::oauth_flow::callback_page_with_details(status, message, "MCP server", details);
     let response = format!(
         "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
@@ -248,6 +346,7 @@ mod tests {
                 &mut socket,
                 "200 OK",
                 "MCP login complete. You can return to the client.",
+                &[("Server", "https://mcp.example.com/mcp")],
             )
             .await
             .unwrap();
@@ -259,6 +358,44 @@ mod tests {
         browser.read_to_string(&mut response).await.unwrap();
         assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
         assert!(response.contains("MCP server is connected."));
+        assert!(response.contains("https://mcp.example.com/mcp"));
+    }
+
+    #[test]
+    fn connection_details_shows_issuer_only_when_it_differs_from_the_server() {
+        let server = "https://mcp.example.com/mcp";
+        let details =
+            connection_details(server, Some("https://auth.example.com"), Some("read"), None);
+        let rows: Vec<(&str, &str)> = details
+            .iter()
+            .map(|(label, value)| (label.as_str(), value.as_str()))
+            .collect();
+        assert!(rows.contains(&("Server", server)));
+        assert!(rows.contains(&("Authorization server", "https://auth.example.com")));
+        assert!(rows.contains(&("Access scope", "read")));
+
+        let same_issuer = connection_details(server, Some(server), Some("read"), None);
+        assert!(
+            same_issuer
+                .iter()
+                .all(|(label, _)| label != "Authorization server"),
+            "issuer matching the server adds no row"
+        );
+
+        let no_issuer = connection_details(server, None, None, Some("2026-10-16 12:00 UTC"));
+        assert!(
+            no_issuer
+                .iter()
+                .all(|(label, _)| label != "Authorization server"),
+            "absent issuer adds no row"
+        );
+        assert!(
+            no_issuer.contains(&(
+                "Credentials expire".to_string(),
+                "2026-10-16 12:00 UTC".to_string()
+            )),
+            "expiry is shown when known"
+        );
     }
 
     // The MCP host binds the OAuth resource to the MCP server origin
