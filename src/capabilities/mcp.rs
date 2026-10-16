@@ -39,6 +39,10 @@ pub(crate) struct McpSessionConfig {
 
 impl McpSessionConfig {
     pub(crate) async fn reload(&self) -> anyhow::Result<Vec<String>> {
+        self.reload_session(self.session_id).await
+    }
+
+    async fn reload_session(&self, session_id: SessionId) -> anyhow::Result<Vec<String>> {
         let _guard = self.reload_lock.lock().await;
         let configured =
             crate::config::mcp::load_mcp_servers(&self.settings.snapshot(), &self.workspace_root);
@@ -46,9 +50,9 @@ impl McpSessionConfig {
         let names = servers.keys().cloned().collect();
         let mut session = self
             .sessions
-            .get_session(self.session_id)
+            .get_session(session_id)
             .await?
-            .ok_or_else(|| anyhow::anyhow!("session {} not found", self.session_id))?;
+            .ok_or_else(|| anyhow::anyhow!("session {session_id} not found"))?;
         if session.mcp_servers != servers {
             session.mcp_servers = servers;
             self.sessions.add_session(session).await?;
@@ -64,11 +68,11 @@ impl PostToolExecHook for McpSessionConfig {
         _call: &ToolCall,
         _definition: &ToolDefinition,
         result: &mut ToolResult,
-        _context: &ToolContext,
+        context: &ToolContext,
     ) {
         // Shell composition and ordinary file tools can change configuration.
         // Refresh at the tool boundary, before the next context is assembled.
-        if let Err(error) = self.reload().await {
+        if let Err(error) = self.reload_session(context.session_id).await {
             let warning = format!("MCP configuration refresh failed: {error:#}");
             let output = result.result.get_or_insert_with(|| json!({}));
             if let Some(object) = output.as_object_mut() {

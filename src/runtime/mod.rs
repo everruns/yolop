@@ -7375,6 +7375,74 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn mcp_refresh_targets_the_executing_child_session() {
+        use everruns_core::tool_hooks::PostToolExecHook;
+        let workspace = tempfile::tempdir().unwrap();
+        let sessions = tempfile::tempdir().unwrap();
+        let built = build_with_options(
+            workspace.path().to_path_buf(),
+            ProviderChoice::Sim,
+            None,
+            sessions.path().to_path_buf(),
+            Arc::new(SettingsStore::open(sessions.path().join("settings.toml"))),
+            BuildOptions::default(),
+        )
+        .await
+        .unwrap();
+        let store = &built.handles.session_store;
+        let parent_id = built.handles.session_id;
+        let mut child = store.get_session(parent_id).await.unwrap().unwrap();
+        child.id = SessionId::new();
+        let child_id = child.id;
+        store.add_session(child).await.unwrap();
+        let context = built.handles.runtime.load_context(parent_id).await.unwrap();
+        let bash = context
+            .runtime_agent
+            .tools
+            .iter()
+            .find(|tool| tool.name() == "bash")
+            .unwrap();
+        std::fs::write(
+            workspace.path().join(".mcp.json"),
+            r#"{"mcpServers":{"child-added":{"url":"https://example.com/mcp"}}}"#,
+        )
+        .unwrap();
+        let mut result = everruns_contracts::ToolResult::default();
+        built
+            .handles
+            .mcp_config
+            .after_exec(
+                &everruns_contracts::ToolCall {
+                    id: "install".into(),
+                    name: "bash".into(),
+                    arguments: serde_json::json!({}),
+                },
+                bash,
+                &mut result,
+                &everruns_core::ToolContext::new(child_id),
+            )
+            .await;
+        assert!(
+            !store
+                .get_session(parent_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .mcp_servers
+                .contains_key("child-added")
+        );
+        assert!(
+            store
+                .get_session(child_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .mcp_servers
+                .contains_key("child-added")
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn btw_answers_a_side_question_without_persisting_it() {
         // End-to-end check that the upstream `/btw` capability is enabled and
         // dispatches through the embedded runtime's `CommandHost`: it must be
