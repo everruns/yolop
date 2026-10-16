@@ -71,6 +71,15 @@ pub fn html_escape(input: &str) -> String {
 }
 
 pub fn callback_page(status: &str, message: &str, connection_label: &str) -> String {
+    callback_page_with_details(status, message, connection_label, &[])
+}
+
+pub fn callback_page_with_details(
+    status: &str,
+    message: &str,
+    connection_label: &str,
+    details: &[(&str, &str)],
+) -> String {
     let ok = status.starts_with("200");
     let title = if ok {
         format!("Yolop {connection_label} login complete")
@@ -89,6 +98,18 @@ pub fn callback_page(status: &str, message: &str, connection_label: &str) -> Str
     } else {
         "Almost there.".to_string()
     };
+    let mut details_html = String::new();
+    if !details.is_empty() {
+        details_html.push_str("<dl class=\"details\">");
+        for (label, value) in details {
+            details_html.push_str("<div><dt>");
+            details_html.push_str(&html_escape(label));
+            details_html.push_str("</dt><dd>");
+            details_html.push_str(&html_escape(value));
+            details_html.push_str("</dd></div>");
+        }
+        details_html.push_str("</dl>");
+    }
     format!(
         r#"<!doctype html>
 <html lang="en">
@@ -170,6 +191,32 @@ pub fn callback_page(status: &str, message: &str, connection_label: &str) -> Str
       color: var(--navy);
       font-weight: 500;
     }}
+    .details {{
+      margin-top: 20px;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      padding: 4px 16px;
+      font-size: 0.875rem;
+      background: rgba(10, 22, 54, 0.03);
+    }}
+    .details div {{
+      display: flex;
+      gap: 12px;
+      padding: 10px 0;
+      border-top: 1px solid var(--line);
+    }}
+    .details div:first-child {{ border-top: 0; }}
+    .details dt {{
+      color: var(--muted);
+      min-width: 10rem;
+      flex-shrink: 0;
+    }}
+    .details dd {{
+      margin: 0;
+      color: var(--navy);
+      font-weight: 600;
+      overflow-wrap: anywhere;
+    }}
     .success .next {{ border-left: 5px solid var(--gold); }}
     .error .next {{ border-left: 5px solid var(--bad); }}
     @media (prefers-color-scheme: dark) {{
@@ -188,6 +235,7 @@ pub fn callback_page(status: &str, message: &str, connection_label: &str) -> Str
       }}
       .logo {{ background: rgba(255, 255, 255, 0.08); }}
       .next {{ background: rgba(255, 255, 255, 0.08); }}
+      .details {{ background: rgba(255, 255, 255, 0.04); }}
     }}
   </style>
 </head>
@@ -197,6 +245,7 @@ pub fn callback_page(status: &str, message: &str, connection_label: &str) -> Str
     <p class="eyebrow">{eyebrow}</p>
     <h1>{headline}</h1>
     <p class="message">{message}</p>
+    {details}
     <div class="next">{fun}</div>
   </main>
 </body>
@@ -208,6 +257,7 @@ pub fn callback_page(status: &str, message: &str, connection_label: &str) -> Str
         eyebrow = html_escape(eyebrow),
         headline = html_escape(&headline),
         message = html_escape(message),
+        details = details_html,
         fun = html_escape(fun),
     )
 }
@@ -275,5 +325,31 @@ mod tests {
 
         let denied = callback_page("400 Bad Request", "Denied.", "MCP server");
         assert!(denied.contains("No changes were made."));
+    }
+
+    #[test]
+    fn callback_page_with_details_renders_server_and_escapes_values() {
+        let page = callback_page_with_details(
+            "200 OK",
+            "MCP login complete.",
+            "MCP server",
+            &[("Server", "https://mcp.example.com/mcp")],
+        );
+
+        assert!(page.contains("MCP server is connected."));
+        assert!(page.contains("https://mcp.example.com/mcp"));
+        assert!(page.contains("<dl class=\"details\">"));
+
+        let plain = callback_page("200 OK", "MCP login complete.", "MCP server");
+        assert!(!plain.contains("<dl class=\"details\">"));
+
+        let escaped = callback_page_with_details(
+            "200 OK",
+            "MCP login complete.",
+            "MCP server",
+            &[("Server", "https://example.com/<mcp>&")],
+        );
+        assert!(escaped.contains("https://example.com/&lt;mcp&gt;&amp;"));
+        assert!(!escaped.contains("https://example.com/<mcp>&"));
     }
 }
