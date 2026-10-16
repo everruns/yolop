@@ -566,6 +566,17 @@ enum WeightsCommand {
 
 #[derive(Subcommand, Debug)]
 enum McpCommand {
+    /// Verify a server connection and list the tools it actually exposes.
+    #[command(
+        after_help = "Examples:\n  Verify an installed server after signing in:\n    yolop mcp test cloudflare"
+    )]
+    Test {
+        /// Server name.
+        name: String,
+        /// Workspace root for workspace/effective config.
+        #[arg(short = 'C', long = "cwd")]
+        cwd: Option<PathBuf>,
+    },
     /// List configured MCP servers.
     #[command(
         after_help = "Examples:\n  See every server this workspace would load:\n    yolop mcp list\n\n  See only global servers:\n    yolop mcp list --scope global"
@@ -1582,6 +1593,34 @@ async fn run_mcp_command(command: McpCommand) -> Result<()> {
     }
 
     match command {
+        McpCommand::Test { name, cwd } => {
+            let server = store(cwd)?
+                .effective()
+                .map_err(anyhow::Error::msg)?
+                .servers
+                .into_iter()
+                .find(|server| server.name == name && server.effective)
+                .with_context(|| {
+                    format!(
+                        "MCP server `{name}` was not found in effective scope (missing or disabled)"
+                    )
+                })?;
+            let path =
+                connectors::default_connections_path().context("resolve MCP connection store")?;
+            let connections = Arc::new(connectors::ConnectionStore::open(path));
+            let tools = runtime::verify_mcp_server(&connections, &name, &server.server.server)
+                .await
+                .with_context(|| format!("MCP server `{name}` connection failed; if it requires OAuth, run `yolop mcp login {name}` and authorize in the browser, then test again"))?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "server": name,
+                    "connected": true,
+                    "tools": tools,
+                }))?
+            );
+            Ok(())
+        }
         McpCommand::List { scope, cwd } => {
             let store = store(cwd)?;
             let servers: Vec<McpServerSummary> = match scope {
@@ -1703,7 +1742,10 @@ async fn run_mcp_command(command: McpCommand) -> Result<()> {
                 mcp_scope_label(write_scope(scope)?)
             );
             println!(
-                "restart or start a new yolop session for MCP connection changes to take effect"
+                "MCP configuration refreshes after tool execution in running Yolop sessions; no restart is required"
+            );
+            println!(
+                "Verify setup with `yolop mcp test {name}`. OAuth is not automatic: if needed, run `yolop mcp login {name}` in a background Bash task, show its URL, wait for browser consent, then test again before reporting setup complete."
             );
             if login {
                 login_mcp_server(cwd, &name).await?;
@@ -1721,7 +1763,7 @@ async fn run_mcp_command(command: McpCommand) -> Result<()> {
                     mcp_scope_label(write_scope(scope)?)
                 );
                 println!(
-                    "restart or start a new yolop session for MCP connection changes to take effect"
+                    "MCP configuration refreshes after tool execution in running Yolop sessions; no restart is required"
                 );
             } else {
                 println!(
@@ -1741,7 +1783,7 @@ async fn run_mcp_command(command: McpCommand) -> Result<()> {
                 mcp_scope_label(write_scope(scope)?)
             );
             println!(
-                "restart or start a new yolop session for MCP connection changes to take effect"
+                "MCP configuration refreshes after tool execution in running Yolop sessions; no restart is required"
             );
             Ok(())
         }
@@ -1755,7 +1797,7 @@ async fn run_mcp_command(command: McpCommand) -> Result<()> {
                 mcp_scope_label(write_scope(scope)?)
             );
             println!(
-                "restart or start a new yolop session for MCP connection changes to take effect"
+                "MCP configuration refreshes after tool execution in running Yolop sessions; no restart is required"
             );
             Ok(())
         }
@@ -3050,6 +3092,24 @@ mod tests {
                 .contains("was not found in effective scope"),
             "unexpected error: {error:#}"
         );
+    }
+
+    #[tokio::test]
+    async fn mcp_test_unknown_server_errors_instead_of_reporting_ready() {
+        let cwd = tempfile::tempdir().expect("workspace");
+        let cli = Cli::try_parse_from([
+            "yolop",
+            "mcp",
+            "test",
+            "definitely-not-a-server",
+            "--cwd",
+            cwd.path().to_str().unwrap(),
+        ])
+        .expect("MCP connection verification must be available from the CLI");
+        let error = run_command(cli.command.expect("MCP command"))
+            .await
+            .expect_err("a missing server is not a working connection");
+        assert!(error.to_string().contains("was not found"), "{error:#}");
     }
 
     #[tokio::test]
