@@ -1,7 +1,12 @@
+use crate::config::SettingsStore;
 use crate::config::mcp::{McpConfigStore, McpServerSummary};
 use crate::control::{ControlCapability, ControlResponse, ControlRoute};
 use async_trait::async_trait;
+use everruns_contracts::{ToolCall, ToolDefinition, ToolResult, typed_id::SessionId};
+use everruns_core::host::RuntimeSessionStore;
+use everruns_core::tool_hooks::PostToolExecHook;
 use everruns_core::{Capability, CapabilityStatus, SystemPromptContext, Tool, ToolExecutionResult};
+use everruns_core::{ScopedMcpServers, ToolContext};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -18,12 +23,67 @@ pub(crate) const MCP_CONTROL_ROUTE: ControlRoute = ControlRoute {
 
 pub(crate) struct McpCapability {
     pub(crate) store: Arc<McpConfigStore>,
+    pub(crate) session: Option<Arc<McpSessionConfig>>,
+}
+
+/// The same reload boundary serves terminal commands and automatic refresh in
+/// every host. Client-supplied servers retain their precedence over disk config.
+pub(crate) struct McpSessionConfig {
+    pub(crate) settings: Arc<SettingsStore>,
+    pub(crate) sessions: Arc<dyn RuntimeSessionStore>,
+    pub(crate) session_id: SessionId,
+    pub(crate) workspace_root: std::path::PathBuf,
+    pub(crate) client_servers: ScopedMcpServers,
+    pub(crate) reload_lock: tokio::sync::Mutex<()>,
+}
+
+impl McpSessionConfig {
+    pub(crate) async fn reload(&self) -> anyhow::Result<Vec<String>> {
+        let _guard = self.reload_lock.lock().await;
+        let configured =
+            crate::config::mcp::load_mcp_servers(&self.settings.snapshot(), &self.workspace_root);
+        let servers = everruns_core::merge_scoped_mcp_servers(&configured, &self.client_servers);
+        let names = servers.keys().cloned().collect();
+        let mut session = self
+            .sessions
+            .get_session(self.session_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("session {} not found", self.session_id))?;
+        if session.mcp_servers != servers {
+            session.mcp_servers = servers;
+            self.sessions.add_session(session).await?;
+        }
+        Ok(names)
+    }
+}
+
+#[async_trait]
+impl PostToolExecHook for McpSessionConfig {
+    async fn after_exec(
+        &self,
+        _call: &ToolCall,
+        _definition: &ToolDefinition,
+        result: &mut ToolResult,
+        _context: &ToolContext,
+    ) {
+        // Shell composition and ordinary file tools can change configuration.
+        // Refresh at the tool boundary, before the next context is assembled.
+        if let Err(error) = self.reload().await {
+            let warning = format!("MCP configuration refresh failed: {error:#}");
+            let output = result.result.get_or_insert_with(|| json!({}));
+            if let Some(object) = output.as_object_mut() {
+                object.insert("mcp_reload_error".into(), json!(warning));
+            } else {
+                *output = json!({"output": output.take(), "mcp_reload_error": warning});
+            }
+        }
+    }
 }
 
 pub(crate) fn render_mcp_prompt(servers: &[McpServerSummary]) -> String {
-    let mut prompt = String::from("<capability id=\"mcp\">\nMCP servers provide external tools. ");
+    let mut prompt = String::from("<capability id=\"mcp\">\n");
     if servers.is_empty() {
-        prompt.push_str("No MCP servers are configured yet. ");
+        prompt.push_str("No MCP servers configured. ");
     } else {
         prompt.push_str("Configured servers (scope plus on/off state):\n");
         for server in servers.iter().take(MCP_VISIBLE_SERVERS) {
@@ -43,7 +103,7 @@ pub(crate) fn render_mcp_prompt(servers: &[McpServerSummary]) -> String {
         }
     }
     prompt.push_str(
-        "Discover the full set with the control tool (resource `mcp`, operation `list`) or `yolop mcp list`; details with `yolop mcp show <name>`. Manage with `yolop mcp login <name>` for OAuth, `yolop mcp enable <name>` / `yolop mcp disable <name>` to toggle, `yolop mcp add ...` to add, `yolop mcp remove <name>` to remove. Do not guess `.mcp.json` paths or environment keys; use `yolop mcp ...` instead.\n</capability>",
+        "Use `yolop mcp list` or `yolop mcp show <name>`; `yolop mcp --help` for changes. Adapt other agents' setup commands to Yolop. New servers refresh after tools, no restart. Require `yolop mcp test <name>` success before claiming setup complete. OAuth is not automatic: run `yolop mcp login <name>` in background Bash, show its URL, wait for browser consent, then retest.\n</capability>",
     );
     prompt
 }
@@ -72,7 +132,9 @@ impl Capability for McpCapability {
     // `.mcp.json` paths or environment keys.
     async fn system_prompt_contribution(&self, _ctx: &SystemPromptContext) -> Option<String> {
         let servers = self.store.effective().ok().map(|config| config.servers)?;
-        Some(render_mcp_prompt(&servers))
+        // The CLI advertises MCP management before installation. Only pay for
+        // server guidance once there is configuration for the model to use.
+        (!servers.is_empty()).then(|| render_mcp_prompt(&servers))
     }
 
     fn system_prompt_preview(&self) -> Option<String> {
@@ -89,6 +151,13 @@ impl Capability for McpCapability {
         // terminal-only reached through run_command). The read-only list is
         // served by the control route below; no model-invoked tools remain.
         Vec::new()
+    }
+
+    fn post_tool_exec_hooks(&self) -> Vec<Arc<dyn PostToolExecHook>> {
+        self.session
+            .iter()
+            .map(|session| session.clone() as Arc<dyn PostToolExecHook>)
+            .collect()
     }
 }
 
@@ -143,14 +212,20 @@ mod tests {
     #[test]
     fn tools_exposes_no_model_tools() {
         let (_tmp, store) = test_store();
-        let capability = McpCapability { store };
+        let capability = McpCapability {
+            store,
+            session: None,
+        };
         assert!(capability.tools().is_empty());
     }
 
     #[test]
     fn control_route_points_at_mcp_cli() {
         let (_tmp, store) = test_store();
-        let capability = McpCapability { store };
+        let capability = McpCapability {
+            store,
+            session: None,
+        };
         let route = capability.control_route();
         assert_eq!(route.resource, "mcp");
         assert_eq!(route.cli_subcommand, "mcp");
@@ -160,7 +235,10 @@ mod tests {
     #[tokio::test]
     async fn control_list_reports_effective_configuration() {
         let (_tmp, store) = test_store();
-        let capability = McpCapability { store };
+        let capability = McpCapability {
+            store,
+            session: None,
+        };
         let response = capability
             .execute_control(&json!({ "operation": "list" }))
             .await;
@@ -174,7 +252,10 @@ mod tests {
     #[tokio::test]
     async fn control_rejects_mutations_toward_cli() {
         let (_tmp, store) = test_store();
-        let capability = McpCapability { store };
+        let capability = McpCapability {
+            store,
+            session: None,
+        };
         let response = capability
             .execute_control(&json!({ "operation": "remove", "name": "x" }))
             .await;
@@ -208,7 +289,10 @@ mod tests {
     async fn system_prompt_lists_servers_and_discovery() {
         let (_tmp, store) = test_store();
         seed_server(&store, "linear");
-        let capability = McpCapability { store };
+        let capability = McpCapability {
+            store,
+            session: None,
+        };
         let prompt = capability
             .system_prompt_contribution(&SystemPromptContext::without_file_store(
                 everruns_contracts::typed_id::SessionId::new(),
@@ -218,7 +302,7 @@ mod tests {
         assert!(prompt.contains("linear"), "{prompt}");
         assert!(prompt.contains("yolop mcp list"), "{prompt}");
         assert!(prompt.contains("yolop mcp login"), "{prompt}");
-        assert!(prompt.contains("yolop mcp enable"), "{prompt}");
+        assert!(prompt.contains("yolop mcp test"), "{prompt}");
     }
 
     #[tokio::test]
@@ -227,7 +311,10 @@ mod tests {
         for i in 0..12 {
             seed_server(&store, &format!("server-{i:02}"));
         }
-        let capability = McpCapability { store };
+        let capability = McpCapability {
+            store,
+            session: None,
+        };
         let prompt = capability
             .system_prompt_contribution(&SystemPromptContext::without_file_store(
                 everruns_contracts::typed_id::SessionId::new(),
@@ -243,7 +330,10 @@ mod tests {
     #[test]
     fn system_prompt_preview_mentions_discovery_when_empty() {
         let (_tmp, store) = test_store();
-        let capability = McpCapability { store };
+        let capability = McpCapability {
+            store,
+            session: None,
+        };
         let prompt = capability.system_prompt_preview().expect("mcp preview");
         assert!(prompt.contains("yolop mcp list"), "{prompt}");
         assert!(prompt.contains("yolop mcp show"), "{prompt}");

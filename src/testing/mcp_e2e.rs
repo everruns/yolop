@@ -221,6 +221,122 @@ async fn mcp_tool_executes_over_real_stdio_server() {
     );
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn installed_mcp_server_becomes_callable_in_the_same_turn() {
+    let Some(python) = require_python3("installed_mcp_server_becomes_callable_in_the_same_turn")
+    else {
+        return;
+    };
+    let workspace = tempfile::tempdir().unwrap();
+    let sessions = tempfile::tempdir().unwrap();
+    let marker = tempfile::tempdir().unwrap();
+    let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
+    let ready_command = if cfg!(windows) {
+        "Write-Output ready"
+    } else {
+        "true"
+    };
+    let settings_path = sessions.path().join("settings.toml");
+    let remove_command = if cfg!(windows) {
+        format!(
+            "Set-Content -LiteralPath '{}' -Value ''",
+            settings_path.display()
+        )
+    } else {
+        format!(": > '{}'", settings_path.display())
+    };
+    let runtime = build_with_options(
+        workspace.path().to_path_buf(),
+        ProviderChoice::Sim,
+        None,
+        sessions.path().to_path_buf(),
+        settings.clone(),
+        BuildOptions {
+            llmsim_override: Some(
+                LlmSimConfig::scripted(vec![
+                    SimTurn::ToolCalls(vec![SimToolCall {
+                        name: "bash".into(),
+                        arguments: json!({"command": ready_command}),
+                        id: None,
+                    }]),
+                    SimTurn::ToolCalls(vec![SimToolCall {
+                        name: mcp_tool("echo", "echo"),
+                        arguments: json!({"message": "installed-mid-turn"}),
+                        id: None,
+                    }]),
+                    SimTurn::ToolCalls(vec![SimToolCall {
+                        name: "bash".into(),
+                        arguments: json!({"command": remove_command}),
+                        id: None,
+                    }]),
+                    SimTurn::ToolCalls(vec![SimToolCall {
+                        name: mcp_tool("echo", "echo"),
+                        arguments: json!({"message": "removed-server-called"}),
+                        id: None,
+                    }]),
+                    SimTurn::Assistant("done".into()),
+                ])
+                .with_model("llmsim-yolop"),
+            ),
+            ..BuildOptions::default()
+        },
+    )
+    .await
+    .unwrap();
+    // Another CLI process installs the server after context construction. The
+    // next completed tool must make it available to the continuing model loop.
+    seed_global_echo_server(&settings, &python, marker.path());
+    let result = run_turn(&runtime, "finish installing and use the server").await;
+    assert!(result.success, "{result:?}");
+    assert!(
+        marker.path().join("echo.called").exists(),
+        "the newly installed MCP tool must actually execute without a restart or manual reload"
+    );
+    let called = std::fs::read_to_string(marker.path().join("echo.called")).unwrap();
+    assert!(
+        called.contains("installed-mid-turn"),
+        "a removed server must not execute again: {called}"
+    );
+    assert!(
+        !live_mcp_server_names(&runtime)
+            .await
+            .iter()
+            .any(|name| name == "echo")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mcp_connection_check_discovers_real_tools_and_preserves_failures() {
+    let Some(python) =
+        require_python3("mcp_connection_check_discovers_real_tools_and_preserves_failures")
+    else {
+        return;
+    };
+    let marker = tempfile::tempdir().unwrap();
+    let runtime = build_runtime(LlmSimConfig::fixed("hi"), marker.path(), &python).await;
+    let server = runtime.settings.snapshot().mcp.servers["echo"]
+        .server
+        .clone();
+    let tools = crate::runtime::verify_mcp_server(&runtime.handles.connections, "echo", &server)
+        .await
+        .unwrap();
+    assert_eq!(tools, [mcp_tool("echo", "echo"), mcp_tool("echo", "peek")]);
+    assert!(
+        !marker.path().join("echo.called").exists(),
+        "checking a connection must not call a server tool"
+    );
+    let broken = ScopedMcpServer {
+        command: Some("/definitely-missing-yolop-mcp-server".into()),
+        ..server
+    };
+    assert!(
+        crate::runtime::verify_mcp_server(&runtime.handles.connections, "echo", &broken)
+            .await
+            .is_err(),
+        "transport failures must not appear as a successful empty tool list"
+    );
+}
+
 /// The reload seam swaps the live session's scoped MCP servers so add / remove
 /// take effect without rebuilding the runtime. This assertion is config-only
 /// (an HTTP server that is never contacted), so it runs in CI without

@@ -55,7 +55,11 @@ path, so MCP tools flow through the same agent loop as the built-in tools.
   also appear in `StartupInfo` and in the agent system prompt (first 10, with
   `yolop mcp list` as the full discovery path).
 - **Live reload**: server changes apply to the running session without a
-  restart. `/mcp enable|disable|remove` mutate config and immediately re-apply;
+  restart. The enabled MCP capability refreshes file-based configuration after
+  each tool completes, so a server installed through Bash or file tools is
+  callable on the next model step, including print and ACP. Client-supplied
+  servers keep their precedence through every refresh. Unchanged config does
+  not rewrite the session. `/mcp enable|disable|remove` mutate config and immediately re-apply;
   `/mcp reload` re-reads config from disk (picking up `yolop mcp add`, hand
   edits, or the agent's own config tools). The runtime resolves a session's
   scoped MCP servers per turn from `session.mcp_servers` and never negatively
@@ -95,6 +99,16 @@ Credentials for a server are resolved per request by the runtime's
 Environment credentials are only used through explicit `${VAR}` header
 bindings. Yolop never derives environment-variable names from MCP server names
 or OAuth provider identifiers because workspace configuration controls both.
+
+Setup distinguishes saved configuration, browser authorization, and a verified
+connection. Setting `auth_mode = "oauth"` does not start OAuth, and a failed
+tool discovery does not automatically open a browser. Agent-driven setup starts
+`yolop mcp login <name>` in a background Bash task and surfaces the authorization
+URL while the user approves. `yolop mcp test <name>` performs real transport
+discovery using the stored credentials and returns tool names, or a nonzero
+failure with login guidance. It never calls a server tool. A setup request is
+complete only after the required login and verification succeed; a pending
+browser grant is reported as pending.
 
 **OAuth login** (`/mcp login <name>`, or `yolop mcp login <name>` headlessly, remote HTTP servers) is discovery-based:
 protected-resource metadata (RFC 9728) → authorization-server metadata

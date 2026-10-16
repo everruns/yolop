@@ -16,6 +16,7 @@ additional coverage, never a substitute.
 | Scenario | Area | Needs |
 | --- | --- | --- |
 | [Install a registry skill and render its diagram](skill-install-mermaid-render.md) | Skills, transcript rendering | Live provider, network |
+| [Complete Cloudflare setup](cloudflare-setup.md) | Skills, MCP, OAuth | Live provider, network, browser authorization |
 
 ## Related manual checks
 

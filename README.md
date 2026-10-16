@@ -249,11 +249,11 @@ Yolop earns its keep on large repos (full inventory: [Tools and capabilities](do
 
 ## MCP servers
 
-The fastest way is to ask: "install the GitHub MCP server" and yolop wires it up and shows the new tools. `/mcp` manages live connections in-session; `yolop mcp` does it from the terminal (`list`, `show`, `login`, `add`, `remove`, `enable`, `disable`, each per scope).
+The fastest way is to ask: "install the GitHub MCP server" and yolop wires it up and shows the new tools. `/mcp` manages live connections in-session; `yolop mcp` does it from the terminal (`list`, `show`, `test`, `login`, `add`, `remove`, `enable`, `disable`, each per scope). Configuration refreshes after tool execution, so servers installed mid-session do not require a restart. For OAuth servers, `yolop mcp login <name>` opens browser sign-in; `yolop mcp test <name>` verifies the connection and lists its tools.
 
 The manual path for remote HTTP servers is `.mcp.json` at the repo root. Local
 stdio servers must be added to user-owned global configuration with
-`yolop mcp add <name> global --type stdio ...`, because
+`yolop mcp add <name> --scope global --type stdio ...`, because
 repository-controlled commands are not executed:
 
 ```jsonc

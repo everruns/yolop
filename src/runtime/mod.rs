@@ -268,21 +268,10 @@ pub(crate) async fn discover_mcp_tool_names(
     if servers.is_empty() {
         return Vec::new();
     }
-    let client = everruns_core::mcp::McpClient::new(
-        Arc::new(everruns_core::host::DirectEgressService::default()),
-        Arc::new(StoredMcpAuthProvider::new(connections.clone())),
-    );
     let mut names = Vec::new();
     for (name, server) in servers.iter() {
-        let Some(connection) = mcp_connection_for(name, server) else {
-            continue;
-        };
-        match client.discover(&connection).await {
-            Ok(tools) => {
-                for tool in tools {
-                    names.push(everruns_core::mcp_tool_name(name, &tool.name));
-                }
-            }
+        match verify_mcp_server(connections, name, server).await {
+            Ok(tools) => names.extend(tools),
             Err(error) => {
                 tracing::debug!(
                     server = %name,
@@ -294,6 +283,28 @@ pub(crate) async fn discover_mcp_tool_names(
     }
     names.sort();
     names
+}
+
+/// Unlike ambient tool discovery, an explicit connection check must retain
+/// authentication and transport failures so a saved entry cannot imply readiness.
+pub(crate) async fn verify_mcp_server(
+    connections: &Arc<ConnectionStore>,
+    name: &str,
+    server: &everruns_core::ScopedMcpServer,
+) -> anyhow::Result<Vec<String>> {
+    let connection = mcp_connection_for(name, server)
+        .ok_or_else(|| anyhow!("MCP server `{name}` has no stdio command"))?;
+    let client = everruns_core::mcp::McpClient::new(
+        Arc::new(everruns_core::host::DirectEgressService::default()),
+        Arc::new(StoredMcpAuthProvider::new(connections.clone())),
+    );
+    let tools = client.discover(&connection).await?;
+    let mut names: Vec<_> = tools
+        .into_iter()
+        .map(|tool| everruns_core::mcp_tool_name(name, &tool.name))
+        .collect();
+    names.sort();
+    Ok(names)
 }
 
 // The owner-evidence policy in system.md uses a semantic threshold: investigated
@@ -2801,6 +2812,7 @@ fn default_coding_harness_capabilities(client_commands: bool) -> Vec<CapabilityR
         CapabilityRef::new(crate::extensions::manage::EXTENSIONS_CAPABILITY_ID),
         CapabilityRef::new(MEMORY_CAPABILITY_ID),
         CapabilityRef::new(HOOKS_CAPABILITY_ID),
+        CapabilityRef::new(crate::capabilities::mcp::MCP_CAPABILITY_ID),
         CapabilityRef::new(YOLOP_CAPABILITY_ID),
         // `/btw` — ephemeral side question, answered out-of-band with the
         // session's context (upstream `BtwCapability`).
@@ -3013,15 +3025,12 @@ pub struct RuntimeHandles {
     /// live session's scoped MCP servers without rebuilding the runtime.
     /// See [`RuntimeHandles::reload_mcp_servers`].
     pub session_store: Arc<dyn RuntimeSessionStore>,
-    /// Workspace root the session's MCP servers were loaded from. Reused
-    /// verbatim on reload so `.mcp.json` resolution stays identical to
-    /// startup.
-    pub workspace_root: PathBuf,
     /// Shared connection store backing MCP OAuth tokens. Saving through this
     /// same instance is what lets the runtime's [`StoredMcpAuthProvider`] see a
     /// freshly minted token (the store caches connections in memory per
     /// handle), so `/mcp login` uses it rather than a separate handle.
     pub connections: Arc<ConnectionStore>,
+    mcp_config: Arc<crate::capabilities::mcp::McpSessionConfig>,
     /// Shared containment provider for host-triggered shell commands.
     pub(crate) sandbox: Arc<dyn SandboxProvider>,
     pub(crate) sandbox_approval_gate: Arc<crate::sandbox_approval::ApprovalGate>,
@@ -3158,18 +3167,7 @@ impl RuntimeHandles {
     /// servers are discovered cold on the next turn and removed ones simply
     /// drop out of the tool set. Returns the sorted names now active.
     pub async fn reload_mcp_servers(&self) -> anyhow::Result<Vec<String>> {
-        let servers =
-            crate::config::mcp::load_mcp_servers(&self.settings.snapshot(), &self.workspace_root);
-        let mut session = self
-            .session_store
-            .get_session(self.session_id)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("session {} not found", self.session_id))?;
-        let mut names: Vec<String> = servers.keys().cloned().collect();
-        names.sort();
-        session.mcp_servers = servers;
-        self.session_store.add_session(session).await?;
-        Ok(names)
+        self.mcp_config.reload().await
     }
 
     /// Discover tool names currently offered by the session's scoped MCP
@@ -4666,8 +4664,20 @@ pub async fn build_with_options(
     });
     // `yolop` is registered at session setup with the routes actually present,
     // so there is exactly one prompt block (framing plus administration).
+    let mcp_config = Arc::new(crate::capabilities::mcp::McpSessionConfig {
+        settings: settings.clone(),
+        sessions: backends.session_store.clone(),
+        session_id,
+        workspace_root: canonical_root.clone(),
+        client_servers: options.client_mcp_servers.clone(),
+        reload_lock: tokio::sync::Mutex::new(()),
+    });
     capabilities.register(YolopMcpCapability {
-        store: Arc::new(McpConfigStore::default_for_workspace(&canonical_root)),
+        store: Arc::new(McpConfigStore::new(
+            settings.path().to_path_buf(),
+            canonical_root.clone(),
+        )),
+        session: Some(mcp_config.clone()),
     });
     // `progress_guard` — runtime-visible warnings when tool use stops making
     // observable progress.
@@ -5038,8 +5048,8 @@ pub async fn build_with_options(
             events: event_bus_typed,
             checkpoints,
             session_store,
-            workspace_root: canonical_root.clone(),
             connections,
+            mcp_config,
             sandbox: sandbox.clone(),
             sandbox_approval_gate,
             coordinates_threads,
@@ -7345,6 +7355,22 @@ mod tests {
         assert_eq!(
             docs.url, "https://client.example.com/mcp",
             "client entry must override the file entry on name collision"
+        );
+        let names = built.handles.reload_mcp_servers().await.expect("reload");
+        assert!(
+            names.contains(&"issues".to_string()),
+            "reload must retain client-only servers"
+        );
+        let session = built
+            .handles
+            .session_store
+            .get_session(built.handles.session_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            session.mcp_servers["docs"].url, "https://client.example.com/mcp",
+            "reload must retain client precedence"
         );
     }
 

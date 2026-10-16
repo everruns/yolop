@@ -1,5 +1,13 @@
 # Knowledge Log
 
+## 2026-10-16, Verify conversational MCP setup
+
+MCP setup distinguishes saved configuration, pending browser authorization,
+and verified connectivity. Tool completion refreshes configuration in every
+host without restarting, preserving client overrides. The live Cloudflare
+scenario verifies the fetched instructions through an actual MCP call.
+See [MCP](specs/mcp.md).
+
 ## 2026-10-14, Windows sandbox fixture isolation
 
 Native Windows CI fixtures run serially because MXC's DACL fallback mutates
