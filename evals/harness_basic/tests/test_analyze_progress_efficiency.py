@@ -107,6 +107,14 @@ class AnalyzeProgressEfficiencyTests(unittest.TestCase):
         _, failures = MODULE.analyze_reports([focused, controls])
         self.assertTrue(any("control cost_usd regressed" in failure for failure in failures))
 
+    def test_control_cost_drift_within_noise_is_accepted(self):
+        focused, controls = self.passing_reports()
+        for item in controls["cases"]:
+            if item["sample"] == "add-fn" and item["params"]["binary"] == "candidate":
+                item["transcript"]["usage"]["cost_usd"] = 0.0118
+        _, failures = MODULE.analyze_reports([focused, controls])
+        self.assertEqual(failures, [])
+
     def test_rejects_warning_on_ordinary_control(self):
         focused, controls = self.passing_reports()
         for item in controls["cases"]:
