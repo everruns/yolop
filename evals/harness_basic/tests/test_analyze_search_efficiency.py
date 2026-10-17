@@ -36,6 +36,7 @@ def case(
     error=None,
     scored=None,
     metrics=None,
+    cost=0.01,
 ):
     default_metrics = (
         {"equivalent_failure_warnings": 1, "calls_after_progress_warning": 1}
@@ -51,7 +52,7 @@ def case(
             **default_metrics,
             **(metrics or {}),
         },
-        "usage": {"input_tokens": tokens, "cost_usd": 0.01},
+        "usage": {"input_tokens": tokens, "cost_usd": cost},
         "timing": {"duration_ms": 1000},
     }
     if error is not None:
@@ -92,7 +93,9 @@ def focused_cases():
     return cases
 
 
-def control_cases(candidate_passed=True, candidate_tokens=100, trials=5):
+def control_cases(
+    candidate_passed=True, candidate_tokens=100, candidate_cost=0.01, trials=5
+):
     cases = []
     for sample in sorted(analyzer.CONTROLS):
         for _ in range(trials):
@@ -103,6 +106,7 @@ def control_cases(candidate_passed=True, candidate_tokens=100, trials=5):
                     "candidate",
                     candidate_passed,
                     tokens=candidate_tokens,
+                    cost=candidate_cost,
                 ),
             ]
     return cases
@@ -148,6 +152,17 @@ class AnalyzeTests(unittest.TestCase):
         cases = focused_cases() + control_cases(candidate_tokens=113)
         _, failures, _ = analyzer.analyze({"cases": cases})
         self.assertEqual(failures, [])
+
+    def test_control_cost_drift_within_noise_is_accepted(self):
+        # Same nightly: add-fn cost 0.0843 -> 0.0999 (+18%).
+        cases = focused_cases() + control_cases(candidate_cost=0.0118)
+        _, failures, _ = analyzer.analyze({"cases": cases})
+        self.assertEqual(failures, [])
+
+    def test_control_cost_past_noise_ceiling_still_regresses(self):
+        cases = focused_cases() + control_cases(candidate_cost=0.013)
+        _, failures, _ = analyzer.analyze({"cases": cases})
+        self.assertTrue(any("cost_usd regressed" in f for f in failures))
 
     def _control_with_llm_calls(self, base, cand):
         cases = focused_cases()
