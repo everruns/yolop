@@ -290,12 +290,14 @@ def analyze_reports(reports: list[dict]) -> tuple[list[str], list[str], list[str
                 # Call counts are small integers: at a median of 8, a single extra
                 # call is already +12.5% (nightly 2026-10-14, 8 -> 9) on identical
                 # behavior. Count metrics get one call of slack; tokens and cost
-                # are continuous and keep the strict 10%.
-                slack_calls = 1 if metric in ("tool_calls", "llm_calls") else 0
-                limit = base * 1.10 + slack_calls if base else 0
+                # are continuous but drift with how much the model writes between
+                # identical calls (nightly 2026-10-17, add-fn at 5 -> 5 calls and
+                # 100% pass: tokens +13%, cost +18%), so they get a 25% ceiling.
+                counts = metric in ("tool_calls", "llm_calls")
+                limit = (base * 1.10 + 1 if counts else base * 1.25) if base else 0
                 if candidate_value > limit:
                     failures.append(
-                        f"{sample}: control {metric} regressed >10% "
+                        f"{sample}: control {metric} regressed >{10 if counts else 25}% "
                         f"({base:g} -> {candidate_value:g})"
                     )
         if sample == "equivalent-failure-recovery":

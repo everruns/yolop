@@ -137,11 +137,17 @@ class AnalyzeTests(unittest.TestCase):
 
     def test_rejects_control_cost_and_correctness_regression(self):
         cases = focused_cases() + control_cases(
-            candidate_passed=False, candidate_tokens=120
+            candidate_passed=False, candidate_tokens=130
         )
         _, failures, _ = analyzer.analyze({"cases": cases})
         self.assertTrue(any("correctness regressed" in failure for failure in failures))
         self.assertTrue(any("input_tokens regressed" in failure for failure in failures))
+
+    def test_control_token_drift_within_noise_is_accepted(self):
+        # Nightly 2026-10-17: add-fn tokens 11523 -> 13058 (+13%) on identical calls.
+        cases = focused_cases() + control_cases(candidate_tokens=113)
+        _, failures, _ = analyzer.analyze({"cases": cases})
+        self.assertEqual(failures, [])
 
     def _control_with_llm_calls(self, base, cand):
         cases = focused_cases()
