@@ -557,7 +557,12 @@ pub(crate) fn draw_setup_overlay(f: &mut Frame<'_>, area: Rect, app: &App) {
         width: panel.width.saturating_sub(4),
         height: panel.height.saturating_sub(2),
     };
-    let (lines, cursor) = setup_overlay_content(app);
+    // Provider rows fit what is left after the title, hint, spacer, and footer,
+    // so short viewports window the list instead of clipping the footer.
+    let provider_rows = usize::from(inner.height)
+        .saturating_sub(4)
+        .clamp(1, INLINE_PROVIDER_ROWS);
+    let (lines, cursor) = setup_overlay_content(app, Some(provider_rows));
     paint_panel_body(
         f,
         inner,
@@ -951,7 +956,7 @@ pub(crate) fn setup_panel_rect(area: Rect) -> Rect {
     let height = area
         .height
         .saturating_sub(2)
-        .min(18)
+        .min(21)
         .max(area.height.min(1));
     Rect {
         x: area.x + area.width.saturating_sub(width) / 2,
@@ -963,20 +968,22 @@ pub(crate) fn setup_panel_rect(area: Rect) -> Rect {
 
 /// Option rows the inline setup sheet can show for the provider list.
 ///
-/// [`setup_panel_rect`] caps the sheet at 18 rows; two go to the border and
-/// four to the title, hint, spacer, and footer, leaving ten. Overflowing this
-/// silently clips the footer off the bottom, so the list is windowed instead.
+/// [`setup_panel_rect`] caps the sheet at 21 rows; two go to the border and
+/// four to the title, hint, spacer, and footer, leaving fifteen. Overflowing
+/// this silently clips the footer off the bottom, so the list is windowed
+/// instead.
 ///
-/// Ten is exactly the current provider count, and deliberately so: windowing is
-/// the safety net, not the normal path. A scrolled list hides whichever
-/// providers fall outside it, including their connection status, which is the
-/// main thing the picker exists to show. If an eleventh provider arrives,
-/// prefer buying back a row (the hint line is the obvious candidate) over
-/// letting the list scroll by default.
+/// Fifteen is exactly the current provider count, and deliberately so:
+/// windowing is the safety net, not the normal path. A scrolled list hides
+/// whichever providers fall outside it, including their connection status,
+/// which is the main thing the picker exists to show. If a sixteenth provider
+/// arrives, prefer buying back a row (the spacer before the footer is already
+/// gone; the hint line is the next candidate) over letting the list scroll by
+/// default.
 ///
 /// The full-screen renderer has no such limit — [`setup_picker`] hands the
 /// options to a scrolling `SelectList` with a scrollbar.
-const INLINE_PROVIDER_ROWS: usize = 10;
+const INLINE_PROVIDER_ROWS: usize = 15;
 
 /// Window a `len`-item list down to `capacity` rows, keeping `selected` in
 /// view and centered where possible. A list that already fits is untouched.
@@ -990,7 +997,10 @@ fn scroll_window(len: usize, selected: usize, capacity: usize) -> std::ops::Rang
     start..start.saturating_add(capacity)
 }
 
-pub(crate) fn setup_overlay_content(app: &App) -> (Vec<Line<'static>>, Option<(usize, usize)>) {
+pub(crate) fn setup_overlay_content(
+    app: &App,
+    provider_rows: Option<usize>,
+) -> (Vec<Line<'static>>, Option<(usize, usize)>) {
     let mut lines = Vec::new();
     let mut cursor = None;
     match app.setup.as_ref() {
@@ -1004,7 +1014,13 @@ pub(crate) fn setup_overlay_content(app: &App) -> (Vec<Line<'static>>, Option<(u
             let snapshot = app.settings.snapshot();
             // Row numbers stay tied to the option's real index, so the digit
             // shortcuts keep working the same whether or not the list scrolled.
-            let window = scroll_window(PROVIDER_OPTIONS.len(), *selected, INLINE_PROVIDER_ROWS);
+            // Tall sheets show every provider; short viewports window the list
+            // while always reserving the footer, so the footer is never clipped.
+            let rows = provider_rows
+                .unwrap_or(INLINE_PROVIDER_ROWS)
+                .min(INLINE_PROVIDER_ROWS)
+                .clamp(1, INLINE_PROVIDER_ROWS);
+            let window = scroll_window(PROVIDER_OPTIONS.len(), *selected, rows);
             for (idx, option) in PROVIDER_OPTIONS
                 .iter()
                 .enumerate()

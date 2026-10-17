@@ -530,6 +530,11 @@ fn provider_error_context(error: &str) -> Option<String> {
         .map(|(provider, _)| provider)
         .map(|provider| match provider {
             "openrouter" => "OpenRouter".to_string(),
+            "mistral" => "Mistral".to_string(),
+            "fireworks" => "Fireworks".to_string(),
+            "vercel" => "Vercel".to_string(),
+            "cloudflare" => "Cloudflare".to_string(),
+            "mai" => "MAI".to_string(),
             provider => provider.to_string(),
         });
     let status = error

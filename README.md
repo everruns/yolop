@@ -183,7 +183,7 @@ Transparent authorship: commits yolop creates keep your git identity with a `Co-
 
 ## Providers and models
 
-Nine backends, one switch. Set a key once with `/setup`, override per run with flags.
+Fourteen backends, one switch. Set a key once with `/setup`, override per run with flags.
 
 | Provider | Default model | Key |
 | -------- | ------------- | --- |
@@ -193,6 +193,11 @@ Nine backends, one switch. Set a key once with `/setup`, override per run with f
 | `meta` | `muse-spark-1.3` | `MODEL_API_KEY` |
 | `openrouter` | `openai/gpt-6.1-sol` | browser login, or `OPENROUTER_API_KEY` |
 | `google` | `gemini-3.8-flash` | `GEMINI_API_KEY` or `GOOGLE_API_KEY` |
+| `mistral` | `mistral-large-4` | `MISTRAL_API_KEY` |
+| `fireworks` | `accounts/fireworks/models/llama-v3p1-70b` | `FIREWORKS_API_KEY` |
+| `vercel` | `anthropic/claude-opus-5-5` | `AI_GATEWAY_API_KEY` |
+| `cloudflare` | `@cf/meta/llama-3.3-70b-instruct-fp8-fast` | `CLOUDFLARE_API_TOKEN` plus `CLOUDFLARE_ACCOUNT_ID` |
+| `mai` | `mai-1-preview` | `AZURE_AI_API_KEY` plus `AZURE_AI_ENDPOINT` |
 | `ollama` | `llama3.2` | none; `OLLAMA_BASE_URL` / `OLLAMA_API_KEY` for remote servers |
 | `local` | Qwen3-30B-A3B, Q4 (`~19 GB`) | none; weights via `yolop weights pull` |
 | `custom` | provider default | `CUSTOM_BASE_URL` plus optional `CUSTOM_API_KEY` |
@@ -228,6 +233,10 @@ Invalid explicit selections fail without substituting another model.
 **Codex.** `--provider codex` uses your ChatGPT plan via a browser or device login (`/setup` walks through it). Pin a model with `yolop config model set codex <id>`, tune reasoning with `/effort`. The Codex route signs in with the Codex CLI's public OAuth client; to use a different client there, set `yolop config set chatgpt_client_id <id>` or `YOLOP_CHATGPT_CLIENT_ID` and log in again. An existing login keeps refreshing with the client that issued it. A browser sign-in uses OpenAI's open-source Sign in with ChatGPT by default, which needs no borrowed client: yolop registers a client for your account on the first sign-in and runs turns on the public Responses API, still billed to your ChatGPT plan. It is a preview route, so a few request options (output token cap, temperature, `speed`) do not apply there. To use the Codex route instead, run `yolop config set chatgpt_sign_in codex` (or set `YOLOP_CHATGPT_SIGN_IN=codex`) and sign in again. A device login uses the Codex route unless `open-source` is set explicitly.
 
 **OpenRouter.** Sign in from the browser or set `OPENROUTER_API_KEY`. The default model is `openai/gpt-6.1-sol`; any `provider/model` id works with `-m`.
+
+**Cloudflare Workers AI.** Needs the `CLOUDFLARE_API_TOKEN` plus the account ID it is scoped to. Setup collects the account ID alongside the key, or export `CLOUDFLARE_ACCOUNT_ID`.
+
+**Microsoft MAI.** Needs the `AZURE_AI_API_KEY` plus the Azure AI Foundry endpoint of the deployment. Setup collects the endpoint alongside the key, or set `AZURE_AI_ENDPOINT` (or `base_urls.mai` in settings).
 
 **Custom.** Point any OpenAI compatible endpoint at yolop via `CUSTOM_BASE_URL` (plus `CUSTOM_API_KEY` when needed), or store it in a profile. The model comes from your profile pick, falling back to the provider default.
 

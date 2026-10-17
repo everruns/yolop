@@ -771,6 +771,11 @@ enum ProviderArg {
     Openai,
     Google,
     Openrouter,
+    Mistral,
+    Fireworks,
+    Vercel,
+    Cloudflare,
+    Mai,
     Ollama,
     /// In-process inference, no external server. Requires a build with the
     /// `local-inference` feature: the accelerated release binaries
@@ -790,6 +795,11 @@ fn provider_name_for_arg(arg: ProviderArg) -> &'static str {
         ProviderArg::Openai => "openai",
         ProviderArg::Google => "google",
         ProviderArg::Openrouter => "openrouter",
+        ProviderArg::Mistral => "mistral",
+        ProviderArg::Fireworks => "fireworks",
+        ProviderArg::Vercel => "vercel",
+        ProviderArg::Cloudflare => "cloudflare",
+        ProviderArg::Mai => "mai",
         ProviderArg::Ollama => "ollama",
         ProviderArg::Local => "local",
         ProviderArg::Custom => "custom",

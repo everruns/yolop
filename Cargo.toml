@@ -147,7 +147,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # interfaces; core exposes optional host, builtins and MCP modules.
 everruns-contracts = { version = "=0.48.0", default-features = false, features = ["definition"] }
 everruns-core = { version = "=0.48.0", features = ["host", "builtins", "mcp-stdio", "direct-egress"] }
-everruns-drivers = { version = "=0.48.0", default-features = false, features = ["openai", "anthropic", "meta", "openrouter", "chatgpt", "codex"] }
+everruns-drivers = { version = "=0.48.0", default-features = false, features = ["openai", "anthropic", "meta", "openrouter", "chatgpt", "codex", "mistral", "fireworks", "vercel", "cloudflare", "mai", "gemini"] }
 everruns-capabilities = { version = "=0.48.0", features = ["hosted-integration-catalog"] }
 # The facade's local backend supplies SQLite, git workspace and durable logs.
 # TypeSafe supplies the Muse actionable-promise classifier.
