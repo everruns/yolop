@@ -1749,7 +1749,7 @@ pub(crate) struct ResolvedModel {
 pub(crate) fn registered_drivers(settings: Arc<SettingsStore>) -> DriverRegistry {
     let mut driver_registry = DriverRegistry::new();
     everruns_drivers::anthropic::register_driver(&mut driver_registry);
-    everruns_drivers::meta::register_driver(&mut driver_registry);
+    crate::drivers::meta::register_driver(&mut driver_registry);
     everruns_drivers::openai::register_driver(&mut driver_registry);
     // OpenRouter moved to its own crate in everruns 0.13.0; register its
     // first-class DriverId::OpenRouter driver here (was bundled with openai).

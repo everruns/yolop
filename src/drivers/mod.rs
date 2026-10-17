@@ -6,6 +6,7 @@
 pub mod codex;
 #[cfg(feature = "local-inference")]
 pub mod local;
+pub mod meta;
 
 /// Driver id for in-process inference. Declared unconditionally, unlike the
 /// module behind it, so provider resolution stays feature-independent: a build
