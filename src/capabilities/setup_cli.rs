@@ -296,6 +296,9 @@ impl SetupCliCapability {
             | Provider::Vercel
             | Provider::Cloudflare
             | Provider::Mai => {
+                // A passed --api-key stays non-interactive; otherwise the key
+                // itself was just prompted for.
+                let interactive = api_key.is_none();
                 let key = match api_key {
                     Some(key) => {
                         let key = key.trim().to_string();
@@ -315,6 +318,59 @@ impl SetupCliCapability {
                     return ToolExecutionResult::tool_error(format!(
                         "failed to save {name} API key: {err}"
                     ));
+                }
+                // Cloudflare also needs the account ID and MAI the endpoint:
+                // collect and store them alongside the key when this login is
+                // already interactive (a passed --api-key stays non-interactive
+                // and reads both from the environment instead).
+                if interactive {
+                    let snapshot = settings.snapshot();
+                    if name == "cloudflare"
+                        && std::env::var("CLOUDFLARE_ACCOUNT_ID")
+                            .ok()
+                            .filter(|v| !v.trim().is_empty())
+                            .is_none()
+                        && snapshot.base_url_for("cloudflare").is_none()
+                    {
+                        match prompt_for_value(name, "Cloudflare account ID") {
+                            Ok(account) => {
+                                let url = format!(
+                                    "https://api.cloudflare.com/client/v4/accounts/{}/ai/v1",
+                                    account.trim()
+                                );
+                                if let Err(err) = settings.set_base_url(name.to_string(), url) {
+                                    return ToolExecutionResult::tool_error(format!(
+                                        "failed to save {name} endpoint: {err}"
+                                    ));
+                                }
+                            }
+                            Err(err) => return ToolExecutionResult::tool_error(err),
+                        }
+                    }
+                    if name == "mai"
+                        && std::env::var("AZURE_AI_ENDPOINT")
+                            .ok()
+                            .filter(|v| !v.trim().is_empty())
+                            .is_none()
+                        && snapshot.base_url_for("mai").is_none()
+                    {
+                        match prompt_for_value(name, "Azure AI endpoint URL") {
+                            Ok(endpoint) => {
+                                if !endpoint.starts_with("http") {
+                                    return ToolExecutionResult::tool_error(
+                                        "endpoint URL must start with http".to_string(),
+                                    );
+                                }
+                                if let Err(err) = settings.set_base_url(name.to_string(), endpoint)
+                                {
+                                    return ToolExecutionResult::tool_error(format!(
+                                        "failed to save {name} endpoint: {err}"
+                                    ));
+                                }
+                            }
+                            Err(err) => return ToolExecutionResult::tool_error(err),
+                        }
+                    }
                 }
                 if let Err(err) = settings.set_default_provider(Some(name.to_string())) {
                     return ToolExecutionResult::tool_error(format!(
@@ -401,6 +457,24 @@ fn detached_env_present(provider: &str) -> bool {
             .map(|value| !value.is_empty())
             .unwrap_or(false)
     })
+}
+
+fn prompt_for_value(provider: &str, label: &str) -> Result<String, String> {
+    if !std::io::stdin().is_terminal() {
+        return Err(format!(
+            "no {label} provided for {provider}; run interactively to enter it"
+        ));
+    }
+    eprint!("{label} for {provider}: ");
+    let mut input = String::new();
+    std::io::stdin()
+        .read_line(&mut input)
+        .map_err(|err| format!("failed to read {label}: {err}"))?;
+    let value = input.trim().to_string();
+    if value.is_empty() {
+        return Err(format!("{label} must not be empty"));
+    }
+    Ok(value)
 }
 
 fn prompt_for_api_key(provider: &str) -> Result<String, String> {

@@ -2440,7 +2440,9 @@ impl ProviderChoice {
                     provider_type: DriverId::Cloudflare,
                     provider_metadata: None,
                     api_key: Some(key),
-                    base_url: None,
+                    base_url: Some(cloudflare_base_url(settings).ok_or_else(|| {
+                        anyhow!("Cloudflare account ID not set (set CLOUDFLARE_ACCOUNT_ID or run /setup)")
+                    })?),
                 })
             }
             ProviderChoice::Mai { model, .. } => {
@@ -2455,7 +2457,9 @@ impl ProviderChoice {
                     provider_type: DriverId::Mai,
                     provider_metadata: None,
                     api_key: Some(key),
-                    base_url: None,
+                    base_url: Some(mai_base_url(settings).ok_or_else(|| {
+                        anyhow!("Azure AI endpoint not set (set AZURE_AI_ENDPOINT or run /setup)")
+                    })?),
                 })
             }
             ProviderChoice::Meta { model, .. } => {
@@ -2939,6 +2943,23 @@ fn local_resolved_model(model: &str) -> ResolvedModel {
 
 pub(crate) fn custom_base_url(settings: &Settings) -> Option<String> {
     env_non_empty("CUSTOM_BASE_URL").or_else(|| settings.base_url_for("custom").map(str::to_string))
+}
+/// Cloudflare Workers AI endpoint: derived from `CLOUDFLARE_ACCOUNT_ID`
+/// (same construction as the driver's account base URL), or a stored
+/// override from setup.
+pub(crate) fn cloudflare_base_url(settings: &Settings) -> Option<String> {
+    env_non_empty("CLOUDFLARE_ACCOUNT_ID")
+        .map(|account| {
+            format!(
+                "https://api.cloudflare.com/client/v4/accounts/{}/ai/v1",
+                account.trim()
+            )
+        })
+        .or_else(|| settings.base_url_for("cloudflare").map(str::to_string))
+}
+/// Microsoft MAI endpoint: `AZURE_AI_ENDPOINT` or the stored override.
+pub(crate) fn mai_base_url(settings: &Settings) -> Option<String> {
+    env_non_empty("AZURE_AI_ENDPOINT").or_else(|| settings.base_url_for("mai").map(str::to_string))
 }
 
 /// Env vars beat settings — a per-run override always wins over a saved
@@ -8717,6 +8738,13 @@ mod tests {
             std::env::remove_var("ANTHROPIC_API_KEY");
             std::env::remove_var("MODEL_API_KEY");
             std::env::remove_var("OPENROUTER_API_KEY");
+            std::env::remove_var("MISTRAL_API_KEY");
+            std::env::remove_var("FIREWORKS_API_KEY");
+            std::env::remove_var("AI_GATEWAY_API_KEY");
+            std::env::remove_var("CLOUDFLARE_API_TOKEN");
+            std::env::remove_var("CLOUDFLARE_ACCOUNT_ID");
+            std::env::remove_var("AZURE_AI_API_KEY");
+            std::env::remove_var("AZURE_AI_ENDPOINT");
             std::env::remove_var("GEMINI_API_KEY");
             std::env::remove_var("GOOGLE_API_KEY");
             std::env::remove_var("OLLAMA_BASE_URL");
@@ -8737,6 +8765,13 @@ mod tests {
             std::env::remove_var("ANTHROPIC_API_KEY");
             std::env::remove_var("MODEL_API_KEY");
             std::env::remove_var("OPENROUTER_API_KEY");
+            std::env::remove_var("MISTRAL_API_KEY");
+            std::env::remove_var("FIREWORKS_API_KEY");
+            std::env::remove_var("AI_GATEWAY_API_KEY");
+            std::env::remove_var("CLOUDFLARE_API_TOKEN");
+            std::env::remove_var("CLOUDFLARE_ACCOUNT_ID");
+            std::env::remove_var("AZURE_AI_API_KEY");
+            std::env::remove_var("AZURE_AI_ENDPOINT");
             std::env::remove_var("GEMINI_API_KEY");
             std::env::remove_var("GOOGLE_API_KEY");
             std::env::remove_var("OLLAMA_BASE_URL");
@@ -9072,8 +9107,255 @@ mod tests {
         let model = provider
             .model_with_provider(&Settings::default())
             .expect("resolve Mistral");
+        unsafe {
+            std::env::remove_var("MISTRAL_API_KEY");
+        }
         assert_eq!(model.provider_type, DriverId::Mistral);
         assert_eq!(model.api_key.as_deref(), Some("test-key"));
+    }
+
+    #[test]
+    fn fireworks_requires_api_key() {
+        let _guard = crate::testing::test_env::lock();
+        unsafe {
+            std::env::remove_var("FIREWORKS_API_KEY");
+        }
+        let provider = ProviderChoice::Fireworks {
+            model: "accounts/fireworks/models/llama-v3p1-70b".to_string(),
+            reasoning_effort: None,
+        };
+
+        let err = provider
+            .model_with_provider(&Settings::default())
+            .expect_err("missing key must fail");
+        assert!(err.to_string().contains("FIREWORKS_API_KEY"));
+    }
+
+    // Fireworks routes through the first-class Fireworks driver (everruns
+    // 0.48): no compatibility shim, native auth and discovery.
+    #[test]
+    fn fireworks_uses_first_class_fireworks_driver() {
+        let _guard = crate::testing::test_env::lock();
+        unsafe {
+            std::env::set_var("FIREWORKS_API_KEY", "test-key");
+        }
+
+        let provider = ProviderChoice::default_fireworks();
+        assert_eq!(provider.provider(), Provider::Fireworks);
+        let model = provider
+            .model_with_provider(&Settings::default())
+            .expect("resolve Fireworks");
+        unsafe {
+            std::env::remove_var("FIREWORKS_API_KEY");
+        }
+        assert_eq!(model.provider_type, DriverId::Fireworks);
+        assert_eq!(model.api_key.as_deref(), Some("test-key"));
+    }
+
+    #[test]
+    fn vercel_requires_api_key() {
+        let _guard = crate::testing::test_env::lock();
+        unsafe {
+            std::env::remove_var("AI_GATEWAY_API_KEY");
+        }
+        let provider = ProviderChoice::Vercel {
+            model: "anthropic/claude-opus-5-5".to_string(),
+            reasoning_effort: None,
+        };
+
+        let err = provider
+            .model_with_provider(&Settings::default())
+            .expect_err("missing key must fail");
+        assert!(err.to_string().contains("AI_GATEWAY_API_KEY"));
+    }
+
+    // Vercel routes through the first-class AI Gateway driver (everruns 0.48).
+    #[test]
+    fn vercel_uses_first_class_vercel_driver() {
+        let _guard = crate::testing::test_env::lock();
+        unsafe {
+            std::env::set_var("AI_GATEWAY_API_KEY", "test-key");
+        }
+
+        let provider = ProviderChoice::default_vercel();
+        assert_eq!(provider.provider(), Provider::Vercel);
+        let model = provider
+            .model_with_provider(&Settings::default())
+            .expect("resolve Vercel");
+        unsafe {
+            std::env::remove_var("AI_GATEWAY_API_KEY");
+        }
+        assert_eq!(model.provider_type, DriverId::Vercel);
+        assert_eq!(model.api_key.as_deref(), Some("test-key"));
+    }
+
+    #[test]
+    fn cloudflare_requires_api_key() {
+        let _guard = crate::testing::test_env::lock();
+        unsafe {
+            std::env::remove_var("CLOUDFLARE_API_TOKEN");
+        }
+        let provider = ProviderChoice::Cloudflare {
+            model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast".to_string(),
+            reasoning_effort: None,
+        };
+
+        let err = provider
+            .model_with_provider(&Settings::default())
+            .expect_err("missing key must fail");
+        assert!(err.to_string().contains("CLOUDFLARE_API_TOKEN"));
+    }
+
+    // Cloudflare routes through the first-class Workers AI driver (everruns
+    // 0.48).
+    #[test]
+    fn cloudflare_uses_first_class_cloudflare_driver() {
+        let _guard = crate::testing::test_env::lock();
+        unsafe {
+            std::env::set_var("CLOUDFLARE_API_TOKEN", "test-key");
+            std::env::set_var("CLOUDFLARE_ACCOUNT_ID", "test-account");
+        }
+
+        let provider = ProviderChoice::default_cloudflare();
+        assert_eq!(provider.provider(), Provider::Cloudflare);
+        let model = provider
+            .model_with_provider(&Settings::default())
+            .expect("resolve Cloudflare");
+        unsafe {
+            std::env::remove_var("CLOUDFLARE_API_TOKEN");
+            std::env::remove_var("CLOUDFLARE_ACCOUNT_ID");
+        }
+        assert_eq!(model.provider_type, DriverId::Cloudflare);
+        assert_eq!(model.api_key.as_deref(), Some("test-key"));
+    }
+
+    #[test]
+    fn mai_requires_api_key() {
+        let _guard = crate::testing::test_env::lock();
+        unsafe {
+            std::env::remove_var("AZURE_AI_API_KEY");
+        }
+        let provider = ProviderChoice::Mai {
+            model: "mai-1-preview".to_string(),
+            reasoning_effort: None,
+        };
+
+        let err = provider
+            .model_with_provider(&Settings::default())
+            .expect_err("missing key must fail");
+        assert!(err.to_string().contains("AZURE_AI_API_KEY"));
+    }
+
+    // MAI routes through the first-class Azure AI Foundry driver (everruns
+    // 0.48).
+    #[test]
+    fn mai_uses_first_class_mai_driver() {
+        let _guard = crate::testing::test_env::lock();
+        unsafe {
+            std::env::set_var("AZURE_AI_API_KEY", "test-key");
+            std::env::set_var("AZURE_AI_ENDPOINT", "https://test.openai.azure.com");
+        }
+
+        let provider = ProviderChoice::default_mai();
+        assert_eq!(provider.provider(), Provider::Mai);
+        let model = provider
+            .model_with_provider(&Settings::default())
+            .expect("resolve MAI");
+        unsafe {
+            std::env::remove_var("AZURE_AI_API_KEY");
+            std::env::remove_var("AZURE_AI_ENDPOINT");
+        }
+        assert_eq!(model.provider_type, DriverId::Mai);
+        assert_eq!(model.api_key.as_deref(), Some("test-key"));
+    }
+
+    #[test]
+    fn cloudflare_requires_account_id() {
+        let _guard = crate::testing::test_env::lock();
+        unsafe {
+            std::env::set_var("CLOUDFLARE_API_TOKEN", "test-key");
+            std::env::remove_var("CLOUDFLARE_ACCOUNT_ID");
+        }
+        let provider = ProviderChoice::Cloudflare {
+            model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast".to_string(),
+            reasoning_effort: None,
+        };
+
+        let err = provider
+            .model_with_provider(&Settings::default())
+            .expect_err("missing account must fail");
+        assert!(err.to_string().contains("CLOUDFLARE_ACCOUNT_ID"));
+
+        unsafe {
+            std::env::remove_var("CLOUDFLARE_API_TOKEN");
+        }
+    }
+
+    #[test]
+    fn mai_requires_endpoint() {
+        let _guard = crate::testing::test_env::lock();
+        unsafe {
+            std::env::set_var("AZURE_AI_API_KEY", "test-key");
+            std::env::remove_var("AZURE_AI_ENDPOINT");
+        }
+        let provider = ProviderChoice::Mai {
+            model: "mai-1-preview".to_string(),
+            reasoning_effort: None,
+        };
+
+        let err = provider
+            .model_with_provider(&Settings::default())
+            .expect_err("missing endpoint must fail");
+        assert!(err.to_string().contains("AZURE_AI_ENDPOINT"));
+
+        unsafe {
+            std::env::remove_var("AZURE_AI_API_KEY");
+        }
+    }
+
+    #[test]
+    fn mai_endpoint_env_wins_over_stored_base_url() {
+        use std::collections::BTreeMap;
+        let _guard = crate::testing::test_env::lock();
+        unsafe {
+            std::env::set_var("AZURE_AI_API_KEY", "test-key");
+            std::env::set_var("AZURE_AI_ENDPOINT", "https://env.openai.azure.com");
+        }
+        let settings = Settings {
+            base_urls: BTreeMap::from([(
+                "mai".to_string(),
+                "https://stored.openai.azure.com".to_string(),
+            )]),
+            ..Settings::default()
+        };
+        let provider = ProviderChoice::Mai {
+            model: "mai-1-preview".to_string(),
+            reasoning_effort: None,
+        };
+
+        let model = provider
+            .model_with_provider(&settings)
+            .expect("resolve MAI");
+        assert_eq!(
+            model.base_url.as_deref(),
+            Some("https://env.openai.azure.com")
+        );
+
+        // Stored override applies when the env var is absent.
+        unsafe {
+            std::env::remove_var("AZURE_AI_ENDPOINT");
+        }
+        let model = provider
+            .model_with_provider(&settings)
+            .expect("resolve MAI from stored endpoint");
+        assert_eq!(
+            model.base_url.as_deref(),
+            Some("https://stored.openai.azure.com")
+        );
+
+        unsafe {
+            std::env::remove_var("AZURE_AI_API_KEY");
+        }
     }
 
     #[test]

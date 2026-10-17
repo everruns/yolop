@@ -234,6 +234,10 @@ Invalid explicit selections fail without substituting another model.
 
 **OpenRouter.** Sign in from the browser or set `OPENROUTER_API_KEY`. The default model is `openai/gpt-6.1-sol`; any `provider/model` id works with `-m`.
 
+**Cloudflare Workers AI.** Needs the `CLOUDFLARE_API_TOKEN` plus the account ID it is scoped to. Setup collects the account ID alongside the key, or export `CLOUDFLARE_ACCOUNT_ID`.
+
+**Microsoft MAI.** Needs the `AZURE_AI_API_KEY` plus the Azure AI Foundry endpoint of the deployment. Setup collects the endpoint alongside the key, or set `AZURE_AI_ENDPOINT` (or `base_urls.mai` in settings).
+
 **Custom.** Point any OpenAI compatible endpoint at yolop via `CUSTOM_BASE_URL` (plus `CUSTOM_API_KEY` when needed), or store it in a profile. The model comes from your profile pick, falling back to the provider default.
 
 **Local.** `--provider local` runs inference on your machine: no key, no network. `yolop weights pull` fetches the default Qwen3-30B-A3B (Q4, about 19 GB); `yolop weights pull qwen3-8b` grabs the 5 GB alternative. There is no CPU-only download. Prefer the accelerated release binaries: `metal` on macOS, `cuda` on Linux.
