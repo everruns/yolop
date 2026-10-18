@@ -71,9 +71,24 @@ Presence and delivery are local and restart-safe. See
 
 ## Web
 
-`free_web_search`, `web_fetch` (HTTP GET/HEAD with markdown and text
-conversion plus DNS-pinned SSRF protection), and `duckduckgo_instant_answer`,
-all working without an API key. Set
+`web_search` and `web_fetch` (HTTP GET/HEAD with markdown and text
+conversion plus DNS-pinned SSRF protection), both working without an API key.
+
+`web_search` picks a search provider automatically: the model's own search on
+OpenAI, ChatGPT plan, Anthropic, Gemini and OpenRouter sessions, then Brave
+Search or Parallel when `BRAVE_SEARCH_API_KEY` or `PARALLEL_API_KEY` is set,
+then keyless free search. Pin a provider, or filter domains, in
+`settings.toml`:
+
+```toml
+[[capabilities]]
+ref = "web_search"
+provider = "brave"        # or auto | native | free | parallel
+blocked_domains = ["pinterest.com"]
+```
+
+The DuckDuckGo Instant Answer lookup (`duckduckgo_instant_answer`) stays
+available with `[[capabilities]] ref = "duckduckgo"`. Set
 `EVERRUNS_SYSTEM_ALLOWLIST_ENABLED=true` to restrict `web_fetch` to a curated
 allowlist of well-known public resources.
 
