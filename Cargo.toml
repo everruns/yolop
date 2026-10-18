@@ -154,7 +154,7 @@ everruns-capabilities = { version = "=0.48.0", features = ["hosted-integration-c
 everruns = { version = "=0.48.0", default-features = false, features = ["local", "typesafe"] }
 # LLMSim is a user-facing offline provider, so it remains a production dependency.
 everruns-llmsim = { version = "=0.48.0", features = ["host"] }
-everruns-integrations = { version = "=0.48.0", features = ["filesystem", "web-fetch", "duckduckgo", "parallel", "daytona", "e2b"] }
+everruns-integrations = { version = "=0.48.0", features = ["filesystem", "web-fetch", "web-search", "duckduckgo", "parallel", "daytona", "e2b"] }
 arboard = { version = "3", features = ["wayland-data-control"] }
 futures = "0.3"
 html-escape = "0.2"

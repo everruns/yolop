@@ -107,6 +107,7 @@ use everruns_integrations::duckduckgo::DuckDuckGoCapability;
 use everruns_integrations::e2b::E2BCapability;
 use everruns_integrations::filesystem::{FileSystemCapability, SESSION_FILE_SYSTEM_CAPABILITY_ID};
 use everruns_integrations::web_fetch::{WEB_FETCH_CAPABILITY_ID, WebFetchCapability};
+use everruns_integrations::web_search::{WEB_SEARCH_CAPABILITY_ID, WebSearchCapability};
 use everruns_llmsim::LlmSimConfig;
 use everruns_llmsim::LlmSimRuntimeExt;
 use ignore::WalkBuilder;
@@ -3084,7 +3085,6 @@ fn reasoning_effort_value(value: &ReasoningEffort) -> Option<String> {
 // (`everruns-integrations-*` identify themselves with a bare string). Mirror
 // them here so the harness wiring references a single named source of truth
 // instead of scattering string literals.
-pub(crate) const DUCKDUCKGO_CAPABILITY_ID: &str = "duckduckgo";
 pub(crate) const DAYTONA_CAPABILITY_ID: &str = "daytona";
 pub(crate) const E2B_CAPABILITY_ID: &str = "e2b";
 pub(crate) const COMPACTION_BUDGET_PERCENT: u8 = 85;
@@ -3154,7 +3154,16 @@ fn default_coding_harness_capabilities(client_commands: bool) -> Vec<CapabilityR
                 "max_active_descendant_tasks": 32
             }),
         ),
-        CapabilityRef::new(DUCKDUCKGO_CAPABILITY_ID),
+        // One web search tool. Automatic asks the model provider's own search
+        // first (OpenAI, ChatGPT plan, Anthropic, Gemini, OpenRouter), then
+        // Brave or Parallel when `BRAVE_SEARCH_API_KEY` / `PARALLEL_API_KEY`
+        // is set, then keyless free search. It replaced the `duckduckgo`
+        // default (still registered, opt-in) and yolop's own `free_search`,
+        // which moved upstream as the free search backend.
+        CapabilityRef::with_config(
+            WEB_SEARCH_CAPABILITY_ID,
+            serde_json::json!({ "provider": "auto" }),
+        ),
         CapabilityRef::new(ATTRIBUTION_CAPABILITY_ID),
         // enable_file_download=true: saved responses land on disk through
         // the platform filesystem stack, so the write blocklist applies.
@@ -4616,8 +4625,8 @@ pub async fn build_with_options(
     //   * stateless_todo_list  — write_todos tool for multi-step tasks
     //   * loop_detection       — safety net against repeated identical tool calls
     //   * prompt_caching       — Anthropic prompt caching; free token savings
-    //   * duckduckgo           — DuckDuckGo Instant Answer lookup (`duckduckgo_instant_answer`); no API key
-    //   * free_search          — best-effort free SERP/dev search (`free_web_search`); no API key
+    //   * web_search          - one `web_search` tool (model native, Brave, Parallel, free); no key needed
+    //   * duckduckgo          - DuckDuckGo Instant Answer lookup (`duckduckgo_instant_answer`), opt-in
     //   * session_storage      — session kv/secret store (Daytona dependency)
     //   * daytona              — remote cloud sandboxes (`daytona_*` tools)
     //   * e2b                  — remote cloud sandboxes (`e2b_*` tools)
@@ -4957,7 +4966,7 @@ pub async fn build_with_options(
     capabilities.register(E2BCapability);
     capabilities.register(UserHooksCapability);
     capabilities.register(DuckDuckGoCapability);
-    capabilities.register(crate::capabilities::FreeSearchCapability::new());
+    capabilities.register(WebSearchCapability::from_env());
     capabilities.register(WebFetchCapability::from_env());
     capabilities.register(MessageMetadataCapability);
     capabilities.register(ModelRuntimeContextCapability::new(provider_state.clone()));
@@ -6266,21 +6275,24 @@ mod tests {
             );
         }
         assert!(
-            built
-                .startup
-                .tool_names
-                .contains(&"duckduckgo_instant_answer".to_string()),
-            "DuckDuckGo Instant Answer tool: {:?}",
+            built.startup.tool_names.contains(&"web_search".to_string()),
+            "shared web_search tool: {:?}",
             built.startup.tool_names
         );
-        assert!(
-            !built
-                .startup
-                .tool_names
-                .contains(&"duckduckgo_search".to_string()),
-            "retired DuckDuckGo tool name must not remain: {:?}",
-            built.startup.tool_names
-        );
+        for retired_search_tool in [
+            "duckduckgo_instant_answer",
+            "duckduckgo_search",
+            "free_web_search",
+        ] {
+            assert!(
+                !built
+                    .startup
+                    .tool_names
+                    .contains(&retired_search_tool.to_string()),
+                "web_search replaced {retired_search_tool} on the default harness: {:?}",
+                built.startup.tool_names
+            );
+        }
         for retired_management_tool in [
             "scaffold_extension",
             "list_extensions",

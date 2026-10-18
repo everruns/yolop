@@ -342,7 +342,7 @@ impl Tool for RgTool {
          max_results (default 200); truncated reports when bounds cut the \
          results and counts are lower bounds then. Prefer for codebase-wide \
          text search; prefer ast_grep for syntax-aware structural search and \
-         free_search for semantic search. Prefer this tool over shelling out \
+         repo_map for symbol-level orientation. Prefer this tool over shelling out \
          to `rg`, which may not be installed."
     }
 
