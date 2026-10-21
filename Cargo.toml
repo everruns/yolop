@@ -157,7 +157,7 @@ everruns-llmsim = { version = "=0.48.0", features = ["host"] }
 everruns-integrations = { version = "=0.48.0", features = ["filesystem", "web-fetch", "web-search", "duckduckgo", "parallel", "daytona", "e2b"] }
 arboard = { version = "3", features = ["wayland-data-control"] }
 futures = "0.3"
-html-escape = "0.2"
+html-escape = "0.3"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 regex = "1"
 urlencoding = "2"
