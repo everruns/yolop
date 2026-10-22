@@ -197,14 +197,20 @@ mod tests {
         std::fs::remove_file(&copy).unwrap();
         std::fs::write(&copy, b"not a binary").unwrap();
         let proc_exe = PathBuf::from(format!("/proc/{}/exe", child.id()));
-        let status = std::process::Command::new(&proc_exe)
+        let out = std::process::Command::new(&proc_exe)
             .arg0("sleep")
             .arg("0")
-            .status()
+            .output()
             .unwrap();
         child.kill().unwrap();
         let _ = child.wait();
-        assert!(status.success());
+        assert!(
+            out.status.success(),
+            "{:?} stderr={} sleep={}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr),
+            sleep.display()
+        );
     }
 
     #[cfg(target_os = "linux")]
