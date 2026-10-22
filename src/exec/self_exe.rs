@@ -184,6 +184,16 @@ mod tests {
         let Ok(sleep) = which_sleep() else {
             return;
         };
+        // Multicall coreutils (uutils) refuse to run when argv[0] or the
+        // deleted exe name differs from the applet, so they cannot stand in.
+        if sleep
+            .canonicalize()
+            .ok()
+            .and_then(|p| p.file_name().map(|n| n == "sleep"))
+            != Some(true)
+        {
+            return;
+        }
         let dir = tempfile::tempdir().unwrap();
         let copy = dir.path().join("sleeper");
         std::fs::copy(&sleep, &copy).unwrap();
