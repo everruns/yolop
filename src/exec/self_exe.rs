@@ -181,17 +181,24 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn proc_exe_survives_replacing_the_binary() {
+        use std::os::unix::process::CommandExt;
         let Ok(sleep) = which_sleep() else {
             return;
         };
         let dir = tempfile::tempdir().unwrap();
         let copy = dir.path().join("sleeper");
         std::fs::copy(&sleep, &copy).unwrap();
-        let mut child = std::process::Command::new(&copy).arg("30").spawn().unwrap();
+        // argv[0] stays `sleep`: multicall coreutils pick the applet from it.
+        let mut child = std::process::Command::new(&copy)
+            .arg0("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
         std::fs::remove_file(&copy).unwrap();
         std::fs::write(&copy, b"not a binary").unwrap();
         let proc_exe = PathBuf::from(format!("/proc/{}/exe", child.id()));
         let status = std::process::Command::new(&proc_exe)
+            .arg0("sleep")
             .arg("0")
             .status()
             .unwrap();
