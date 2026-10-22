@@ -192,10 +192,16 @@ mod tests {
         std::fs::write(&copy, b"not a binary").unwrap();
         let proc_exe = PathBuf::from(format!("/proc/{}/exe", child.id()));
         let mut reexec = spawn_retrying_text_busy(&proc_exe, "0");
-        let status = reexec.wait().unwrap();
+        let out = reexec.wait_with_output().unwrap();
         child.kill().unwrap();
         let _ = child.wait();
-        assert!(status.success());
+        assert!(
+            out.status.success(),
+            "{:?} stderr={} sleep={}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr),
+            sleep.display()
+        );
     }
 
     /// Another test thread forking while the copy's write fd is still open
@@ -203,7 +209,11 @@ mod tests {
     #[cfg(target_os = "linux")]
     fn spawn_retrying_text_busy(program: &std::path::Path, arg: &str) -> std::process::Child {
         for _ in 0..50 {
-            match std::process::Command::new(program).arg(arg).spawn() {
+            match std::process::Command::new(program)
+                .arg(arg)
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+            {
                 Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => {
                     std::thread::sleep(std::time::Duration::from_millis(20));
                 }
