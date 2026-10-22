@@ -181,36 +181,36 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn proc_exe_survives_replacing_the_binary() {
-        use std::os::unix::process::CommandExt;
         let Ok(sleep) = which_sleep() else {
             return;
         };
         let dir = tempfile::tempdir().unwrap();
         let copy = dir.path().join("sleeper");
         std::fs::copy(&sleep, &copy).unwrap();
-        // argv[0] stays `sleep`: multicall coreutils pick the applet from it.
-        let mut child = std::process::Command::new(&copy)
-            .arg0("sleep")
-            .arg("30")
-            .spawn()
-            .unwrap();
+        let mut child = spawn_retrying_text_busy(&copy, "30");
         std::fs::remove_file(&copy).unwrap();
         std::fs::write(&copy, b"not a binary").unwrap();
         let proc_exe = PathBuf::from(format!("/proc/{}/exe", child.id()));
-        let out = std::process::Command::new(&proc_exe)
-            .arg0("sleep")
-            .arg("0")
-            .output()
-            .unwrap();
+        let mut reexec = spawn_retrying_text_busy(&proc_exe, "0");
+        let status = reexec.wait().unwrap();
         child.kill().unwrap();
         let _ = child.wait();
-        assert!(
-            out.status.success(),
-            "{:?} stderr={} sleep={}",
-            out.status,
-            String::from_utf8_lossy(&out.stderr),
-            sleep.display()
-        );
+        assert!(status.success());
+    }
+
+    /// Another test thread forking while the copy's write fd is still open
+    /// makes exec fail with ETXTBSY; the window closes once that child execs.
+    #[cfg(target_os = "linux")]
+    fn spawn_retrying_text_busy(program: &std::path::Path, arg: &str) -> std::process::Child {
+        for _ in 0..50 {
+            match std::process::Command::new(program).arg(arg).spawn() {
+                Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                other => return other.unwrap(),
+            }
+        }
+        panic!("{} stayed busy", program.display());
     }
 
     #[cfg(target_os = "linux")]
