@@ -191,7 +191,7 @@ mod tests {
         std::fs::remove_file(&copy).unwrap();
         std::fs::write(&copy, b"not a binary").unwrap();
         let proc_exe = PathBuf::from(format!("/proc/{}/exe", child.id()));
-        let mut reexec = spawn_retrying_text_busy(&proc_exe, "0");
+        let reexec = spawn_retrying_text_busy(&proc_exe, "0");
         let out = reexec.wait_with_output().unwrap();
         child.kill().unwrap();
         let _ = child.wait();
