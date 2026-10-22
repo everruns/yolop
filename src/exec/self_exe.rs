@@ -178,52 +178,51 @@ mod tests {
 
     /// The failure this module exists for: copy a binary, start it, replace
     /// the file, and the `/proc/<pid>/exe` route still executes the original.
+    /// The fixture is `sh`, not `sleep`: multicall coreutils (uutils) refuse to
+    /// run when argv[0] or the deleted exe name is not the applet name.
     #[cfg(target_os = "linux")]
     #[test]
     fn proc_exe_survives_replacing_the_binary() {
-        let Ok(sleep) = which_sleep() else {
+        let Ok(sh) = which_sh() else {
             return;
         };
-        // Multicall coreutils (uutils) refuse to run when argv[0] or the
-        // deleted exe name differs from the applet, so they cannot stand in.
-        if sleep
-            .canonicalize()
-            .ok()
-            .and_then(|p| p.file_name().map(|n| n == "sleep"))
-            != Some(true)
-        {
-            return;
-        }
         let dir = tempfile::tempdir().unwrap();
         let copy = dir.path().join("sleeper");
-        std::fs::copy(&sleep, &copy).unwrap();
-        let mut child = spawn_retrying_text_busy(&copy, "30");
+        std::fs::copy(&sh, &copy).unwrap();
+        // `read` blocks on the open stdin pipe, keeping the child alive.
+        let mut child = spawn_retrying_text_busy(&copy, "read x", true);
         std::fs::remove_file(&copy).unwrap();
         std::fs::write(&copy, b"not a binary").unwrap();
         let proc_exe = PathBuf::from(format!("/proc/{}/exe", child.id()));
-        let reexec = spawn_retrying_text_busy(&proc_exe, "0");
+        let reexec = spawn_retrying_text_busy(&proc_exe, "exit 0", false);
         let out = reexec.wait_with_output().unwrap();
         child.kill().unwrap();
         let _ = child.wait();
         assert!(
             out.status.success(),
-            "{:?} stderr={} sleep={}",
+            "{:?} stderr={}",
             out.status,
-            String::from_utf8_lossy(&out.stderr),
-            sleep.display()
+            String::from_utf8_lossy(&out.stderr)
         );
     }
 
     /// Another test thread forking while the copy's write fd is still open
     /// makes exec fail with ETXTBSY; the window closes once that child execs.
     #[cfg(target_os = "linux")]
-    fn spawn_retrying_text_busy(program: &std::path::Path, arg: &str) -> std::process::Child {
+    fn spawn_retrying_text_busy(
+        program: &std::path::Path,
+        script: &str,
+        hold_stdin: bool,
+    ) -> std::process::Child {
         for _ in 0..50 {
-            match std::process::Command::new(program)
-                .arg(arg)
-                .stderr(std::process::Stdio::piped())
-                .spawn()
-            {
+            let mut command = std::process::Command::new(program);
+            command
+                .args(["-c", script])
+                .stderr(std::process::Stdio::piped());
+            if hold_stdin {
+                command.stdin(std::process::Stdio::piped());
+            }
+            match command.spawn() {
                 Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => {
                     std::thread::sleep(std::time::Duration::from_millis(20));
                 }
@@ -234,8 +233,8 @@ mod tests {
     }
 
     #[cfg(target_os = "linux")]
-    fn which_sleep() -> Result<PathBuf, ()> {
-        ["/bin/sleep", "/usr/bin/sleep"]
+    fn which_sh() -> Result<PathBuf, ()> {
+        ["/bin/sh", "/usr/bin/sh"]
             .into_iter()
             .map(PathBuf::from)
             .find(|path| path.exists())
