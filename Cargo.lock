@@ -2558,7 +2558,7 @@ dependencies = [
 [[package]]
 name = "everruns"
 version = "0.48.0"
-source = "git+https://github.com/everruns/everruns.git?branch=main#310d402215897e3428ff026eed51e21a6ae4314e"
+source = "git+https://github.com/everruns/everruns.git?branch=main#77944affe143dc7cea3cc3168893b53dfaa6bb35"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -2589,7 +2589,7 @@ dependencies = [
 [[package]]
 name = "everruns-ard"
 version = "0.48.0"
-source = "git+https://github.com/everruns/everruns.git?branch=main#310d402215897e3428ff026eed51e21a6ae4314e"
+source = "git+https://github.com/everruns/everruns.git?branch=main#77944affe143dc7cea3cc3168893b53dfaa6bb35"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2606,7 +2606,7 @@ dependencies = [
 [[package]]
 name = "everruns-capabilities"
 version = "0.48.0"
-source = "git+https://github.com/everruns/everruns.git?branch=main#310d402215897e3428ff026eed51e21a6ae4314e"
+source = "git+https://github.com/everruns/everruns.git?branch=main#77944affe143dc7cea3cc3168893b53dfaa6bb35"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2617,7 +2617,7 @@ dependencies = [
  "everruns-integrations",
  "everruns-integrations-experimental",
  "inventory",
- "jsonschema",
+ "jsonschema 0.58.6",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -2629,7 +2629,7 @@ dependencies = [
 [[package]]
 name = "everruns-cli-contract"
 version = "0.48.0"
-source = "git+https://github.com/everruns/everruns.git?branch=main#310d402215897e3428ff026eed51e21a6ae4314e"
+source = "git+https://github.com/everruns/everruns.git?branch=main#77944affe143dc7cea3cc3168893b53dfaa6bb35"
 dependencies = [
  "clap",
  "serde",
@@ -2639,7 +2639,7 @@ dependencies = [
 [[package]]
 name = "everruns-contracts"
 version = "0.48.0"
-source = "git+https://github.com/everruns/everruns.git?branch=main#310d402215897e3428ff026eed51e21a6ae4314e"
+source = "git+https://github.com/everruns/everruns.git?branch=main#77944affe143dc7cea3cc3168893b53dfaa6bb35"
 dependencies = [
  "aho-corasick",
  "anyhow",
@@ -2657,7 +2657,7 @@ dependencies = [
  "hex",
  "http",
  "inventory",
- "jsonschema",
+ "jsonschema 0.58.6",
  "rand 0.10.3",
  "regex",
  "reqwest 0.13.5",
@@ -2682,7 +2682,7 @@ dependencies = [
 [[package]]
 name = "everruns-core"
 version = "0.48.0"
-source = "git+https://github.com/everruns/everruns.git?branch=main#310d402215897e3428ff026eed51e21a6ae4314e"
+source = "git+https://github.com/everruns/everruns.git?branch=main#77944affe143dc7cea3cc3168893b53dfaa6bb35"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2696,7 +2696,7 @@ dependencies = [
  "globset",
  "ignore",
  "inventory",
- "jsonschema",
+ "jsonschema 0.58.6",
  "libc",
  "rand 0.10.3",
  "regex",
@@ -2720,7 +2720,7 @@ dependencies = [
 [[package]]
 name = "everruns-drivers"
 version = "0.48.0"
-source = "git+https://github.com/everruns/everruns.git?branch=main#310d402215897e3428ff026eed51e21a6ae4314e"
+source = "git+https://github.com/everruns/everruns.git?branch=main#77944affe143dc7cea3cc3168893b53dfaa6bb35"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2745,7 +2745,7 @@ dependencies = [
 [[package]]
 name = "everruns-integrations"
 version = "0.48.0"
-source = "git+https://github.com/everruns/everruns.git?branch=main#310d402215897e3428ff026eed51e21a6ae4314e"
+source = "git+https://github.com/everruns/everruns.git?branch=main#77944affe143dc7cea3cc3168893b53dfaa6bb35"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2772,6 +2772,9 @@ dependencies = [
  "http-body",
  "hyper-util",
  "inventory",
+ "openapiv3",
+ "progenitor",
+ "progenitor-client",
  "prost",
  "protox",
  "reqwest 0.13.5",
@@ -2796,7 +2799,7 @@ dependencies = [
 [[package]]
 name = "everruns-integrations-experimental"
 version = "0.48.0"
-source = "git+https://github.com/everruns/everruns.git?branch=main#310d402215897e3428ff026eed51e21a6ae4314e"
+source = "git+https://github.com/everruns/everruns.git?branch=main#77944affe143dc7cea3cc3168893b53dfaa6bb35"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2812,7 +2815,7 @@ dependencies = [
 [[package]]
 name = "everruns-llmsim"
 version = "0.48.0"
-source = "git+https://github.com/everruns/everruns.git?branch=main#310d402215897e3428ff026eed51e21a6ae4314e"
+source = "git+https://github.com/everruns/everruns.git?branch=main#77944affe143dc7cea3cc3168893b53dfaa6bb35"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3772,9 +3775,9 @@ checksum = "62adaabb884c94955b19907d60019f4e145d091c75345379e70d1ee696f7854f"
 
 [[package]]
 name = "html-escape"
-version = "0.2.15"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c9356095b4b41197bba32173600e1582792cda618f65d12f68e2e77d273413c5"
+checksum = "491194d601b4fa9fac3c9571e014070a0ad1bc3392d1bc10419695196a8b3cc3"
 
 [[package]]
 name = "html2text"
@@ -4495,12 +4498,40 @@ dependencies = [
  "fraction",
  "getrandom 0.3.4",
  "itoa",
- "jsonschema-regex",
- "jsonschema-value",
+ "jsonschema-regex 0.58.6",
+ "jsonschema-value 0.58.6",
  "num-cmp",
  "num-traits",
  "percent-encoding",
- "referencing",
+ "referencing 0.58.6",
+ "regex",
+ "serde",
+ "serde_json",
+ "strum 0.28.0",
+ "unicode-general-category",
+ "uuid-simd",
+]
+
+[[package]]
+name = "jsonschema"
+version = "0.59.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1b320ad34c177093d21622edc9215bb608294c2333ff296672c0c8265a5ee60c"
+dependencies = [
+ "ahash",
+ "bytecount",
+ "data-encoding",
+ "email_address",
+ "fancy-regex 0.19.2",
+ "fraction",
+ "getrandom 0.3.4",
+ "itoa",
+ "jsonschema-regex 0.59.0",
+ "jsonschema-value 0.59.0",
+ "num-cmp",
+ "num-traits",
+ "percent-encoding",
+ "referencing 0.59.0",
  "regex",
  "serde",
  "serde_json",
@@ -4519,10 +4550,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "jsonschema-regex"
+version = "0.59.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1472f7be79026f79e01a9b172263311e829d7c210d57b39cb57037abc0ce0500"
+dependencies = [
+ "regex-syntax",
+]
+
+[[package]]
 name = "jsonschema-value"
 version = "0.58.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39b7670345e5ce87371339d13705dbb9276b7e3e934bbe1efa2c6734a1f65a96"
+dependencies = [
+ "ahash",
+ "bytecount",
+ "fraction",
+ "getrandom 0.3.4",
+ "num-cmp",
+ "num-traits",
+ "serde_json",
+ "zmij",
+]
+
+[[package]]
+name = "jsonschema-value"
+version = "0.59.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e5a7550a7a84787e715ead0b47e01fa8c6bb7c3413630f91a8f2094c06c2078a"
 dependencies = [
  "ahash",
  "bytecount",
@@ -5351,9 +5407,9 @@ checksum = "743fb55ba31b18fb1ecef6bdc9aa2743314978ac084044301a7eee33fb99a20d"
 
 [[package]]
 name = "mxc-sdk"
-version = "1.0.0"
+version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e4866ca589a68edc8e931eba58eed9253ad1ce670e974aedc4830a1d94bca6cd"
+checksum = "7c9e2d05b3953fdb34c44e4de8d8f2b447f4444534cb95294b72fb297a468f61"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -5800,6 +5856,17 @@ dependencies = [
  "sha1 0.10.7",
  "sha2 0.10.9",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "openapiv3"
+version = "2.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5c8d427828b22ae1fff2833a03d8486c2c881367f1c336349f307f321e7f4d05"
+dependencies = [
+ "indexmap 2.14.2",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -6396,6 +6463,52 @@ checksum = "4488a4a36b9a4ba6b9334a32a39971f77c1436ec82c38707bce707699cc3bbcb"
 dependencies = [
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "progenitor"
+version = "0.15.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "15bd395aa613c6491be9233fae4a870a35cd611655c0ef1cbaae7aa9e1c4c0e6"
+dependencies = [
+ "progenitor-impl",
+]
+
+[[package]]
+name = "progenitor-client"
+version = "0.15.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6aa13eb6d9499a851512ec8fa3280f586be059682da4f05d953924be45d736f0"
+dependencies = [
+ "bytes",
+ "futures-core",
+ "percent-encoding",
+ "reqwest 0.13.5",
+ "serde",
+ "serde_json",
+ "serde_urlencoded",
+]
+
+[[package]]
+name = "progenitor-impl"
+version = "0.15.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3d9fbe5a1aa114c6c7c507a30ebeb0b12de383edab951ea27300210a3841917c"
+dependencies = [
+ "heck",
+ "http",
+ "indexmap 2.14.2",
+ "openapiv3",
+ "proc-macro2",
+ "quote",
+ "regex",
+ "schemars 0.8.22",
+ "serde",
+ "serde_json",
+ "syn 3.0.6",
+ "thiserror 2.0.21",
+ "typify",
+ "unicode-ident",
 ]
 
 [[package]]
@@ -7011,6 +7124,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "referencing"
+version = "0.59.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "473f4dcca28ead7ee0f8e5b5d0bbae2549f4fc4c958fb20af328961b6c174be3"
+dependencies = [
+ "ahash",
+ "fluent-uri",
+ "getrandom 0.3.4",
+ "hashbrown 0.17.1",
+ "itoa",
+ "micromap",
+ "parking_lot",
+ "percent-encoding",
+ "serde_json",
+]
+
+[[package]]
 name = "regalloc2"
 version = "0.15.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7059,6 +7189,15 @@ name = "regex-syntax"
 version = "0.8.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
+
+[[package]]
+name = "regress"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32eef8b209c3c1c15dbad02c1f30f9539f00dc7253e0cbcdaae442a50a09d7c1"
+dependencies = [
+ "memchr",
+]
 
 [[package]]
 name = "reqwest"
@@ -7445,6 +7584,18 @@ dependencies = [
 
 [[package]]
 name = "schemars"
+version = "0.8.22"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3fbf2ae1b8bc8e02df939598064d22402220cd5bbcca1c76f7d6a310974d5615"
+dependencies = [
+ "dyn-clone",
+ "schemars_derive 0.8.22",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "schemars"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4cd191f9397d57d581cddd31014772520aa448f65ef991055d7f61582c65165f"
@@ -7463,9 +7614,21 @@ checksum = "687274d293b6cdc6e73e0fee520bf2049650090d7164f87672d212a3c530cf4a"
 dependencies = [
  "dyn-clone",
  "ref-cast",
- "schemars_derive",
+ "schemars_derive 1.2.2",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "schemars_derive"
+version = "0.8.22"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32e265784ad618884abaea0600a9adf15393368d840e0222d101a072f3f7534d"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "serde_derive_internals 0.29.1",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -7476,7 +7639,7 @@ checksum = "d98c67716b46af2f0b8cf752abc930f6f9aecfbf671ecfb531db8a31dbe4e2ba"
 dependencies = [
  "proc-macro2",
  "quote",
- "serde_derive_internals",
+ "serde_derive_internals 0.30.0",
  "syn 3.0.6",
 ]
 
@@ -7635,6 +7798,17 @@ dependencies = [
 
 [[package]]
 name = "serde_derive_internals"
+version = "0.29.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "18d26a20a969b9e3fdf2fc2d9f21eda6c40e2de84c9408bb5d3b05d499aae711"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
+name = "serde_derive_internals"
 version = "0.30.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f852137cce035d6a4df67ccce505ff6b3e9fd3a10e3e52b24dc71e650bb1a9bd"
@@ -7699,6 +7873,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4e7523beb55eece201a2356bee0bbca0d1ab466c14c07703b2e0ee6d42cb0c2c"
 dependencies = [
  "serde_core",
+]
+
+[[package]]
+name = "serde_tokenstream"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "db95b8acf6eca5bc1bc771a7d7fb1a0d1485bdef0c46eec2f573bbaf4b4118f8"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "serde",
+ "syn 3.0.6",
 ]
 
 [[package]]
@@ -9526,6 +9712,53 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
 
 [[package]]
+name = "typify"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "71187d2e983363e9a6ca884f7b061620bc6da4316902058e74bbc9d61c347696"
+dependencies = [
+ "typify-impl",
+ "typify-macro",
+]
+
+[[package]]
+name = "typify-impl"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1cbc3132686085f84a068ad86fc281cb3d566dd940c8911fd3562013851e9ae8"
+dependencies = [
+ "heck",
+ "log",
+ "proc-macro2",
+ "quote",
+ "regress",
+ "schemars 0.8.22",
+ "semver",
+ "serde",
+ "serde_json",
+ "syn 3.0.6",
+ "thiserror 2.0.21",
+ "unicode-ident",
+]
+
+[[package]]
+name = "typify-macro"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b3a7f8d08ec85254fb8b383a6c66fe43b81f7f6b288fa71eb365f0867fc8f3a6"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "schemars 0.8.22",
+ "semver",
+ "serde",
+ "serde_json",
+ "serde_tokenstream",
+ "syn 3.0.6",
+ "typify-impl",
+]
+
+[[package]]
 name = "ucd-trie"
 version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9858,9 +10091,9 @@ checksum = "5c3082ca00d5a5ef149bb8b555a72ae84c9c59f7250f013ac822ac2e49b19c64"
 
 [[package]]
 name = "vt100"
-version = "0.16.2"
+version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "054ff75fb8fa83e609e685106df4faeffdf3a735d3c74ebce97ec557d5d36fd9"
+checksum = "6e8e54ec9993c500979d6771157fc4a8b47e460fddc430dd5c66a74fc6865b07"
 dependencies = [
  "itoa",
  "unicode-width 0.2.2",
@@ -11060,7 +11293,7 @@ dependencies = [
  "image",
  "include_dir",
  "inventory",
- "jsonschema",
+ "jsonschema 0.59.0",
  "landlock",
  "libc",
  "mistralrs",

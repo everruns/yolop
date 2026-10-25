@@ -79,7 +79,7 @@ tar = "0.4"
 # `.worktreeinclude` matching for copying ignored local files into worktrees.
 ignore = "0.4"
 include_dir = "0.7"
-jsonschema = { version = "0.58.5", default-features = false }
+jsonschema = { version = "0.59.0", default-features = false }
 # In-process inference engine behind the `local-inference` feature. Pure Rust
 # on CPU (candle underneath), so an enabled build still needs no C/C++
 # toolchain; `metal`/`cuda` do and stay opt-in on top.
@@ -157,7 +157,7 @@ everruns-llmsim = { git = "https://github.com/everruns/everruns.git", branch = "
 everruns-integrations = { git = "https://github.com/everruns/everruns.git", branch = "main", features = ["filesystem", "web-fetch", "web-search", "duckduckgo", "parallel", "daytona", "e2b"] }
 arboard = { version = "3", features = ["wayland-data-control"] }
 futures = "0.3"
-html-escape = "0.2"
+html-escape = "0.3"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 regex = "1"
 urlencoding = "2"
@@ -170,7 +170,7 @@ seccompiler = "0.5.0"
 
 # Windows shell containment, run in-process: see src/exec/sandbox_windows.rs.
 [target.'cfg(windows)'.dependencies]
-mxc-sdk = { version = "=1.0.0", features = ["tier2_bfs"] }
+mxc-sdk = { version = "=1.0.1", features = ["tier2_bfs"] }
 # The attached control endpoint's named-pipe ACL; see `control::control_pipe`.
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Isolation"] }
 
@@ -186,7 +186,7 @@ portable-pty = "0.9.0"
 proptest = "1"
 tempfile = "3"
 tiny_http = "0.12"
-vt100 = "0.16"
+vt100 = "0.17"
 
 # Yolop ships as one binary, and users pay for its size on every tarball
 # download, `cargo install`, and cold start. Measured on x86_64 Linux with
