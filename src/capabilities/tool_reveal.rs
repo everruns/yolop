@@ -49,6 +49,7 @@ mod tests {
         ToolDisclosure {
             deferring: true,
             revealed: revealed.iter().map(|name| name.to_string()).collect(),
+            ..Default::default()
         }
     }
 

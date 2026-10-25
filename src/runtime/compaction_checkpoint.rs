@@ -73,6 +73,53 @@ struct StoredState {
     attempts: Vec<StoredAttempt>,
 }
 
+pub struct LegacyCompactionAttempt {
+    pub provider_type: String,
+    pub model: String,
+    pub attempt: ProactiveCompactionAttempt,
+}
+
+/// Migration retains replacements on abandoned branches as well as the
+/// selected branch; the target authority chooses the compatible lineage.
+pub(crate) fn read_legacy_compaction(
+    session_dir: &Path,
+    session_id: SessionId,
+    maximum: i32,
+    digest: &mut sha2::Sha256,
+) -> anyhow::Result<(Vec<CompactionCheckpoint>, Vec<LegacyCompactionAttempt>)> {
+    let records: Vec<StoredRecord> =
+        super::migration::read_records(&session_dir.join(CHECKPOINT_LOG), digest)?;
+    let mut checkpoints = Vec::new();
+    let mut attempts = Vec::new();
+    for record in records {
+        let (owner, sequence) = match &record {
+            StoredRecord::Checkpoint(checkpoint) => {
+                (checkpoint.session_id, checkpoint.source_sequence)
+            }
+            StoredRecord::ProactiveAttempt(attempt) => {
+                (attempt.session_id, attempt.source_sequence)
+            }
+        };
+        anyhow::ensure!(
+            owner == session_id,
+            "migration compaction record belongs to another session"
+        );
+        anyhow::ensure!(
+            (0..=i64::from(maximum)).contains(&sequence),
+            "migration compaction record exceeds the source journal"
+        );
+        match record {
+            StoredRecord::Checkpoint(checkpoint) => checkpoints.push(checkpoint.try_into()?),
+            StoredRecord::ProactiveAttempt(stored) => attempts.push(LegacyCompactionAttempt {
+                provider_type: stored.provider_type.clone(),
+                model: stored.model.clone(),
+                attempt: stored.into_attempt(),
+            }),
+        }
+    }
+    Ok((checkpoints, attempts))
+}
+
 impl JsonlCompactionCheckpointStore {
     pub(crate) fn open(
         session_dir: &Path,

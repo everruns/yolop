@@ -695,6 +695,7 @@ mod tests {
             executed_arguments_truncated: false,
             details: None,
             severity: None,
+            worker_thread_cpu_ns: None,
         })));
         assert_eq!(updates.len(), 1);
         match &updates[0] {
@@ -763,6 +764,7 @@ mod tests {
             executed_arguments_truncated: false,
             details: None,
             severity: None,
+            worker_thread_cpu_ns: None,
         })));
         assert_eq!(updates.len(), 1);
         match &updates[0] {
@@ -937,6 +939,7 @@ mod tests {
             executed_arguments_truncated: false,
             details: None,
             severity: None,
+            worker_thread_cpu_ns: None,
         })));
 
         assert_eq!(updates.len(), 2);

@@ -7,6 +7,7 @@
 pub mod background_wake;
 mod compaction_checkpoint;
 pub(crate) mod discovered_profiles;
+pub mod migration;
 // Stopgap classifiers for OpenRouter account gates (403 attestation, 404
 // data-policy / guardrail). Replace with the upstream structured error once
 // `everruns-openrouter` reports those gates as first-class kinds.
@@ -10633,7 +10634,7 @@ mod tests {
                     tool_calls_count: 0,
                     success: true,
                     error: None,
-                    stop_reason: everruns_core::turn::TurnStopReason::EndTurn,
+                    stop_reason: everruns_contracts::turn::TurnStopReason::EndTurn,
                     turn_id: everruns_contracts::typed_id::TurnId::new(),
                 })
             }
@@ -10714,9 +10715,9 @@ mod tests {
                             .to_string()
                     }),
                     stop_reason: if effort.is_some() {
-                        everruns_core::turn::TurnStopReason::EndTurn
+                        everruns_contracts::turn::TurnStopReason::EndTurn
                     } else {
-                        everruns_core::turn::TurnStopReason::Error
+                        everruns_contracts::turn::TurnStopReason::Error
                     },
                     turn_id: everruns_contracts::typed_id::TurnId::new(),
                 })
@@ -10793,9 +10794,9 @@ mod tests {
                             .to_string()
                     }),
                     stop_reason: if effort.is_some() {
-                        everruns_core::turn::TurnStopReason::EndTurn
+                        everruns_contracts::turn::TurnStopReason::EndTurn
                     } else {
-                        everruns_core::turn::TurnStopReason::Error
+                        everruns_contracts::turn::TurnStopReason::Error
                     },
                     turn_id: everruns_contracts::typed_id::TurnId::new(),
                 })
@@ -10878,9 +10879,9 @@ mod tests {
                             .to_string()
                     }),
                     stop_reason: if first {
-                        everruns_core::turn::TurnStopReason::Error
+                        everruns_contracts::turn::TurnStopReason::Error
                     } else {
-                        everruns_core::turn::TurnStopReason::EndTurn
+                        everruns_contracts::turn::TurnStopReason::EndTurn
                     },
                     turn_id: everruns_contracts::typed_id::TurnId::new(),
                 })

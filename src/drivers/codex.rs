@@ -323,6 +323,15 @@ mod tests {
             Ok(_) => panic!("missing consent must fail"),
             Err(e) => e,
         };
-        assert!(error.to_string().contains("plan use was not granted"));
+        assert_eq!(
+            error.llm_error_kind(),
+            Some(everruns_contracts::LlmErrorKind::Authentication)
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("ChatGPT Plan use was not granted"),
+            "{error}"
+        );
     }
 }

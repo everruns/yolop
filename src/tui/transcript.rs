@@ -916,6 +916,7 @@ mod tests {
             executed_arguments_truncated: false,
             details: None,
             severity: None,
+            worker_thread_cpu_ns: None,
         };
         let summary = summarize_tool_result(&data);
         assert!(
@@ -958,6 +959,7 @@ mod tests {
             executed_arguments_truncated: false,
             details: None,
             severity: None,
+            worker_thread_cpu_ns: None,
         };
         let summary = summarize_tool_result(&data);
         assert!(
@@ -992,6 +994,7 @@ mod tests {
             executed_arguments_truncated: false,
             details: None,
             severity: None,
+            worker_thread_cpu_ns: None,
         };
         assert!(summarize_tool_result(&data).contains("pre_tool_use hook"));
     }
@@ -1126,6 +1129,7 @@ mod tests {
             executed_arguments_truncated: false,
             details: None,
             severity: None,
+            worker_thread_cpu_ns: None,
         };
 
         assert_eq!(

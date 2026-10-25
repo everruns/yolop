@@ -107,6 +107,152 @@ struct TimelineState {
     redo: Option<RedoState>,
 }
 
+/// Yolop's conversation lineage decoded for an authority migration. Workspace
+/// snapshots remain Yolop-owned and are retained alongside their turn boundary.
+#[derive(Serialize)]
+pub struct LegacyConversation {
+    pub baseline_end: i32,
+    pub checkpoints: Vec<LegacyTurnCheckpoint>,
+    pub head: Option<String>,
+    pub pending: Option<String>,
+    pub redo: Option<LegacyRedo>,
+    pub active_ranges: Vec<(i32, i32)>,
+}
+
+#[derive(Serialize)]
+pub struct LegacyTurnCheckpoint {
+    pub id: String,
+    pub parent: Option<String>,
+    pub prompt: String,
+    pub event_start: i32,
+    pub event_end: Option<i32>,
+    pub workspace_tree: Option<String>,
+    pub workspace_ref: Option<String>,
+    pub workspace_error: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+pub struct LegacyRedo {
+    pub head: Option<String>,
+    pub workspace_tree: Option<String>,
+    pub workspace_ref: Option<String>,
+}
+
+pub(crate) fn read_legacy_conversation(
+    session_dir: &Path,
+    maximum: i32,
+    digest: &mut sha2::Sha256,
+) -> Result<LegacyConversation> {
+    let records: Vec<TimelineRecord> =
+        crate::runtime::migration::read_records(&session_dir.join(TIMELINE_FILE), digest)?;
+    let mut state = TimelineState::default();
+    for record in records {
+        match &record {
+            TimelineRecord::Initialized { baseline_end, .. } => {
+                if !(0..=maximum).contains(baseline_end) || !state.nodes.is_empty() {
+                    bail!("migration timeline has an invalid baseline");
+                }
+            }
+            TimelineRecord::CheckpointCreated {
+                id,
+                parent,
+                event_start,
+                ..
+            } => {
+                if state.pending.is_some()
+                    || state.nodes.contains_key(id)
+                    || parent != &state.head
+                    || *event_start <= state.baseline_end
+                    || i64::from(*event_start) > i64::from(maximum) + 1
+                    || parent.as_ref().is_some_and(|parent| {
+                        state
+                            .nodes
+                            .get(parent)
+                            .is_none_or(|node| node.event_end.is_none_or(|end| end >= *event_start))
+                    })
+                {
+                    bail!("migration timeline has an invalid checkpoint lineage");
+                }
+            }
+            TimelineRecord::TurnCompleted {
+                checkpoint_id,
+                event_end,
+                ..
+            } => {
+                if state.pending.as_ref() != Some(checkpoint_id)
+                    || state.nodes.get(checkpoint_id).is_none_or(|node| {
+                        i64::from(*event_end) < i64::from(node.event_start) - 1
+                            || *event_end > maximum
+                    })
+                {
+                    bail!("migration timeline has an invalid turn boundary");
+                }
+            }
+            TimelineRecord::HeadMoved {
+                from,
+                to,
+                redo_head,
+                ..
+            } => {
+                if state.pending.is_some()
+                    || from != &state.head
+                    || [to, redo_head]
+                        .into_iter()
+                        .flatten()
+                        .any(|head| !state.nodes.contains_key(head))
+                {
+                    bail!("migration timeline has an invalid history head");
+                }
+            }
+            TimelineRecord::RedoCleared { .. } => {}
+        }
+        apply_record(&mut state, record);
+    }
+    // Uncheckpointed logs predate the timeline, and all their events form
+    // the baseline. This mirrors opening them without materializing a file.
+    if state.nodes.is_empty() {
+        state.baseline_end = maximum;
+    }
+    let mut active_ranges = Vec::new();
+    if state.baseline_end > 0 {
+        active_ranges.push((1, state.baseline_end));
+    }
+    for id in active_path(&state).into_iter().chain(state.pending.clone()) {
+        let node = &state.nodes[&id];
+        let end = node.event_end.unwrap_or(maximum);
+        if node.event_start <= end {
+            active_ranges.push((node.event_start, end));
+        }
+    }
+    Ok(LegacyConversation {
+        baseline_end: state.baseline_end,
+        checkpoints: state
+            .nodes
+            .into_values()
+            .map(|node| LegacyTurnCheckpoint {
+                id: node.id,
+                parent: node.parent,
+                prompt: node.prompt,
+                event_start: node.event_start,
+                event_end: node.event_end,
+                workspace_tree: node.snapshot.as_ref().map(|snapshot| snapshot.tree.clone()),
+                workspace_ref: node.snapshot.and_then(|snapshot| snapshot.reference),
+                workspace_error: node.snapshot_error,
+                created_at: node.created_at,
+            })
+            .collect(),
+        head: state.head,
+        pending: state.pending,
+        redo: state.redo.map(|redo| LegacyRedo {
+            head: redo.head,
+            workspace_tree: redo.snapshot.as_ref().map(|snapshot| snapshot.tree.clone()),
+            workspace_ref: redo.snapshot.and_then(|snapshot| snapshot.reference),
+        }),
+        active_ranges,
+    })
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum TimelineRecord {

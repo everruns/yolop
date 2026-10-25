@@ -6,6 +6,13 @@ description: Defines the local session discovery contract for Yolop.
 
 # Local session discovery
 
+`yolop sessions migration-check <session-id>` is a read-only source preflight
+for the [direct Engine cutover](engine-execution.md). It takes the existing
+exclusive session lease and refuses a live session, malformed records or
+inconsistent lineage. Output contains counts and a source fingerprint, not
+message bodies or provider-opaque context. A valid source check does not claim
+that import or execution cutover has happened.
+
 Yolop persists session event logs locally, but agents previously had no direct,
 bounded way to locate a prior run. Requests such as “inspect the recent session
 that mentioned this reference” therefore tended to trigger repository searches

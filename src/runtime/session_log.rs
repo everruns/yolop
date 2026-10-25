@@ -515,13 +515,56 @@ pub struct JsonlEventEmitter {
     persisted_sequence: Arc<AtomicI32>,
     file: Arc<Mutex<Option<File>>>,
     path: PathBuf,
-    _session_lock: File,
+    _session_lock: SessionFileLease,
     materializer: Arc<SessionMaterializer>,
     session_dir: PathBuf,
     /// Live fan-out of every emitted event (including deltas) for in-process
     /// subscribers like the TUI's streaming renderer. Filesystem persistence
     /// still filters by `is_replay_relevant`; this channel does not.
     live: broadcast::Sender<Event>,
+}
+
+/// Shared exclusive lease for runtime execution and saved-session migration.
+pub(crate) struct SessionFileLease(File);
+
+impl Drop for SessionFileLease {
+    fn drop(&mut self) {
+        // A shell child can inherit the open-file description between fork
+        // and exec. Closing only our descriptor would keep its lock alive.
+        if let Err(error) = self.0.unlock() {
+            tracing::warn!(%error, "release session file lease");
+        }
+    }
+}
+
+pub(crate) fn lock_session(session_dir: &Path) -> Result<SessionFileLease> {
+    let sessions_dir = session_dir.parent().unwrap_or_else(|| Path::new("."));
+    let lock_dir = sessions_dir.join(".locks");
+    std::fs::create_dir_all(&lock_dir).map_err(|e| {
+        AgentLoopError::config(format!(
+            "create session lock dir {}: {e}",
+            lock_dir.display()
+        ))
+    })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&lock_dir, std::fs::Permissions::from_mode(0o700)).map_err(
+            |e| {
+                AgentLoopError::config(format!(
+                    "tighten session lock dir permissions on {}: {e}",
+                    lock_dir.display()
+                ))
+            },
+        )?;
+    }
+    let lock_name = session_dir
+        .file_name()
+        .unwrap_or_else(|| std::ffi::OsStr::new("session"));
+    let lock_path = lock_dir.join(lock_name);
+    let session_lock = open_private_append(&lock_path)?;
+    try_lock_session_file(&session_lock, &lock_path)?;
+    Ok(SessionFileLease(session_lock))
 }
 
 impl JsonlEventEmitter {
@@ -548,32 +591,7 @@ impl JsonlEventEmitter {
         materializer: Arc<SessionMaterializer>,
     ) -> Result<Self> {
         let session_dir = path.parent().unwrap_or_else(|| Path::new("."));
-        let sessions_dir = session_dir.parent().unwrap_or_else(|| Path::new("."));
-        let lock_dir = sessions_dir.join(".locks");
-        std::fs::create_dir_all(&lock_dir).map_err(|e| {
-            AgentLoopError::config(format!(
-                "create session lock dir {}: {e}",
-                lock_dir.display()
-            ))
-        })?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&lock_dir, std::fs::Permissions::from_mode(0o700)).map_err(
-                |e| {
-                    AgentLoopError::config(format!(
-                        "tighten session lock dir permissions on {}: {e}",
-                        lock_dir.display()
-                    ))
-                },
-            )?;
-        }
-        let lock_name = session_dir
-            .file_name()
-            .unwrap_or_else(|| std::ffi::OsStr::new("session"));
-        let lock_path = lock_dir.join(lock_name);
-        let session_lock = open_private_append(&lock_path)?;
-        try_lock_session_file(&session_lock, &lock_path)?;
+        let session_lock = lock_session(session_dir)?;
 
         let file = if path.exists() {
             Some(open_session_log(path)?)
@@ -675,20 +693,35 @@ fn open_private_append(path: &Path) -> Result<File> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        opts.mode(0o600);
+        opts.mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
     }
     let file = opts.open(path).map_err(|e| {
         AgentLoopError::config(format!("open private file {}: {e}", path.display()))
     })?;
+    let metadata = file
+        .metadata()
+        .map_err(|error| AgentLoopError::config(format!("inspect private file: {error}")))?;
+    if !metadata.is_file() {
+        return Err(AgentLoopError::config(
+            "session lock must be a regular file",
+        ));
+    }
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(|e| {
-            AgentLoopError::config(format!(
-                "tighten private file permissions on {}: {e}",
-                path.display()
-            ))
-        })?;
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        if metadata.nlink() != 1 {
+            return Err(AgentLoopError::config(
+                "session lock must have one hard link",
+            ));
+        }
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| {
+                AgentLoopError::config(format!(
+                    "tighten private file permissions on {}: {e}",
+                    path.display()
+                ))
+            })?;
     }
     Ok(file)
 }
@@ -1115,6 +1148,48 @@ mod tests {
         EventContext, InputMessageData, OutputMessageCompletedData, SessionTitleUpdatedData,
         ToolCompletedData,
     };
+
+    #[test]
+    fn session_lease_release_does_not_wait_for_an_inherited_descriptor() {
+        let session = tempfile::tempdir().unwrap();
+        let lease = lock_session(session.path()).unwrap();
+        let inherited = lease.0.try_clone().unwrap();
+        assert!(lock_session(session.path()).is_err());
+        drop(lease);
+        let replacement = lock_session(session.path()).unwrap();
+        drop(inherited);
+        assert!(
+            lock_session(session.path()).is_err(),
+            "closing an old inherited descriptor cannot release the new owner's lease"
+        );
+        drop(replacement);
+        assert!(lock_session(session.path()).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn session_lease_refuses_linked_locks_before_changing_permissions() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let root = tempfile::tempdir().unwrap();
+        let session = root.path().join("session");
+        let locks = root.path().join(".locks");
+        std::fs::create_dir(&session).unwrap();
+        std::fs::create_dir(&locks).unwrap();
+        let victim = root.path().join("unrelated");
+        std::fs::write(&victim, b"unchanged").unwrap();
+        std::fs::set_permissions(&victim, std::fs::Permissions::from_mode(0o640)).unwrap();
+        let lock = locks.join("session");
+        symlink(&victim, &lock).unwrap();
+        assert!(lock_session(&session).is_err());
+        std::fs::remove_file(&lock).unwrap();
+        std::fs::hard_link(&victim, &lock).unwrap();
+        assert!(lock_session(&session).is_err());
+        assert_eq!(
+            std::fs::metadata(&victim).unwrap().permissions().mode() & 0o777,
+            0o640
+        );
+        assert_eq!(std::fs::read(&victim).unwrap(), b"unchanged");
+    }
 
     fn input_event(session_id: SessionId, text: &str) -> Event {
         Event::new(

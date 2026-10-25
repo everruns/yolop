@@ -1447,7 +1447,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let tool = BashTool::new(Workspace::from_path(dir.path().to_path_buf()));
         let worker = tokio::spawn(async move {
-            tool.execute(json!({"command":"printf started > started.marker; (sleep 2; printf orphan > orphan.marker) & wait"})).await
+            // Release the descendant only after cancellation, so a busy test
+            // host cannot let it write its marker before the abort request.
+            tool.execute(json!({"command":"(printf started > started.marker; while [ ! -e release.marker ]; do sleep 0.01; done; printf orphan > orphan.marker) & wait"})).await
         });
         tokio::time::timeout(Duration::from_secs(2), async {
             while !dir.path().join("started.marker").exists() {
@@ -1458,6 +1460,7 @@ mod tests {
         .unwrap();
         worker.abort();
         assert!(worker.await.unwrap_err().is_cancelled());
+        std::fs::write(dir.path().join("release.marker"), "release").unwrap();
         tokio::time::sleep(Duration::from_millis(2100)).await;
         assert!(!dir.path().join("orphan.marker").exists());
     }

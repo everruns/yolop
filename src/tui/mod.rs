@@ -4117,7 +4117,7 @@ impl App {
     }
     fn start_completion_review(&mut self, result: Option<everruns_core::host::TurnResult>) {
         let Some(result) = result else { return };
-        if result.stop_reason == everruns_core::turn::TurnStopReason::Cancelled {
+        if result.stop_reason == everruns_contracts::turn::TurnStopReason::Cancelled {
             return;
         }
         let handles = self.session.handles().clone();

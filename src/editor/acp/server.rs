@@ -2170,9 +2170,9 @@ mod tests {
             success,
             error: error.map(str::to_string),
             stop_reason: if success {
-                everruns_core::turn::TurnStopReason::EndTurn
+                everruns_contracts::turn::TurnStopReason::EndTurn
             } else {
-                everruns_core::turn::TurnStopReason::Error
+                everruns_contracts::turn::TurnStopReason::Error
             },
             turn_id: everruns_contracts::typed_id::TurnId::new(),
         }
