@@ -7,6 +7,7 @@
 pub mod background_wake;
 mod compaction_checkpoint;
 pub(crate) mod discovered_profiles;
+mod session_start;
 // Stopgap classifiers for OpenRouter account gates (403 attestation, 404
 // data-policy / guardrail). Replace with the upstream structured error once
 // `everruns-openrouter` reports those gates as first-class kinds.
@@ -32,10 +33,10 @@ use crate::capabilities::{
     MODEL_RUNTIME_CONTEXT_CAPABILITY_ID, MODELS_CAPABILITY_ID, ModelCliCapability,
     ModelRuntimeContextCapability, ModelsCapability, NativeEditToolsCapability,
     PROGRESS_GUARD_CAPABILITY_ID, ProgressGuardCapability, REPO_MAP_CAPABILITY_ID,
-    RepoMapCapability, SESSIONS_CAPABILITY_ID, SOFT_APPROVAL_CAPABILITY_ID, SessionsCapability,
-    SetupCliCapability, TOOL_ARGUMENT_VALIDATION_CAPABILITY_ID, ThreadRouting,
-    ToolArgumentValidationCapability, WorktreeCapability, coordination_project_id,
-    inherited_launch_args, process_thread_launcher,
+    REX_CAPABILITY_ID, RepoMapCapability, RexCapability, SESSIONS_CAPABILITY_ID,
+    SOFT_APPROVAL_CAPABILITY_ID, SessionsCapability, SetupCliCapability,
+    TOOL_ARGUMENT_VALIDATION_CAPABILITY_ID, ThreadRouting, ToolArgumentValidationCapability,
+    WorktreeCapability, coordination_project_id, inherited_launch_args, process_thread_launcher,
 };
 use crate::config::capability_settings::{CapabilityCatalog, apply_capability_settings};
 use crate::config::mcp::McpConfigStore;
@@ -3111,6 +3112,7 @@ fn default_coding_harness_capabilities(client_commands: bool) -> Vec<CapabilityR
         CapabilityRef::new(SKILLS_CAPABILITY_ID),
         CapabilityRef::new(HERDR_CAPABILITY_ID),
         CapabilityRef::new(REPO_MAP_CAPABILITY_ID),
+        CapabilityRef::new(REX_CAPABILITY_ID),
         CapabilityRef::new(SESSIONS_CAPABILITY_ID),
         CapabilityRef::new(CHECKPOINT_CAPABILITY_ID),
         CapabilityRef::new(AST_GREP_CAPABILITY_ID),
@@ -4663,6 +4665,7 @@ pub async fn build_with_options(
     // Herdr contributes a conditional, read-only skill mount. Outside a Herdr
     // pane it has no mounts and the reporter is inert.
     capabilities.register(HerdrCapability::new(herdr.is_active()));
+    capabilities.register(RexCapability::new());
     // Yolop-owned skill lifecycle operations are exposed through `yolop skills`.
     // The upstream agent capability remains responsible for list/activate/read/write.
     let skill_management = Arc::new(crate::capabilities::skills::SkillManagementCapability::new(
@@ -5238,6 +5241,11 @@ pub async fn build_with_options(
     let model_driver_registry = driver_registry.clone();
 
     // 0.18 replaced PlatformDefinition with HostComposition; same shape.
+    // Fire session-start hooks (config plus capability contributions such as
+    // the built-in rex handshake) once per process. Advisory only: hook
+    // failures never abort startup.
+    session_start::fire_session_start_hooks(&capabilities, &harness_capabilities, session_id).await;
+
     let platform_builder = everruns_core::host::HostComposition::builder()
         .capability_registry(capabilities)
         .driver_registry(driver_registry)
@@ -7587,6 +7595,17 @@ mod tests {
         assert!(
             !ids.iter()
                 .any(|cap| cap.capability_id() == DAYTONA_CAPABILITY_ID)
+        );
+    }
+
+    #[test]
+    fn default_harness_includes_rex() {
+        // The rex session-start handshake ships in the default harness; the
+        // capability itself stays silent unless rex resolves on PATH.
+        let ids = coding_harness_capabilities(false, None, &Settings::default());
+        assert!(
+            ids.iter()
+                .any(|cap| cap.capability_id() == REX_CAPABILITY_ID)
         );
     }
 
