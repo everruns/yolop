@@ -1,5 +1,16 @@
 # Knowledge Log
 
+## 2026-10-25, Windows CPython dependency correction
+
+Refreshed the complete Everruns git family together to consume published
+Bashkit 0.20.1 and Wasmtime 48.0.7. The hosted integration catalog retains
+Python. Its CPython component avoids the unsupported Windows COFF static
+alignment while preserving the 64 KiB runtime alignment Wasmtime requires.
+The source exception for Engine adoption and the publication hold are unchanged.
+See [Engine-owned execution](specs/engine-execution.md),
+[the upstream correction](https://github.com/everruns/bashkit/pull/2777), and
+[Everruns consumption](https://github.com/everruns/everruns/pull/4924).
+
 ## 2026-10-25, Native Engine execution and retained-session import
 
 Replaced direct Core runtime construction with registered Engine sessions and

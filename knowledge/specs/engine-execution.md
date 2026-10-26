@@ -12,7 +12,7 @@ this authority. Runtime construction supplies Agent, Harness, HostServices and
 a reopenable Environment. It does not construct or drive a Core runtime.
 
 The Everruns family consumes git `main`, locked together at
-[`f857dbfe9f6064cde23ba5c9cff7ea0cf07f37c4`](https://github.com/everruns/everruns/tree/f857dbfe9f6064cde23ba5c9cff7ea0cf07f37c4).
+[`e405378518b9e68ac03bfcef951c8c4237db9c0a`](https://github.com/everruns/everruns/tree/e405378518b9e68ac03bfcef951c8c4237db9c0a).
 This source exception is authorized for Engine adoption. A crates.io release
 must return all family dependencies to aligned published versions first.
 
