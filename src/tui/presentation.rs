@@ -887,6 +887,7 @@ mod tests {
             "Bash",
             everruns_core::tool_narration::ToolNarrationPhase::Completed,
             None,
+            Default::default(),
         ));
         let event = RuntimeEvent::new(SessionId::new(), EventContext::empty(), data);
         let lines = lines_for_event(&event);

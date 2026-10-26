@@ -483,6 +483,7 @@ impl Tool for BashTool {
             self.display_name().unwrap_or("Bash"),
             phase,
             locale,
+            _ctx,
         ))
     }
 

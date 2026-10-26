@@ -2,11 +2,8 @@ use crate::config::SettingsStore;
 use crate::config::mcp::{McpConfigStore, McpServerSummary};
 use crate::control::{ControlCapability, ControlResponse, ControlRoute};
 use async_trait::async_trait;
-use everruns_contracts::{ToolCall, ToolDefinition, ToolResult, typed_id::SessionId};
-use everruns_core::host::RuntimeSessionStore;
-use everruns_core::tool_hooks::PostToolExecHook;
+use everruns_core::ScopedMcpServers;
 use everruns_core::{Capability, CapabilityStatus, SystemPromptContext, Tool, ToolExecutionResult};
-use everruns_core::{ScopedMcpServers, ToolContext};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -26,61 +23,24 @@ pub(crate) struct McpCapability {
     pub(crate) session: Option<Arc<McpSessionConfig>>,
 }
 
-/// The same reload boundary serves terminal commands and automatic refresh in
-/// every host. Client-supplied servers retain their precedence over disk config.
+/// Scoped configuration is a host capability contribution. Engine re-reads it
+/// when building model context, including after tools change configuration.
+/// Client-supplied servers retain precedence over disk config.
 pub(crate) struct McpSessionConfig {
     pub(crate) settings: Arc<SettingsStore>,
-    pub(crate) sessions: Arc<dyn RuntimeSessionStore>,
-    pub(crate) session_id: SessionId,
     pub(crate) workspace_root: std::path::PathBuf,
     pub(crate) client_servers: ScopedMcpServers,
-    pub(crate) reload_lock: tokio::sync::Mutex<()>,
 }
 
 impl McpSessionConfig {
     pub(crate) async fn reload(&self) -> anyhow::Result<Vec<String>> {
-        self.reload_session(self.session_id).await
+        Ok(self.effective_servers().keys().cloned().collect())
     }
 
-    async fn reload_session(&self, session_id: SessionId) -> anyhow::Result<Vec<String>> {
-        let _guard = self.reload_lock.lock().await;
+    pub(crate) fn effective_servers(&self) -> ScopedMcpServers {
         let configured =
             crate::config::mcp::load_mcp_servers(&self.settings.snapshot(), &self.workspace_root);
-        let servers = everruns_core::merge_scoped_mcp_servers(&configured, &self.client_servers);
-        let names = servers.keys().cloned().collect();
-        let mut session = self
-            .sessions
-            .get_session(session_id)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("session {session_id} not found"))?;
-        if session.mcp_servers != servers {
-            session.mcp_servers = servers;
-            self.sessions.add_session(session).await?;
-        }
-        Ok(names)
-    }
-}
-
-#[async_trait]
-impl PostToolExecHook for McpSessionConfig {
-    async fn after_exec(
-        &self,
-        _call: &ToolCall,
-        _definition: &ToolDefinition,
-        result: &mut ToolResult,
-        context: &ToolContext,
-    ) {
-        // Shell composition and ordinary file tools can change configuration.
-        // Refresh at the tool boundary, before the next context is assembled.
-        if let Err(error) = self.reload_session(context.session_id).await {
-            let warning = format!("MCP configuration refresh failed: {error:#}");
-            let output = result.result.get_or_insert_with(|| json!({}));
-            if let Some(object) = output.as_object_mut() {
-                object.insert("mcp_reload_error".into(), json!(warning));
-            } else {
-                *output = json!({"output": output.take(), "mcp_reload_error": warning});
-            }
-        }
+        everruns_core::merge_scoped_mcp_servers(&configured, &self.client_servers)
     }
 }
 
@@ -157,11 +117,23 @@ impl Capability for McpCapability {
         Vec::new()
     }
 
-    fn post_tool_exec_hooks(&self) -> Vec<Arc<dyn PostToolExecHook>> {
+    fn mcp_servers(&self) -> everruns_core::CapabilityMcpServers {
         self.session
-            .iter()
-            .map(|session| session.clone() as Arc<dyn PostToolExecHook>)
-            .collect()
+            .as_ref()
+            .map(|session| {
+                session
+                    .effective_servers()
+                    .into_iter()
+                    .map(|(name, server)| {
+                        let identity = server.acts_as;
+                        (
+                            name,
+                            everruns_core::CapabilityMcpServer::new(server, identity),
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 }
 

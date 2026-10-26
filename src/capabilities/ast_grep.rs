@@ -154,6 +154,7 @@ impl Tool for AstGrepTool {
             &tool_call.arguments,
             phase,
             locale,
+            _ctx,
         ))
     }
 
@@ -256,6 +257,7 @@ impl Tool for AstEditTool {
             &tool_call.arguments,
             phase,
             locale,
+            _ctx,
         ))
     }
 

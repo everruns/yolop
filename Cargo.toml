@@ -92,6 +92,7 @@ hf-hub = { version = "0.4.3", default-features = false, features = [
     "rustls-tls",
 ], optional = true }
 rand = "0.10"
+uuid = { version = "1", features = ["v5"] }
 rustix = { version = "1.1", features = ["fs"] }
 # Already present through the facade's local backend. Yolop uses the same SQLite handle for
 # its capability-owned local session coordination tables.
@@ -151,7 +152,7 @@ everruns-drivers = { git = "https://github.com/everruns/everruns.git", branch = 
 everruns-capabilities = { git = "https://github.com/everruns/everruns.git", branch = "main", features = ["hosted-integration-catalog"] }
 # The facade's local backend supplies SQLite, git workspace and durable logs.
 # TypeSafe supplies the Muse actionable-promise classifier.
-everruns = { git = "https://github.com/everruns/everruns.git", branch = "main", default-features = false, features = ["local", "typesafe"] }
+everruns = { git = "https://github.com/everruns/everruns.git", branch = "main", default-features = false, features = ["local", "typesafe", "mcp-stdio"] }
 # LLMSim is a user-facing offline provider, so it remains a production dependency.
 everruns-llmsim = { git = "https://github.com/everruns/everruns.git", branch = "main", features = ["host"] }
 everruns-integrations = { git = "https://github.com/everruns/everruns.git", branch = "main", features = ["filesystem", "web-fetch", "web-search", "duckduckgo", "parallel", "daytona", "e2b"] }

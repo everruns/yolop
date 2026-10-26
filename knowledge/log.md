@@ -1,5 +1,16 @@
 # Knowledge Log
 
+## 2026-10-25, Native Engine execution and retained-session import
+
+Replaced direct Core runtime construction with registered Engine sessions and
+SQLite hosting. Frontends observe admitted turns, cancellation waits for its
+authority outcome, and native hosting owns linked children, tasks and schedules.
+Saved-session import retains event identities, branch and compaction lineage,
+including mixed child journals. A durable restore intent fences execution until
+conversation selection and workspace restoration agree after restart. Native
+schedule admission and child task settlement gaps are tracked in OSS EVE-1309
+and EVE-1310. See [Engine-owned execution](specs/engine-execution.md).
+
 ## 2026-10-19, Direct Engine authority cutover
 
 Changed the migration target to registered Engine sessions with coherent SQLite

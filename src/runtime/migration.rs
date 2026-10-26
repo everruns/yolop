@@ -5,11 +5,14 @@
 //! tolerant, active-branch projection used to render an older session.
 
 use anyhow::{Context, Result, bail};
+use everruns::hosting::{
+    AgentBuild, ConversationLineage, CutoverOptions, CutoverReport, HistoryBranch, SequenceRange,
+};
 use everruns_contracts::typed_id::SessionId;
 use everruns_core::{CompactionCheckpoint, Event};
 use serde::de::DeserializeOwned;
 use sha2::{Digest, Sha256};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
@@ -35,26 +38,248 @@ pub struct LegacySessionSource {
     pub workspace: Option<SessionWorkspaceMetadata>,
     /// Digest of all source files, including workspace/checkpoint metadata.
     pub fingerprint: String,
-    _lease: SessionFileLease,
+    children: Vec<LegacyChildSource>,
+    journal: Vec<Event>,
+    journal_digest: [u8; 32],
+    source_dir: std::path::PathBuf,
+    lease: Option<SessionFileLease>,
+}
+
+struct LegacyChildSource {
+    id: SessionId,
+    parent: SessionId,
+    events: Vec<Event>,
 }
 
 impl LegacySessionSource {
+    /// Translate the product's timeline into immutable authority branches.
+    /// Each turn boundary is retained, including siblings that were abandoned
+    /// before the current redo point. Workspace snapshots stay product metadata.
+    pub fn lineage(&self) -> Result<ConversationLineage> {
+        let conversation = &self.conversation;
+        let maximum = self
+            .events
+            .last()
+            .and_then(|event| event.sequence)
+            .unwrap_or(0);
+        let baseline_end = conversation.baseline_end.min(maximum);
+        let baseline = if baseline_end > 0 {
+            vec![SequenceRange::new(1, baseline_end)]
+        } else {
+            Vec::new()
+        };
+        let branch_id = |id: &str| format!("turn:{id}");
+        let active = conversation
+            .pending
+            .as_deref()
+            .or(conversation.head.as_deref())
+            .map(branch_id)
+            .unwrap_or_else(|| "baseline".into());
+        let redo = conversation
+            .redo
+            .as_ref()
+            .and_then(|redo| redo.head.as_deref())
+            .map(branch_id);
+        let parents: HashSet<_> = conversation
+            .checkpoints
+            .iter()
+            .filter_map(|node| node.parent.as_deref())
+            .collect();
+        let nodes: HashMap<_, _> = conversation
+            .checkpoints
+            .iter()
+            .map(|node| (node.id.as_str(), node))
+            .collect();
+        let mut branches = vec![HistoryBranch {
+            id: "baseline".into(),
+            ranges: baseline.clone(),
+        }];
+        // Construct only retained leaves and selected heads. Building every
+        // ancestor's complete path first grows quadratically on linear history.
+        for checkpoint in conversation.checkpoints.iter().filter(|node| {
+            !parents.contains(node.id.as_str())
+                || branch_id(&node.id) == active
+                || Some(branch_id(&node.id)) == redo
+        }) {
+            let mut path = vec![checkpoint];
+            let mut parent = checkpoint.parent.as_deref();
+            while let Some(id) = parent {
+                let node = *nodes
+                    .get(id)
+                    .context("migration timeline parent is missing")?;
+                path.push(node);
+                parent = node.parent.as_deref();
+            }
+            let mut ranges = baseline.clone();
+            for node in path.into_iter().rev() {
+                let last = node.event_end.unwrap_or(maximum).min(maximum);
+                if node.event_start <= last {
+                    if let Some(previous) = ranges.last_mut()
+                        && previous.last.checked_add(1) == Some(node.event_start)
+                    {
+                        previous.last = last;
+                    } else {
+                        ranges.push(SequenceRange::new(node.event_start, last));
+                    }
+                }
+            }
+            branches.push(HistoryBranch {
+                id: branch_id(&checkpoint.id),
+                ranges,
+            });
+        }
+        let mut lineage = ConversationLineage::new(active, branches);
+        for checkpoint in &self.checkpoints {
+            // The producing turn is the unique owner of this journal position.
+            // An ancestor prefix is compatible on all of its descendants.
+            let sequence = i32::try_from(checkpoint.source_sequence)?;
+            let branch = lineage
+                .branches
+                .iter()
+                .find(|branch| {
+                    branch
+                        .ranges
+                        .iter()
+                        .any(|range| range.first <= sequence && sequence <= range.last)
+                })
+                .context("compaction checkpoint has no retained conversation lineage")?
+                .id
+                .clone();
+            lineage = lineage.with_checkpoint(branch, checkpoint.clone());
+        }
+        Ok(lineage)
+    }
+
+    /// Import a frozen source into registered hosting. The legacy Agent is a
+    /// source descriptor only: no runtime or legacy Engine session is started.
+    #[allow(deprecated)]
+    pub async fn cut_over(
+        &self,
+        engine: &everruns::Engine,
+        build: &AgentBuild,
+        backends: everruns_core::host::HostBackends,
+        mut metadata: serde_json::Value,
+    ) -> Result<CutoverReport> {
+        // Child events used to share the root's physical journal and sequence
+        // allocator. Archive the original source before rebuilding root exports.
+        self.retain_source_journal()?;
+        let template = backends
+            .session_store
+            .get_session(self.session_id)
+            .await?
+            .context("migration source session is missing")?;
+        for child in &self.children {
+            let mut record = template.clone();
+            record.id = child.id;
+            record.parent_session_id = Some(child.parent);
+            backends.session_store.add_session(record).await?;
+            let source = everruns::Agent::builder()
+                .instructions("Saved Yolop child session migration source.")
+                .model(everruns::Model::simulated(
+                    "migration source must never execute",
+                ))
+                .backends(
+                    backends
+                        .clone()
+                        .with_event_log(std::sync::Arc::new(SourceJournal {
+                            session: child.id,
+                            events: child.events.clone(),
+                        })),
+                )
+                .build()?;
+            engine.cut_over_legacy_session_with_metadata(child.id, &source, build, serde_json::json!({
+                "parent_session_id": child.parent,
+                "yolop_migration": { "format":"yolop-jsonl-v1", "fingerprint":self.fingerprint },
+            })).await?;
+        }
+        let source = everruns::Agent::builder()
+            .instructions("Saved Yolop session migration source.")
+            .model(everruns::Model::simulated(
+                "migration source must never execute",
+            ))
+            .backends(backends.with_event_log(std::sync::Arc::new(SourceJournal {
+                session: self.session_id,
+                events: self.events.clone(),
+            })))
+            .build()?;
+        if metadata.is_null() {
+            metadata = serde_json::json!({});
+        }
+        metadata["yolop_migration"] = serde_json::json!({
+            "format": "yolop-jsonl-v1", "fingerprint": self.fingerprint,
+            "events": self.events.len(), "workspace_checkpoints": self.conversation.checkpoints.len(),
+            "compaction_attempts": self.compaction_attempts.len(),
+        });
+        let options = CutoverOptions::new()
+            .lineage(self.lineage()?)
+            .metadata(metadata);
+        Ok(engine
+            .cut_over_legacy_session_with_options(self.session_id, &source, build, options)
+            .await?)
+    }
+
     /// Retain the same exclusive lease used by Yolop execution until this
     /// source is dropped. Malformed or foreign records refuse migration;
     /// replay's best-effort skipping is unsuitable for an ownership transfer.
     pub fn read(session_dir: &Path, session_id: SessionId) -> Result<Self> {
+        Self::read_with_links(session_dir, session_id, HashMap::new())
+    }
+
+    pub async fn read_for_runtime(
+        session_dir: &Path,
+        session_id: SessionId,
+        sessions_dir: &Path,
+    ) -> Result<Self> {
+        use everruns_core::SessionTaskRegistry;
+        let db_path =
+            everruns::local::LocalProfile::new(sessions_dir.join("everruns-local")).db_path();
+        let mut parents = HashMap::new();
+        if db_path.exists() {
+            let tasks = everruns::local::LocalSessionTaskRegistry::new(
+                everruns::local::SqliteDb::open(db_path)?,
+            )?;
+            let mut queue = std::collections::VecDeque::from([session_id]);
+            while let Some(parent) = queue.pop_front() {
+                for task in tasks.list(parent, None).await? {
+                    if let Some(child) = task.links.child_session_id {
+                        anyhow::ensure!(
+                            child != session_id,
+                            "migration child linkage contains a cycle"
+                        );
+                        if let Some(previous) = parents.insert(child, parent) {
+                            anyhow::ensure!(
+                                previous == parent,
+                                "migration child has conflicting parents"
+                            );
+                        } else {
+                            anyhow::ensure!(
+                                parents.len() <= MAX_SOURCE_RECORDS,
+                                "migration has too many child sessions"
+                            );
+                            queue.push_back(child);
+                        }
+                    }
+                }
+            }
+        }
+        Self::read_with_links(session_dir, session_id, parents)
+    }
+
+    fn read_with_links(
+        session_dir: &Path,
+        session_id: SessionId,
+        mut parents: HashMap<SessionId, SessionId>,
+    ) -> Result<Self> {
         if !session_dir.is_dir() {
             bail!("migration source session does not exist");
         }
         let lease = lock_session(session_dir)?;
         let mut digest = Sha256::new();
         let mut events: Vec<Event> = read_records(&session_log_path(session_dir), &mut digest)?;
+        let journal_digest = digest.clone().finalize().into();
         let mut sequence = 0i32;
         let mut ids = HashSet::new();
         for event in &mut events {
-            if event.session_id != session_id {
-                bail!("migration journal contains an event for another session");
-            }
             if !ids.insert(event.id) {
                 bail!("migration journal contains a duplicate event identity");
             }
@@ -70,6 +295,91 @@ impl LegacySessionSource {
             event.sequence = Some(current);
             sequence = current;
         }
+        // Successful subagent results are another durable parent link, including
+        // older formats which predate the persistent task registry.
+        loop {
+            let mut changed = false;
+            for event in &events {
+                if event.session_id != session_id && !parents.contains_key(&event.session_id) {
+                    continue;
+                }
+                let everruns_core::EventData::ToolCompleted(tool) = &event.data else {
+                    continue;
+                };
+                if tool.tool_name != "subagent" || !tool.success {
+                    continue;
+                }
+                for part in tool.result.iter().flatten() {
+                    let everruns_core::ContentPart::Text(text) = part else {
+                        continue;
+                    };
+                    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text.text) else {
+                        continue;
+                    };
+                    let Some(child) = value
+                        .get("subagent_id")
+                        .and_then(serde_json::Value::as_str)
+                        .and_then(|id| id.parse::<SessionId>().ok())
+                    else {
+                        continue;
+                    };
+                    anyhow::ensure!(
+                        child != session_id,
+                        "migration child linkage contains a cycle"
+                    );
+                    if let Some(previous) = parents.insert(child, event.session_id) {
+                        anyhow::ensure!(
+                            previous == event.session_id,
+                            "migration child has conflicting parents"
+                        );
+                    } else {
+                        changed = true;
+                    }
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        anyhow::ensure!(
+            events
+                .iter()
+                .all(|event| event.session_id == session_id
+                    || parents.contains_key(&event.session_id)),
+            "migration journal contains an event for another session without a retained parent link"
+        );
+        for child in parents.keys() {
+            let mut visited = HashSet::new();
+            let mut cursor = *child;
+            while cursor != session_id {
+                anyhow::ensure!(
+                    visited.insert(cursor),
+                    "migration child linkage contains a cycle"
+                );
+                cursor = *parents
+                    .get(&cursor)
+                    .context("migration child parent is missing")?;
+            }
+        }
+        let journal = events;
+        let events: Vec<_> = journal
+            .iter()
+            .filter(|event| event.session_id == session_id)
+            .cloned()
+            .collect();
+        let mut children: Vec<_> = parents
+            .into_iter()
+            .map(|(id, parent)| LegacyChildSource {
+                id,
+                parent,
+                events: journal
+                    .iter()
+                    .filter(|event| event.session_id == id)
+                    .cloned()
+                    .collect(),
+            })
+            .collect();
+        children.sort_by_key(|child| child.id.to_string());
         let conversation = read_legacy_conversation(session_dir, sequence, &mut digest)?;
         let (checkpoints, compaction_attempts) =
             read_legacy_compaction(session_dir, session_id, sequence, &mut digest)?;
@@ -92,13 +402,97 @@ impl LegacySessionSource {
             checkpoints,
             compaction_attempts,
             workspace,
+            children,
+            journal,
+            journal_digest,
+            source_dir: session_dir.to_path_buf(),
             fingerprint: digest
                 .finalize()
                 .iter()
                 .map(|byte| format!("{byte:02x}"))
                 .collect(),
-            _lease: lease,
+            lease: Some(lease),
         })
+    }
+
+    fn retain_source_journal(&self) -> Result<()> {
+        // Archive exact source bytes, including fields a newer Event schema may
+        // not understand. The native journal remains the execution authority.
+        let path = self.source_dir.join("legacy-events.jsonl");
+        if let Some(file) = read_source_file(&path)? {
+            return self.verify_and_copy_journal(file, None);
+        }
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let temporary = self.source_dir.join(format!(
+            ".legacy-events-{}.tmp",
+            everruns_contracts::typed_id::EventId::new()
+        ));
+        let mut archive = options.open(&temporary)?;
+        let source = read_source_file(&session_log_path(&self.source_dir))?
+            .context("migration source journal disappeared")?;
+        let result = self.verify_and_copy_journal(source, Some(&mut archive));
+        if let Err(error) = result {
+            drop(archive);
+            let _ = std::fs::remove_file(&temporary);
+            return Err(error);
+        }
+        archive.sync_all()?;
+        std::fs::rename(temporary, path)?;
+        File::open(&self.source_dir)?.sync_all()?;
+        Ok(())
+    }
+
+    fn verify_and_copy_journal(
+        &self,
+        mut source: File,
+        mut archive: Option<&mut File>,
+    ) -> Result<()> {
+        use std::io::Write;
+        let mut digest = Sha256::new();
+        let mut length = 0u64;
+        let mut buffer = [0u8; 8192];
+        loop {
+            let count = source.read(&mut buffer)?;
+            if count == 0 {
+                break;
+            }
+            length += count as u64;
+            anyhow::ensure!(
+                length <= MAX_SOURCE_BYTES as u64,
+                "migration source exceeds the authority recovery byte limit"
+            );
+            digest.update(&buffer[..count]);
+            if let Some(file) = archive.as_mut() {
+                file.write_all(&buffer[..count])?;
+            }
+        }
+        let mut fingerprint = Sha256::new();
+        digest_source(
+            &mut fingerprint,
+            Path::new("events.jsonl"),
+            Some(&digest.finalize()),
+        );
+        fingerprint.update(length.to_be_bytes());
+        let actual: [u8; 32] = fingerprint.finalize().into();
+        anyhow::ensure!(
+            actual == self.journal_digest,
+            "migration source archive differs from the frozen journal"
+        );
+        Ok(())
+    }
+
+    /// Transfer the existing file lease to the session lifetime without an
+    /// unlocked interval between source validation and authority import.
+    pub(crate) fn take_lease(&mut self) -> SessionFileLease {
+        self.lease
+            .take()
+            .expect("migration lease already transferred")
     }
 
     /// Bounded preflight output contains no retained messages or opaque
@@ -121,7 +515,8 @@ impl LegacySessionSource {
             "source_valid":true,
             "cutover_performed":false,
             "source_fingerprint":self.fingerprint,
-            "event_count":self.events.len(),
+            "event_count":self.journal.len(),
+            "child_session_count":self.children.len(),
             "last_sequence":self.events.last().and_then(|event| event.sequence),
             "baseline_end":self.conversation.baseline_end,
             "checkpoint_count":self.conversation.checkpoints.len(),
@@ -135,6 +530,89 @@ impl LegacySessionSource {
             "compaction_attempt_scopes_truncated":self.compaction_attempts.len()>50,
             "has_workspace_metadata":self.workspace.is_some(),
         })
+    }
+}
+
+/// Read-only, identity-preserving view of the journal held under the file lease.
+/// Refusing appends makes accidental use as an execution backend fail closed.
+struct SourceJournal {
+    session: SessionId,
+    events: Vec<Event>,
+}
+
+#[async_trait::async_trait]
+impl everruns_core::host::EventReader for SourceJournal {
+    async fn read_page(
+        &self,
+        request: everruns_core::host::EventReadRequest,
+    ) -> std::result::Result<everruns_core::host::EventPage, everruns_core::host::EventLogError>
+    {
+        use everruns_core::host::{EventCursor, EventLogError, EventPage};
+        if request.session_id() != self.session {
+            return EventPage::new(Vec::new(), None, 0);
+        }
+        let head = self
+            .events
+            .last()
+            .and_then(|event| event.sequence)
+            .unwrap_or(0);
+        let (after, snapshot) = match request.cursor() {
+            Some(cursor) if cursor.session_id() != self.session => {
+                return Err(EventLogError::CrossSessionCursor {
+                    detail: "migration cursor belongs to another session".into(),
+                });
+            }
+            Some(cursor) => (
+                cursor.after_sequence(),
+                cursor.snapshot_high_watermark().unwrap_or(head),
+            ),
+            None => (0, head),
+        };
+        if snapshot > head {
+            return Err(EventLogError::InvalidRead {
+                detail: "migration cursor exceeds source journal".into(),
+            });
+        }
+        let events: Vec<_> = self
+            .events
+            .iter()
+            .filter(|event| {
+                event
+                    .sequence
+                    .is_some_and(|sequence| after < sequence && sequence <= snapshot)
+            })
+            .take(request.limit().get())
+            .cloned()
+            .collect();
+        let next = events
+            .last()
+            .and_then(|event| event.sequence)
+            .filter(|last| *last < snapshot)
+            .map(|last| EventCursor::continuation(self.session, last, snapshot))
+            .transpose()?;
+        EventPage::new(events, next, snapshot)
+    }
+}
+
+#[async_trait::async_trait]
+impl everruns_core::host::EventLog for SourceJournal {
+    async fn append(
+        &self,
+        _: everruns_core::EventRequest,
+    ) -> std::result::Result<Event, everruns_core::host::EventLogError> {
+        Err(everruns_core::host::EventLogError::InvalidAppend {
+            detail: "migration source is read-only".into(),
+        })
+    }
+    async fn append_conditional(
+        &self,
+        request: everruns_core::EventRequest,
+        _: Option<i32>,
+    ) -> std::result::Result<Event, everruns_core::host::EventLogError> {
+        self.append(request).await
+    }
+    fn durability(&self) -> everruns_core::host::EventDurability {
+        everruns_core::host::EventDurability::Volatile
     }
 }
 
@@ -413,6 +891,313 @@ mod tests {
         assert_eq!(source.conversation.head.as_deref(), Some("C"));
         assert!(source.conversation.redo.is_none());
         assert_eq!(source.events.len(), 6);
+        let lineage = source.lineage().unwrap();
+        assert_eq!(lineage.active, "turn:C");
+        assert_eq!(
+            lineage
+                .branches
+                .iter()
+                .find(|branch| branch.id == "turn:B")
+                .unwrap()
+                .ranges,
+            [SequenceRange::new(1, 4)]
+        );
+        assert_eq!(
+            lineage
+                .branches
+                .iter()
+                .find(|branch| branch.id == "turn:C")
+                .unwrap()
+                .ranges,
+            [SequenceRange::new(1, 2), SequenceRange::new(5, 6)]
+        );
+    }
+
+    #[tokio::test]
+    async fn mixed_child_history_import_is_lossless_and_retryable() {
+        use everruns::hosting::{SessionHosting, SqliteHosting};
+        use everruns_core::host::SessionBuilder;
+        let temp = tempfile::tempdir().unwrap();
+        let root = SessionId::new();
+        let child = SessionId::new();
+        let nested = SessionId::new();
+        let events = [
+            event(root, Some(1), "parent"),
+            event(child, Some(2), "child"),
+            event(nested, Some(3), "nested"),
+            event(root, Some(4), "parent again"),
+        ];
+        let mut raw: Vec<Value> = events
+            .iter()
+            .map(|event| serde_json::to_value(event).unwrap())
+            .collect();
+        raw[0]["retired_extension_field"] = json!({"original":"must survive decoding"});
+        write_records(&temp.path().join("events.jsonl"), &raw);
+        let text = std::fs::read_to_string(temp.path().join("events.jsonl")).unwrap();
+        std::fs::write(temp.path().join("events.jsonl"), format!("\n{text}\n")).unwrap();
+        let original_bytes = std::fs::read(temp.path().join("events.jsonl")).unwrap();
+        assert!(LegacySessionSource::read(temp.path(), root).is_err());
+        let source = LegacySessionSource::read_with_links(
+            temp.path(),
+            root,
+            HashMap::from([(child, root), (nested, child)]),
+        )
+        .unwrap();
+        assert_eq!(source.summary()["event_count"], 4);
+        let profile = SqliteHosting::open(temp.path().join("authority.sqlite")).unwrap();
+        let build = AgentBuild::new("yolop", "family-test");
+        let agent = everruns::Agent::builder()
+            .model(everruns::Model::simulated("reply"))
+            .instructions("Answer briefly.")
+            .build()
+            .unwrap();
+        let engine = everruns::Engine::builder()
+            .hosting(profile.clone())
+            .register(build.clone(), agent)
+            .build();
+        let backends = everruns_core::host::HostBackends::in_memory();
+        backends
+            .session_store
+            .add_session(
+                SessionBuilder::new(everruns_contracts::typed_id::HarnessId::new())
+                    .id(root)
+                    .build(),
+            )
+            .await
+            .unwrap();
+        source
+            .cut_over(&engine, &build, backends.clone(), serde_json::Value::Null)
+            .await
+            .unwrap();
+        assert!(
+            source
+                .cut_over(&engine, &build, backends, serde_json::Value::Null)
+                .await
+                .unwrap()
+                .replayed
+        );
+        for id in [root, child, nested] {
+            let mut raw = Vec::new();
+            profile.export_jsonl(id, &mut raw).unwrap();
+            let imported: Vec<Event> = String::from_utf8(raw)
+                .unwrap()
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect();
+            let original: Vec<_> = events
+                .iter()
+                .filter(|event| event.session_id == id)
+                .collect();
+            assert_eq!(
+                imported
+                    .iter()
+                    .map(|event| (event.id, event.sequence))
+                    .collect::<Vec<_>>(),
+                original
+                    .iter()
+                    .map(|event| (event.id, event.sequence))
+                    .collect::<Vec<_>>()
+            );
+        }
+        assert_eq!(
+            profile.status(nested).await.unwrap().binding.metadata["parent_session_id"],
+            json!(child)
+        );
+        profile
+            .rebuild_jsonl_export(root, temp.path().join("events.jsonl"))
+            .unwrap();
+        let archived: Vec<Event> =
+            read_records(&temp.path().join("legacy-events.jsonl"), &mut Sha256::new()).unwrap();
+        assert_eq!(
+            std::fs::read(temp.path().join("legacy-events.jsonl")).unwrap(),
+            original_bytes
+        );
+        assert_eq!(
+            archived.iter().map(|event| event.id).collect::<Vec<_>>(),
+            events.iter().map(|event| event.id).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn long_linear_history_fits_the_authority_branch_budget() {
+        let temp = tempfile::tempdir().unwrap();
+        let id = SessionId::new();
+        let events: Vec<_> = (1..=2200)
+            .map(|sequence| event(id, Some(sequence), "saved input"))
+            .collect();
+        journal(&temp.path().join("events.jsonl"), &events);
+        let mut records = vec![timeline()[0].clone()];
+        for index in 0..1100 {
+            records.push(
+                json!({"type":"checkpoint_created", "id":format!("C{index}"),
+                "parent":if index == 0 { None } else { Some(format!("C{}", index-1)) },
+                "prompt":"saved input", "event_start":index*2+1, "snapshot":null,
+                "snapshot_error":null, "created_at":"2026-10-25T00:00:00Z"}),
+            );
+            records.push(
+                json!({"type":"turn_completed", "checkpoint_id":format!("C{index}"),
+                "event_end":index*2+2, "success":true, "completed_at":"2026-10-25T00:00:00Z"}),
+            );
+        }
+        write_records(&temp.path().join("timeline.jsonl"), &records);
+        let source = LegacySessionSource::read(temp.path(), id).unwrap();
+        let lineage = source.lineage().unwrap();
+        assert_eq!(lineage.branches.len(), 2);
+        assert_eq!(
+            lineage
+                .branches
+                .iter()
+                .find(|branch| branch.id == lineage.active)
+                .unwrap()
+                .ranges,
+            [SequenceRange::new(1, 2200)]
+        );
+        assert_eq!(source.conversation.checkpoints.len(), 1100);
+    }
+
+    #[tokio::test]
+    async fn engine_import_preserves_identity_branches_compaction_and_restart() {
+        use everruns::hosting::{SessionHosting, SqliteHosting};
+        use everruns::{Agent, Engine, Model};
+        use everruns_contracts::typed_id::HarnessId;
+        use everruns_core::host::SessionBuilder;
+        let temp = tempfile::tempdir().unwrap();
+        let agent = || {
+            Agent::builder()
+                .instructions("Answer briefly.")
+                .model(Model::simulated("reply"))
+                .build()
+                .unwrap()
+        };
+        let build = AgentBuild::new("yolop", "migration-test-v1");
+        let fixture_profile = SqliteHosting::open(temp.path().join("fixture.db")).unwrap();
+        let fixture = Engine::builder()
+            .hosting(fixture_profile.clone())
+            .register(build.clone(), agent())
+            .build();
+        let id = SessionId::new();
+        fixture.create_registered(id, &build).await.unwrap();
+        let session = fixture.resume(id).await.unwrap();
+        assert!(session.run("alpha").await.unwrap().success);
+        let mut first = Vec::new();
+        fixture_profile.export_jsonl(id, &mut first).unwrap();
+        let first_events: Vec<Event> = String::from_utf8(first)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        let first_end = first_events.last().unwrap().sequence.unwrap();
+        assert!(session.run("beta").await.unwrap().success);
+        let mut raw = Vec::new();
+        fixture_profile.export_jsonl(id, &mut raw).unwrap();
+        let events: Vec<Event> = String::from_utf8(raw)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        let head = events.last().unwrap().sequence.unwrap();
+        let source_dir = temp.path().join("saved");
+        std::fs::create_dir(&source_dir).unwrap();
+        journal(&source_dir.join("events.jsonl"), &events);
+        let mut records = timeline();
+        records[2]["event_end"] = json!(first_end);
+        records[3]["event_start"] = json!(first_end + 1);
+        records[4]["event_end"] = json!(head);
+        write_records(&source_dir.join("timeline.jsonl"), &records);
+        write_records(
+            &source_dir.join("compaction-checkpoints.jsonl"),
+            &[compact(id, first_end), compact(id, head)],
+        );
+        let source = LegacySessionSource::read(&source_dir, id).unwrap();
+        let path = temp.path().join("authority.db");
+        let profile = SqliteHosting::open(&path).unwrap();
+        let engine = Engine::builder()
+            .hosting(profile.clone())
+            .register(build.clone(), agent())
+            .build();
+        let backends = everruns_core::host::HostBackends::in_memory();
+        backends
+            .session_store
+            .add_session(SessionBuilder::new(HarnessId::new()).id(id).build())
+            .await
+            .unwrap();
+        let report = source
+            .cut_over(&engine, &build, backends.clone(), serde_json::Value::Null)
+            .await
+            .unwrap();
+        assert!(!report.replayed);
+        assert_eq!(report.boundary.events, events.len());
+        assert!(
+            source
+                .cut_over(&engine, &build, backends, serde_json::Value::Null)
+                .await
+                .unwrap()
+                .replayed
+        );
+        let imported = engine.resume(id).await.unwrap();
+        let texts = |page: everruns::HistoryPage| {
+            page.messages
+                .iter()
+                .map(|message| message.text())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            texts(imported.history().page().await.unwrap()),
+            ["alpha", "reply"]
+        );
+        let reader = profile.reader(id);
+        let eligible = reader
+            .compaction_checkpoint_store
+            .get_latest_format(id, "openai", "test", 1)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(eligible.source_sequence, i64::from(first_end));
+        assert!(imported.run("gamma").await.unwrap().success);
+        assert_eq!(
+            texts(imported.history().page().await.unwrap()),
+            ["alpha", "reply", "gamma", "reply"]
+        );
+        drop(imported);
+        drop(engine);
+        drop(profile);
+        let profile = SqliteHosting::open(&path).unwrap();
+        let engine = Engine::builder()
+            .hosting(profile.clone())
+            .register(build.clone(), agent())
+            .build();
+        let lineage = engine.history_lineage(id).await.unwrap();
+        engine
+            .select_history_branch(
+                id,
+                everruns_contracts::typed_id::MessageId::new().uuid(),
+                lineage.revision,
+                "turn:B",
+                None,
+            )
+            .await
+            .unwrap();
+        let imported = engine.resume(id).await.unwrap();
+        assert_eq!(
+            texts(imported.history().page().await.unwrap()),
+            ["alpha", "reply", "beta", "reply"]
+        );
+        let eligible = profile
+            .reader(id)
+            .compaction_checkpoint_store
+            .get_latest_format(id, "openai", "test", 1)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(eligible.source_sequence, i64::from(head));
+        let mut exported = Vec::new();
+        profile.export_jsonl(id, &mut exported).unwrap();
+        let exported: Vec<Event> = String::from_utf8(exported)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(json!(&exported[..events.len()]), json!(events));
     }
 
     #[test]

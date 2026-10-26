@@ -322,6 +322,7 @@ impl Tool for RgTool {
             &tool_call.arguments,
             phase,
             locale,
+            _ctx,
         ))
     }
 

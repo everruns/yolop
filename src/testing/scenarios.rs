@@ -1,6 +1,6 @@
 //! Scripted agent loop scenario tests.
 //!
-//! These tests drive a real `InProcessRuntime` (via `runtime::build_with_options`)
+//! These tests drive a registered Engine session (via `runtime::build_with_options`)
 //! against the bundled llmsim driver in **scripted** mode, where each
 //! assistant turn is pre-specified as `SimTurn::{Assistant, ToolCalls, Mixed,
 //! Error}`. That gives us deterministic multi-turn agent behavior without
@@ -343,7 +343,7 @@ async fn predictable_long_command_returns_immediately_and_terminal_result_is_dur
             name: "spawn_background".to_string(),
             arguments: json!({
                 "tool": "bash",
-                "args": { "command": "sleep 1; printf durable-result" },
+                "args": { "command": "sleep 3; printf durable-result" },
                 "title": "synthetic long validation",
                 "signal_on_completion": false
             }),
@@ -361,8 +361,8 @@ async fn predictable_long_command_returns_immediately_and_terminal_result_is_dur
         "background launch turn must succeed: {turn:?}"
     );
     assert!(
-        foreground_elapsed < Duration::from_millis(750),
-        "the one-second command must not consume foreground time: {foreground_elapsed:?}"
+        foreground_elapsed < Duration::from_millis(2250),
+        "the three-second command must not consume foreground time: {foreground_elapsed:?}"
     );
 
     let session_id = runtime.handles.session_id;
@@ -677,7 +677,7 @@ async fn print_enforces_configured_continuation_limit() {
             .settings
             .set_continuation_max_turns(Some(limit))
             .unwrap();
-        let log_path = runtime.startup.session_log_path.clone();
+        let log_path = runtime.startup.session_dir.join("host-events.jsonl");
         let session_id = runtime.handles.session_id;
         let error = crate::run_print_mode(runtime, "Complete verification".into(), vec![], None)
             .await
@@ -741,7 +741,7 @@ async fn completion_review_failure_is_durable() {
         .expect("review must fail");
     assert!(error.to_string().contains("invalid completion review"));
     let events: Vec<everruns_core::Event> =
-        std::fs::read_to_string(&runtime.startup.session_log_path)
+        std::fs::read_to_string(runtime.startup.session_dir.join("host-events.jsonl"))
             .unwrap()
             .lines()
             .map(|line| serde_json::from_str(line).unwrap())
