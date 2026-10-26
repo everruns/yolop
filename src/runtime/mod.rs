@@ -257,6 +257,7 @@ fn mcp_connection_for(
         secret_bindings: Default::default(),
         acted_as: Default::default(),
         connect_in_chat: Default::default(),
+        tool_timeout_ms: None,
     })
 }
 
@@ -10652,7 +10653,7 @@ mod tests {
                     tool_calls_count: 0,
                     success: true,
                     error: None,
-                    stop_reason: everruns_core::turn::TurnStopReason::EndTurn,
+                    stop_reason: everruns_core::host::TurnStopReason::EndTurn,
                     turn_id: everruns_contracts::typed_id::TurnId::new(),
                 })
             }
@@ -10733,9 +10734,9 @@ mod tests {
                             .to_string()
                     }),
                     stop_reason: if effort.is_some() {
-                        everruns_core::turn::TurnStopReason::EndTurn
+                        everruns_core::host::TurnStopReason::EndTurn
                     } else {
-                        everruns_core::turn::TurnStopReason::Error
+                        everruns_core::host::TurnStopReason::Error
                     },
                     turn_id: everruns_contracts::typed_id::TurnId::new(),
                 })
@@ -10812,9 +10813,9 @@ mod tests {
                             .to_string()
                     }),
                     stop_reason: if effort.is_some() {
-                        everruns_core::turn::TurnStopReason::EndTurn
+                        everruns_core::host::TurnStopReason::EndTurn
                     } else {
-                        everruns_core::turn::TurnStopReason::Error
+                        everruns_core::host::TurnStopReason::Error
                     },
                     turn_id: everruns_contracts::typed_id::TurnId::new(),
                 })
@@ -10897,9 +10898,9 @@ mod tests {
                             .to_string()
                     }),
                     stop_reason: if first {
-                        everruns_core::turn::TurnStopReason::Error
+                        everruns_core::host::TurnStopReason::Error
                     } else {
-                        everruns_core::turn::TurnStopReason::EndTurn
+                        everruns_core::host::TurnStopReason::EndTurn
                     },
                     turn_id: everruns_contracts::typed_id::TurnId::new(),
                 })
