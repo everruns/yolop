@@ -51,7 +51,7 @@ pub(crate) fn gate_turn(
     result: &everruns_core::host::TurnResult,
     background: bool,
 ) -> GateDecision {
-    use everruns_core::turn::TurnStopReason::*;
+    use everruns_core::host::TurnStopReason::*;
     if result.stop_reason == Cancelled {
         return GateDecision::Conclusive(CompletionState::Blocked);
     }
@@ -336,7 +336,7 @@ mod tests {
             tool_calls_count: 0,
             success: true,
             error: None,
-            stop_reason: everruns_core::turn::TurnStopReason::EndTurn,
+            stop_reason: everruns_core::host::TurnStopReason::EndTurn,
             turn_id: everruns_contracts::typed_id::TurnId::new(),
         };
         assert_eq!(gate_turn(&result, false), GateDecision::Evaluate);

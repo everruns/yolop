@@ -148,12 +148,13 @@ impl Tool for AstGrepTool {
         tool_call: &everruns_contracts::tool_types::ToolCall,
         phase: ToolNarrationPhase,
         locale: Option<&str>,
-        _ctx: everruns_core::tool_narration::ToolNarrationContext<'_>,
+        ctx: everruns_core::tool_narration::ToolNarrationContext<'_>,
     ) -> Option<String> {
         Some(everruns_core::tool_narration::narrate_grep_files(
             &tool_call.arguments,
             phase,
             locale,
+            ctx,
         ))
     }
 
@@ -250,12 +251,13 @@ impl Tool for AstEditTool {
         tool_call: &everruns_contracts::tool_types::ToolCall,
         phase: ToolNarrationPhase,
         locale: Option<&str>,
-        _ctx: everruns_core::tool_narration::ToolNarrationContext<'_>,
+        ctx: everruns_core::tool_narration::ToolNarrationContext<'_>,
     ) -> Option<String> {
         Some(everruns_core::tool_narration::narrate_grep_files(
             &tool_call.arguments,
             phase,
             locale,
+            ctx,
         ))
     }
 

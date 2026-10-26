@@ -323,6 +323,6 @@ mod tests {
             Ok(_) => panic!("missing consent must fail"),
             Err(e) => e,
         };
-        assert!(error.to_string().contains("plan use was not granted"));
+        assert!(error.to_string().contains("Plan use was not granted"));
     }
 }
