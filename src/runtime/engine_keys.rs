@@ -55,6 +55,8 @@ pub fn open_or_create(directory: &Path) -> Result<String> {
                     file.write_all(key.as_bytes())
                         .context("write Engine encryption key")?;
                     file.sync_all().context("sync Engine encryption key")?;
+                    // Windows flushes the key file above; directory fsync is Unix-only.
+                    #[cfg(unix)]
                     File::open(directory)?.sync_all()?;
                     return Ok(key);
                 }

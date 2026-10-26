@@ -894,6 +894,7 @@ impl CheckpointManager {
         serde_json::to_writer(&mut file, intent)?;
         file.write_all(b"\n")?;
         file.sync_all()?;
+        #[cfg(unix)]
         File::open(&self.session_dir)?.sync_all()?;
         Ok(())
     }
@@ -920,6 +921,7 @@ impl CheckpointManager {
             let lineage = engine.engine.history_lineage(self.session_id).await?;
             if lineage.revision == intent.revision && lineage.branch(&intent.branch).is_none() {
                 std::fs::remove_file(self.session_dir.join(RESTORE_INTENT_FILE))?;
+                #[cfg(unix)]
                 File::open(&self.session_dir)?.sync_all()?;
             }
             return Err(error.into());
@@ -932,6 +934,7 @@ impl CheckpointManager {
         )?;
         engine.synchronize().await?;
         std::fs::remove_file(self.session_dir.join(RESTORE_INTENT_FILE))?;
+        #[cfg(unix)]
         File::open(&self.session_dir)?.sync_all()?;
         self.finish_restore_presentation(&intent.prepared)
     }

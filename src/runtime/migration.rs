@@ -444,6 +444,7 @@ impl LegacySessionSource {
         }
         archive.sync_all()?;
         std::fs::rename(temporary, path)?;
+        #[cfg(unix)]
         File::open(&self.source_dir)?.sync_all()?;
         Ok(())
     }
