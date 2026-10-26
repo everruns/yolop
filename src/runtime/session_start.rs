@@ -71,28 +71,24 @@ impl BashHookDispatcher for LocalShellDispatcher {
         // wait and keep running detached.
         cmd.kill_on_drop(true);
 
-        use tokio::io::AsyncReadExt as _;
-
         let mut child = cmd
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn()
             .map_err(|err| format!("session-start hook failed to spawn: {err}"))?;
-        let mut out_pipe = child.stdout.take();
-        let mut err_pipe = child.stderr.take();
         // Bounded reads: one byte past the cap tells truncation apart,
         // contents are trimmed below.
         let cap = opts.max_output_bytes.saturating_add(1) as u64;
+        // Drain both pipes concurrently with the wait: a child that fills a
+        // pipe buffer must never block the wait from completing.
+        let out_pipe = child.stdout.take();
+        let err_pipe = child.stderr.take();
+        let mut out_handle = tokio::spawn(async move { drain_capped(out_pipe, cap).await });
+        let mut err_handle = tokio::spawn(async move { drain_capped(err_pipe, cap).await });
         let run = async {
             let status = child.wait().await?;
-            let mut out = Vec::new();
-            let mut err = Vec::new();
-            if let Some(ref mut pipe) = out_pipe {
-                pipe.take(cap).read_to_end(&mut out).await?;
-            }
-            if let Some(ref mut pipe) = err_pipe {
-                pipe.take(cap).read_to_end(&mut err).await?;
-            }
+            let out = (&mut out_handle).await.map_err(std::io::Error::other)??;
+            let err = (&mut err_handle).await.map_err(std::io::Error::other)??;
             Ok::<_, std::io::Error>((status, out, err))
         };
         let (status, stdout, stderr) =
@@ -151,6 +147,25 @@ fn write_payload_file(payload_json: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// Read at most `cap` bytes, then drain and discard the rest so the writer
+/// observes EOF instead of SIGPIPE and exits normally. Memory stays bounded:
+/// only the capped prefix is kept.
+async fn drain_capped(
+    pipe: Option<impl tokio::io::AsyncRead + Unpin>,
+    cap: u64,
+) -> Result<Vec<u8>, std::io::Error> {
+    use tokio::io::AsyncReadExt as _;
+    let Some(pipe) = pipe else {
+        return Ok(Vec::new());
+    };
+    let mut kept = Vec::new();
+    let mut limited = pipe.take(cap);
+    limited.read_to_end(&mut kept).await?;
+    let mut rest = limited.into_inner();
+    tokio::io::copy(&mut rest, &mut tokio::io::sink()).await?;
+    Ok(kept)
 }
 
 fn truncate(text: &str, max_bytes: usize) -> String {
@@ -337,6 +352,36 @@ mod tests {
 
         assert_eq!(out.exit_code, 0);
         assert!(out.stdout.contains("hello-from-hook"));
+    }
+
+    #[tokio::test]
+    async fn dispatcher_drains_large_output_before_exit() {
+        // ~1.4MB of stdout would fill a pipe buffer and deadlock a
+        // wait-then-read implementation.
+        let dispatcher = LocalShellDispatcher;
+        let payload = HookPayload {
+            event: HookEvent::SessionStart,
+            hook_id: HookId("test".to_string()),
+            session_id: SessionId::new(),
+            turn_id: None,
+            org_id: None,
+            agent_id: None,
+            ts: String::new(),
+            data: serde_json::Value::Null,
+        };
+
+        let out = dispatcher
+            .dispatch(
+                &payload,
+                "seq 1 200000",
+                &BTreeMap::new(),
+                &ExecutorOpts::default(),
+            )
+            .await
+            .expect("large output drains");
+
+        assert_eq!(out.exit_code, 0);
+        assert!(out.stdout.len() <= 65536);
     }
 
     #[tokio::test]
