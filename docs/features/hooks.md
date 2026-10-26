@@ -89,6 +89,10 @@ primary v1 surface.
 | `session_start` | no | no | Advisory setup or audit |
 | `session_end` | no | no | Advisory cleanup |
 
+When the `rex` binary is on `PATH`, yolop also runs `rex __internal
+session-start --agent yolop` as a built-in `session_start` hook alongside
+any configured ones.
+
 Tool events can match on exact tool name, restricted tool glob, and simple
 argument JSON paths. Regexes use Rust's `regex` crate.
 

@@ -120,6 +120,13 @@ case in v1 is `pre_tool_use` / `post_tool_use` policy around tool calls.
 | `turn_end` | no | no | Advisory reporting after a turn completes. |
 | `session_end` | no | no | Advisory cleanup/audit at session close. |
 
+Built-in capabilities can contribute hooks the same way config does. The
+`rex` capability contributes one `session_start` hook that runs
+`rex __internal session-start --agent yolop` when a `rex` binary resolves on
+`PATH`, and nothing when it does not. The command is best effort (stderr
+dropped, failure tolerated), so it never blocks startup. Mute it with
+`disabled_contributions` like any other contributed hook.
+
 Tool-event matchers use the upstream restricted matcher shape:
 
 - `tool_name` for exact match.
