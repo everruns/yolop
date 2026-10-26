@@ -67,38 +67,90 @@ impl BashHookDispatcher for LocalShellDispatcher {
         if let Some(path) = &payload_path {
             cmd.env(PAYLOAD_PATH_VAR, path);
         }
+        // Kill the child on timeout so an expired hook cannot outlive the
+        // wait and keep running detached.
+        cmd.kill_on_drop(true);
 
-        let output =
-            tokio::time::timeout(Duration::from_millis(opts.timeout_ms.into()), cmd.output())
-                .await
-                .map_err(|_| format!("session-start hook timed out after {}ms", opts.timeout_ms))?
-                .map_err(|err| format!("session-start hook failed to spawn: {err}"))?;
+        use tokio::io::AsyncReadExt as _;
+
+        let mut child = cmd
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|err| format!("session-start hook failed to spawn: {err}"))?;
+        let mut out_pipe = child.stdout.take();
+        let mut err_pipe = child.stderr.take();
+        // Bounded reads: one byte past the cap tells truncation apart,
+        // contents are trimmed below.
+        let cap = opts.max_output_bytes.saturating_add(1) as u64;
+        let run = async {
+            let status = child.wait().await?;
+            let mut out = Vec::new();
+            let mut err = Vec::new();
+            if let Some(ref mut pipe) = out_pipe {
+                pipe.take(cap).read_to_end(&mut out).await?;
+            }
+            if let Some(ref mut pipe) = err_pipe {
+                pipe.take(cap).read_to_end(&mut err).await?;
+            }
+            Ok::<_, std::io::Error>((status, out, err))
+        };
+        let (status, stdout, stderr) =
+            match tokio::time::timeout(Duration::from_millis(opts.timeout_ms.into()), run).await {
+                Ok(Ok(output)) => output,
+                Ok(Err(err)) => {
+                    let _ = payload_path.map(std::fs::remove_file);
+                    return Err(format!("session-start hook failed while running: {err}"));
+                }
+                Err(_) => {
+                    let _ = child.kill().await;
+                    let _ = payload_path.map(std::fs::remove_file);
+                    return Err(format!(
+                        "session-start hook timed out after {}ms",
+                        opts.timeout_ms
+                    ));
+                }
+            };
 
         let _ = payload_path.map(std::fs::remove_file);
         Ok(BashExecOutput {
-            exit_code: output.status.code().unwrap_or(-1),
-            stdout: truncate(
-                &String::from_utf8_lossy(&output.stdout),
-                opts.max_output_bytes,
-            ),
-            stderr: truncate(
-                &String::from_utf8_lossy(&output.stderr),
-                opts.max_output_bytes,
-            ),
+            exit_code: status.code().unwrap_or(-1),
+            stdout: truncate(&String::from_utf8_lossy(&stdout), opts.max_output_bytes),
+            stderr: truncate(&String::from_utf8_lossy(&stderr), opts.max_output_bytes),
         })
     }
 }
 
 /// Best-effort payload sidecar; hooks still get the JSON env var when the
-/// file cannot be written.
+/// file cannot be written. Created with `O_EXCL` and owner-only permissions
+/// so a predictable temp path cannot be swapped for a symlink.
 fn write_payload_file(payload_json: &str) -> Option<String> {
-    let path = std::env::temp_dir().join(format!(
-        "yolop-hook-payload-{}-{}.json",
-        std::process::id(),
-        PAYLOAD_COUNTER.fetch_add(1, Ordering::Relaxed),
-    ));
-    std::fs::write(&path, payload_json).ok()?;
-    Some(path.to_string_lossy().into_owned())
+    for _ in 0..8 {
+        let path = std::env::temp_dir().join(format!(
+            "yolop-hook-payload-{}-{}.json",
+            std::process::id(),
+            PAYLOAD_COUNTER.fetch_add(1, Ordering::Relaxed),
+        ));
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            options.mode(0o600);
+        }
+        match options.open(&path) {
+            Ok(mut file) => {
+                use std::io::Write as _;
+                if file.write_all(payload_json.as_bytes()).is_ok() {
+                    return Some(path.to_string_lossy().into_owned());
+                }
+                let _ = std::fs::remove_file(&path);
+                return None;
+            }
+            Err(_) => continue,
+        }
+    }
+    None
 }
 
 fn truncate(text: &str, max_bytes: usize) -> String {

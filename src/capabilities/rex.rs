@@ -1,12 +1,13 @@
 //! The `rex` capability: session-start handshake with the rex daemon.
 //!
-//! When a `rex` binary resolves on `PATH`, yolop contributes a built-in
-//! `SessionStart` hook that runs `rex __internal session-start --agent yolop`.
-//! This mirrors the Codex `hooks.json` recipe (`rex __internal session-start
-//! --agent codex`, five second timeout), with the agent name changed to yolop.
-//! The hook is best effort: stderr is discarded and a nonzero exit still
-//! counts as success, so a failing daemon never breaks session startup. With
-//! no `rex` on `PATH` the capability contributes nothing.
+//! When a runnable `rex` binary resolves on `PATH`, yolop contributes a
+//! built-in `SessionStart` hook that runs
+//! `rex __internal session-start --agent yolop`. This mirrors the Codex
+//! `hooks.json` recipe (`rex __internal session-start --agent codex`, five
+//! second timeout), with the agent name changed to yolop. The hook is best
+//! effort: output is captured, never shown, and a nonzero exit still counts
+//! as success (`OnError::Allow`), so a failing daemon never breaks session
+//! startup. With no `rex` on `PATH` the capability contributes nothing.
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -19,10 +20,10 @@ use everruns_core::user_hook_types::{
 
 pub(crate) const REX_CAPABILITY_ID: &str = "rex";
 
-/// Session-start handshake. The executor already runs through a shell, so the
-/// `|| true` keeps a failing daemon from failing session startup.
-const REX_SESSION_START_COMMAND: &str =
-    "rex __internal session-start --agent yolop 2>/dev/null || true";
+/// Session-start handshake. Output is captured by the hook runner and failure
+/// is tolerated via `OnError::Allow`, so no shell redirection is needed:
+/// the same command runs under `sh -c` and `cmd /C`.
+const REX_SESSION_START_COMMAND: &str = "rex __internal session-start --agent yolop";
 /// Same five second budget as the Codex recipe (`"timeout": 5`).
 const REX_SESSION_START_TIMEOUT_MS: u32 = 5_000;
 
@@ -70,8 +71,28 @@ fn rex_found_on_search_path(path_var: &OsString) -> bool {
     REX_BINARY_NAMES.iter().any(|binary| {
         std::env::split_paths(path_var)
             .map(|dir| dir.join(binary))
-            .any(|candidate| candidate.is_file())
+            .any(|candidate| is_runnable_file(&candidate))
     })
+}
+
+/// A `rex` binary counts as present when it exists and, on Unix, carries an
+/// execute bit, mirroring the `rg` availability probe.
+fn is_runnable_file(candidate: &std::path::Path) -> bool {
+    if !candidate.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        candidate
+            .metadata()
+            .map(|metadata| metadata.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false)
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
 }
 
 #[async_trait]
@@ -154,6 +175,23 @@ mod tests {
             &dir.join("missing"),
             None
         )));
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let inert = dir.join("inert");
+            std::fs::create_dir_all(&inert).expect("probe dir");
+            std::fs::write(inert.join(REX_BINARY_NAMES[0]), "#!/bin/sh\n")
+                .expect("write non-executable fake");
+            std::fs::set_permissions(
+                inert.join(REX_BINARY_NAMES[0]),
+                std::fs::Permissions::from_mode(0o644),
+            )
+            .expect("strip executable bit");
+            assert!(!rex_found_on_search_path(&search_path_with_entry(
+                &inert, None
+            )));
+        }
 
         std::fs::remove_dir_all(&dir).ok();
     }
