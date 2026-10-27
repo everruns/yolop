@@ -261,6 +261,7 @@ fn mcp_connection_for(
         secret_bindings: Default::default(),
         acted_as: Default::default(),
         connect_in_chat: Default::default(),
+        tool_timeout_ms: None,
     })
 }
 

@@ -16,38 +16,37 @@ tags the version and publishes to crates.io and the Homebrew tap.
 
 - Six more providers: Mistral, Fireworks, Vercel, Cloudflare, MAI, and native Gemini.
 - Web search through one shared capability, plus model discovery with strict selection.
-- Coordinator delegation, continuation budgets, richer MCP login display, live ACP config updates.
+- Coordinator flag, continuation budgets, richer MCP login display, config updates pushed on disk change.
 
 ### What's Changed
 
-* fix(search): web search integration tests for provider rotation and telemetry redaction ([#868](https://github.com/everruns/yolop/pull/868)) by @chaliy
+* fix(exec): make the proc-exe test robust on uutils runners ([#868](https://github.com/everruns/yolop/pull/868)) by @chaliy
 * chore(deps): bump html-escape from 0.2.15 to 0.3.0 ([#867](https://github.com/everruns/yolop/pull/867)) by @app/dependabot
 * chore(deps): bump vt100 from 0.16.2 to 0.17.0 ([#866](https://github.com/everruns/yolop/pull/866)) by @app/dependabot
 * chore(deps): bump jsonschema from 0.58.6 to 0.59.0 ([#865](https://github.com/everruns/yolop/pull/865)) by @app/dependabot
 * chore(deps): bump the cargo-minor-and-patch group with 8 updates ([#864](https://github.com/everruns/yolop/pull/864)) by @app/dependabot
-* feat(search): add shared web_search capability, config, and provider wiring ([#863](https://github.com/everruns/yolop/pull/863)) by @chaliy
-* docs: update README supported providers and models sections ([#862](https://github.com/everruns/yolop/pull/862)) by @chaliy
-* fix(meta): replay responses from recorded fixtures when present ([#861](https://github.com/everruns/yolop/pull/861)) by @chaliy
-* feat(providers): add Mistral, Fireworks, Vercel, Cloudflare, MAI, and native Gemini ([#860](https://github.com/everruns/yolop/pull/860)) by @chaliy
-* feat(mcp): show login page server, issuer, scope, and credential expiry ([#859](https://github.com/everruns/yolop/pull/859)) by @chaliy
+* feat(search): adopt the shared web_search capability ([#863](https://github.com/everruns/yolop/pull/863)) by @chaliy
+* fix(evals): give control token and cost gates a 25% noise ceiling ([#862](https://github.com/everruns/yolop/pull/862)) by @chaliy
+* fix(meta): replay responses with incompatible IDs ([#861](https://github.com/everruns/yolop/pull/861)) by @chaliy
+* feat(providers): adopt Mistral, Fireworks, Vercel, Cloudflare, MAI, and native Gemini ([#860](https://github.com/everruns/yolop/pull/860)) by @chaliy
+* feat(mcp): show server, issuer, scope, and expiry on login page ([#859](https://github.com/everruns/yolop/pull/859)) by @chaliy
 * feat(config): configure and trace continuation budgets ([#858](https://github.com/everruns/yolop/pull/858)) by @chaliy
-* chore: add regression test for duplicate tool names across MCP servers ([#857](https://github.com/everruns/yolop/pull/857)) by @chaliy
-* chore: add approval integrity tests ([#856](https://github.com/everruns/yolop/pull/856)) by @chaliy
-* chore(deps): bump the cargo-minor-and-patch group with 8 updates ([#855](https://github.com/everruns/yolop/pull/855)) by @app/dependabot
-* chore(deps): bump actions/download-artifact from 6 to 7 ([#854](https://github.com/everruns/yolop/pull/854)) by @app/dependabot
-* fix(agents): remove stale ACP auth methods from stale file layouts ([#853](https://github.com/everruns/yolop/pull/853)) by @chaliy
-* feat(models): discover and test models with strict selection semantics ([#852](https://github.com/everruns/yolop/pull/852)) by @chaliy
-* fix(agents): reject unknown agent types at creation ([#851](https://github.com/everruns/yolop/pull/851)) by @chaliy
-* fix(search): request timeouts, response size caps, and redirect limits ([#850](https://github.com/everruns/yolop/pull/850)) by @chaliy
-* chore: sign agent skill frontmatter in pre-commit ([#849](https://github.com/everruns/yolop/pull/849)) by @chaliy
-* feat(prompt): everruns 0.48 cache-stable system prompt path ([#848](https://github.com/everruns/yolop/pull/848)) by @chaliy
-* fix(approval): close prompt-injection escalation paths and harden approval integrity ([#847](https://github.com/everruns/yolop/pull/847)) by @chaliy
-* fix(mcp): remember MCP server setup without restart ([#846](https://github.com/everruns/yolop/pull/846)) by @chaliy
-* fix(provider): keep OpenAI-compatible reasoning fields inside provider fields ([#845](https://github.com/everruns/yolop/pull/845)) by @chaliy
-* feat(acp): push config updates to connected ACP clients ([#844](https://github.com/everruns/yolop/pull/844)) by @chaliy
-* fix(agents): expand home-relative legacy paths ([#843](https://github.com/everruns/yolop/pull/843)) by @chaliy
-* feat(sandbox): support Windows MXC container provider ([#841](https://github.com/everruns/yolop/pull/841)) by @chaliy
-* feat(coordination): add --coordinator flag for agent delivery ([#842](https://github.com/everruns/yolop/pull/842)) by @chaliy
+* fix(mcp): complete conversational setup without restarting ([#857](https://github.com/everruns/yolop/pull/857)) by @chaliy
+* chore(deps): bump tree-sitter-php from 0.24.2 to 0.25.1 ([#856](https://github.com/everruns/yolop/pull/856)) by @app/dependabot
+* chore(deps): bump agent-client-protocol from 2.2.0 to 3.3.0 ([#855](https://github.com/everruns/yolop/pull/855)) by @app/dependabot
+* chore(deps): bump the cargo-minor-and-patch group with 6 updates ([#854](https://github.com/everruns/yolop/pull/854)) by @app/dependabot
+* fix(evals): allow one call of slack on control call-count gates ([#853](https://github.com/everruns/yolop/pull/853)) by @chaliy
+* feat(models): discover and test models with strict selection ([#852](https://github.com/everruns/yolop/pull/852)) by @chaliy
+* fix(control): admit macOS parser image before shell launch ([#851](https://github.com/everruns/yolop/pull/851)) by @chaliy
+* fix(sandbox): deny asynchronous Linux syscall entry points ([#850](https://github.com/everruns/yolop/pull/850)) by @chaliy
+* fix(evals): absorb single-trial sampling noise in the search-efficiency gate ([#849](https://github.com/everruns/yolop/pull/849)) by @chaliy
+* feat(prompt): adopt everruns 0.48 cache-stable tool changes ([#848](https://github.com/everruns/yolop/pull/848)) by @chaliy
+* fix(approval): preserve complete request integrity ([#847](https://github.com/everruns/yolop/pull/847)) by @chaliy
+* chore: point docs links at everruns.com/docs ([#846](https://github.com/everruns/yolop/pull/846)) by @chaliy
+* fix(coordination): inherit sandbox containment in thread hosts ([#845](https://github.com/everruns/yolop/pull/845)) by @chaliy
+* feat(acp): push config updates when settings change on disk ([#844](https://github.com/everruns/yolop/pull/844)) by @chaliy
+* feat(sandbox): contain the Windows shell with an in-process MXC container ([#841](https://github.com/everruns/yolop/pull/841)) by @chaliy
+* feat(coordination): add a --coordinator flag ([#842](https://github.com/everruns/yolop/pull/842)) by @chaliy
 
 ## [0.21.0] - 2026-10-11
 
