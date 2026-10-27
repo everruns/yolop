@@ -221,8 +221,14 @@ enum SessionsCommand {
     )]
     Search {
         /// Case-insensitive text to find; omit to list recent sessions.
+        /// Accepts `--query <text>` or a positional `<text>` so agents and
+        /// users do not burn a retry discovering the flag.
         #[arg(long)]
         query: Option<String>,
+        /// Positional fallback for `sessions search <text>`. Accepts several
+        /// words without quoting: they are joined with single spaces.
+        #[arg(index = 1, hide = true, num_args(0..))]
+        positional_query: Vec<String>,
         /// Maximum sessions to return (default 10, max 50).
         #[arg(long)]
         limit: Option<u64>,
@@ -264,14 +270,23 @@ impl SessionsCommandLine {
         match cli.command {
             SessionsCommand::Search {
                 query,
+                positional_query,
                 limit,
                 include_current,
-            } => Ok(json!({
-                "operation": "search",
-                "query": query,
-                "limit": limit,
-                "include_current": include_current,
-            })),
+            } => {
+                if query.is_some() && !positional_query.is_empty() {
+                    anyhow::bail!(
+                        "sessions search takes a single query: use either --query <text> or a positional <text>, not both"
+                    );
+                }
+                let positional = (!positional_query.is_empty()).then(|| positional_query.join(" "));
+                Ok(json!({
+                    "operation": "search",
+                    "query": query.or(positional),
+                    "limit": limit,
+                    "include_current": include_current,
+                }))
+            }
             SessionsCommand::List { limit } => Ok(json!({
                 "operation": "list",
                 "limit": limit,
@@ -994,6 +1009,61 @@ mod tests {
         assert!(response.ok);
         let value = response.value.expect("search must return a value");
         assert_eq!(value["count"], 1);
+    }
+
+    #[test]
+    fn search_accepts_positional_query() {
+        // Agents and users naturally try `sessions search <query>`; clap should
+        // accept it the same as `--query <query>` instead of erroring.
+        let dir = tempfile::tempdir().unwrap();
+        let capability =
+            SessionsCapability::new(dir.path().to_path_buf(), SessionId::new(), memory_store());
+        let matches = capability
+            .cli_command()
+            .try_get_matches_from(["sessions", "search", "cli-dispatch-777"])
+            .expect("positional query parses");
+        let request = capability
+            .control_request_from_cli(&matches)
+            .expect("control request");
+        assert_eq!(request.action["operation"], "search");
+        assert_eq!(request.action["query"], "cli-dispatch-777");
+    }
+
+    #[test]
+    fn search_joins_unquoted_positional_words() {
+        // Agents often skip quotes; `search prior session foo` should behave
+        // like `--query "prior session foo"` instead of erroring.
+        let dir = tempfile::tempdir().unwrap();
+        let capability =
+            SessionsCapability::new(dir.path().to_path_buf(), SessionId::new(), memory_store());
+        let matches = capability
+            .cli_command()
+            .try_get_matches_from(["sessions", "search", "prior", "session", "foo"])
+            .expect("multi-word positional parses");
+        let request = capability
+            .control_request_from_cli(&matches)
+            .expect("control request");
+        assert_eq!(request.action["query"], "prior session foo");
+    }
+
+    #[test]
+    fn search_rejects_query_and_positional_together() {
+        // Both forms at once used to silently drop the positional text;
+        // fail loudly instead so no typed query is lost.
+        let dir = tempfile::tempdir().unwrap();
+        let capability =
+            SessionsCapability::new(dir.path().to_path_buf(), SessionId::new(), memory_store());
+        let matches = capability
+            .cli_command()
+            .try_get_matches_from(["sessions", "search", "--query", "foo", "bar"])
+            .expect("CLI parses");
+        let err = capability
+            .control_request_from_cli(&matches)
+            .expect_err("both forms must be rejected");
+        assert!(
+            err.to_string().contains("not both"),
+            "unexpected error: {err}"
+        );
     }
 
     fn memory_store() -> CoordinationStore {
