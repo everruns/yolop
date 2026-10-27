@@ -1,5 +1,12 @@
 # Knowledge Log
 
+## 2026-10-26, Retry confirmed native restores in process
+
+A failed confirmed restore retains its durable command and execution fence.
+Retrying the original confirmation finishes that command without restarting or
+selecting history twice. New previews cannot replace the pending recovery
+snapshot. See [Checkpointing](specs/checkpointing.md).
+
 ## 2026-10-25, Windows CPython dependency correction
 
 Refreshed the complete Everruns git family together to consume published

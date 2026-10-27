@@ -129,6 +129,13 @@ The journal is append-only and flushed before the turn begins or a restore is
 reported successful. A compact derived index may be added later, but it is never
 the source of truth.
 
+If a confirmed restore fails after its intent is durable, the same confirmation
+token retries that command in the running process. The retained intent and its
+recovery snapshot remain authoritative until completion. New previews are
+refused while the intent is pending, so they cannot replace its recovery state.
+Startup recovery uses the same command and preserves the abandoned branch for
+redo.
+
 ### Model-context checkpoints
 
 Model-context compaction is a separate projection over the lossless authority

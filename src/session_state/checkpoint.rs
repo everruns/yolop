@@ -642,6 +642,7 @@ impl CheckpointManager {
     }
 
     pub fn prepare_rewind(&self, checkpoint_id: &str, mode: RestoreMode) -> Result<RestorePreview> {
+        self.ensure_no_pending_restore()?;
         let (node, conversation_head) = {
             let state = self.state.lock().expect("checkpoint state lock");
             let active = active_path(&state);
@@ -682,6 +683,7 @@ impl CheckpointManager {
     }
 
     pub fn prepare_redo(&self, mode: RestoreMode) -> Result<RestorePreview> {
+        self.ensure_no_pending_restore()?;
         let redo = self
             .state
             .lock()
@@ -726,6 +728,17 @@ impl CheckpointManager {
             None => None,
         };
         self.ensure_no_active_tasks().await?;
+        if let Some(engine) = &engine
+            && let Some(intent) = self.read_restore_intent()?
+        {
+            anyhow::ensure!(
+                intent.prepared.token == token,
+                "confirmation token does not match the pending restore"
+            );
+            // A confirmed restore may already have moved history or files.
+            // Retry its durable command, never a new selection or preview.
+            return self.complete_native_restore(engine, &intent).await;
+        }
         let prepared = self
             .prepared
             .lock()
@@ -761,7 +774,10 @@ impl CheckpointManager {
                 ranges,
                 prepared,
             };
-            self.write_restore_intent(&intent)?;
+            if let Err(error) = self.write_restore_intent(&intent) {
+                *self.prepared.lock().expect("prepared restore lock") = Some(intent.prepared);
+                return Err(error);
+            }
             self.complete_native_restore(engine, &intent).await
         } else {
             self.restore_prepared_workspace(&prepared)?;
@@ -939,6 +955,27 @@ impl CheckpointManager {
         self.finish_restore_presentation(&intent.prepared)
     }
 
+    fn read_restore_intent(&self) -> Result<Option<NativeRestoreIntent>> {
+        let path = self.session_dir.join(RESTORE_INTENT_FILE);
+        if !path.try_exists()? {
+            return Ok(None);
+        }
+        let mut records: Vec<NativeRestoreIntent> =
+            crate::runtime::migration::read_records(&path, &mut sha2::Sha256::default())?;
+        anyhow::ensure!(records.len() == 1, "invalid restore intent journal");
+        Ok(records.pop())
+    }
+
+    fn ensure_no_pending_restore(&self) -> Result<()> {
+        if let Some(intent) = self.read_restore_intent()? {
+            bail!(
+                "a confirmed restore is incomplete; retry confirmation `{}` before requesting a new preview",
+                intent.prepared.token
+            );
+        }
+        Ok(())
+    }
+
     /// Finish a previously confirmed restore before this process starts any
     /// Engine activation. A retained intent fences claims until both durable
     /// conversation selection and workspace restoration have completed.
@@ -953,10 +990,9 @@ impl CheckpointManager {
             .and_then(std::sync::Weak::upgrade)
             .context("Engine restore host unavailable")?;
         let _restore = engine.restore_gate.write().await;
-        let mut records: Vec<NativeRestoreIntent> =
-            crate::runtime::migration::read_records(&path, &mut sha2::Sha256::default())?;
-        anyhow::ensure!(records.len() == 1, "invalid restore intent journal");
-        let intent = records.pop().expect("one restore intent");
+        let Some(intent) = self.read_restore_intent()? else {
+            return Ok(());
+        };
         match self.complete_native_restore(&engine, &intent).await {
             Ok(_) => Ok(()),
             Err(error) if !path.exists() => {
@@ -970,11 +1006,18 @@ impl CheckpointManager {
     }
 
     pub fn queue_confirmation(&self, token: &str) -> Result<()> {
-        let prepared = self.prepared.lock().expect("prepared restore lock");
-        let Some(prepared) = prepared.as_ref() else {
-            bail!("no restore is awaiting confirmation");
+        let pending_token = if let Some(intent) = self.read_restore_intent()? {
+            intent.prepared.token
+        } else {
+            self.prepared
+                .lock()
+                .expect("prepared restore lock")
+                .as_ref()
+                .context("no restore is awaiting confirmation")?
+                .token
+                .clone()
         };
-        if prepared.token != token {
+        if pending_token != token {
             bail!("confirmation token does not match the pending restore");
         }
         *self
@@ -1633,6 +1676,87 @@ mod tests {
             ))
             .await
             .expect("emit user");
+    }
+
+    #[tokio::test]
+    async fn failed_native_restore_can_retry_confirmation_without_restarting() {
+        use crate::runtime::{BuildOptions, ProviderChoice, build_with_options};
+        let repo = tempfile::tempdir().unwrap();
+        git(repo.path(), &["init", "-q"]);
+        git(repo.path(), &["config", "user.name", "Test User"]);
+        git(repo.path(), &["config", "user.email", "test@example.com"]);
+        std::fs::write(repo.path().join("tracked.txt"), "base").unwrap();
+        git(repo.path(), &["add", "tracked.txt"]);
+        git(repo.path(), &["commit", "-qm", "base"]);
+        let data = tempfile::tempdir().unwrap();
+        let settings = Arc::new(crate::config::SettingsStore::open(
+            data.path().join("settings.toml"),
+        ));
+        settings.set_worktrees_mode(WorktreesMode::Always).unwrap();
+        let built = build_with_options(
+            repo.path().into(),
+            ProviderChoice::Sim,
+            None,
+            data.path().into(),
+            settings,
+            BuildOptions {
+                llmsim_override: Some(everruns_llmsim::LlmSimConfig::fixed("reply")),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let manager = &built.handles.checkpoints;
+        let active = manager.worktree.active_root();
+        for prompt in ["alpha", "beta"] {
+            built
+                .handles
+                .run_checkpointed_turn(prompt, built.model.input_message(prompt))
+                .await
+                .unwrap();
+            std::fs::write(active.join("tracked.txt"), prompt).unwrap();
+        }
+        let preview = manager.prepare_undo(RestoreMode::Both).unwrap();
+        let timeline_backup = manager.timeline_path.with_extension("backup");
+        std::fs::rename(&manager.timeline_path, &timeline_backup).unwrap();
+        std::fs::create_dir(&manager.timeline_path).unwrap();
+        // The authority and files move, but the local timeline write fails.
+        assert!(manager.confirm(&preview.token).await.is_err());
+        let intent_path = manager.session_dir.join(RESTORE_INTENT_FILE);
+        let intent_bytes = std::fs::read(&intent_path).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(active.join("tracked.txt")).unwrap(),
+            "alpha"
+        );
+        assert!(manager.confirm("another-token").await.is_err());
+        assert_eq!(std::fs::read(&intent_path).unwrap(), intent_bytes);
+        assert!(manager.prepare_undo(RestoreMode::Both).is_err());
+        assert!(manager.prepare_redo(RestoreMode::Both).is_err());
+        std::fs::remove_dir(&manager.timeline_path).unwrap();
+        std::fs::rename(&timeline_backup, &manager.timeline_path).unwrap();
+        // Hosts can queue the original confirmation again in this process.
+        manager.queue_confirmation(&preview.token).unwrap();
+        manager.apply_queued_confirmation().await;
+        assert!(manager.take_notice().unwrap().starts_with("restored "));
+        assert!(!intent_path.exists());
+        let events = built.handles.runtime.events().await.unwrap();
+        let inputs: Vec<_> = messages_from_events(&events)
+            .into_iter()
+            .filter(|message| message.role == everruns_core::RuntimeMessageRole::User)
+            .map(|message| message.text().unwrap_or_default().to_string())
+            .collect();
+        assert_eq!(inputs, ["alpha"]);
+        let redo = manager.prepare_redo(RestoreMode::Both).unwrap();
+        manager.confirm(&redo.token).await.unwrap();
+        assert_eq!(
+            std::fs::read_to_string(active.join("tracked.txt")).unwrap(),
+            "beta"
+        );
+        drop(built);
+        git(
+            repo.path(),
+            &["worktree", "remove", "--force", active.to_str().unwrap()],
+        );
     }
 
     #[tokio::test]
