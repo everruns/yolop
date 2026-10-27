@@ -52,6 +52,45 @@ struct LegacyChildSource {
 }
 
 impl LegacySessionSource {
+    /// Open the retired stores only while importing a saved legacy session.
+    pub async fn import_backends(
+        &self,
+        workspace: &Path,
+        provider: std::sync::Arc<dyn everruns_core::host::RuntimeProviderStore>,
+        events: std::sync::Arc<super::session_log::JsonlEventEmitter>,
+        checkpoints: std::sync::Arc<crate::session_state::checkpoint::CheckpointManager>,
+        session: everruns_core::ExecutionSession,
+        connections: std::sync::Arc<dyn everruns_core::connection_services::UserConnectionResolver>,
+    ) -> Result<everruns_core::host::HostBackends> {
+        let compaction = std::sync::Arc::new(
+            super::compaction_checkpoint::JsonlCompactionCheckpointStore::open(
+                &self.source_dir,
+                self.session_id,
+                checkpoints,
+            )?,
+        );
+        let backends = everruns_core::host::HostBackends::in_memory()
+            .with_provider_store(provider)
+            .with_event_log(events.clone())
+            .with_event_sink(events)
+            .with_compaction_checkpoint_store(compaction)
+            .with_connection_resolver(connections);
+        let profile = everruns::local::LocalProfile::new(
+            self.source_dir
+                .parent()
+                .context("legacy sessions directory is missing")?
+                .join("everruns-local"),
+        )
+        .with_workspace_root(workspace);
+        let legacy = everruns::local::LocalBackends::new(profile, backends)?;
+        legacy
+            .runtime_backends
+            .session_store
+            .add_session(session)
+            .await?;
+        Ok(legacy.runtime_backends)
+    }
+
     /// Translate the product's timeline into immutable authority branches.
     /// Each turn boundary is retained, including siblings that were abandoned
     /// before the current redo point. Workspace snapshots stay product metadata.

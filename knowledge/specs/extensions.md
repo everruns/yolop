@@ -103,7 +103,7 @@ mutated through the VFS) and added as a read-only `SkillScope` (label
 `extension_contributed_skill_is_visible_and_read_only` covers the mount.
 Slash commands: an extension declares `commands` in its manifest; `ExtensionCapability`
 implements the `Capability` `commands()`/`execute_command()` boundaries, so the
-commands flow into `runtime.list_commands` → the palette automatically. Each is
+commands flow into `Session::commands` → the palette automatically. Each is
 registered namespaced (`<ext>:<name>`) so it can never shadow a built-in, and
 invoking it sends `command/execute` (host→server) with `{name, arguments}`; the
 server's `CommandExecuteResult { success, message }` becomes the `CommandResult`

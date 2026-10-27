@@ -101,7 +101,7 @@ impl CompletionController {
     pub(super) async fn record_decision(
         &self,
         handles: &RuntimeHandles,
-        result: &everruns_core::host::TurnResult,
+        result: &everruns::Turn,
         settings: &Settings,
         used_turns: u64,
         reason: &str,
@@ -135,7 +135,7 @@ impl CompletionController {
         if decision.followup.is_some() {
             diagnostic.next_continuation = Some(self.repairs);
         }
-        emit(handles, result.turn_id, diagnostic).await
+        emit(handles, result.turn_id.parse()?, diagnostic).await
     }
 }
 

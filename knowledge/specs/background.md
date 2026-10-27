@@ -163,15 +163,15 @@ non-reattachable work. Terminal task inspection and ACP reconciliation recover
 results whose completion notification was not admitted before process loss.
 
 Schedules retain leased occurrence state, advance recurring schedules after
-successful delivery and disable delivered one-shot schedules. Native delivery
-currently lacks a stable Engine admission identity across delivery and schedule
-acknowledgement. [EVE-1309](https://linear.app/everruns/issue/EVE-1309) tracks this
-upstream failure window; exactly-once schedule admission is not claimed.
+successful delivery and disable delivered one-shot schedules. The framework
+uses a stable occurrence admission identity across delivery and acknowledgement
+retries, including the correction tracked by
+[EVE-1309](https://linear.app/everruns/issue/EVE-1309).
 
-Native foreground subagent settlement also needs an upstream correction:
-[EVE-1310](https://linear.app/everruns/issue/EVE-1310). Until then, the platform
-adapter resolves idle sessions through their actual assigned turn outcomes.
-Only committed success maps to completed; bare idle does not imply success.
+Native foreground subagent waits use committed turn outcomes and settle their
+tasks directly, including the correction tracked by
+[EVE-1310](https://linear.app/everruns/issue/EVE-1310). Bare idle does not imply
+success. Yolop adds no local outcome remapping.
 
 ## Safety
 

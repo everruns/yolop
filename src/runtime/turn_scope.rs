@@ -1,7 +1,5 @@
 //! Correlate frontend streams and cancellation with admitted inputs. A frontend
 //! must not consume another independently running Engine turn's output.
-use super::engine::EngineRuntime;
-use everruns::hosting::SessionHosting;
 use everruns_contracts::typed_id::{MessageId, TurnId};
 use everruns_core::{Event, EventData, InputMessage};
 use std::collections::HashSet;
@@ -10,6 +8,7 @@ pub(crate) const RUN_METADATA: &str = "yolop.frontend_run";
 
 pub(crate) struct TurnScope {
     pub id: MessageId,
+    cancellation: everruns::CancellationToken,
     admission: Option<MessageId>,
     inputs: HashSet<MessageId>,
     turns: HashSet<TurnId>,
@@ -29,12 +28,13 @@ impl TurnScope {
             .insert(RUN_METADATA.into(), serde_json::json!(id));
         Self {
             id,
+            cancellation: everruns::CancellationToken::new(),
             admission,
             inputs: admission.into_iter().collect(),
             turns: HashSet::new(),
         }
     }
-    pub async fn accepts(&mut self, runtime: &EngineRuntime, event: &Event) -> bool {
+    pub async fn accepts(&mut self, session: &everruns::Session, event: &Event) -> bool {
         if let EventData::InputMessage(input) = &event.data {
             let mine = self.admission == Some(input.message.id)
                 || input
@@ -56,14 +56,9 @@ impl TurnScope {
             return true;
         }
         for input in &self.inputs {
-            if let Ok(Some(assignment)) = runtime
-                .hosting
-                .record(event.session_id, &format!("assignment/{input}"))
-                .await
-                && assignment
-                    .get("turn_id")
-                    .and_then(serde_json::Value::as_str)
-                    .is_some_and(|id| id == turn.to_string())
+            if let Ok(Some(admission)) = session.admission(*input).await
+                && let Ok(Some(assignment)) = admission.assignment().await
+                && assignment.turn_id == turn
             {
                 self.turns.insert(turn);
                 return true;
@@ -71,12 +66,16 @@ impl TurnScope {
         }
         false
     }
-    pub async fn cancel(&self, runtime: &EngineRuntime) -> anyhow::Result<()> {
-        runtime.cancel_run(self.id).await;
+    pub fn cancellation(&self) -> everruns::CancellationToken {
+        self.cancellation.clone()
+    }
+
+    pub async fn cancel(&self, session: &everruns::Session) -> anyhow::Result<()> {
+        self.cancellation.cancel();
         if let Some(id) = self.admission
-            && let Some(admission) = runtime.session(runtime.root).await?.admission(id).await?
+            && let Some(admission) = session.admission(id).await?
         {
-            admission.cancel(MessageId::new().uuid()).await?;
+            admission.cancel(uuid::Uuid::new_v4()).await?;
             admission.wait().await?;
         }
         Ok(())

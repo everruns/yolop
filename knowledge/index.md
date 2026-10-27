@@ -55,7 +55,7 @@ and [`docs/`](../docs/); it must not link back into this internal bundle.
 
 ## Safety and execution
 
-- [Engine-owned execution](specs/engine-execution.md), framework adoption boundary and direct-execution retirement requirements.
+- [Engine-owned execution](specs/engine-execution.md), native Session APIs, application policy, and retained-session import.
 - [Crash reporting](specs/crash-reporting.md), local privacy-preserving panic diagnostics.
 - [Progress guard](specs/progress-guard.md), host-enforced trajectory transitions and evidence reuse.
 - [Sandboxing](specs/sandboxing.md), filesystem and process boundaries.

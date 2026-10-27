@@ -13,7 +13,7 @@ also accepts `!<command>` and `!shell <command>` as terminal-local shell
 aliases for the same capability command as `/shell`. Every command is
 contributed by a **capability** (`Capability::commands()`), so each host's
 command surface
-is sourced solely from `runtime.list_commands(session_id)`, the source of
+is sourced solely from `Session::commands(session_id)`, the source of
 truth for that host's palette, `/help`, and completion. There is no hard-coded
 command table on any host.
 
@@ -30,7 +30,7 @@ top of the runtime's two, not a separate `CommandSource` variant.
 
 ## Execution targets
 
-1. **System**: the **runtime** executes it via `runtime.execute_command`,
+1. **System**: the **runtime** executes it via `Session::run_command`,
    returning a `CommandResult { success, message }` the host renders inline.
    Example: `/setup` opens guided setup, while the attached CLI owns
    `yolop setup status|login|reauthenticate` for provider authentication;
@@ -72,10 +72,10 @@ portable case ever arises.
 ## Required behavior
 
 1. **Single registry.** The palette, `/help`, and completion read only
-   `runtime.list_commands`. Removing a capability removes its commands; no host
+   `Session::commands`. Removing a capability removes its commands; no host
    keeps a parallel list.
 2. **Uniform dispatch.** The host looks a typed command up in the registry and
-   routes by `CommandSource`: `System`/client → `runtime.execute_command`;
+   routes by `CommandSource`: `System`/client → `Session::run_command`;
    `Skill` → forward as a chat turn. `/exit` is an accepted alias for `/quit`.
    Interactive hosts also accept `!<command>` and `!shell <command>` as
    shortcuts for `/shell <command>`.
@@ -91,8 +91,8 @@ portable case ever arises.
    user to type the slash command. Administrative operations, including provider
    authentication, use the attached `yolop` CLI through Bash. `run_command` covers the
    **whole registry** of the host it runs on, not a curated subset, and holds no
-   allowlist of its own: a name is resolved against `runtime.list_commands` and
-   run through `runtime.execute_command`, exactly as typing it would, so client
+   allowlist of its own: a name is resolved against `Session::commands` and
+   run through `Session::run_command`, exactly as typing it would, so client
    commands reach their capability and emit the same `UiCommand` as the typed
    path. `command: help` returns the live list privately in the tool result,
    without executing the terminal's visible `/help` effect, and an unknown name

@@ -176,12 +176,13 @@ async fn build_runtime(config: LlmSimConfig, marker_dir: &Path, python: &Path) -
     .expect("build runtime")
 }
 
-async fn run_turn(runtime: &BuiltRuntime, text: &str) -> everruns_core::host::TurnResult {
-    let session_id = runtime.handles.session_id;
+async fn run_turn(runtime: &BuiltRuntime, text: &str) -> everruns::Turn {
     let input = runtime.model.input_message(text.to_string());
     tokio::time::timeout(
         TURN_TIMEOUT,
-        runtime.handles.runtime.run_turn(session_id, input),
+        runtime
+            .handles
+            .execute_input(input, everruns::CancellationToken::new()),
     )
     .await
     .expect("run_turn timed out")
@@ -200,7 +201,7 @@ async fn mcp_tool_executes_over_real_stdio_server() {
     let result = run_turn(&runtime, "use the echo tool").await;
 
     assert!(result.success, "turn must succeed: {result:?}");
-    assert_eq!(result.tool_calls_count, 1, "exactly one MCP call expected");
+    assert_eq!(result.tool_calls, 1, "exactly one MCP call expected");
     let called = marker.join("echo.called");
     assert!(
         called.exists(),
@@ -411,7 +412,7 @@ async fn reload_adds_mcp_server_and_executes_live() {
     // The next turn discovers and executes the freshly added server.
     let result = run_turn(&runtime, "use the echo tool").await;
     assert!(result.success, "turn must succeed: {result:?}");
-    assert_eq!(result.tool_calls_count, 1, "exactly one MCP call expected");
+    assert_eq!(result.tool_calls, 1, "exactly one MCP call expected");
     let called = marker.join("echo.called");
     assert!(
         called.exists(),

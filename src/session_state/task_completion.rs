@@ -45,10 +45,7 @@ pub(crate) fn tag_continuation(
     );
     input
 }
-pub(crate) fn gate_turn(
-    result: &everruns_core::host::TurnResult,
-    background: bool,
-) -> GateDecision {
+pub(crate) fn gate_turn(result: &everruns::Turn, background: bool) -> GateDecision {
     use everruns_contracts::turn::TurnStopReason::*;
     if result.stop_reason == Cancelled {
         return GateDecision::Conclusive(CompletionState::Blocked);
@@ -105,18 +102,19 @@ impl CompletionController {
     pub(crate) async fn after_turn(
         &mut self,
         handles: &crate::runtime::RuntimeHandles,
-        result: &everruns_core::host::TurnResult,
+        result: &everruns::Turn,
         background: bool,
         settings: &dyn ConfigService,
     ) -> Result<CompletionDecision> {
-        self.record_reset(handles, result.turn_id, &settings.snapshot())
+        let turn_id = result.turn_id.parse()?;
+        self.record_reset(handles, turn_id, &settings.snapshot())
             .await?;
-        self.last_turn = Some(result.turn_id);
+        self.last_turn = Some(turn_id);
         let background =
-            background || (result.success && handles.runtime.has_owed_work(result.turn_id).await?);
+            background || (result.success && handles.host.has_owed_work(turn_id).await?);
         // Charge only automatic repairs. A long original turn must still get a recovery chance.
         let tokens = if self.repairs > 0 {
-            handles.turn_tokens(result.turn_id).await
+            handles.turn_tokens(turn_id).await
         } else {
             0
         };
@@ -140,8 +138,8 @@ impl CompletionController {
                     },
                 ),
                 GateDecision::Evaluate => {
-                    let session = handles.runtime.session(handles.session_id).await?;
-                    let messages = handles.runtime.messages(handles.session_id).await?;
+                    let session = &handles.session;
+                    let messages = handles.host.messages(handles.session_id).await?;
                     let evidence = review_evidence(&messages, &result.response);
                     let response = session
                         .complete(
@@ -168,7 +166,7 @@ impl CompletionController {
                     self.diagnostic(&settings, used_turns, "failed", &format!("{error:#}"));
                 diagnostic.action = "review_failed";
                 diagnostic.turn_stop_reason = Some(result.stop_reason);
-                diagnostics::emit(handles, result.turn_id, diagnostic).await?;
+                diagnostics::emit(handles, turn_id, diagnostic).await?;
                 return Err(error);
             }
         };
@@ -323,7 +321,8 @@ mod tests {
             error: None,
             stop_reason: everruns_contracts::turn::TurnStopReason::EndTurn,
             turn_id: everruns_contracts::typed_id::TurnId::new(),
-        };
+        }
+        .into();
         assert_eq!(gate_turn(&result, false), GateDecision::Evaluate);
         assert_eq!(
             gate_turn(&result, true),

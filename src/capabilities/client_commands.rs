@@ -3,7 +3,7 @@
 //! `help`, `tools`, `mcp`, `cwd`, `status`, `model`, `effort`, `clear`, `/shell`, and
 //! `quit` act on the terminal, not the agent runtime. They are declared here as ordinary
 //! capability commands so they share the single command registry — palette,
-//! `/help`, and completion all read `runtime.list_commands` — and dispatched
+//! `/help`, and completion all read `Session::commands` — and dispatched
 //! through the injected [`HostUi`] port: `execute_command` translates each
 //! command into a [`UiCommand`] that the terminal event loop applies. The
 //! runtime never performs the effect; it only routes the invocation.

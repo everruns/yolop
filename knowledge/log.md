@@ -1,5 +1,17 @@
 # Knowledge Log
 
+## 2026-10-27, Native Session APIs and application host boundary
+
+Yolop demonstrates Everruns while retaining all product features. Frontends now
+hold native Sessions for turns, admissions, cancellation, controls and commands;
+the generic runtime facade and global run registry are removed. The remaining
+application host owns model policy, checkpoint coordination and presentation.
+Fresh/native startup does not construct legacy execution stores. Resume reads
+canonical history even when its JSONL export is stale. Legacy import retains
+full history and rewind support. The aligned git-main lock includes native
+schedule identity and child task settlement fixes, replacing the local child
+outcome workaround. See [Engine-owned execution](specs/engine-execution.md).
+
 ## 2026-10-26, Retry confirmed native restores in process
 
 A failed confirmed restore retains its durable command and execution fence.

@@ -87,15 +87,13 @@ async fn build_scripted_runtime_with_workspace_and_options(
 
 /// Drive one user turn against the scripted runtime under a wall-clock
 /// timeout so a hung agent loop fails the test instead of hanging CI.
-async fn run_single_turn(
-    runtime: &BuiltRuntime,
-    user_text: &str,
-) -> everruns_core::host::TurnResult {
-    let session_id = runtime.handles.session_id;
+async fn run_single_turn(runtime: &BuiltRuntime, user_text: &str) -> everruns::Turn {
     let input = runtime.model.input_message(user_text.to_string());
     tokio::time::timeout(
         TURN_TIMEOUT,
-        runtime.handles.runtime.run_turn(session_id, input),
+        runtime
+            .handles
+            .execute_input(input, everruns::CancellationToken::new()),
     )
     .await
     .expect("run_turn timed out")
@@ -121,7 +119,7 @@ async fn scripted_get_config_capabilities_smoke() {
         "get_config capabilities smoke must succeed: {result:?}"
     );
     assert_eq!(
-        result.tool_calls_count, 1,
+        result.tool_calls, 1,
         "scripted get_config must run exactly once"
     );
 }
@@ -140,7 +138,7 @@ async fn scripted_assistant_text_returns_success_with_no_tools() {
         "scripted assistant turn must succeed: {result:?}"
     );
     assert_eq!(
-        result.tool_calls_count, 0,
+        result.tool_calls, 0,
         "Assistant-only turn must not run tools"
     );
     assert!(
@@ -175,7 +173,7 @@ async fn scripted_prompt_command_tool_queues_quit_ui_command() {
         "prompt command turn must succeed: {result:?}"
     );
     assert_eq!(
-        result.tool_calls_count, 1,
+        result.tool_calls, 1,
         "natural-language command should run through the tool entry point"
     );
     let command = runtime.ui_rx.try_recv().expect("queued UI command");
@@ -205,10 +203,7 @@ async fn scripted_tool_call_executes_bash_then_assistant_completes() {
         result.success,
         "tool-call + assistant turn must succeed: {result:?}"
     );
-    assert_eq!(
-        result.tool_calls_count, 1,
-        "exactly one bash invocation expected"
-    );
+    assert_eq!(result.tool_calls, 1, "exactly one bash invocation expected");
     assert!(
         workspace.join(marker).exists(),
         "BashTool must have run the scripted command and created {marker:?} in {workspace:?}"
@@ -253,14 +248,9 @@ async fn repeated_read_reuse_runs_through_real_file_tools_and_invalidates_on_wri
 
     let result = run_single_turn(&runtime, "inspect, repeat, update, and inspect").await;
     assert!(result.success, "scripted discovery turn: {result:?}");
-    assert_eq!(result.tool_calls_count, 4);
+    assert_eq!(result.tool_calls, 4);
 
-    let events = runtime
-        .handles
-        .runtime
-        .events()
-        .await
-        .expect("runtime events");
+    let events = runtime.handles.host.events().await.expect("runtime events");
     let reads = events
         .iter()
         .filter_map(|event| match &event.data {
@@ -317,7 +307,7 @@ async fn scripted_spawn_background_runs_bash_detached() {
         "spawn_background turn must succeed: {result:?}"
     );
     assert_eq!(
-        result.tool_calls_count, 1,
+        result.tool_calls, 1,
         "the scripted turn should call spawn_background once"
     );
     tokio::time::timeout(Duration::from_secs(10), async {
@@ -499,8 +489,8 @@ async fn ask_user_dispatch_returns_the_default_in_noninteractive_runtime() {
     .await;
     let result = run_single_turn(&runtime, "Ask for a color").await;
     assert!(result.success, "ask_user turn: {result:?}");
-    assert_eq!(result.tool_calls_count, 1);
-    let events = runtime.handles.runtime.events().await.expect("events");
+    assert_eq!(result.tool_calls, 1);
+    let events = runtime.handles.host.events().await.expect("events");
     let answer = events
         .iter()
         .find_map(|event| match &event.data {
@@ -759,7 +749,10 @@ async fn completion_review_failure_is_durable() {
             .unwrap()
             .contains("invalid completion review")
     );
-    assert_eq!(paused.context.turn_id, Some(result.turn_id));
+    assert_eq!(
+        paused.context.turn_id,
+        Some(result.turn_id.parse().unwrap())
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -2539,7 +2539,7 @@ async fn write_trajectory_if_requested(
     path: Option<&Path>,
 ) {
     let Some(path) = path else { return };
-    let events = match handles.runtime.events().await {
+    let events = match handles.host.events().await {
         Ok(events) => events,
         Err(err) => {
             eprintln!("yolop: trajectory export failed to read session events: {err}");
@@ -2579,7 +2579,7 @@ async fn run_print_mode(
         ..
     } = runtime;
     let _ = (&startup.session_dir, &startup.session_log_path);
-    let mut prompt = prompt.trim().to_string();
+    let prompt = prompt.trim().to_string();
     let mut input = model.input_message_with_images(&prompt, images);
     let mut background_deadline = None;
     let mut completion = session_state::task_completion::CompletionController::default();
@@ -2591,7 +2591,7 @@ async fn run_print_mode(
                 handles.flush_trace_exporters().await;
                 anyhow::bail!("turn canceled");
             }
-            turn = collect_print_turn(&handles, &model, &prompt, input) => turn?,
+            turn = collect_print_turn(&handles, &model, input) => turn?,
         };
         let background = session_state::task_completion::has_pending_execution(
             &task_registry
@@ -2636,12 +2636,6 @@ async fn run_print_mode(
                     };
                     match next {
                         Ok(next) => {
-                            prompt = next
-                                .content
-                                .iter()
-                                .filter_map(ContentPart::as_text)
-                                .collect::<Vec<_>>()
-                                .join("\n");
                             input = next;
                             continue;
                         }
@@ -2659,10 +2653,8 @@ async fn run_print_mode(
                     }
                 }
                 if let Some(next) = decision.followup {
-                    prompt = next;
-                    input = session_state::task_completion::tag_continuation(
-                        model.input_message(&prompt),
-                    );
+                    input =
+                        session_state::task_completion::tag_continuation(model.input_message(next));
                     continue;
                 }
                 if decision.state == session_state::task_completion::CompletionState::Blocked {
@@ -2739,22 +2731,9 @@ async fn run_serve_mode(runtime: BuiltRuntime, release: Arc<tokio::sync::Notify>
         };
         let message =
             runtime::background_wake::coalesce_pending_wakes(message, &mut background_wake)
-                .resolve_artifacts(
-                    handles
-                        .runtime
-                        .file_store(everruns_core::host::in_process_internal_org_id(
-                            everruns_core::DEFAULT_ORG_PUBLIC_ID,
-                        ))
-                        .as_ref(),
-                );
+                .resolve_artifacts(handles.host.files.clone().as_ref());
         let input = runtime::background_wake::input_for_wake(&message);
-        let prompt = input
-            .content
-            .iter()
-            .filter_map(ContentPart::as_text)
-            .collect::<Vec<_>>()
-            .join("\n");
-        match collect_print_turn(&handles, &model, &prompt, input).await {
+        match collect_print_turn(&handles, &model, input).await {
             Ok(turn) if !turn.result.success => tracing::warn!(
                 session = %handles.session_id,
                 error = turn.result.error.as_deref().unwrap_or("turn failed"),
@@ -2799,27 +2778,19 @@ async fn wait_for_print_background(
             }
         };
         let message = runtime::background_wake::coalesce_pending_wakes(message, receiver)
-            .resolve_artifacts(
-                handles
-                    .runtime
-                    .file_store(everruns_core::host::in_process_internal_org_id(
-                        everruns_core::DEFAULT_ORG_PUBLIC_ID,
-                    ))
-                    .as_ref(),
-            );
+            .resolve_artifacts(handles.host.files.clone().as_ref());
         return Ok(runtime::background_wake::input_for_wake(&message));
     }
 }
 
 struct PrintTurn {
-    result: everruns_core::host::TurnResult,
+    result: everruns::Turn,
     output: Vec<String>,
 }
 
 async fn collect_print_turn(
     handles: &runtime::RuntimeHandles,
     model: &runtime::ModelState,
-    prompt: &str,
     mut input: everruns_core::message_retriever::InputMessage,
 ) -> Result<PrintTurn> {
     let mut scope = runtime::turn_scope::TurnScope::new(&mut input);
@@ -2829,15 +2800,15 @@ async fn collect_print_turn(
         eprintln!("{notice}");
     };
     let result = handles
-        .run_turn_with_reasoning_recovery(model, prompt, input, &notice)
+        .run_turn_with_reasoning_recovery(model, input, scope.cancellation(), &notice)
         .await?;
     let retried = retried.load(std::sync::atomic::Ordering::SeqCst);
     if let Some(notice) = handles.checkpoints.take_notice() {
         eprintln!("{notice}");
     }
     let mut scoped_events = Vec::new();
-    for event in handles.runtime.events().await.unwrap_or_default() {
-        if scope.accepts(&handles.runtime, &event).await {
+    for event in handles.host.events().await.unwrap_or_default() {
+        if scope.accepts(&handles.session, &event).await {
             scoped_events.push(event);
         }
     }

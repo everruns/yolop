@@ -73,7 +73,6 @@ use everruns_core::host::{
 };
 // #3111/#3119 moved the hosted and environment capability implementations out
 // of everruns-core into the platform and integration crates.
-use everruns::local::{LocalBackends, LocalProfile};
 use everruns_capabilities::capabilities::{
     SESSION_TASKS_CAPABILITY_ID, SUBAGENTS_CAPABILITY_ID, USER_HOOKS_CAPABILITY_ID,
     UserHooksCapability,
@@ -86,15 +85,11 @@ use everruns_contracts::{
     DriverId, ModelProfile, ReasoningEffort, ReasoningEffortConfig, ReasoningEffortValue,
 };
 use everruns_contracts::{DriverRegistry, ProviderMetadata};
-#[cfg(test)]
 use everruns_core::SessionStore;
 use everruns_core::SessionTaskRegistry;
-use everruns_core::command::{CommandDescriptor, CommandResult, ExecuteCommandRequest};
+use everruns_core::command::{CommandDescriptor, CommandResult};
 use everruns_core::host::RuntimeProviderStore;
-use everruns_core::host::{
-    AgentBuilder, CapabilityDelta, HarnessBuilder, HostBackends, RealDiskFileStore,
-    RuntimeSessionStore, SessionBuilder, WriteBlocklistFileStore,
-};
+use everruns_core::host::{RealDiskFileStore, WriteBlocklistFileStore};
 use everruns_core::host::{SessionFileSystemFactory, SessionFileSystemFactoryContext};
 use everruns_core::mcp::{McpAuthProvider, McpAuthRequest, McpCredential};
 use everruns_core::session_file::build_grep_search_result;
@@ -2844,10 +2839,10 @@ pub(crate) async fn run_with_reasoning_recovery<F, Fut>(
     input: InputMessage,
     notice: &(dyn Fn(String) + Send + Sync),
     run: F,
-) -> anyhow::Result<everruns_core::host::TurnResult>
+) -> anyhow::Result<everruns::Turn>
 where
     F: Fn(InputMessage) -> Fut,
-    Fut: std::future::Future<Output = anyhow::Result<everruns_core::host::TurnResult>>,
+    Fut: std::future::Future<Output = anyhow::Result<everruns::Turn>>,
 {
     // Inputs the host builds itself (a background wake, a resumed turn) do not
     // come from `input_message`, so they carry no controls at all. Give them
@@ -2936,9 +2931,9 @@ pub(crate) fn agent_output_start(
 }
 
 /// The provider-facing error of a finished turn, whether it failed by `Err` or
-/// by an unsuccessful [`everruns_core::host::TurnResult`]. `None` for a turn that
+/// by an unsuccessful [`everruns::Turn`]. `None` for a turn that
 /// succeeded.
-fn turn_failure(result: &anyhow::Result<everruns_core::host::TurnResult>) -> Option<String> {
+fn turn_failure(result: &anyhow::Result<everruns::Turn>) -> Option<String> {
     match result {
         Err(error) => Some(format!("{error:#}")),
         Ok(turn) if !turn.success => turn.error.clone(),
@@ -3395,7 +3390,7 @@ pub struct BuiltRuntime {
     /// ordinary background-task completion signals.
     /// Shared repointable workspace disk for host-path tools (`bash`, `!shell`).
     pub workspace_host: Arc<WorkspaceHost>,
-    /// Shared Everruns session task registry, backed by `everruns-local`. The
+    /// Native SQLite session task registry. The
     /// TUI reads this to show `spawn_background` tasks through the generic
     /// runtime task model.
     pub task_registry: Arc<dyn SessionTaskRegistry>,
@@ -3410,7 +3405,8 @@ pub struct RuntimeHandles {
     /// [`RuntimeHandles::flush_trace_exporters`] at teardown; `None` once
     /// flushed, so a second call is a no-op.
     trace_flush: Arc<tokio::sync::Mutex<Option<crate::extensions::trace::TraceFlush>>>,
-    pub runtime: Arc<engine::EngineRuntime>,
+    pub session: everruns::Session,
+    pub host: Arc<engine::SessionHost>,
     settings: Arc<SettingsStore>,
     pending_model_choice: Arc<RwLock<Option<ProviderChoice>>>,
     pub session_id: SessionId,
@@ -3421,10 +3417,8 @@ pub struct RuntimeHandles {
     /// Durable conversation/workspace checkpoint controller shared by every
     /// host path that can start a turn or restore a branch.
     pub checkpoints: Arc<CheckpointManager>,
-    /// The runtime's session store, retained so the host can mutate the
-    /// live session's scoped MCP servers without rebuilding the runtime.
-    /// See [`RuntimeHandles::reload_mcp_servers`].
-    pub session_store: Arc<dyn RuntimeSessionStore>,
+    /// Read-only authority catalog for session titles and delegated task views.
+    pub session_store: Arc<dyn SessionStore>,
     /// Shared connection store backing MCP OAuth tokens. Saving through this
     /// same instance is what lets the runtime's [`StoredMcpAuthProvider`] see a
     /// freshly minted token (the store caches connections in memory per
@@ -3487,15 +3481,64 @@ impl RuntimeHandles {
         self.herdr.report_background(state);
     }
 
+    #[cfg(test)]
     pub async fn run_checkpointed_turn(
         &self,
-        prompt: &str,
         input: InputMessage,
-    ) -> anyhow::Result<everruns_core::host::TurnResult> {
-        let _ = prompt;
-        let result = self.runtime.run_turn(self.session_id, input).await;
+    ) -> anyhow::Result<everruns::Turn> {
+        self.execute_input(input, everruns::CancellationToken::new())
+            .await
+    }
+
+    pub(crate) async fn execute_input(
+        &self,
+        mut input: InputMessage,
+        cancellation: everruns::CancellationToken,
+    ) -> anyhow::Result<everruns::Turn> {
+        let observed = input
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("yolop.observe_admission"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::parse)
+            .transpose()?;
+        if observed.is_none() {
+            self.host.sync_model(self.session_id).await?;
+            self.events.materializer().ensure()?;
+            input.metadata.get_or_insert_default().insert(
+                "yolop.frontend_host".into(),
+                serde_json::json!(self.host.profile.platform.instance),
+            );
+        }
+        let mut cancel_on_drop = engine::CancelOnDrop(Some(cancellation.clone()));
+        let session = self.session.clone();
+        let task = tokio::spawn(async move {
+            if let Some(id) = observed {
+                let admission = session.admission(id).await?.ok_or_else(|| {
+                    everruns::RunError::from(AgentLoopError::config("Engine admission not found"))
+                })?;
+                admission.wait().await
+            } else {
+                session
+                    .run_with(
+                        input,
+                        everruns::RunOptions::new().cancel_token(cancellation),
+                    )
+                    .await
+            }
+        });
+        let completed = task.await;
+        // A completed attempt may be retried with the same frontend token.
+        cancel_on_drop.0.take();
+        let result = match completed? {
+            Ok(turn) => {
+                self.host.synchronize().await?;
+                self.host.turn_result(self.session_id, turn).await
+            }
+            Err(error) => Err(error.into()),
+        };
         let success = result.as_ref().is_ok_and(|turn| turn.success);
-        if success {
+        if success && observed.is_none() {
             let warning = SetupController::persist_pending_model_choice(
                 &self.settings,
                 &self.pending_model_choice,
@@ -3518,12 +3561,13 @@ impl RuntimeHandles {
     pub(crate) async fn run_turn_with_reasoning_recovery(
         &self,
         model: &ModelState,
-        prompt: &str,
         input: InputMessage,
+        cancellation: everruns::CancellationToken,
         notice: &(dyn Fn(String) + Send + Sync),
-    ) -> anyhow::Result<everruns_core::host::TurnResult> {
-        run_with_reasoning_recovery(model, input, notice, move |input| async move {
-            self.run_checkpointed_turn(prompt, input).await
+    ) -> anyhow::Result<everruns::Turn> {
+        run_with_reasoning_recovery(model, input, notice, move |input| {
+            let cancellation = cancellation.clone();
+            async move { self.execute_input(input, cancellation).await }
         })
         .await
     }
@@ -3532,7 +3576,7 @@ impl RuntimeHandles {
     /// use the durable event stream so TUI, print, and ACP share one budget
     /// accounting rule.
     pub(crate) async fn turn_tokens(&self, turn_id: everruns_contracts::typed_id::TurnId) -> u64 {
-        self.runtime
+        self.host
             .events()
             .await
             .unwrap_or_default()
@@ -3587,10 +3631,11 @@ impl RuntimeHandles {
     pub async fn activate_capability(
         &self,
         capability_id: &str,
-    ) -> anyhow::Result<CapabilityDelta> {
-        self.runtime
-            .activate_capability(self.session_id, CapabilityRef::new(capability_id))
-            .await
+    ) -> anyhow::Result<everruns::CapabilityChange> {
+        Ok(self
+            .session
+            .activate_capability(CapabilityRef::new(capability_id))
+            .await?)
     }
 
     /// Deactivate a capability from the live session overlay. Enabled
@@ -3599,10 +3644,8 @@ impl RuntimeHandles {
     pub async fn deactivate_capability(
         &self,
         capability_id: &str,
-    ) -> anyhow::Result<CapabilityDelta> {
-        self.runtime
-            .deactivate_capability(self.session_id, capability_id)
-            .await
+    ) -> anyhow::Result<everruns::CapabilityChange> {
+        Ok(self.session.deactivate_capability(capability_id).await?)
     }
 }
 
@@ -3674,7 +3717,7 @@ impl StartupInfo {
 #[derive(Clone)]
 pub struct ModelState {
     /// Shared with [`crate::capabilities::ModelsCapability`] so a successful `/setup`
-    /// invocation through `runtime.execute_command` immediately updates the
+    /// invocation through `Session::run_command` immediately updates the
     /// banner label.
     provider: Arc<RwLock<ProviderChoice>>,
     provider_store: Arc<dyn RuntimeProviderStore>,
@@ -4074,22 +4117,16 @@ impl Default for BuildOptions {
     }
 }
 
-/// Session command registry for the agent-facing `run_command` tool.
-///
-/// Holds the same late-bound `Weak<EngineRuntime>` the wake seam uses: the
-/// capability is constructed while the runtime is still being built, and the
-/// cell is set once `build()` returns, long before a turn can call a tool.
-/// Listing and executing go through `runtime.list_commands` /
-/// `runtime.execute_command`, the single registry every host reads, so the
-/// agent can run whatever the user could type.
+/// Native session commands exposed through the agent-facing capability contract.
+/// The weak host reference avoids a capability/Engine ownership cycle.
 struct RuntimeCommandDispatch {
-    runtime: Arc<std::sync::OnceLock<std::sync::Weak<engine::EngineRuntime>>>,
+    host: Arc<std::sync::OnceLock<std::sync::Weak<engine::SessionHost>>>,
     session_id: SessionId,
 }
 
 impl RuntimeCommandDispatch {
-    fn runtime(&self) -> everruns_contracts::error::Result<Arc<engine::EngineRuntime>> {
-        self.runtime
+    fn host(&self) -> everruns_contracts::error::Result<Arc<engine::SessionHost>> {
+        self.host
             .get()
             .and_then(std::sync::Weak::upgrade)
             .ok_or_else(|| {
@@ -4101,7 +4138,15 @@ impl RuntimeCommandDispatch {
 #[async_trait]
 impl CommandDispatch for RuntimeCommandDispatch {
     async fn list(&self) -> everruns_contracts::error::Result<Vec<CommandDescriptor>> {
-        self.runtime()?.list_commands(self.session_id).await
+        let session = self
+            .host()?
+            .engine
+            .resume(self.session_id)
+            .await
+            .map_err(engine::host_error)?;
+        Ok(session::command_descriptors(
+            session.commands().await.map_err(engine::host_error)?,
+        ))
     }
 
     async fn execute(
@@ -4109,16 +4154,22 @@ impl CommandDispatch for RuntimeCommandDispatch {
         name: &str,
         arguments: Option<String>,
     ) -> everruns_contracts::error::Result<CommandResult> {
-        self.runtime()?
-            .execute_command(
-                self.session_id,
-                ExecuteCommandRequest {
-                    name: name.to_string(),
-                    arguments,
-                    controls: None,
-                },
-            )
+        let session = self
+            .host()?
+            .engine
+            .resume(self.session_id)
             .await
+            .map_err(engine::host_error)?;
+        let result = session
+            .run_command(name, arguments.as_deref())
+            .await
+            .map_err(engine::host_error)?;
+        Ok(CommandResult {
+            success: result.success,
+            message: result.message,
+            error_code: result.error_code,
+            error_fields: None,
+        })
     }
 }
 
@@ -4544,14 +4595,22 @@ pub async fn build_with_options(
         None => session_log::lock_session(&session_dir)?,
     };
 
-    // Replay anything already on disk for this id. Missing file → empty.
-    // Pass `session_id` so events for any other session get skipped
-    // rather than seeded — defends against mixed/copied logs.
-    let replayed = replay(&log_path, session_id)?;
+    // Native history is authoritative even if a crash left JSONL stale.
+    let native_resume = retained_binding.is_some();
+    let replayed = if native_resume {
+        let events = engine::read_events(&native_hosting, session_id).await?;
+        session_log::ReplayedSession {
+            max_sequence: events.iter().filter_map(|event| event.sequence).max(),
+            messages: session_log::messages_from_events(&events),
+            events,
+        }
+    } else {
+        replay(&log_path, session_id)?
+    };
     let next_sequence = replayed.max_sequence.map(|m| m + 1).unwrap_or(1);
 
     // The emitter observes native events and persists only host diagnostics.
-    // JSONL supplies legacy import and frontend bootstrap until authority sync.
+    // JSONL is read only when importing a legacy session.
     let materializer = Arc::new(session_log::SessionMaterializer::new(
         session_dir.clone(),
         initial_workspace,
@@ -4571,14 +4630,11 @@ pub async fn build_with_options(
         event_bus_typed.clone(),
         replayed.max_sequence.unwrap_or(0),
     )?);
-    let compaction_checkpoints =
-        Arc::new(compaction_checkpoint::JsonlCompactionCheckpointStore::open(
-            &session_dir,
-            session_id,
-            checkpoints.clone(),
-        )?);
-    let active_events = checkpoints.filter_active_events(replayed.events);
-    let replayed_events_count = active_events.len();
+    let active_events = if native_resume {
+        replayed.events
+    } else {
+        checkpoints.filter_active_events(replayed.events)
+    };
     let replayed_tool_count = active_events
         .iter()
         .filter(|event| matches!(&event.data, everruns_core::EventData::ToolCompleted(_)))
@@ -4589,28 +4645,20 @@ pub async fn build_with_options(
 
     // Bootstrap presentation only. Native synchronization replaces this view.
     event_bus_typed.seed_replayed(active_events).await;
-    // Legacy descriptors below exist only to import old local service state.
-    // Their EventLog rejects canonical writes in authority-owned mode.
-    let event_log: Arc<dyn everruns_core::host::EventLog> = event_bus_typed.clone();
-    let event_sink: Arc<dyn everruns_core::host::EventSink> = event_bus_typed.clone();
     let provider_state = Arc::new(std::sync::RwLock::new(provider.clone()));
     let runtime_cell = Arc::new(std::sync::OnceLock::new());
-    let yolop_provider_store: Arc<dyn everruns_core::host::RuntimeProviderStore> =
+    let provider_store: Arc<dyn everruns_core::host::RuntimeProviderStore> =
         Arc::new(YolopProviderStore {
             provider: provider_state.clone(),
             settings: settings.clone(),
         });
-    let base_backends = HostBackends::in_memory()
-        .with_provider_store(yolop_provider_store)
-        .with_event_log(event_log)
-        .with_event_sink(event_sink)
-        .with_compaction_checkpoint_store(compaction_checkpoints)
-        .with_connection_resolver(connection_resolver.clone());
-    let local_profile = LocalProfile::new(sessions_dir.join("everruns-local"))
-        .with_workspace_root(effective_root.clone());
-    let local_backends = LocalBackends::new(local_profile, base_backends)
-        .context("initialize everruns-local backend stores")?;
-    let coordination_store = CoordinationStore::new(local_backends.db.clone())
+    // Keep coordination's existing database; native execution uses engine.sqlite.
+    let coordination_profile =
+        everruns::local::LocalProfile::new(sessions_dir.join("everruns-local"))
+            .with_workspace_root(effective_root.clone());
+    coordination_profile.ensure_dirs()?;
+    let coordination_db = everruns::local::SqliteDb::open(coordination_profile.db_path())?;
+    let coordination_store = CoordinationStore::new(coordination_db)
         .context("initialize session coordination store")?
         .with_sessions_dir(&sessions_dir);
     // Assignment changes this process makes for a coordinator hosted elsewhere
@@ -4677,13 +4725,6 @@ pub async fn build_with_options(
         },
     )
     .context("start session coordination host")?;
-    // Native hosting owns schedule execution. This runner remains only a
-    // routing adapter for the product's cross-process coordination inbox.
-    let backends = local_backends.runtime_backends;
-    // Shared between `ModelState` (for banner labels) and
-    // `ModelsCapability` (which mutates it on a successful `/setup`).
-    let provider_store = backends.provider_store.clone();
-
     // Register a curated set of built-in capabilities (no opinionated bundle
     // — we want a tight, predictable surface for the coding-CLI) plus our
     // bash capability.
@@ -5198,7 +5239,7 @@ pub async fn build_with_options(
     // the transcript lines the host printed.
     capabilities.register(AgentCommandsCapability::new(
         Arc::new(RuntimeCommandDispatch {
-            runtime: runtime_cell.clone(),
+            host: runtime_cell.clone(),
             session_id,
         }) as Arc<dyn CommandDispatch>,
         host_ui,
@@ -5335,18 +5376,12 @@ pub async fn build_with_options(
     .create_session_file_system(Default::default())
     .await?;
 
-    // Seed harness/agent/session explicitly so Yolop can attach harness
-    // metadata that Everruns forwards to LLM calls and observability.
     let session_title =
         read_session_workspace_metadata(&session_dir)?.and_then(|metadata| metadata.title);
     let runtime_session_title = session_title
         .clone()
         .unwrap_or_else(|| format!("yolop @ {}", effective_root.display()));
-    // Enabled extensions live at the session layer, not the harness layer.
-    // That makes the runtime's activate/deactivate overlay genuinely
-    // reversible for an attached `yolop extensions enable|disable` command.
-    // The capabilities are still registered above; only their ownership layer
-    // changes. Newly installed manifests require a new session to register.
+    // Session overlays keep attached extension enable/disable reversible.
     let session_extension_capabilities =
         take_session_extension_capabilities(&mut harness_capabilities);
     // Resolve the hard approval gate only when a host supplied an approver
@@ -5365,55 +5400,22 @@ pub async fn build_with_options(
         Some(extra) => format!("{SYSTEM_PROMPT}\n\n## Profile instructions\n\n{extra}\n"),
         None => SYSTEM_PROMPT.to_string(),
     };
-    let mut harness_builder = HarnessBuilder::new("yolop", &harness_prompt)
-        .metadata_entry("app", "yolop")
-        .metadata_entry("yolop_version", env!("CARGO_PKG_VERSION"))
-        .metadata_entry("everruns_core_version", env!("YOLOP_EVERRUNS_CORE_VERSION"))
-        // Attribute LLM calls routed through OpenRouter so they show up under
-        // Yolop on OpenRouter's app dashboards. The driver forwards these as
-        // the `HTTP-Referer` and `X-Title` headers (everruns 0.14+).
-        .openrouter_attribution("https://github.com/everruns/yolop", "Yolop");
-    for cap in harness_capabilities {
-        harness_builder = harness_builder.capability(cap);
-    }
-    let harness_id = harness_builder.harness_id();
-
-    // The orchestration A/B found that the prompt rule drove most round reduction;
-    // the provider hint improved combined batch width/latency without breaking the
-    // dependent-read control. Side-band bookkeeping would split replay ownership.
-    let agent_builder = AgentBuilder::new("coding-agent", AGENT_PROMPT)
-        .display_name("Coding Agent")
-        .description("Reads, edits, and runs commands inside a project workspace.")
-        // AgentBuilder dropped free-form tags in 0.18.
-        .parallel_tool_calls(true);
-    let agent_id = agent_builder.agent_id();
-
-    let session_builder = SessionBuilder::new(harness_id)
-        .agent(agent_id)
-        .id(session_id)
-        .title(runtime_session_title)
-        .capabilities(session_extension_capabilities)
-        .tag("example")
-        .tag("coding");
-
-    // A thread knows its coordinator from the durable thread record; the
-    // coordination worker tools find its assignment through this parent link.
-    let mut host_session = session_builder.build();
+    // The native runtime catalog materializes on activation. This read-only
+    // presentation record supplies titles and parentage before the first turn.
+    let mut host_session = everruns_core::ExecutionSession::with_own_workspace(
+        session_id,
+        everruns_contracts::typed_id::HarnessId::new(),
+    );
+    host_session.title = Some(runtime_session_title);
+    host_session.capabilities = session_extension_capabilities.clone();
+    host_session.tags = vec!["example".into(), "coding".into()];
     host_session.parent_session_id = thread_coordinator;
-    // Retain the session store so the host can hot-swap the live session's
-    // scoped MCP servers (`RuntimeHandles::reload_mcp_servers`) without
-    // rebuilding the runtime. Cloned before `backends` is moved into the
-    // builder below.
-    let session_store: Arc<dyn RuntimeSessionStore> = authority_catalog.clone();
+    let session_store: Arc<dyn SessionStore> = authority_catalog.clone();
     authority_catalog
         .template
         .set(host_session.clone())
         .map_err(|_| anyhow!("catalog initialized twice"))?;
 
-    backends
-        .session_store
-        .add_session(host_session.clone())
-        .await?;
     let mut driver_registry = model_driver_registry.clone();
     let llmsim_config = options.llmsim_override.unwrap_or_else(|| {
         LlmSimConfig::fixed("I'm running in offline mode (llmsim, no API key set). Set ANTHROPIC_API_KEY or OPENAI_API_KEY for real responses.")
@@ -5452,8 +5454,9 @@ pub async fn build_with_options(
         connections: connection_resolver.clone(),
         schedules: task_schedule_store.clone(),
         platform: Arc::new(engine_platform::PlatformServices {
+            instance: everruns_contracts::typed_id::MessageId::new(),
             session_dir: session_dir.clone(),
-            runtime: runtime_cell.clone(),
+            host: runtime_cell.clone(),
             router: wake_runner.clone(),
             settings: settings.clone(),
             wakes: background_wake_tx.clone(),
@@ -5562,12 +5565,11 @@ pub async fn build_with_options(
             }
         });
     let mut native_harness = everruns::Harness::builder("yolop");
-    let harness_definition = harness_builder.build();
     let retained_caps: Option<Vec<CapabilityRef>> = retained
         .as_ref()
         .map(|behavior| behavior.capabilities.clone());
     let native_capabilities: Vec<CapabilityRef> = retained_caps
-        .unwrap_or_else(|| harness_definition.definition.capabilities.clone())
+        .unwrap_or(harness_capabilities)
         .into_iter()
         .map(|cap| {
             CapabilityRef::with_config(
@@ -5597,14 +5599,24 @@ pub async fn build_with_options(
     });
     if retained_binding.is_none() {
         if let Some(source) = &migration_source {
+            let backends = source
+                .import_backends(
+                    &effective_root,
+                    provider_store.clone(),
+                    event_bus_typed.clone(),
+                    checkpoints.clone(),
+                    host_session,
+                    connection_resolver.clone(),
+                )
+                .await?;
             source
-                .cut_over(&engine, &engine_build, backends.clone(), creation_metadata)
+                .cut_over(&engine, &engine_build, backends, creation_metadata)
                 .await?;
         } else {
             engine
                 .create_registered_with_metadata(session_id, &engine_build, creation_metadata)
                 .await?;
-            for capability in &host_session.capabilities {
+            for capability in &session_extension_capabilities {
                 engine
                     .resume(session_id)
                     .await?
@@ -5613,7 +5625,8 @@ pub async fn build_with_options(
             }
         }
     }
-    let runtime = engine::EngineRuntime::new(
+    let session = engine.resume(session_id).await?;
+    let runtime = engine::SessionHost::new(
         engine,
         hosting,
         files,
@@ -5633,16 +5646,16 @@ pub async fn build_with_options(
     checkpoints.attach_engine(&runtime);
     checkpoints.recover_restore().await?;
     runtime.observe_pending_admissions().await?;
-    let context = runtime.load_context(session_id).await?;
+    runtime.sync_model(session_id).await?;
+    let context = session.command_context().await?;
+    let replayed_events_count = runtime.session_events(session_id).await?.len();
     runtime.start_supervisor();
     let tool_names = context.tools.iter().map(|t| t.name.clone()).collect();
-    let capability_commands = runtime.list_commands(session_id).await?;
+    let capability_commands = session::command_descriptors(session.commands().await?);
     let skill_commands = crate::capabilities::skills::user_invocable_commands(
         &skill_dirs,
         &extension_skill_scopes,
-        &runtime.file_store(everruns_core::host::in_process_internal_org_id(
-            everruns_core::DEFAULT_ORG_PUBLIC_ID,
-        )),
+        &runtime.files.clone(),
         session_id,
     )
     .await;
@@ -5668,7 +5681,8 @@ pub async fn build_with_options(
     Ok(BuiltRuntime {
         handles: RuntimeHandles {
             trace_flush: Arc::new(tokio::sync::Mutex::new(Some(trace_flush))),
-            runtime,
+            session,
+            host: runtime,
             settings: settings.clone(),
             pending_model_choice,
             session_id,
@@ -5726,7 +5740,6 @@ mod tests {
     use super::*;
     use crate::capabilities::REPO_MAP_CAPABILITY_ID;
     use everruns_core::McpServerAuthMode;
-    use everruns_core::command::ExecuteCommandRequest;
     use std::sync::Mutex;
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
@@ -6584,22 +6597,15 @@ mod tests {
         );
         let extensions = built
             .handles
-            .runtime
-            .execute_command(
-                built.handles.session_id,
-                ExecuteCommandRequest {
-                    name: "extensions".to_string(),
-                    arguments: None,
-                    controls: None,
-                },
-            )
+            .session
+            .run_command("extensions", None)
             .await
             .expect("execute /extensions through the runtime registry");
         assert!(extensions.success, "{}", extensions.message);
         assert!(
             built
                 .handles
-                .runtime
+                .host
                 .connection_resolver(everruns_core::host::in_process_internal_org_id(
                     everruns_core::DEFAULT_ORG_PUBLIC_ID,
                 ))
@@ -6634,8 +6640,8 @@ mod tests {
         .expect("build runtime");
         let context = built
             .handles
-            .runtime
-            .load_context(built.handles.session_id)
+            .session
+            .command_context()
             .await
             .expect("assemble context");
 
@@ -6681,7 +6687,6 @@ mod tests {
         let result = built
             .handles
             .run_checkpointed_turn(
-                "Implement automatic session titles",
                 built
                     .model
                     .input_message("Implement automatic session titles"),
@@ -6690,7 +6695,7 @@ mod tests {
             .expect("run turn");
 
         assert!(result.success, "scripted title turn: {result:?}");
-        assert_eq!(result.tool_calls_count, 1);
+        assert_eq!(result.tool_calls, 1);
         let session = built
             .handles
             .session_store
@@ -6699,12 +6704,7 @@ mod tests {
             .expect("get runtime session")
             .expect("runtime session present");
         assert_eq!(session.title.as_deref(), Some("Automatic session titles"));
-        let events = built
-            .handles
-            .runtime
-            .events()
-            .await
-            .expect("runtime events");
+        let events = built.handles.host.events().await.expect("runtime events");
         assert!(events.iter().any(|event| matches!(
             &event.data,
             EventData::SessionTitleUpdated(data)
@@ -6760,16 +6760,13 @@ mod tests {
         .expect("build runtime");
         let result = built
             .handles
-            .run_checkpointed_turn(
-                "Check missing evidence.",
-                built.model.input_message("Check missing evidence."),
-            )
+            .run_checkpointed_turn(built.model.input_message("Check missing evidence."))
             .await
             .expect("run turn");
         assert!(result.success, "{result:?}");
         let messages = built
             .handles
-            .runtime
+            .host
             .messages(built.handles.session_id)
             .await
             .expect("runtime messages");
@@ -6857,7 +6854,6 @@ mod tests {
         let result = built
             .handles
             .run_checkpointed_turn(
-                "Exercise tool argument correction.",
                 built
                     .model
                     .input_message("Exercise tool argument correction."),
@@ -6865,14 +6861,9 @@ mod tests {
             .await
             .expect("run correction turn");
         assert!(result.success, "correction turn: {result:?}");
-        assert_eq!(result.tool_calls_count, 2);
+        assert_eq!(result.tool_calls, 2);
 
-        let events = built
-            .handles
-            .runtime
-            .events()
-            .await
-            .expect("runtime events");
+        let events = built.handles.host.events().await.expect("runtime events");
         let completed = events
             .iter()
             .filter_map(|event| match &event.data {
@@ -6936,10 +6927,7 @@ mod tests {
 
         let result = built
             .handles
-            .run_checkpointed_turn(
-                "survive the stall",
-                built.model.input_message("survive the stall"),
-            )
+            .run_checkpointed_turn(built.model.input_message("survive the stall"))
             .await
             .expect("run turn");
 
@@ -6987,10 +6975,7 @@ mod tests {
 
         let result = built
             .handles
-            .run_checkpointed_turn(
-                "budget too small",
-                built.model.input_message("budget too small"),
-            )
+            .run_checkpointed_turn(built.model.input_message("budget too small"))
             .await
             .expect("run turn");
 
@@ -7079,7 +7064,6 @@ mod tests {
         let result = built
             .handles
             .run_checkpointed_turn(
-                "Read both independent fixtures and keep progress visible.",
                 built
                     .model
                     .input_message("Read both independent fixtures and keep progress visible."),
@@ -7088,13 +7072,8 @@ mod tests {
             .expect("run turn");
 
         assert!(result.success, "scripted batch turn: {result:?}");
-        assert_eq!(result.tool_calls_count, 4);
-        let events = built
-            .handles
-            .runtime
-            .events()
-            .await
-            .expect("runtime events");
+        assert_eq!(result.tool_calls, 4);
+        let events = built.handles.host.events().await.expect("runtime events");
         let widths = events
             .iter()
             .filter_map(|event| match &event.data {
@@ -7201,7 +7180,6 @@ mod tests {
         let result = built
             .handles
             .run_checkpointed_turn(
-                "Diagnose the owner without changing files.",
                 built
                     .model
                     .input_message("Diagnose the owner without changing files."),
@@ -7210,12 +7188,7 @@ mod tests {
             .expect("run guarded trajectory");
         assert!(result.success, "guarded trajectory: {result:?}");
 
-        let events = built
-            .handles
-            .runtime
-            .events()
-            .await
-            .expect("runtime events");
+        let events = built.handles.host.events().await.expect("runtime events");
         let completed = events
             .iter()
             .filter_map(|event| match &event.data {
@@ -7358,7 +7331,6 @@ mod tests {
         let result = built
             .handles
             .run_checkpointed_turn(
-                "Recover from equivalent missing search commands.",
                 built
                     .model
                     .input_message("Recover from equivalent missing search commands."),
@@ -7367,12 +7339,7 @@ mod tests {
             .expect("run guarded trajectory");
         assert!(result.success, "guarded trajectory: {result:?}");
 
-        let events = built
-            .handles
-            .runtime
-            .events()
-            .await
-            .expect("runtime events");
+        let events = built.handles.host.events().await.expect("runtime events");
         let completed = events
             .iter()
             .filter_map(|event| match &event.data {
@@ -7433,7 +7400,7 @@ mod tests {
 
         let result = built
             .handles
-            .run_checkpointed_turn("hello", built.model.input_message("hello"))
+            .run_checkpointed_turn(built.model.input_message("hello"))
             .await
             .expect("run turn");
         assert!(result.success);
@@ -7455,12 +7422,7 @@ mod tests {
         assert!(provider_text.contains("<model>llmsim-yolop</model>"));
         assert!(provider_text.contains("<reasoning_effort>none</reasoning_effort>"));
 
-        let events = built
-            .handles
-            .runtime
-            .events()
-            .await
-            .expect("runtime events");
+        let events = built.handles.host.events().await.expect("runtime events");
         let stored_input = events
             .iter()
             .find_map(|event| match &event.data {
@@ -7517,10 +7479,7 @@ mod tests {
 
         let result = built
             .handles
-            .run_checkpointed_turn(
-                "Delegate the orbit inspection.",
-                built.model.input_message("Delegate the orbit inspection."),
-            )
+            .run_checkpointed_turn(built.model.input_message("Delegate the orbit inspection."))
             .await
             .expect("run parent turn");
         assert!(result.success, "parent turn: {result:?}");
@@ -7552,7 +7511,7 @@ mod tests {
             "task: {task:?}; child status: {:?}",
             built
                 .handles
-                .runtime
+                .host
                 .engine
                 .session_status(task.links.child_session_id.unwrap())
                 .await
@@ -7563,7 +7522,7 @@ mod tests {
             .expect("task links a child session");
         let child_messages = built
             .handles
-            .runtime
+            .host
             .messages(child_id)
             .await
             .expect("read child messages");
@@ -7574,12 +7533,7 @@ mod tests {
 
         // The transcript line must name the spawned agent, not read
         // "Running Spawn Agent" (the generic display-name fallback).
-        let events = built
-            .handles
-            .runtime
-            .events()
-            .await
-            .expect("runtime events");
+        let events = built.handles.host.events().await.expect("runtime events");
         let narrations = events
             .iter()
             .filter_map(|event| match &event.data {
@@ -7623,7 +7577,7 @@ mod tests {
         assert!(
             built
                 .handles
-                .runtime
+                .host
                 .session_task_registry(everruns_core::host::in_process_internal_org_id(
                     everruns_core::DEFAULT_ORG_PUBLIC_ID
                 ))
@@ -7633,7 +7587,7 @@ mod tests {
         assert!(
             built
                 .handles
-                .runtime
+                .host
                 .schedule_store(everruns_core::host::in_process_internal_org_id(
                     everruns_core::DEFAULT_ORG_PUBLIC_ID
                 ))
@@ -7674,8 +7628,8 @@ mod tests {
 
         let context = built
             .handles
-            .runtime
-            .load_context(built.handles.session_id)
+            .session
+            .command_context()
             .await
             .expect("load context");
         assert_eq!(
@@ -8020,11 +7974,11 @@ mod tests {
         let child_id = SessionId::new();
         built
             .handles
-            .runtime
+            .host
             .engine
             .create_registered_with_metadata(
                 child_id,
-                &built.handles.runtime.build,
+                &built.handles.host.profile.build,
                 serde_json::json!({"parent_session_id": parent_id}),
             )
             .await
@@ -8081,29 +8035,21 @@ mod tests {
         .await
         .expect("build runtime");
 
-        let commands = built
-            .handles
-            .runtime
-            .list_commands(built.handles.session_id)
-            .await
-            .expect("commands");
+        let commands = built.handles.session.commands().await.expect("commands");
         let btw = commands
             .iter()
             .find(|c| c.name == "btw")
             .expect("/btw surfaced in the command registry");
-        assert!(btw.args.iter().any(|a| a.name == "question" && a.required));
+        assert!(
+            btw.arguments
+                .iter()
+                .any(|a| a.name == "question" && a.required)
+        );
 
         let result = built
             .handles
-            .runtime
-            .execute_command(
-                built.handles.session_id,
-                ExecuteCommandRequest {
-                    name: "btw".to_string(),
-                    arguments: Some("what model are you?".to_string()),
-                    controls: None,
-                },
-            )
+            .session
+            .run_command("btw", Some("what model are you?"))
             .await
             .expect("execute /btw");
         assert!(result.success, "result: {}", result.message);
@@ -8117,7 +8063,7 @@ mod tests {
         // Ephemeral: neither the question nor the answer lands in history.
         let messages = built
             .handles
-            .runtime
+            .host
             .messages(built.handles.session_id)
             .await
             .expect("messages");
@@ -8131,15 +8077,8 @@ mod tests {
         // wording lives upstream, so assert only that the call fails.
         built
             .handles
-            .runtime
-            .execute_command(
-                built.handles.session_id,
-                ExecuteCommandRequest {
-                    name: "btw".to_string(),
-                    arguments: None,
-                    controls: None,
-                },
-            )
+            .session
+            .run_command("btw", None)
             .await
             .expect_err("missing question is rejected");
     }
@@ -8237,10 +8176,10 @@ mod tests {
         );
 
         let cell = Arc::new(std::sync::OnceLock::new());
-        cell.set(Arc::downgrade(&built.handles.runtime))
+        cell.set(Arc::downgrade(&built.handles.host))
             .expect("seed runtime cell");
         let dispatch = RuntimeCommandDispatch {
-            runtime: cell,
+            host: cell,
             session_id: built.handles.session_id,
         };
 
@@ -8285,12 +8224,7 @@ mod tests {
         .await
         .expect("build runtime");
 
-        let commands = built
-            .handles
-            .runtime
-            .list_commands(built.handles.session_id)
-            .await
-            .expect("commands");
+        let commands = built.handles.session.commands().await.expect("commands");
         let names: Vec<&str> = commands.iter().map(|c| c.name.as_str()).collect();
 
         assert!(names.contains(&"setup"), "commands: {names:?}");
@@ -8303,15 +8237,8 @@ mod tests {
 
         let status = built
             .handles
-            .runtime
-            .execute_command(
-                built.handles.session_id,
-                ExecuteCommandRequest {
-                    name: "setup".to_string(),
-                    arguments: Some("status".to_string()),
-                    controls: None,
-                },
-            )
+            .session
+            .run_command("setup", Some("status"))
             .await
             .expect("setup status");
         assert!(status.success);
@@ -8329,15 +8256,8 @@ mod tests {
 
         let disable_attribution = built
             .handles
-            .runtime
-            .execute_command(
-                built.handles.session_id,
-                ExecuteCommandRequest {
-                    name: "setup".to_string(),
-                    arguments: Some("attribution off".to_string()),
-                    controls: None,
-                },
-            )
+            .session
+            .run_command("setup", Some("attribution off"))
             .await
             .expect("disable setup attribution");
         assert!(disable_attribution.success);
@@ -8345,15 +8265,8 @@ mod tests {
 
         let enable_attribution = built
             .handles
-            .runtime
-            .execute_command(
-                built.handles.session_id,
-                ExecuteCommandRequest {
-                    name: "setup".to_string(),
-                    arguments: Some("attribution on".to_string()),
-                    controls: None,
-                },
-            )
+            .session
+            .run_command("setup", Some("attribution on"))
             .await
             .expect("enable setup attribution");
         assert!(enable_attribution.success);
@@ -8363,15 +8276,8 @@ mod tests {
         // same command entry point and persists it.
         let set_approval = built
             .handles
-            .runtime
-            .execute_command(
-                built.handles.session_id,
-                ExecuteCommandRequest {
-                    name: "setup".to_string(),
-                    arguments: Some("approval protective".to_string()),
-                    controls: None,
-                },
-            )
+            .session
+            .run_command("setup", Some("approval protective"))
             .await
             .expect("set setup approval");
         assert!(set_approval.success);
@@ -8382,15 +8288,8 @@ mod tests {
 
         let bad_approval = built
             .handles
-            .runtime
-            .execute_command(
-                built.handles.session_id,
-                ExecuteCommandRequest {
-                    name: "setup".to_string(),
-                    arguments: Some("approval whenever".to_string()),
-                    controls: None,
-                },
-            )
+            .session
+            .run_command("setup", Some("approval whenever"))
             .await
             .expect("reject bad approval level");
         assert!(!bad_approval.success);
@@ -8402,15 +8301,8 @@ mod tests {
 
         let store_token = built
             .handles
-            .runtime
-            .execute_command(
-                built.handles.session_id,
-                ExecuteCommandRequest {
-                    name: "setup".to_string(),
-                    arguments: Some("token openai sk-test".to_string()),
-                    controls: None,
-                },
-            )
+            .session
+            .run_command("setup", Some("token openai sk-test"))
             .await
             .expect("store setup token");
         assert!(store_token.success);
@@ -8418,45 +8310,24 @@ mod tests {
 
         let set_provider = built
             .handles
-            .runtime
-            .execute_command(
-                built.handles.session_id,
-                ExecuteCommandRequest {
-                    name: "setup".to_string(),
-                    arguments: Some("provider openai".to_string()),
-                    controls: None,
-                },
-            )
+            .session
+            .run_command("setup", Some("provider openai"))
             .await
             .expect("setup openai provider");
         assert!(set_provider.success);
 
         let model_effort_base = built
             .handles
-            .runtime
-            .execute_command(
-                built.handles.session_id,
-                ExecuteCommandRequest {
-                    name: "setup".to_string(),
-                    arguments: Some("model gpt-5.4".to_string()),
-                    controls: None,
-                },
-            )
+            .session
+            .run_command("setup", Some("model gpt-5.4"))
             .await
             .expect("setup openai model");
         assert!(model_effort_base.success);
 
         let effort = built
             .handles
-            .runtime
-            .execute_command(
-                built.handles.session_id,
-                ExecuteCommandRequest {
-                    name: "setup".to_string(),
-                    arguments: Some("effort high".to_string()),
-                    controls: None,
-                },
-            )
+            .session
+            .run_command("setup", Some("effort high"))
             .await
             .expect("setup effort");
         assert!(effort.success);
@@ -8464,15 +8335,8 @@ mod tests {
 
         let clear_token = built
             .handles
-            .runtime
-            .execute_command(
-                built.handles.session_id,
-                ExecuteCommandRequest {
-                    name: "setup".to_string(),
-                    arguments: Some("token openai clear".to_string()),
-                    controls: None,
-                },
-            )
+            .session
+            .run_command("setup", Some("token openai clear"))
             .await
             .expect("clear setup token");
         assert!(clear_token.success);
@@ -8480,45 +8344,24 @@ mod tests {
 
         let provider = built
             .handles
-            .runtime
-            .execute_command(
-                built.handles.session_id,
-                ExecuteCommandRequest {
-                    name: "setup".to_string(),
-                    arguments: Some("provider llmsim".to_string()),
-                    controls: None,
-                },
-            )
+            .session
+            .run_command("setup", Some("provider llmsim"))
             .await
             .expect("setup provider");
         assert!(provider.success);
 
         let model = built
             .handles
-            .runtime
-            .execute_command(
-                built.handles.session_id,
-                ExecuteCommandRequest {
-                    name: "setup".to_string(),
-                    arguments: Some("model llmsim-yolop".to_string()),
-                    controls: None,
-                },
-            )
+            .session
+            .run_command("setup", Some("model llmsim-yolop"))
             .await
             .expect("setup model");
         assert!(model.success);
 
         let unknown = built
             .handles
-            .runtime
-            .execute_command(
-                built.handles.session_id,
-                ExecuteCommandRequest {
-                    name: "setup".to_string(),
-                    arguments: Some("wat".to_string()),
-                    controls: None,
-                },
-            )
+            .session
+            .run_command("setup", Some("wat"))
             .await
             .expect("unknown setup action");
         assert!(!unknown.success);
@@ -8542,8 +8385,8 @@ mod tests {
         .expect("build runtime");
         let context = built
             .handles
-            .runtime
-            .load_context(built.handles.session_id)
+            .session
+            .command_context()
             .await
             .expect("assemble context");
         let names: Vec<&str> = context
@@ -8585,19 +8428,11 @@ mod tests {
         .await
         .expect("build runtime");
         let run = |arg: &str| {
-            let runtime = built.handles.runtime.clone();
-            let session_id = built.handles.session_id;
+            let session = built.handles.session.clone();
             let arg = arg.to_string();
             async move {
-                runtime
-                    .execute_command(
-                        session_id,
-                        ExecuteCommandRequest {
-                            name: "setup".to_string(),
-                            arguments: Some(arg),
-                            controls: None,
-                        },
-                    )
+                session
+                    .run_command("setup", Some(&arg))
                     .await
                     .expect("execute setup")
             }
@@ -10881,7 +10716,8 @@ mod tests {
                     error: None,
                     stop_reason: everruns_contracts::turn::TurnStopReason::EndTurn,
                     turn_id: everruns_contracts::typed_id::TurnId::new(),
-                })
+                }
+                .into())
             }
         };
 
@@ -10965,7 +10801,8 @@ mod tests {
                         everruns_contracts::turn::TurnStopReason::Error
                     },
                     turn_id: everruns_contracts::typed_id::TurnId::new(),
-                })
+                }
+                .into())
             }
         };
 
@@ -11044,7 +10881,8 @@ mod tests {
                         everruns_contracts::turn::TurnStopReason::Error
                     },
                     turn_id: everruns_contracts::typed_id::TurnId::new(),
-                })
+                }
+                .into())
             }
         };
 
@@ -11129,7 +10967,7 @@ mod tests {
                         everruns_contracts::turn::TurnStopReason::EndTurn
                     },
                     turn_id: everruns_contracts::typed_id::TurnId::new(),
-                })
+                }.into())
             }
         };
 
@@ -12034,8 +11872,8 @@ mod tests {
         .expect("build runtime");
         let context = built
             .handles
-            .runtime
-            .load_context(built.handles.session_id)
+            .session
+            .command_context()
             .await
             .expect("assemble context");
 
@@ -12107,8 +11945,8 @@ mod tests {
         .expect("build runtime");
         let context = built
             .handles
-            .runtime
-            .load_context(built.handles.session_id)
+            .session
+            .command_context()
             .await
             .expect("assemble cold-start context");
 
@@ -12247,16 +12085,13 @@ mod tests {
 
         let capability_id = crate::extensions::extension_capability_id("echo");
         assert!(
-            !built
-                .handles
-                .runtime
-                .is_capability_registered(&capability_id),
+            !built.handles.host.is_capability_registered(&capability_id),
             "the package is not installed yet, so nothing should be registered"
         );
         let before = built
             .handles
-            .runtime
-            .load_context(built.handles.session_id)
+            .session
+            .command_context()
             .await
             .expect("context before install");
         assert!(
@@ -12293,12 +12128,7 @@ mod tests {
             .register_installed_extension("echo")
             .expect("register the freshly installed package");
         assert!(registered, "a package absent at startup must register now");
-        assert!(
-            built
-                .handles
-                .runtime
-                .is_capability_registered(&capability_id)
-        );
+        assert!(built.handles.host.is_capability_registered(&capability_id));
         let delta = session
             .activate_capability(&capability_id)
             .await
@@ -12308,8 +12138,8 @@ mod tests {
         // The extension's tool is on the next turn's surface...
         let context = built
             .handles
-            .runtime
-            .load_context(built.handles.session_id)
+            .session
+            .command_context()
             .await
             .expect("context after activation");
         assert!(
@@ -12326,7 +12156,7 @@ mod tests {
         // answering rather than merely advertised.
         let turn = built
             .handles
-            .run_checkpointed_turn("say hi", built.model.input_message("say hi"))
+            .run_checkpointed_turn(built.model.input_message("say hi"))
             .await
             .expect("run a turn that calls the extension's tool");
         assert!(turn.success, "turn calling the extension tool failed");
@@ -12381,8 +12211,8 @@ mod tests {
 
         let initial = built
             .handles
-            .runtime
-            .load_context(built.handles.session_id)
+            .session
+            .command_context()
             .await
             .expect("initial context");
         // AGENTS.md now rides the provider-visible conversation context instead
@@ -12401,7 +12231,6 @@ mod tests {
         let result = built
             .handles
             .run_checkpointed_turn(
-                "Change note.txt from before to after.",
                 built
                     .model
                     .input_message("Change note.txt from before to after."),
@@ -12409,7 +12238,7 @@ mod tests {
             .await
             .expect("run turn");
         assert!(result.success, "scripted disclosure turn: {result:?}");
-        assert_eq!(result.tool_calls_count, 2);
+        assert_eq!(result.tool_calls, 2);
         let provider_text = {
             let captured = messages.lock().expect("captured provider messages");
             captured
@@ -12431,8 +12260,8 @@ mod tests {
 
         let revealed = built
             .handles
-            .runtime
-            .load_context(built.handles.session_id)
+            .session
+            .command_context()
             .await
             .expect("revealed context");
         let revealed_write = revealed
