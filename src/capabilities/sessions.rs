@@ -221,8 +221,13 @@ enum SessionsCommand {
     )]
     Search {
         /// Case-insensitive text to find; omit to list recent sessions.
+        /// Accepts `--query <text>` or a positional `<text>` so agents and
+        /// users do not burn a retry discovering the flag.
         #[arg(long)]
         query: Option<String>,
+        /// Positional fallback for `sessions search <text>`.
+        #[arg(index = 1, hide = true)]
+        positional_query: Option<String>,
         /// Maximum sessions to return (default 10, max 50).
         #[arg(long)]
         limit: Option<u64>,
@@ -264,11 +269,12 @@ impl SessionsCommandLine {
         match cli.command {
             SessionsCommand::Search {
                 query,
+                positional_query,
                 limit,
                 include_current,
             } => Ok(json!({
                 "operation": "search",
-                "query": query,
+                "query": query.or(positional_query),
                 "limit": limit,
                 "include_current": include_current,
             })),
@@ -994,6 +1000,24 @@ mod tests {
         assert!(response.ok);
         let value = response.value.expect("search must return a value");
         assert_eq!(value["count"], 1);
+    }
+
+    #[test]
+    fn search_accepts_positional_query() {
+        // Agents and users naturally try `sessions search <query>`; clap should
+        // accept it the same as `--query <query>` instead of erroring.
+        let dir = tempfile::tempdir().unwrap();
+        let capability =
+            SessionsCapability::new(dir.path().to_path_buf(), SessionId::new(), memory_store());
+        let matches = capability
+            .cli_command()
+            .try_get_matches_from(["sessions", "search", "cli-dispatch-777"])
+            .expect("positional query parses");
+        let request = capability
+            .control_request_from_cli(&matches)
+            .expect("control request");
+        assert_eq!(request.action["operation"], "search");
+        assert_eq!(request.action["query"], "cli-dispatch-777");
     }
 
     fn memory_store() -> CoordinationStore {
