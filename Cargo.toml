@@ -92,6 +92,7 @@ hf-hub = { version = "0.4.3", default-features = false, features = [
     "rustls-tls",
 ], optional = true }
 rand = "0.10"
+uuid = { version = "1", features = ["v5"] }
 rustix = { version = "1.1", features = ["fs"] }
 # Already present through the facade's local backend. Yolop uses the same SQLite handle for
 # its capability-owned local session coordination tables.
@@ -143,18 +144,18 @@ tree-sitter-zig = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
-# Keep the Everruns family on aligned exact pins. Contracts owns provider/tool
-# interfaces; core exposes optional host, builtins and MCP modules.
-everruns-contracts = { version = "=0.49.0", default-features = false, features = ["definition"] }
-everruns-core = { version = "=0.49.0", features = ["host", "builtins", "mcp-stdio", "direct-egress"] }
-everruns-drivers = { version = "=0.49.0", default-features = false, features = ["openai", "anthropic", "meta", "openrouter", "chatgpt", "codex", "mistral", "fireworks", "vercel", "cloudflare", "mai", "gemini"] }
-everruns-capabilities = { version = "=0.49.0", features = ["hosted-integration-catalog"] }
+# Engine adoption uses the merged Framework APIs before their crates.io release.
+# Keep the entire family on one git source; Cargo.lock pins the tested main commit.
+everruns-contracts = { git = "https://github.com/everruns/everruns.git", branch = "main", default-features = false, features = ["definition"] }
+everruns-core = { git = "https://github.com/everruns/everruns.git", branch = "main", features = ["host", "builtins", "mcp-stdio", "direct-egress"] }
+everruns-drivers = { git = "https://github.com/everruns/everruns.git", branch = "main", default-features = false, features = ["openai", "anthropic", "meta", "openrouter", "chatgpt", "codex", "mistral", "fireworks", "vercel", "cloudflare", "mai", "gemini"] }
+everruns-capabilities = { git = "https://github.com/everruns/everruns.git", branch = "main", features = ["hosted-integration-catalog"] }
 # The facade's local backend supplies SQLite, git workspace and durable logs.
 # TypeSafe supplies the Muse actionable-promise classifier.
-everruns = { version = "=0.49.0", default-features = false, features = ["local", "typesafe"] }
+everruns = { git = "https://github.com/everruns/everruns.git", branch = "main", default-features = false, features = ["local", "typesafe", "mcp-stdio"] }
 # LLMSim is a user-facing offline provider, so it remains a production dependency.
-everruns-llmsim = { version = "=0.49.0", features = ["host"] }
-everruns-integrations = { version = "=0.49.0", features = ["filesystem", "web-fetch", "web-search", "duckduckgo", "parallel", "daytona", "e2b"] }
+everruns-llmsim = { git = "https://github.com/everruns/everruns.git", branch = "main", features = ["host"] }
+everruns-integrations = { git = "https://github.com/everruns/everruns.git", branch = "main", features = ["filesystem", "web-fetch", "web-search", "duckduckgo", "parallel", "daytona", "e2b"] }
 arboard = { version = "3", features = ["wayland-data-control"] }
 futures = "0.3"
 html-escape = "0.3"

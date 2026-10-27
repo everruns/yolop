@@ -199,9 +199,9 @@ struct Cli {
     #[arg(long = "acp-setup-page", requires = "acp")]
     acp_setup_page: bool,
 
-    /// Resume an existing session. Reads the JSONL log for this id and
-    /// seeds the message history; the new run continues appending to the
-    /// same file. If no log exists, a new session starts with this id.
+    /// Resume an Engine session, importing saved legacy history when needed.
+    /// Canonical history lives in the local Engine authority; JSONL remains an
+    /// export. A new session starts with this id when none exists.
     /// Without `--session`, a fresh id is generated each run.
     #[arg(long)]
     session: Option<String>,
@@ -2575,7 +2575,6 @@ async fn run_print_mode(
         model,
         task_registry,
         mut background_wake,
-        schedule_runner: _schedule_runner,
         settings,
         ..
     } = runtime;
@@ -2716,10 +2715,8 @@ async fn run_serve_mode(runtime: BuiltRuntime, release: Arc<tokio::sync::Notify>
         model,
         task_registry,
         mut background_wake,
-        schedule_runner: _schedule_runner,
         ..
     } = runtime;
-    use everruns_core::host::RuntimeHostAdapter;
     tracing::info!(session = %handles.session_id, "serving session headless");
     loop {
         let message = tokio::select! {
@@ -2781,7 +2778,6 @@ async fn wait_for_print_background(
     registry: &dyn everruns_core::SessionTaskRegistry,
     receiver: &mut runtime::background_wake::WakeReceiver,
 ) -> Result<everruns_core::message_retriever::InputMessage> {
-    use everruns_core::host::RuntimeHostAdapter;
     let mut poll = tokio::time::interval(std::time::Duration::from_secs(1));
     loop {
         let message = tokio::select! {
@@ -2824,15 +2820,9 @@ async fn collect_print_turn(
     handles: &runtime::RuntimeHandles,
     model: &runtime::ModelState,
     prompt: &str,
-    input: everruns_core::message_retriever::InputMessage,
+    mut input: everruns_core::message_retriever::InputMessage,
 ) -> Result<PrintTurn> {
-    let before_msgs = handles
-        .runtime
-        .messages(handles.session_id)
-        .await
-        .map(|m| m.len())
-        .unwrap_or(0);
-
+    let mut scope = runtime::turn_scope::TurnScope::new(&mut input);
     let retried = std::sync::atomic::AtomicBool::new(false);
     let notice = |notice: String| {
         retried.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -2845,16 +2835,17 @@ async fn collect_print_turn(
     if let Some(notice) = handles.checkpoints.take_notice() {
         eprintln!("{notice}");
     }
-    let messages = handles
-        .runtime
-        .messages(handles.session_id)
-        .await
-        .unwrap_or_default();
-
+    let mut scoped_events = Vec::new();
+    for event in handles.runtime.events().await.unwrap_or_default() {
+        if scope.accepts(&handles.runtime, &event).await {
+            scoped_events.push(event);
+        }
+    }
+    let messages = runtime::session_log::messages_from_events(&scoped_events);
     let mut output = Vec::new();
     for msg in messages
         .iter()
-        .skip(runtime::agent_output_start(&messages, before_msgs, retried))
+        .skip(runtime::agent_output_start(&messages, 0, retried))
     {
         if msg.role == RuntimeMessageRole::Agent
             && !msg.has_tool_calls()

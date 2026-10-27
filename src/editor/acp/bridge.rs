@@ -687,7 +687,6 @@ mod tests {
             result: None,
             error: Some("boom".into()),
             duration_ms: None,
-            worker_thread_cpu_ns: None,
             capability_id: None,
             capability_name: None,
             narration: None,
@@ -696,6 +695,7 @@ mod tests {
             executed_arguments_truncated: false,
             details: None,
             severity: None,
+            worker_thread_cpu_ns: None,
         })));
         assert_eq!(updates.len(), 1);
         match &updates[0] {
@@ -756,7 +756,6 @@ mod tests {
             result: Some(vec![ContentPart::text(json!({ "ok": false }).to_string())]),
             error: Some("Invalid URL: must start with http:// or https://".into()),
             duration_ms: None,
-            worker_thread_cpu_ns: None,
             capability_id: None,
             capability_name: None,
             narration: None,
@@ -765,6 +764,7 @@ mod tests {
             executed_arguments_truncated: false,
             details: None,
             severity: None,
+            worker_thread_cpu_ns: None,
         })));
         assert_eq!(updates.len(), 1);
         match &updates[0] {
@@ -931,7 +931,6 @@ mod tests {
             result: None,
             error: None,
             duration_ms: None,
-            worker_thread_cpu_ns: None,
             capability_id: None,
             capability_name: None,
             narration: Some("Listed files".into()),
@@ -940,6 +939,7 @@ mod tests {
             executed_arguments_truncated: false,
             details: None,
             severity: None,
+            worker_thread_cpu_ns: None,
         })));
 
         assert_eq!(updates.len(), 2);

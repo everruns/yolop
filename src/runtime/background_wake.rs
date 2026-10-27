@@ -22,9 +22,7 @@ use everruns_core::EventData;
 use everruns_core::ExecutionSession;
 use everruns_core::InputMessage;
 use everruns_core::RuntimeMessageRole;
-use everruns_core::host::{
-    InProcessRuntime, RuntimeHostAdapter, RuntimeSessionStore, SessionBuilder,
-};
+use everruns_core::host::{RuntimeSessionStore, SessionBuilder};
 use everruns_core::{PlatformCreateSessionRequest, PlatformMessage};
 use everruns_core::{SessionTask, SessionTaskRegistry};
 use everruns_core::{TaskTransition, wake_text_for};
@@ -40,23 +38,31 @@ use tokio::sync::{Mutex as AsyncMutex, mpsc};
 pub(crate) type WakeSender = mpsc::UnboundedSender<WakeMessage>;
 /// Receiver half a host drains to react to finished background tasks.
 pub struct WakeReceiver {
+    deferred: std::collections::VecDeque<WakeMessage>,
     inner: mpsc::UnboundedReceiver<WakeMessage>,
     _route: Option<HostWakeRoute>,
 }
 
 impl WakeReceiver {
     pub async fn recv(&mut self) -> Option<WakeMessage> {
-        self.inner.recv().await
+        match self.deferred.pop_front() {
+            Some(wake) => Some(wake),
+            None => self.inner.recv().await,
+        }
     }
 
     pub fn try_recv(&mut self) -> std::result::Result<WakeMessage, mpsc::error::TryRecvError> {
-        self.inner.try_recv()
+        self.deferred
+            .pop_front()
+            .map(Ok)
+            .unwrap_or_else(|| self.inner.try_recv())
     }
 
     #[cfg(test)]
     pub(crate) fn unrouted(inner: mpsc::UnboundedReceiver<WakeMessage>) -> Self {
         Self {
             inner,
+            deferred: Default::default(),
             _route: None,
         }
     }
@@ -121,9 +127,39 @@ pub struct WakeMessage {
 enum WakeKind {
     Background,
     Coordination,
+    Admitted(everruns_contracts::typed_id::MessageId),
+    Observed,
 }
 
 impl WakeMessage {
+    pub(crate) fn admitted(id: everruns_contracts::typed_id::MessageId, text: String) -> Self {
+        Self {
+            raw: text,
+            handoff: None,
+            kind: WakeKind::Admitted(id),
+            delivery: None,
+        }
+    }
+
+    pub(crate) fn observed(mut self) -> Self {
+        self.kind = WakeKind::Observed;
+        self
+    }
+    pub(crate) fn already_observed(&self) -> bool {
+        self.kind == WakeKind::Observed
+    }
+    pub(crate) fn with_handoff(mut self, handoff: Option<WakeHandoff>) -> Self {
+        self.handoff = handoff;
+        self
+    }
+
+    pub(crate) fn admission(&self) -> Option<everruns_contracts::typed_id::MessageId> {
+        match self.kind {
+            WakeKind::Admitted(id) => Some(id),
+            _ => None,
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn unstructured(raw: impl Into<String>) -> Self {
         Self {
@@ -234,13 +270,17 @@ pub(crate) fn coalesce_pending_wakes(
     // Coordination messages are complete typed prompts. Keep their ordering
     // and identity intact instead of blending them into a background-task
     // burst; the next idle boundary drains the following message.
-    if first.kind == WakeKind::Coordination {
+    if first.kind != WakeKind::Background {
         return first;
     }
     let mut messages = vec![first];
     while messages.len() < MAX_WAKE_BATCH_MESSAGES
         && let Ok(message) = receiver.try_recv()
     {
+        if message.kind != WakeKind::Background {
+            receiver.deferred.push_front(message);
+            break;
+        }
         messages.push(message);
     }
     let count = messages.len();
@@ -299,7 +339,7 @@ pub(crate) fn coalesce_pending_wakes(
 /// Local platform runner for host wakes and child sub-agent sessions.
 /// Host routing itself is owned by Everruns' [`HostRoutedRunner`].
 pub struct WakeRunner {
-    runtime: Arc<OnceLock<Weak<InProcessRuntime>>>,
+    runtime: Arc<OnceLock<Weak<super::engine::EngineRuntime>>>,
     sessions: Arc<dyn RuntimeSessionStore>,
     tasks: Option<Arc<dyn SessionTaskRegistry>>,
     child_turn_locks: Mutex<HashMap<SessionId, Arc<AsyncMutex<()>>>>,
@@ -315,7 +355,7 @@ pub struct WakeRunner {
 
 impl WakeRunner {
     pub fn new(
-        runtime: Arc<OnceLock<Weak<InProcessRuntime>>>,
+        runtime: Arc<OnceLock<Weak<super::engine::EngineRuntime>>>,
         sessions: Arc<dyn RuntimeSessionStore>,
         tasks: Option<Arc<dyn SessionTaskRegistry>>,
         provider: Arc<RwLock<crate::runtime::ProviderChoice>>,
@@ -336,7 +376,7 @@ impl WakeRunner {
     }
 
     /// The coordination thread `session_id` is, if it is one.
-    async fn thread(
+    pub(crate) async fn thread(
         &self,
         session_id: SessionId,
     ) -> Result<
@@ -370,7 +410,7 @@ impl WakeRunner {
             .map(str::to_string)
     }
 
-    fn runtime(&self) -> Result<Arc<InProcessRuntime>> {
+    fn runtime(&self) -> Result<Arc<super::engine::EngineRuntime>> {
         self.runtime
             .get()
             .ok_or_else(|| AgentLoopError::config("runtime not initialized yet"))
@@ -390,7 +430,7 @@ impl WakeRunner {
             .clone()
     }
 
-    async fn wake_message(&self, session_id: SessionId, content: &str) -> WakeMessage {
+    pub(crate) async fn wake_message(&self, session_id: SessionId, content: &str) -> WakeMessage {
         let Some(tasks) = self.tasks.as_ref() else {
             return WakeMessage {
                 raw: truncate_bytes(content, MAX_WAKE_BATCH_BYTES),
@@ -470,6 +510,7 @@ pub async fn register_host_route(
         wake_tx,
         WakeReceiver {
             inner: wake_rx,
+            deferred: Default::default(),
             _route: Some(HostWakeRoute {
                 routes,
                 session_id,
@@ -483,7 +524,7 @@ pub async fn register_host_route(
 /// mirroring the yolop-native `wake_prompt` framing: make clear it is not a user
 /// message and point the model at the run's result before it continues.
 pub fn frame_wake_prompt(message: &WakeMessage) -> String {
-    if message.kind == WakeKind::Coordination {
+    if message.kind == WakeKind::Coordination || message.admission().is_some() {
         return message.raw.clone();
     }
     format!(
@@ -556,6 +597,22 @@ fn remove_observed_task(pending: &mut HashSet<(&str, &str)>, snapshot: &serde_js
 /// provenance because hosts call this constructor only for routed wakes.
 pub fn input_for_wake(message: &WakeMessage) -> InputMessage {
     let mut input = InputMessage::user(frame_wake_prompt(message));
+    if let Some(handoff) = &message.handoff
+        && let Ok(value) = serde_json::to_value(handoff)
+    {
+        input.metadata = Some(std::collections::HashMap::from([(
+            HANDOFF_METADATA_KEY.to_string(),
+            value,
+        )]));
+        input.tags.push("automatic_background_wake".to_string());
+    }
+    if let Some(id) = message.admission() {
+        input
+            .metadata
+            .get_or_insert_default()
+            .insert("yolop.observe_admission".into(), serde_json::json!(id));
+        return input;
+    }
     if message.kind == WakeKind::Coordination {
         input.tags.push("automatic_coordination".to_string());
         if let Some(delivery) = &message.delivery {
@@ -565,15 +622,6 @@ pub fn input_for_wake(message: &WakeMessage) -> InputMessage {
             )]));
         }
         return input;
-    }
-    if let Some(handoff) = &message.handoff
-        && let Ok(value) = serde_json::to_value(handoff)
-    {
-        input.metadata = Some(std::collections::HashMap::from([(
-            HANDOFF_METADATA_KEY.to_string(),
-            value,
-        )]));
-        input.tags.push("automatic_background_wake".to_string());
     }
     input
 }
@@ -718,7 +766,11 @@ impl LocalSessionRunner for WakeRunner {
             &mut input,
             self.reasoning_effort().as_deref(),
         );
-        let result = self.runtime()?.run_turn(session_id, input).await?;
+        let result = self
+            .runtime()?
+            .run_turn(session_id, input)
+            .await
+            .map_err(|error| AgentLoopError::tool(error.to_string()))?;
         if result.success {
             Ok(())
         } else {
@@ -743,7 +795,15 @@ impl LocalSessionRunner for WakeRunner {
             .build();
         session.agent_id = agent_id;
         session.parent_session_id = parent_session_id;
-        self.sessions.add_session(session.clone()).await?;
+        let runtime = self.runtime()?;
+        runtime
+            .engine
+            .create_registered_with_metadata(
+                session.id,
+                &runtime.build,
+                json!({"parent_session_id":parent_session_id}),
+            )
+            .await?;
         Ok(session)
     }
 
@@ -766,7 +826,15 @@ impl LocalSessionRunner for WakeRunner {
         session.agent_id = request.agent_id;
         session.parent_session_id = request.parent_session_id;
         session.goal = request.goal;
-        self.sessions.add_session(session.clone()).await?;
+        let runtime = self.runtime()?;
+        runtime
+            .engine
+            .create_registered_with_metadata(
+                session.id,
+                &runtime.build,
+                json!({"parent_session_id":session.parent_session_id}),
+            )
+            .await?;
         Ok(session)
     }
 
@@ -791,7 +859,11 @@ impl LocalSessionRunner for WakeRunner {
             Some((routing, thread)) => routing
                 .messages(&thread)
                 .map_err(|error| AgentLoopError::store(error.to_string()))?,
-            None => self.runtime()?.messages(session_id).await?,
+            None => self
+                .runtime()?
+                .messages(session_id)
+                .await
+                .map_err(|error| AgentLoopError::store(error.to_string()))?,
         };
         let mut mapped: Vec<_> = messages
             .iter()

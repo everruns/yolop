@@ -38,7 +38,7 @@ pub(super) struct Diagnostic {
     max_tokens: u64,
     max_seconds: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub turn_stop_reason: Option<everruns_core::host::TurnStopReason>,
+    pub turn_stop_reason: Option<everruns_contracts::turn::TurnStopReason>,
     #[serde(skip_serializing_if = "Option::is_none")]
     exhausted_limit: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]

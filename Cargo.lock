@@ -64,9 +64,9 @@ dependencies = [
 
 [[package]]
 name = "agent-client-protocol"
-version = "3.4.0"
+version = "3.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "72adac0ce6b0d0390df9b7a498392b24ebcf9c65c3451e5d618d936f50256289"
+checksum = "02898d848a20eb09b8a392e85bb3a4c79dba01d369758185d102b001362a60da"
 dependencies = [
  "agent-client-protocol-derive",
  "agent-client-protocol-schema",
@@ -81,9 +81,9 @@ dependencies = [
 
 [[package]]
 name = "agent-client-protocol-derive"
-version = "3.4.0"
+version = "3.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "532fa6f1870bb7cb0bfe91fbcb5166393f7046e186bc590d1aa037d306d48716"
+checksum = "26b57a6a7fae5ebd4368712bfcd0a366a20e1370ac3f3fcd83379b37637501c9"
 dependencies = [
  "quote",
  "syn 3.0.6",
@@ -91,9 +91,9 @@ dependencies = [
 
 [[package]]
 name = "agent-client-protocol-schema"
-version = "1.12.0"
+version = "1.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "430e900fdb40a811c1a3e0d85b1134e485d96699f8b90889a15c1da6a0b26c3f"
+checksum = "3d9a84a76a4f44721e0d8dabcd85b219893c43d6171a4a033d84844d85880823"
 dependencies = [
  "anyhow",
  "derive_more",
@@ -270,9 +270,9 @@ checksum = "3bc62ac97cc33321f50863d514c3bc38a453947a8f9e781137e47c7401020aed"
 
 [[package]]
 name = "arboard"
-version = "3.7.0"
+version = "3.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aeb9553e62312c8756a5979254fc6d7da8bbeb5986a1e17037fab932f7037917"
+checksum = "0348a1c054491f4bfe6ab86a7b6ab1e44e45d899005de92f58b3df180b36ddaf"
 dependencies = [
  "clipboard-win",
  "image",
@@ -284,7 +284,7 @@ dependencies = [
  "objc2-foundation",
  "parking_lot",
  "percent-encoding",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
  "wl-clipboard-rs",
  "x11rb",
 ]
@@ -603,7 +603,7 @@ dependencies = [
  "serde_json",
  "serde_norway",
  "sha1 0.11.0",
- "sha2 0.11.1",
+ "sha2 0.11.0",
  "thiserror 2.0.21",
  "tokio",
  "tower",
@@ -2381,7 +2381,7 @@ dependencies = [
  "curve25519-dalek 5.0.0",
  "ed25519 3.0.0",
  "rand_core 0.10.1",
- "sha2 0.11.1",
+ "sha2 0.11.0",
  "signature 3.0.0",
  "subtle",
  "zeroize",
@@ -2557,9 +2557,8 @@ dependencies = [
 
 [[package]]
 name = "everruns"
-version = "0.49.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "122a78021839fdfd70370ffa04011341efefcc7da868557b4c2848307219745e"
+version = "0.48.0"
+source = "git+https://github.com/everruns/everruns.git?branch=main#e405378518b9e68ac03bfcef951c8c4237db9c0a"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -2589,9 +2588,8 @@ dependencies = [
 
 [[package]]
 name = "everruns-ard"
-version = "0.49.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8aa531f204d0ad8569ecef789144db922565a4c0dd27bc6c494ace1983595a5e"
+version = "0.48.0"
+source = "git+https://github.com/everruns/everruns.git?branch=main#e405378518b9e68ac03bfcef951c8c4237db9c0a"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2607,9 +2605,8 @@ dependencies = [
 
 [[package]]
 name = "everruns-capabilities"
-version = "0.49.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5a8115928eae3c7a6896764ea993f12dbd358990c74d35458eaad65b61c2bd20"
+version = "0.48.0"
+source = "git+https://github.com/everruns/everruns.git?branch=main#e405378518b9e68ac03bfcef951c8c4237db9c0a"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2631,9 +2628,8 @@ dependencies = [
 
 [[package]]
 name = "everruns-cli-contract"
-version = "0.49.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4c40cd9bbf02a3110b3b2fac9636e1db42bd492f91c0f7ec720a4da40d04e8c6"
+version = "0.48.0"
+source = "git+https://github.com/everruns/everruns.git?branch=main#e405378518b9e68ac03bfcef951c8c4237db9c0a"
 dependencies = [
  "clap",
  "serde",
@@ -2642,9 +2638,8 @@ dependencies = [
 
 [[package]]
 name = "everruns-contracts"
-version = "0.49.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d05ebb516364c0ebf5ffb82f00be52ca9aa8bb24a88a4eb35b017d2641e2dbab"
+version = "0.48.0"
+source = "git+https://github.com/everruns/everruns.git?branch=main#e405378518b9e68ac03bfcef951c8c4237db9c0a"
 dependencies = [
  "aho-corasick",
  "anyhow",
@@ -2667,11 +2662,11 @@ dependencies = [
  "regex",
  "reqwest 0.13.5",
  "rustls",
- "schemars 1.2.3",
+ "schemars 1.2.2",
  "serde",
  "serde_json",
  "serde_yaml",
- "sha2 0.11.1",
+ "sha2 0.11.0",
  "thiserror 2.0.21",
  "tokio",
  "tokio-tungstenite 0.30.0",
@@ -2686,9 +2681,8 @@ dependencies = [
 
 [[package]]
 name = "everruns-core"
-version = "0.49.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8451a702c532ac3f3519bf09ff17dc3e84d3e96c81b0f089160a941468a34b58"
+version = "0.48.0"
+source = "git+https://github.com/everruns/everruns.git?branch=main#e405378518b9e68ac03bfcef951c8c4237db9c0a"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2711,7 +2705,7 @@ dependencies = [
  "serde_json",
  "serde_urlencoded",
  "serde_yaml",
- "sha2 0.11.1",
+ "sha2 0.11.0",
  "thiserror 2.0.21",
  "tokio",
  "tokio-util",
@@ -2720,14 +2714,13 @@ dependencies = [
  "url",
  "uuid 1.27.0",
  "web-time",
- "zip 9.1.2",
+ "zip 9.0.5",
 ]
 
 [[package]]
 name = "everruns-drivers"
-version = "0.49.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f33f162273db4bdda2df96ca628d26a6a0055a34b49e8f28488d3a39ea12be1a"
+version = "0.48.0"
+source = "git+https://github.com/everruns/everruns.git?branch=main#e405378518b9e68ac03bfcef951c8c4237db9c0a"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2741,7 +2734,7 @@ dependencies = [
  "reqwest 0.13.5",
  "serde",
  "serde_json",
- "sha2 0.11.1",
+ "sha2 0.11.0",
  "thiserror 2.0.21",
  "tokio",
  "tokio-tungstenite 0.30.0",
@@ -2751,9 +2744,8 @@ dependencies = [
 
 [[package]]
 name = "everruns-integrations"
-version = "0.49.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0fa58d6dfe8dbc750bb0422ea36382a13661a577253670b9863039088f49f5ca"
+version = "0.48.0"
+source = "git+https://github.com/everruns/everruns.git?branch=main#e405378518b9e68ac03bfcef951c8c4237db9c0a"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2790,7 +2782,7 @@ dependencies = [
  "rustls-native-certs",
  "serde",
  "serde_json",
- "sha2 0.11.1",
+ "sha2 0.11.0",
  "similar",
  "thiserror 2.0.21",
  "tokio",
@@ -2806,9 +2798,8 @@ dependencies = [
 
 [[package]]
 name = "everruns-integrations-experimental"
-version = "0.49.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d30effbbcff3c31aaba30e5d3f27bfd178b50421d3e349d3125963825fd64d0a"
+version = "0.48.0"
+source = "git+https://github.com/everruns/everruns.git?branch=main#e405378518b9e68ac03bfcef951c8c4237db9c0a"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2823,9 +2814,8 @@ dependencies = [
 
 [[package]]
 name = "everruns-llmsim"
-version = "0.49.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1adc89c4c20cb7987bca4342e0ad71d10826e8e62fc7a3af7cc91f3936c3aee6"
+version = "0.48.0"
+source = "git+https://github.com/everruns/everruns.git?branch=main#e405378518b9e68ac03bfcef951c8c4237db9c0a"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2941,10 +2931,10 @@ dependencies = [
  "percent-encoding",
  "rand 0.10.3",
  "reqwest 0.13.5",
- "schemars 1.2.3",
+ "schemars 1.2.2",
  "serde",
  "serde_json",
- "sha2 0.11.1",
+ "sha2 0.11.0",
  "thiserror 2.0.21",
  "tokio",
  "tower",
@@ -4655,9 +4645,9 @@ checksum = "34b357333733e8260735ba5894eb928c02ecc69c78715f01a8019e7fa7f2db4c"
 
 [[package]]
 name = "libc"
-version = "0.2.191"
+version = "0.2.190"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "65cd87c9a6d60536580b316ad985726104730a5151c99845f2490428ef91240a"
+checksum = "ce5d3ddc6d3fa000eb1536d85e147bfe31aacaba692ed6a876f95cb7c855be78"
 
 [[package]]
 name = "libfuzzer-sys"
@@ -5142,7 +5132,7 @@ dependencies = [
  "mistralrs-macros",
  "rand 0.9.5",
  "reqwest 0.13.5",
- "schemars 1.2.3",
+ "schemars 1.2.2",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -5235,7 +5225,7 @@ dependencies = [
  "rustc-hash 2.1.3",
  "rustfft",
  "safetensors 0.7.0",
- "schemars 1.2.3",
+ "schemars 1.2.2",
  "scraper",
  "serde",
  "serde-big-array",
@@ -5435,7 +5425,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_path_to_error",
- "sha2 0.11.1",
+ "sha2 0.11.0",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
@@ -7618,13 +7608,13 @@ dependencies = [
 
 [[package]]
 name = "schemars"
-version = "1.2.3"
+version = "1.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ab508826f74a77ca9d5aba6ff19b522583ee3eaf28a19384ff3d0e5835fadf6e"
+checksum = "687274d293b6cdc6e73e0fee520bf2049650090d7164f87672d212a3c530cf4a"
 dependencies = [
  "dyn-clone",
  "ref-cast",
- "schemars_derive 1.2.3",
+ "schemars_derive 1.2.2",
  "serde",
  "serde_json",
 ]
@@ -7643,9 +7633,9 @@ dependencies = [
 
 [[package]]
 name = "schemars_derive"
-version = "1.2.3"
+version = "1.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e1c3a92094fa7d61aa124645844facb6b554dfc797136d0f5fd1f890e2bffc69"
+checksum = "d98c67716b46af2f0b8cf752abc930f6f9aecfbf671ecfb531db8a31dbe4e2ba"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -7923,7 +7913,7 @@ dependencies = [
  "indexmap 2.14.2",
  "jiff",
  "schemars 0.9.0",
- "schemars 1.2.3",
+ "schemars 1.2.2",
  "serde_core",
  "serde_json",
  "serde_with_macros",
@@ -8016,9 +8006,9 @@ dependencies = [
 
 [[package]]
 name = "sha2"
-version = "0.11.1"
+version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "47d7069beb7d6ac7b9acd1039986e73443f24234f41074da099d6f994ac9ad19"
+checksum = "446ba717509524cb3f22f17ecc096f10f4822d76ab5c0b9822c5f9c284e825f4"
 dependencies = [
  "cfg-if",
  "cpufeatures 0.3.1",
@@ -8949,9 +8939,9 @@ dependencies = [
 
 [[package]]
 name = "tokio"
-version = "1.53.3"
+version = "1.53.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce3335fa71841cda333a58d7615b03901380ecf09d59b3296d21f8bbac0dde4e"
+checksum = "e95f91fcc7a621e8b030f6aa23c71fe9838ae2fb4d8118b75602a328f5144044"
 dependencies = [
  "bytes",
  "libc",
@@ -9557,9 +9547,9 @@ dependencies = [
 
 [[package]]
 name = "tree-sitter-scala"
-version = "0.26.3"
+version = "0.26.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c554730d29306d9c7cdd26912638d2401378c26961e12d161a071df43f49b81b"
+checksum = "24e0ab4505990bfe30051761d40a7bf4033ce5a81c9eda9e20e987a5cdc84826"
 dependencies = [
  "cc",
  "tree-sitter-language",
@@ -9714,12 +9704,6 @@ name = "typed-path"
 version = "0.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8e28f89b80c87b8fb0cf04ab448d5dd0dd0ade2f8891bae878de66a75a28600e"
-
-[[package]]
-name = "typed-path"
-version = "0.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9ce898823d8cd0f028662d2f349694b1af0a5cc9be83f1d213a00d3147445e1e"
 
 [[package]]
 name = "typenum"
@@ -11324,7 +11308,7 @@ dependencies = [
  "seccompiler",
  "serde",
  "serde_json",
- "sha2 0.11.1",
+ "sha2 0.11.0",
  "tar",
  "tempfile",
  "textwrap",
@@ -11358,6 +11342,7 @@ dependencies = [
  "tuika-html",
  "tuika-mermaid",
  "urlencoding",
+ "uuid 1.27.0",
  "vt100",
  "windows-sys 0.61.2",
  "yolop-yep",
@@ -11379,7 +11364,7 @@ dependencies = [
 name = "yolop-yep"
 version = "0.5.0"
 dependencies = [
- "schemars 1.2.3",
+ "schemars 1.2.2",
  "serde",
  "serde_json",
 ]
@@ -11489,23 +11474,21 @@ dependencies = [
  "crc32fast",
  "indexmap 2.14.2",
  "memchr",
- "typed-path 0.12.3",
+ "typed-path",
 ]
 
 [[package]]
 name = "zip"
-version = "9.1.2"
+version = "9.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ec2e3161de27091f18a831d9494e9c53378a34833af5c1dda35ad85849da18d6"
+checksum = "6e04976da629d3b04204ba8105b396a193af8ad2583b2c79bfb3ab8af580a11e"
 dependencies = [
  "crc32fast",
  "flate2",
- "getrandom 0.4.3",
  "indexmap 2.14.2",
  "memchr",
  "nix 0.31.3",
- "typed-path 0.13.0",
- "windows-sys 0.61.2",
+ "typed-path",
  "zopfli",
 ]
 

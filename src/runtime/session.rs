@@ -14,6 +14,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use everruns_contracts::typed_id::SessionId;
 use everruns_core::ContentPart;
+#[cfg(test)]
 use everruns_core::Event;
 use everruns_core::InputMessage;
 use everruns_core::Tool;
@@ -26,8 +27,12 @@ use crate::runtime::background_wake::WakeMessage;
 use crate::runtime::{ModelState, RuntimeHandles, attestation, reasoning};
 use crate::tui::transcript::{
     Author, ChatLine, DeltaRouter, TurnEvent, assistant_lines_since, handle_live_event,
-    lines_for_event_with_router, lines_for_replayed_event, remember_write_todos_args,
-    shell_result_lines, shell_result_succeeded, status_for_event, tokens_for_event,
+    lines_for_replayed_event, shell_result_lines, shell_result_succeeded,
+};
+
+#[cfg(test)]
+use crate::tui::transcript::{
+    lines_for_event_with_router, remember_write_todos_args, status_for_event, tokens_for_event,
 };
 
 /// Outcome of a capability-provided slash command, reduced to what the host UI
@@ -204,6 +209,35 @@ impl Session {
     /// Run a turn with a host-constructed input. Automatic wakeups use this to
     /// attach provenance metadata without letting display text forge it.
     pub fn run_turn_input(&self, prompt: String, input: InputMessage) -> TurnHandle {
+        let admission = input
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("yolop.observe_admission"))
+            .and_then(serde_json::Value::as_str)
+            .and_then(|value| value.parse().ok());
+        self.observe_or_run(prompt, input, admission)
+    }
+
+    pub(crate) fn observe_admission(
+        &self,
+        id: everruns_contracts::typed_id::MessageId,
+    ) -> TurnHandle {
+        self.observe_or_run(String::new(), InputMessage::user(""), Some(id))
+    }
+
+    fn observe_or_run(
+        &self,
+        prompt: String,
+        mut input: InputMessage,
+        admission: Option<everruns_contracts::typed_id::MessageId>,
+    ) -> TurnHandle {
+        if let Some(id) = admission {
+            input
+                .metadata
+                .get_or_insert_default()
+                .insert("yolop.observe_admission".into(), serde_json::json!(id));
+        }
+        let mut scope = super::turn_scope::TurnScope::new(&mut input);
         let handles = self.handles.clone();
         let model = self.model.clone();
         let (tx, rx) = mpsc::unbounded_channel::<TurnEvent>();
@@ -216,7 +250,9 @@ impl Session {
 
         tokio::spawn(async move {
             let session_id = handles.session_id;
-            if let Err(error) = model.validate_model_available().await {
+            if admission.is_none()
+                && let Err(error) = model.validate_model_available().await
+            {
                 let _ = tx.send(TurnEvent::Failed(format!(
                     "model availability check: {error:#}"
                 )));
@@ -226,22 +262,20 @@ impl Session {
                 });
                 return;
             }
-            let before = match handles.runtime.messages(session_id).await {
-                Ok(m) => m.len(),
-                Err(e) => {
-                    let _ = tx.send(TurnEvent::Failed(format!("load history: {e}")));
-                    let _ = tx.send(TurnEvent::Done {
-                        result: None,
-                        success: false,
-                    });
-                    return;
-                }
-            };
-            let events_before = match handles.runtime.events().await {
+            let mut events_before = match handles.runtime.events().await {
                 Ok(e) => e.len(),
                 Err(_) => 0,
             };
 
+            if let Some(id) = admission
+                && let Ok(events) = handles.runtime.events().await
+                && let Some(position) = events.iter().position(|event| {
+                    matches!(&event.data,
+                        everruns_core::EventData::InputMessage(input) if input.message.id == id)
+                })
+            {
+                events_before = position;
+            }
             let turn_handles = handles.clone();
             let turn_model = model.clone();
             let notices = tx.clone();
@@ -255,9 +289,14 @@ impl Session {
                         text,
                     }]));
                 };
-                turn_handles
-                    .run_turn_with_reasoning_recovery(&turn_model, &prompt, input, &notice)
-                    .await
+                match admission {
+                    Some(id) => turn_handles.runtime.wait_admission(id).await,
+                    None => {
+                        turn_handles
+                            .run_turn_with_reasoning_recovery(&turn_model, &prompt, input, &notice)
+                            .await
+                    }
+                }
             });
 
             let mut emitted_events = HashSet::new();
@@ -284,6 +323,7 @@ impl Session {
                             if event.session_id != session_id {
                                 continue;
                             }
+                            if !scope.accepts(&handles.runtime, &event).await { continue; }
                             handle_live_event(
                                 &event,
                                 &mut emitted_events,
@@ -300,6 +340,7 @@ impl Session {
                                 &handles,
                                 session_id,
                                 &mut events_cursor,
+                                &mut scope,
                                 &mut emitted_events,
                                 &mut delta_router,
                                 &tx,
@@ -319,6 +360,10 @@ impl Session {
             }
 
             if cancelled {
+                let _ = turn.await;
+                if let Err(error) = scope.cancel(&handles.runtime).await {
+                    tracing::warn!(%error, "Engine cancellation acknowledgement failed");
+                }
                 handles.report_herdr_state(crate::capabilities::herdr::HerdrState::Idle);
                 let _ = tx.send(TurnEvent::Stream(None));
                 let _ = tx.send(TurnEvent::Done {
@@ -334,6 +379,7 @@ impl Session {
                 &handles,
                 session_id,
                 &mut events_cursor,
+                &mut scope,
                 &mut emitted_events,
                 &mut delta_router,
                 &tx,
@@ -371,11 +417,13 @@ impl Session {
                 }
             };
 
-            let messages = handles
-                .runtime
-                .messages(session_id)
-                .await
-                .unwrap_or_default();
+            let mut scoped_events = Vec::new();
+            for event in handles.runtime.events().await.unwrap_or_default() {
+                if scope.accepts(&handles.runtime, &event).await {
+                    scoped_events.push(event);
+                }
+            }
+            let messages = super::session_log::messages_from_events(&scoped_events);
 
             // Assistant text from the turn.
             // After a reasoning retry the failed attempt is in history too;
@@ -384,7 +432,7 @@ impl Session {
                 &messages,
                 crate::runtime::agent_output_start(
                     &messages,
-                    before,
+                    0,
                     retried.load(std::sync::atomic::Ordering::SeqCst),
                 ),
             );
@@ -655,14 +703,21 @@ async fn catch_up_events(
     handles: &RuntimeHandles,
     session_id: SessionId,
     cursor: &mut usize,
+    scope: &mut super::turn_scope::TurnScope,
     emitted_events: &mut HashSet<String>,
     router: &mut DeltaRouter,
     tx: &mpsc::UnboundedSender<TurnEvent>,
 ) {
     let events = handles.runtime.events().await.unwrap_or_default();
-    route_catch_up_events(&events, session_id, cursor, emitted_events, router, tx);
+    for event in events.iter().skip(*cursor) {
+        if event.session_id == session_id && scope.accepts(&handles.runtime, event).await {
+            handle_live_event(event, emitted_events, router, tx);
+        }
+    }
+    *cursor = events.len();
 }
 
+#[cfg(test)]
 fn route_catch_up_events(
     events: &[Event],
     session_id: SessionId,

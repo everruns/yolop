@@ -1,60 +1,8 @@
-// Per-session JSONL event log.
-//
-// Each session writes its replay-relevant events to
-// `<sessions_dir>/<session_id>/events.jsonl`, one serialized `Event` per line.
-// `--session <id>` reuses the same SessionId on the next run and replays
-// the file: events are read back and messages derived from those events
-// are seeded into the message store so the conversation history shows up
-// in the next turn's context.
-//
-// JSONL is chosen because `Event` is already `Serialize + Deserialize`
-// and the format degrades gracefully — a half-written line at the end is
-// a parse error on one line, not a corrupt file. The writer flushes after
-// every line so a crash mid-session loses at most the event in flight.
-//
-// Concerns explicitly handled below:
-// * Owner-only on Unix: `events.jsonl` is created with `0o600` and the
-//   file mode is re-tightened to `0o600` on every open; the per-session
-//   folder is `chmod`-ed to `0o700` on open as well. The re-tightening
-//   matters because `OpenOptionsExt::mode` only applies on create —
-//   without it, a legacy file or one loosened out-of-band would keep
-//   its prior mode on resume. Session logs contain prompts, tool
-//   arguments, and tool output, plus the reasoning artifacts described
-//   below.
-// * Durable diagnostics retain turn outcomes, recovery, and budget events.
-//   They carry reasons and usage without becoming conversation messages.
-// * Replay keeps event types that (a) round-trip into the conversation
-//   (`input.message`, `output.message.completed`, `tool.completed`) and
-//   (b) the agent needs to restore the live transcript view and provider
-//   continuation state on resume (`reason.completed`, `reason.item`).
-//   Semantic `session.title.updated` events are also retained so the latest
-//   title can repair the `workspace.json` projection after interruption.
-//   Streaming `*.delta` events have no replay value and would otherwise
-//   inflate the log O(n²) for long streamed responses.
-// * Assistant reasoning content parts ARE persisted whole in yolop's
-//   per-session JSONL, opaque signature and encrypted payload included.
-//   The per-session folder is the local private session store (owner-only
-//   on Unix, see above) and provider continuation on resume requires that
-//   state replayed verbatim, in the position the provider issued it (e.g.
-//   OpenAI Responses threads the encrypted reasoning context back). The
-//   contract is local-store, not user-facing transcript export — see the
-//   yolop README for the public/private distinction.
-// * Replay rejects events whose `session_id` doesn't match the resumed
-//   session — guards against accidentally merging logs across sessions.
-// * On open, if the file does not end with `\n` (previous run crashed
-//   mid-write), append one before any new line is added — prevents the
-//   first new event from being concatenated onto a partial tail.
-// * Sequence numbers continue from the replayed maximum rather than
-//   restarting from 0, so `Event.sequence` stays monotonic within a
-//   session across resumes.
-//
-// Concurrency:
-// * Intra-process: the file handle sits behind a `tokio::Mutex` so emits
-//   serialize even when tools fire events from many tasks.
-// * Inter-process: an advisory exclusive flock (`File::try_lock`) is acquired
-//   in the sessions root's non-discoverable `.locks/` directory before the
-//   lazy event log exists. Existing event logs are locked directly as well. A
-//   second `yolop --session <same-id>` fails fast instead of interleaving.
+// Native sessions use this module for private host diagnostics, frontend
+// observation, saved-format import and readable JSONL exports. SqliteHosting
+// owns canonical events. The legacy writable emitter remains a test fixture.
+// Session file leases cover startup before a discoverable directory exists.
+// Prompts, reasoning and diagnostic files retain owner-only permissions.
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -515,13 +463,57 @@ pub struct JsonlEventEmitter {
     persisted_sequence: Arc<AtomicI32>,
     file: Arc<Mutex<Option<File>>>,
     path: PathBuf,
-    _session_lock: File,
+    session_lock: std::sync::Mutex<Option<SessionFileLease>>,
     materializer: Arc<SessionMaterializer>,
     session_dir: PathBuf,
     /// Live fan-out of every emitted event (including deltas) for in-process
     /// subscribers like the TUI's streaming renderer. Filesystem persistence
     /// still filters by `is_replay_relevant`; this channel does not.
     live: broadcast::Sender<Event>,
+    authority_owned: bool,
+}
+
+/// Shared exclusive lease for runtime execution and saved-session migration.
+pub(crate) struct SessionFileLease(File);
+
+impl Drop for SessionFileLease {
+    fn drop(&mut self) {
+        // A shell child can inherit the open-file description between fork
+        // and exec. Closing only our descriptor would keep its lock alive.
+        if let Err(error) = self.0.unlock() {
+            tracing::warn!(%error, "release session file lease");
+        }
+    }
+}
+
+pub(crate) fn lock_session(session_dir: &Path) -> Result<SessionFileLease> {
+    let sessions_dir = session_dir.parent().unwrap_or_else(|| Path::new("."));
+    let lock_dir = sessions_dir.join(".locks");
+    std::fs::create_dir_all(&lock_dir).map_err(|e| {
+        AgentLoopError::config(format!(
+            "create session lock dir {}: {e}",
+            lock_dir.display()
+        ))
+    })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&lock_dir, std::fs::Permissions::from_mode(0o700)).map_err(
+            |e| {
+                AgentLoopError::config(format!(
+                    "tighten session lock dir permissions on {}: {e}",
+                    lock_dir.display()
+                ))
+            },
+        )?;
+    }
+    let lock_name = session_dir
+        .file_name()
+        .unwrap_or_else(|| std::ffi::OsStr::new("session"));
+    let lock_path = lock_dir.join(lock_name);
+    let session_lock = open_private_append(&lock_path)?;
+    try_lock_session_file(&session_lock, &lock_path)?;
+    Ok(SessionFileLease(session_lock))
 }
 
 impl JsonlEventEmitter {
@@ -542,38 +534,14 @@ impl JsonlEventEmitter {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn open_with_materializer(
         path: &Path,
         start_sequence: i32,
         materializer: Arc<SessionMaterializer>,
     ) -> Result<Self> {
         let session_dir = path.parent().unwrap_or_else(|| Path::new("."));
-        let sessions_dir = session_dir.parent().unwrap_or_else(|| Path::new("."));
-        let lock_dir = sessions_dir.join(".locks");
-        std::fs::create_dir_all(&lock_dir).map_err(|e| {
-            AgentLoopError::config(format!(
-                "create session lock dir {}: {e}",
-                lock_dir.display()
-            ))
-        })?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&lock_dir, std::fs::Permissions::from_mode(0o700)).map_err(
-                |e| {
-                    AgentLoopError::config(format!(
-                        "tighten session lock dir permissions on {}: {e}",
-                        lock_dir.display()
-                    ))
-                },
-            )?;
-        }
-        let lock_name = session_dir
-            .file_name()
-            .unwrap_or_else(|| std::ffi::OsStr::new("session"));
-        let lock_path = lock_dir.join(lock_name);
-        let session_lock = open_private_append(&lock_path)?;
-        try_lock_session_file(&session_lock, &lock_path)?;
+        let session_lock = lock_session(session_dir)?;
 
         let file = if path.exists() {
             Some(open_session_log(path)?)
@@ -588,11 +556,55 @@ impl JsonlEventEmitter {
             persisted_sequence: Arc::new(AtomicI32::new(start_sequence.saturating_sub(1))),
             file: Arc::new(Mutex::new(file)),
             path: path.to_path_buf(),
-            _session_lock: session_lock,
+            session_lock: std::sync::Mutex::new(Some(session_lock)),
             materializer,
             session_dir: session_dir.to_path_buf(),
             live,
+            authority_owned: false,
         })
+    }
+
+    /// Observation and product diagnostics after ownership moves to Engine.
+    /// Canonical JSONL is rebuilt by the authority. Host diagnostics have a
+    /// separate journal and no canonical sequence or conversation content.
+    pub(crate) fn observe_authority(
+        path: &Path,
+        materializer: Arc<SessionMaterializer>,
+        lease: SessionFileLease,
+    ) -> Self {
+        let (live, _) = broadcast::channel(EVENT_BROADCAST_CAPACITY);
+        let session_dir = path.parent().expect("session export has a parent");
+        Self {
+            events: Arc::new(RwLock::new(Vec::new())),
+            sequence: Arc::new(AtomicI32::new(0)),
+            persisted_sequence: Arc::new(AtomicI32::new(0)),
+            file: Arc::new(Mutex::new(None)),
+            path: session_dir.join("host-events.jsonl"),
+            session_lock: std::sync::Mutex::new(Some(lease)),
+            materializer,
+            session_dir: session_dir.to_path_buf(),
+            live,
+            authority_owned: true,
+        }
+    }
+
+    pub(crate) async fn load_host_diagnostics(&self, session: SessionId) -> anyhow::Result<()> {
+        let records: Vec<Event> =
+            super::migration::read_records(&self.path, &mut sha2::Sha256::default())?;
+        anyhow::ensure!(
+            records.iter().all(|event| event.session_id == session
+                && event.sequence.is_none()
+                && matches!(
+                    event.data,
+                    EventData::BudgetWarning(_)
+                        | EventData::BudgetPaused(_)
+                        | EventData::BudgetExhausted(_)
+                        | EventData::BudgetResumed(_)
+                )),
+            "invalid host diagnostic journal"
+        );
+        self.events.write().await.extend(records);
+        Ok(())
     }
 
     async fn ensure_log_file(&self) -> Result<tokio::sync::MutexGuard<'_, Option<File>>> {
@@ -651,7 +663,18 @@ impl JsonlEventEmitter {
     /// discarded suffix remains durable in `events.jsonl`; only the live view
     /// queried by the runtime and transcript changes.
     pub async fn replace_collected_events(&self, events: Vec<Event>) {
-        *self.events.write().await = events;
+        let mut collected = self.events.write().await;
+        let diagnostics: Vec<_> = if self.authority_owned {
+            collected
+                .iter()
+                .filter(|event| event.sequence.is_none())
+                .cloned()
+                .collect()
+        } else {
+            Vec::new()
+        };
+        *collected = events;
+        collected.extend(diagnostics);
     }
 
     /// Highest sequence allocated in this session, including abandoned
@@ -659,6 +682,17 @@ impl JsonlEventEmitter {
     /// globally monotonic.
     pub fn last_sequence(&self) -> i32 {
         self.persisted_sequence.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn release_session_lease(&self) {
+        self.session_lock.lock().expect("session lease lock").take();
+    }
+
+    /// Track the authority's committed position for workspace checkpoint
+    /// boundaries. Observation never allocates a canonical event sequence.
+    pub(crate) fn observe_sequence(&self, sequence: i32) {
+        self.persisted_sequence
+            .fetch_max(sequence, Ordering::AcqRel);
     }
 
     pub(crate) fn materializer(&self) -> Arc<SessionMaterializer> {
@@ -675,20 +709,35 @@ fn open_private_append(path: &Path) -> Result<File> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        opts.mode(0o600);
+        opts.mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
     }
     let file = opts.open(path).map_err(|e| {
         AgentLoopError::config(format!("open private file {}: {e}", path.display()))
     })?;
+    let metadata = file
+        .metadata()
+        .map_err(|error| AgentLoopError::config(format!("inspect private file: {error}")))?;
+    if !metadata.is_file() {
+        return Err(AgentLoopError::config(
+            "session lock must be a regular file",
+        ));
+    }
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(|e| {
-            AgentLoopError::config(format!(
-                "tighten private file permissions on {}: {e}",
-                path.display()
-            ))
-        })?;
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        if metadata.nlink() != 1 {
+            return Err(AgentLoopError::config(
+                "session lock must have one hard link",
+            ));
+        }
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| {
+                AgentLoopError::config(format!(
+                    "tighten private file permissions on {}: {e}",
+                    path.display()
+                ))
+            })?;
     }
     Ok(file)
 }
@@ -790,6 +839,24 @@ impl JsonlEventEmitter {
     /// yolop's broadcast lives. `emit` below keeps both halves together for the
     /// few callers that drive the emitter directly.
     async fn commit(&self, request: EventRequest) -> Result<Event> {
+        if self.authority_owned {
+            if !matches!(
+                &request.data,
+                EventData::BudgetWarning(_)
+                    | EventData::BudgetPaused(_)
+                    | EventData::BudgetExhausted(_)
+                    | EventData::BudgetResumed(_)
+            ) {
+                return Err(AgentLoopError::config(
+                    "Engine owns canonical session events",
+                ));
+            }
+            let mut event = request.into_event(EventId::new(), 0);
+            event.sequence = None;
+            self.persist(&event, 0).await?;
+            self.events.write().await.push(event.clone());
+            return Ok(event);
+        }
         // Assign id + sequence ourselves so we own the monotonic
         // sequence even across resumes.
         let previous = self
@@ -899,7 +966,6 @@ impl JsonlEventEmitter {
     /// Was `EventBus::collected_events`; the trait is gone with the canonical
     /// event model, but yolop's own callers (checkpointing, transcript) still
     /// want the whole active branch in one shot rather than paged.
-    #[cfg(test)]
     pub async fn collected_events(&self) -> Vec<Event> {
         self.events.read().await.clone()
     }
@@ -997,6 +1063,11 @@ impl EventReader for JsonlEventEmitter {
 #[async_trait]
 impl EventLog for JsonlEventEmitter {
     async fn append(&self, request: EventRequest) -> std::result::Result<Event, EventLogError> {
+        if self.authority_owned {
+            return Err(EventLogError::Backend {
+                detail: "Engine owns canonical session events".into(),
+            });
+        }
         self.commit(request)
             .await
             .map_err(|error| EventLogError::Backend {
@@ -1009,6 +1080,11 @@ impl EventLog for JsonlEventEmitter {
         request: EventRequest,
         expected_last_sequence: Option<i32>,
     ) -> std::result::Result<Event, EventLogError> {
+        if self.authority_owned {
+            return Err(EventLogError::Backend {
+                detail: "Engine owns canonical session events".into(),
+            });
+        }
         self.commit_conditional(request, expected_last_sequence)
             .await
     }
@@ -1115,6 +1191,48 @@ mod tests {
         EventContext, InputMessageData, OutputMessageCompletedData, SessionTitleUpdatedData,
         ToolCompletedData,
     };
+
+    #[test]
+    fn session_lease_release_does_not_wait_for_an_inherited_descriptor() {
+        let session = tempfile::tempdir().unwrap();
+        let lease = lock_session(session.path()).unwrap();
+        let inherited = lease.0.try_clone().unwrap();
+        assert!(lock_session(session.path()).is_err());
+        drop(lease);
+        let replacement = lock_session(session.path()).unwrap();
+        drop(inherited);
+        assert!(
+            lock_session(session.path()).is_err(),
+            "closing an old inherited descriptor cannot release the new owner's lease"
+        );
+        drop(replacement);
+        assert!(lock_session(session.path()).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn session_lease_refuses_linked_locks_before_changing_permissions() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let root = tempfile::tempdir().unwrap();
+        let session = root.path().join("session");
+        let locks = root.path().join(".locks");
+        std::fs::create_dir(&session).unwrap();
+        std::fs::create_dir(&locks).unwrap();
+        let victim = root.path().join("unrelated");
+        std::fs::write(&victim, b"unchanged").unwrap();
+        std::fs::set_permissions(&victim, std::fs::Permissions::from_mode(0o640)).unwrap();
+        let lock = locks.join("session");
+        symlink(&victim, &lock).unwrap();
+        assert!(lock_session(&session).is_err());
+        std::fs::remove_file(&lock).unwrap();
+        std::fs::hard_link(&victim, &lock).unwrap();
+        assert!(lock_session(&session).is_err());
+        assert_eq!(
+            std::fs::metadata(&victim).unwrap().permissions().mode() & 0o777,
+            0o640
+        );
+        assert_eq!(std::fs::read(&victim).unwrap(), b"unchanged");
+    }
 
     fn input_event(session_id: SessionId, text: &str) -> Event {
         Event::new(

@@ -26,7 +26,7 @@ workspace, or do both, then edit and resend the original prompt.
 A checkpoint is the state immediately **before** a user or automatic turn:
 
 - the active conversation head;
-- an exact sequence boundary in the append-only session log;
+- the admitted input sequence and exact active authority ranges;
 - a workspace snapshot when the session owns an active Git worktree;
 - the prompt that is about to run, for list labels and input restoration;
 - enough metadata to preview and validate a restore.
@@ -71,7 +71,7 @@ implies the other. The UI always names the state it will change.
 
 Rewind does not delete history. It moves the active head to an ancestor and
 preserves the abandoned suffix as a branch. This makes redo and crash-safe
-resume possible without rewriting `events.jsonl`.
+resume possible without deleting the canonical journal. The JSONL export can be rebuilt.
 
 Workspace restore means file contents, paths, executable bits, and symlinks in
 the captured worktree. It deliberately does **not** rewrite the worktree branch,
@@ -87,16 +87,21 @@ intact and produces ordinary working-tree differences against the current
 
 ## Storage
 
-The existing per-session directory gains:
+The native authority and per-session product metadata are separate:
 
 ```text
 <session>/
-  events.jsonl                 # immutable event payloads, as today
+  events.jsonl                 # rebuildable raw Engine authority export
+  host-events.jsonl            # private product budget diagnostics
+  restore-intent.json          # present only during a confirmed restore
+  legacy-events.jsonl          # retained mixed source when importing children
   timeline.jsonl               # append-only checkpoint/head/restore records
-  compaction-checkpoints.jsonl # append-only model-context replacements
+  compaction-checkpoints.jsonl # retained legacy model-context import source
   workspace.json               # existing session/worktree metadata
 ```
 
+`engine.sqlite` and its private `engine.key` live at the sessions root. Native
+conversation branches and compaction replacements belong to that authority.
 Workspace snapshots use Git objects in the session worktree's repository,
 anchored by private refs:
 
@@ -114,8 +119,8 @@ normal Git GC to reclaim unreachable objects.
 
 Each timeline record is JSONL and owner-only. Relevant record types are:
 
-- `checkpoint.created`: checkpoint id, parent checkpoint, event sequence before
-  the turn, prompt, snapshot tree/ref, and any capture error;
+- `checkpoint.created`: checkpoint id, parent checkpoint, admitted input sequence,
+  exact native history ranges before the turn, prompt, snapshot and capture error;
 - `turn.completed`: checkpoint id and final event sequence/status;
 - `head.moved`: old head, new head, abandoned head, and recovery snapshot;
 - `redo.cleared`: the abandoned head is no longer the implicit redo target.
@@ -124,14 +129,21 @@ The journal is append-only and flushed before the turn begins or a restore is
 reported successful. A compact derived index may be added later, but it is never
 the source of truth.
 
+If a confirmed restore fails after its intent is durable, the same confirmation
+token retries that command in the running process. The retained intent and its
+recovery snapshot remain authoritative until completion. New previews are
+refused while the intent is pending, so they cannot replace its recovery state.
+Startup recovery uses the same command and preserves the abandoned branch for
+redo.
+
 ### Model-context checkpoints
 
-Model-context compaction is a separate, derived projection over the lossless
-event log. A successful native compaction appends the provider/model, source
-event sequence, format version, and provider-opaque replacement to
-`compaction-checkpoints.jsonl`. Subsequent calls reconstruct model input as the
-latest compatible checkpoint on the active timeline plus raw messages after its
-source boundary. The raw events are never rewritten or deleted.
+Model-context compaction is a separate projection over the lossless authority
+journal. A successful replacement records provider/model, source sequence,
+format and opaque context in native hosting. History selection chooses the
+compatible replacement and raw suffix together. Legacy replacements in
+`compaction-checkpoints.jsonl` are imported with their retained branch lineage.
+The source file and canonical raw events remain available.
 
 Proactive replacement is triggered by either context-window pressure or prompt
 cost pressure. Cost pressure combines bounded cumulative uncached input with
@@ -169,41 +181,25 @@ not enter public events or logs.
 
 ## Conversation replay
 
-`events.jsonl` remains the durable event payload store. `timeline.jsonl`
-describes which event ranges form the active branch.
+The Engine authority owns the active conversation branch and compaction lineage.
+`events.jsonl` exports the complete journal, including abandoned history.
 
-On a new turn, Yolop:
+Native turn-start lifecycle processing captures the workspace before effects and
+records the input's authoritative sequence and the preceding active ranges.
+Admissions can interleave, so a turn is not assumed to occupy one contiguous
+sequence interval. Recovered lifecycle calls reuse the same checkpoint boundary.
+Completion synchronizes committed events and records the checkpoint outcome.
 
-1. validates the requested model when its provider exposes model discovery;
-2. creates and flushes the checkpoint;
-3. records its parent as the current conversation head;
-4. runs the turn and appends events normally;
-5. records the turn's final sequence and status;
-6. advances the active head.
+Model preflight runs before admission. Within execution, Framework provider
+recovery reuses the admitted ask and completed tool outputs. Yolop supplies its
+stall window and bounded retry policy through HostServices.
 
-A failed model preflight does not create a checkpoint or append the ask. Once a
-provider request begins, everruns-core owns bounded transient recovery inside
-the active reason phase. Yolop installs a stall liveness window and a recovery
-elapsed budget large enough to absorb full stall retries (upstream's default
-elapsed budget is shorter than one stall window). Retries reuse the persisted ask
-and completed tool outputs; they never create another checkpoint or re-run a
-completed tool.
-
-On resume, Yolop validates the timeline, walks parents from the active head, and
-replays only those event ranges into the event bus, message store, and transcript.
-Abandoned events remain in the raw session log and therefore remain discoverable
-through session search, but never enter model context unless that branch is
-restored.
-
-The live runtime retains the concrete in-memory message store handle. A
-conversation restore reseeds it from the materialized branch and replaces the
-host's active transcript from the same event set. No process restart is
-required. The event sequence remains globally monotonic across all branches.
-
-Compaction and opaque provider reasoning artifacts belong to their turn range.
-Rolling back past them removes them from active replay; Yolop must not reuse a
-provider continuation id whose ancestor messages are no longer active. The next
-turn starts a fresh provider continuation from the materialized messages.
+Rewind uses the authority's revision-checked branch-selection command while
+execution is quiescent. Native hosting selects conversation and compatible
+compaction together. Frontends refresh their transcript from the same canonical
+active history. No mutable in-memory message store is reseeded below Engine.
+Sequences remain monotonic across retained branches. Discarded provider reasoning
+and compaction cannot remain attached to the newly selected branch.
 
 ## Workspace restore
 
@@ -245,11 +241,18 @@ is labeled `conversation only` with the reason. Typical reasons include a missin
 Git repository, repository lock, unsupported path encoding, or unreadable file.
 Yolop never presents a partial snapshot as an exact workspace restore.
 
-Interrupted/failed turns still have checkpoints and are rewindable. If a crash
-occurs after the workspace snapshot but before the turn-completion record, resume
-closes the turn as interrupted at the last persisted event sequence. If a crash
-occurs during restore, the absence of `head.moved` leaves the prior conversation
-head authoritative and the private recovery ref available for manual recovery.
+Interrupted and failed turns retain checkpoints. Native execution recovery owns
+the unfinished turn; a recovered turn-start hook does not duplicate its snapshot.
+
+A confirmed native restore first verifies the workspace preview, then fsyncs a
+private `restore-intent.json` containing its stable command ID, authority revision,
+target ranges, workspace target and redo snapshot. The intent fences Engine
+claims for the workspace group. Recovery replays the same history command,
+restores files, appends an idempotent head record and rebuilds the export before
+removing the fence. Restart handles interruption after the intent, after native
+selection or after product timeline completion. A refused, unapplied selection
+clears the intent and surfaces a fresh-preview notice. Other failures retain it
+and refuse execution until the already-confirmed restore can finish.
 
 Malformed timeline records are skipped only at the corrupt tail. Corruption in
 the committed prefix disables mutation and leaves session replay read-only until
@@ -286,29 +289,13 @@ be duplicated in the UI.
 
 ## Fit with the current architecture
 
-Version 1 is implemented inside Yolop without an Everruns protocol change:
-
-- `src/runtime/session_log.rs` already owns append-only event persistence, replay
-  filtering, sequence continuity, private permissions, tail repair, and the
-  single-writer file lock. Timeline materialization belongs beside it.
-- Runtime construction already creates a concrete `InMemoryMessageRetriever`
-  and seeds it on resume. Retaining its `Arc` in `RuntimeHandles` is sufficient
-  to clear/reseed live model history after rewind; no new message-store trait
-  method is required.
-- `App` owns the mutable transcript vector and replaces it from the active event
-  set after a restore.
-- `WorktreeManager::worktree_info()` identifies an active session worktree and
-  exposes its path. Snapshot creation can use ordinary Git plumbing against that
-  path without changing the runtime file-store abstraction.
-- TUI and ACP foreground turns are serialized at host boundaries. The retained
-  `SessionTaskRegistry` rejects restore while descendant tasks are active, and
-  stale-preview verification rejects external edits made before confirmation.
-- ACP already advertises and dispatches capability commands. Preview/confirm can
-  therefore be expressed as command results without extending ACP.
-
-The main implementation is Yolop state coordination, not a missing platform
-capability. A future shared-checkout/non-Git restore mode may justify a shadow
-repository, and richer native ACP UI would require ACP support.
+Engine provides history branching and compaction lineage. Yolop supplies the
+checkpoint lifecycle hooks, private Git refs, preview policy and restore intent
+coordinating native conversation selection with filesystem changes. A shared
+read/write restore gate and the retained intent prevent claimed native execution
+from racing a restore. Active descendant tasks still block restoration.
+ACP keeps its workspace-only command surface because clients cannot replace
+transcripts. All hosts call one checkpoint controller.
 
 ## Acceptance criteria
 

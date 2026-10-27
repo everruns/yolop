@@ -33,7 +33,7 @@ const SESSIONS_CONTROL_RESOURCE: &str = "sessions";
 pub(crate) const SESSIONS_CONTROL_ROUTE: ControlRoute = ControlRoute {
     resource: SESSIONS_CONTROL_RESOURCE,
     cli_subcommand: SESSIONS_COMMAND,
-    read_only_operations: &["search", "list", "live"],
+    read_only_operations: &["search", "list", "live", "migration_check"],
     summary: "search local Yolop sessions and message one",
 };
 const DEFAULT_LIMIT: usize = 10;
@@ -149,6 +149,9 @@ pub(crate) enum SessionsAction {
         limit: Option<u64>,
     },
     Live,
+    MigrationCheck {
+        session: String,
+    },
     Send {
         session: String,
         message: String,
@@ -181,6 +184,28 @@ impl ControlCapability for SessionsCapability {
                 };
             }
             SessionsAction::Send { session, message } => return self.send(&session, &message),
+            SessionsAction::MigrationCheck { session } => {
+                let target = match session.parse::<SessionId>() {
+                    Ok(target) => target,
+                    Err(_) => return ToolExecutionResult::tool_error("not a session id"),
+                };
+                let directory =
+                    crate::runtime::session_log::session_dir_path(&self.sessions_dir, target);
+                return match tokio::task::spawn_blocking(move || {
+                    crate::runtime::migration::LegacySessionSource::read(&directory, target)
+                        .map(|source| source.summary())
+                })
+                .await
+                {
+                    Ok(Ok(summary)) => ToolExecutionResult::success(summary),
+                    Ok(Err(error)) => ToolExecutionResult::tool_error(format!(
+                        "migration source check failed: {error:#}"
+                    )),
+                    Err(error) => ToolExecutionResult::tool_error(format!(
+                        "migration source check task failed: {error}"
+                    )),
+                };
+            }
         };
         let arguments = json!({
             "query": query,
@@ -215,6 +240,15 @@ struct SessionsCommandLine {
 
 #[derive(clap::Subcommand)]
 enum SessionsCommand {
+    /// Check a saved session's history, branches and compaction before migration.
+    /// Requires the session to be closed. Does not transfer ownership.
+    #[command(
+        after_help = "Examples:\n  Check a closed session before migration:\n    yolop sessions migration-check session_0193..."
+    )]
+    MigrationCheck {
+        /// The saved session id.
+        session: String,
+    },
     /// Search user-visible messages and recorded failures in prior sessions.
     #[command(
         after_help = "Examples:\n  Find the session that hit a specific error:\n    yolop sessions search --query QUASAR-9182"
@@ -268,6 +302,10 @@ impl SessionsCommandLine {
         use clap::FromArgMatches;
         let cli = Self::from_arg_matches(matches)?;
         match cli.command {
+            SessionsCommand::MigrationCheck { session } => Ok(json!({
+                "operation":"migration_check",
+                "session":session,
+            })),
             SessionsCommand::Search {
                 query,
                 positional_query,
@@ -1068,6 +1106,44 @@ mod tests {
 
     fn memory_store() -> CoordinationStore {
         CoordinationStore::new(everruns::local::SqliteDb::open_in_memory().unwrap()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn migration_check_uses_the_real_lease_and_reports_no_ownership_transfer() {
+        use crate::runtime::session_log::{JsonlEventEmitter, session_dir_path};
+        use everruns_core::{Event, EventContext, InputMessageData, RuntimeMessage};
+        let dir = tempfile::tempdir().unwrap();
+        let target = SessionId::new();
+        let session_dir = session_dir_path(dir.path(), target);
+        std::fs::create_dir(&session_dir).unwrap();
+        let log = session_dir.join("events.jsonl");
+        let mut event = Event::new(
+            target,
+            EventContext::default(),
+            InputMessageData::new(RuntimeMessage::user("private migration evidence")),
+        );
+        event.sequence = Some(1);
+        let bytes = format!("{}\n", serde_json::to_string(&event).unwrap());
+        std::fs::write(&log, &bytes).unwrap();
+        let capability = SessionsCapability::detached(dir.path().to_path_buf(), memory_store());
+        let matches = capability
+            .cli_command()
+            .try_get_matches_from(["sessions", "migration-check", &target.to_string()])
+            .unwrap();
+        let request = capability.control_request_from_cli(&matches).unwrap();
+        let response =
+            ControlResponse::from_tool_result(capability.execute_control(&request.action).await);
+        assert!(response.ok);
+        let value = response.value.unwrap();
+        assert_eq!(value["event_count"], 1);
+        assert_eq!(value["cutover_performed"], false);
+        assert_eq!(value["source_valid"], true);
+        assert!(!value.to_string().contains("private migration evidence"));
+        assert_eq!(std::fs::read_to_string(&log).unwrap(), bytes);
+        let _running = JsonlEventEmitter::open(&log, 2).unwrap();
+        let busy =
+            ControlResponse::from_tool_result(capability.execute_control(&request.action).await);
+        assert!(!busy.ok, "preflight must refuse a running legacy session");
     }
 
     #[tokio::test]

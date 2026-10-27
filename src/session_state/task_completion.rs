@@ -3,8 +3,6 @@ mod diagnostics;
 
 use crate::config::{Settings, service::ConfigService};
 use anyhow::{Context, Result};
-use everruns_core::command_host::{CommandHost, SessionCompletionRequest};
-use everruns_core::host::{RuntimeHostAdapter, StoreCommandHost};
 pub(crate) use everruns_core::turn_completion::{CompletionState, GateDecision};
 use everruns_core::{RuntimeMessage, RuntimeMessageRole};
 use std::time::{Duration, Instant};
@@ -51,7 +49,7 @@ pub(crate) fn gate_turn(
     result: &everruns_core::host::TurnResult,
     background: bool,
 ) -> GateDecision {
-    use everruns_core::host::TurnStopReason::*;
+    use everruns_contracts::turn::TurnStopReason::*;
     if result.stop_reason == Cancelled {
         return GateDecision::Conclusive(CompletionState::Blocked);
     }
@@ -114,6 +112,8 @@ impl CompletionController {
         self.record_reset(handles, result.turn_id, &settings.snapshot())
             .await?;
         self.last_turn = Some(result.turn_id);
+        let background =
+            background || (result.success && handles.runtime.has_owed_work(result.turn_id).await?);
         // Charge only automatic repairs. A long original turn must still get a recovery chance.
         let tokens = if self.repairs > 0 {
             handles.turn_tokens(result.turn_id).await
@@ -140,35 +140,20 @@ impl CompletionController {
                     },
                 ),
                 GateDecision::Evaluate => {
-                    let runtime = handles.runtime.as_ref();
-                    let org = everruns_core::host::in_process_internal_org_id(
-                        everruns_core::DEFAULT_ORG_PUBLIC_ID,
-                    );
-                    let host = StoreCommandHost::new(
-                        handles.session_id,
-                        runtime.harness_store(org),
-                        runtime.agent_store(org),
-                        runtime.session_store(org),
-                        runtime.message_store(),
-                        runtime.provider_store(org),
-                        runtime.capability_registry(),
-                        runtime.driver_registry(),
-                    )
-                    .with_file_store(runtime.file_store(org));
-                    let context = host.turn_context().await?;
-                    let evidence = review_evidence(&context.messages, &result.response);
-                    let request = SessionCompletionRequest {
-                        system_prompts: vec![REVIEW_PROMPT.to_string()],
-                        messages: vec![RuntimeMessage::user(evidence)],
-                        metadata: [("purpose".to_string(), "completion_review".to_string())].into(),
-                        ..Default::default()
-                    };
-                    let response =
-                        tokio::time::timeout(Duration::from_secs(45), host.completion(request))
-                            .await
-                            .context("completion review timed out")?
-                            .map_err(|err| anyhow::anyhow!("completion review failed: {err:?}"))?;
-                    parse_review(&response.text)?
+                    let session = handles.runtime.session(handles.session_id).await?;
+                    let messages = handles.runtime.messages(handles.session_id).await?;
+                    let evidence = review_evidence(&messages, &result.response);
+                    let response = session
+                        .complete(
+                            everruns::CompletionRequest::new()
+                                .system_prompt(REVIEW_PROMPT)
+                                .user(evidence)
+                                .purpose("completion_review")
+                                .timeout(Duration::from_secs(45)),
+                        )
+                        .await
+                        .context("completion review failed")?;
+                    parse_review(&response)?
                 }
             })
         }
@@ -336,7 +321,7 @@ mod tests {
             tool_calls_count: 0,
             success: true,
             error: None,
-            stop_reason: everruns_core::host::TurnStopReason::EndTurn,
+            stop_reason: everruns_contracts::turn::TurnStopReason::EndTurn,
             turn_id: everruns_contracts::typed_id::TurnId::new(),
         };
         assert_eq!(gate_turn(&result, false), GateDecision::Evaluate);

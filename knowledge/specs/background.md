@@ -8,7 +8,7 @@ description: Defines the background execution contract for Yolop.
 
 Status: consolidated onto Everruns primitives. Detached background work runs
 through Everruns `spawn_background` and is tracked in Everruns `session_tasks`
-(backed locally by `everruns-local`). Yolop owns no competing task registry; it
+(backed by native Engine SQLite hosting). Yolop owns no competing task registry; it
 adds only the wake delivery boundary and the `/background` command.
 
 ## Why
@@ -18,7 +18,7 @@ The canonical case is *waiting for CI*: `gh pr checks <pr> --watch` (or a poll
 loop) runs for minutes, then the agent should read the result and continue.
 
 Yolop has one agent loop per session and every unit of work is *turn-scoped*: a
-turn is `runtime.run_turn`. Background execution is the primitive that lets work
+turn is executed by its registered Engine session. Background execution is the primitive that lets work
 outlive a turn and then call the agent back when it finishes.
 
 The design goal is a **single generic background-execution core**, not a
@@ -50,19 +50,11 @@ runs use a separate 24-hour wall-clock limit so CI watches can outlive a turn
 without becoming unbounded host processes.
 
 For delayed or recurring work, `spawn_background` accepts a `schedule` instead
-of starting the wrapped tool immediately. Everruns persists the monitor and its
-payload in the local SQLite store. Yolop starts one `LocalScheduleRunner` per
-live host session; when a schedule becomes due, the runner sends the stored
-monitor prompt through the same upstream `HostRoutedRunner` used by background
-completions.
-The resulting turn starts the wrapped tool, and that tool's eventual completion
-produces the ordinary second wake. The TUI and ACP session objects retain the
-runner handle for their lifetimes, preventing polling from outliving its host.
-Before each poll, `everruns-local::WakeRoutes` reports the live session routes
-in this process; the local scheduler scopes claims to that set. This prevents
-inactive sessions' overdue schedules from being claimed and rejected on every
-poll. Delivery is still routed by `SessionId`, and a route that closes after the
-claim rejects the wake so the occurrence remains durable and retryable.
+of starting immediately. Native hosting persists the monitor and payload and
+owns its leased schedule runner. The process's retained native supervisor
+executes admitted monitor inputs. The resulting turn starts the wrapped tool;
+its completion follows the ordinary task handoff path. Frontend wake channels
+observe this work and do not authorize schedule execution.
 
 ### Steering (poll-proofing)
 
@@ -87,9 +79,8 @@ harness steers there at the three places poll loops start, on any repo:
 The `subagents` capability exposes the unified `spawn_agent` tool for linked
 child sessions. A child inherits the parent's harness, agent, model, workspace,
 and safety boundary but gets its own message history and context window. The
-local runner creates the child in the shared session store and drives its turns
-through the same `InProcessRuntime`; per-child turn locks serialize initial
-instructions and task-completion messages.
+native platform service creates another registered Engine session. Native
+admission and epochs serialize initial instructions and subsequent messages.
 
 Background fan-out is bounded twice: Everruns permits five active background
 runs per session, and Yolop configures at most 32 active descendants across a
@@ -135,85 +126,52 @@ On completion `spawn_background`'s sink calls
 platform store that call is a silent no-op, which is why finished background
 work previously never reached the agent.
 
-Due schedules enter through the same host boundary: `everruns-local` calls
-`LocalSessionRunner::send_message(session_id, <stored monitor prompt>)`. The
-single channel and host turn lock serialize schedule wakes, foreground prompts,
-and background completions.
+Yolop's platform adapter authenticates completion text against the durable task
+registry and builds a bounded handoff with task ID, attempt, state, summary and
+artifact references. Task content remains untrusted. The adapter calls Engine
+`send_with_id` with a stable identity derived from the task's terminal occurrence.
+A repeated signal cannot create another admission. Artifact paths resolve to
+physical display paths so both file tools and shell reads can open them.
 
-Yolop installs a platform store to close that gap (`crate::background_wake`):
+Engine classifies a fast completion as steering or a later turn. TUI, print and
+ACP consume observation notifications for that accepted input, correlate streams
+with its assignment and wait for its outcome. They do not resubmit it. An input
+steered into a foreground turn produces a handled notice rather than another
+model turn. A terminal task already inspected through task tools needs only a
+notice. Completion review waits for owed native admissions and task handoffs.
 
-- `runtime.rs` wires a `LocalPlatformStore` backed by
-  `everruns-local::HostRoutedRunner` via `LocalBackends::with_platform_runner`.
-  The upstream route registry hands live-host messages to Yolop's enrichment
-  bridge and then `BuiltRuntime::background_wake`, so the host can stream the
-  turn normally. Its inner Yolop runner resolves authenticated task handoffs and
-  runs child sub-agent turns synchronously when no live host owns the session.
-- The runner's `routable_session_ids` exposes only currently registered wake
-  routes, which bounds local schedule claims to sessions this host process can
-  actually wake.
-- The **TUI** drains the channel from its idle event loop
-  (`App::maybe_wake_from_background_channel`) and starts a streamed turn.
-- The **ACP** server, whose request/response loop only runs turns while a client
-  prompt is in flight, drains the channel from a push-based per-session task
-  (`spawn_background_wake_drain`) that takes the same `turn_lock` as client
-  prompts so a wake turn never overlaps one, and joins on connection teardown.
-  Before running the wake turn the drain sends a specific notice naming each
-  finished task and its outcome, so the client shows facts even when the turn
-  itself emits no text. Each announced task is marked reported for the session.
-- Both frame the completion message as an `[automatic]` prompt
-  (`frame_wake_prompt`): explicitly not a user message. The authenticated
-  terminal snapshot is authoritative, so the model does not re-query task state,
-  retitle the session, or retry unchanged failed work before it continues. The
-  host resolves the matching durable task snapshot and attaches provenance
-  metadata that ordinary prompt text cannot forge.
-- If the foreground turn already observed the same terminal snapshot through a
-  task inspection tool, the host consumes the queued notification without a
-  second model turn. ACP and the TUI still surface a completion-handled notice.
-- A completion turn retains ordinary conversation context, including the
-  original substantive task and later user steering. The host attaches bounded,
-  registry-authenticated terminal snapshots and their artifact references. It
-  does not replace the parent transcript with the latest human message. Normal
-  upstream context masking and canonical compaction remain available.
-- The lossless parent history, task record, `result.json`, and `output.log`
-  remain durable and queryable through `query_history`, task tools, and session
-  file reads. Authenticated artifact references are resolved through the same
-  filesystem display contract as foreground output paths, so both file tools
-  and shell reads can access them. Task summaries and specs are untrusted data.
-- Automatic prompts do not become a new user request. Background waiting and
-  subsequent recovery use the shared [completion controller](task-completion.md).
-- Both coalesce completions already queued at the same idle boundary into one
-  automatic prompt in notification order. All resolved task snapshots share
-  one bounded handoff; a mixed or unusually large burst falls back safely and
-  the durable task registry remains authoritative.
-- Opt-out: the `proactive_wake` setting (on by default) suppresses the auto-turn
-  and surfaces a one-line notice instead. The next user turn then reconciles
-  the still-unreported completion deterministically (see below).
-- `--print` waits for pending execution and consumes the same wake channel before
-  printing its accepted final response. It allows ten minutes of host waiting
-  from the first pending execution. Signal-disabled tasks are reconciled from durable
-  registry state. Persistent monitors and tasks awaiting input proceed to review
-  of the current request. Cancellation, a disabled proactive wake setting, or
-  wait exhaustion exits with an explicit error rather than success.
+The notice names the task and result even if no model text follows. ACP serializes
+presentation with client prompts and reconciles terminal tasks on each later
+user request. Startup and lifecycle reads recover pending admission observation
+when a lossy event listener misses it. Ordinary user text cannot forge host
+handoff provenance. Automatic inputs retain the parent's conversation context
+and use the shared [completion controller](task-completion.md).
+
+The `proactive_wake` opt-out prevents automatic task admission and sends a notice.
+The next user turn reconciles unreported terminal work. Print mode waits for
+pending execution and accepted completion inputs before reporting success, with
+a ten-minute host wait bound. Cancellation, disabled proactive wake or exhausted
+waiting reports an explicit error. A notification batch cannot coalesce distinct
+already-admitted inputs into a replacement execution command.
 
 ## Durability and restart
 
-Session tasks and their `result.json` / `output.log` artifacts live in
-`everruns-local` (SQLite) and the session file store, so results survive a
-restart. In-flight OS processes do not: a run whose worker died is not resumed
-unless an orphan reaper re-attaches it (Yolop runs none, so non-reattachable
-runs simply stop). The wake is a live, in-process signal, a completion that
-happened while Yolop was down is observed on the next `/background` / `get_task`,
-not replayed as a wake. As a backstop, the ACP server reconciles on each user
-turn under `turn_lock`: every terminal background task that is neither observed
-through a task inspection tool nor already reported for the session is announced
-once as a deterministic summary chunk and added to the model input, then marked
-reported. Already-observed completions stay silent.
+Native authority events, task records and private artifacts survive restart.
+The retained supervisor rediscovers admitted runnable work. OS subprocesses
+whose owner died are not blindly relaunched; Framework task recovery settles
+non-reattachable work. Terminal task inspection and ACP reconciliation recover
+results whose completion notification was not admitted before process loss.
 
-Schedules are different: their trigger state is durable. The local runner uses
-atomic, leased SQLite claims, advances recurring schedules only after delivery,
-and disables successful one-shot schedules. A due schedule that could not fire
-while Yolop was down is claimed after the session is loaded again; stale claims
-from an interrupted runner become retryable after the upstream claim timeout.
+Schedules retain leased occurrence state, advance recurring schedules after
+successful delivery and disable delivered one-shot schedules. Native delivery
+currently lacks a stable Engine admission identity across delivery and schedule
+acknowledgement. [EVE-1309](https://linear.app/everruns/issue/EVE-1309) tracks this
+upstream failure window; exactly-once schedule admission is not claimed.
+
+Native foreground subagent settlement also needs an upstream correction:
+[EVE-1310](https://linear.app/everruns/issue/EVE-1310). Until then, the platform
+adapter resolves idle sessions through their actual assigned turn outcomes.
+Only committed success maps to completed; bare idle does not imply success.
 
 ## Safety
 

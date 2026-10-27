@@ -1,6 +1,6 @@
 //! End-to-end streaming tests.
 //!
-//! These tests drive a real `InProcessRuntime` (via `runtime::build`)
+//! These tests drive a registered Engine session (via `runtime::build`)
 //! against the bundled llmsim driver, which emits real per-token chunks
 //! through its `TokenStreamBuilder`. We then assert the full pipeline:
 //!

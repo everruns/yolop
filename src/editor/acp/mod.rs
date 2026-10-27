@@ -345,20 +345,12 @@ mod tests {
                 },
             )
             .await?;
-            // Read the servers resolved onto the live session — what the next
-            // turn would use — rather than the raw request, proving the whole
-            // session/new → build → session chain.
-            use everruns_core::SessionStore;
-            if let Ok(Some(session)) = built
+            *self.seen_servers.lock().unwrap() = built
                 .handles
-                .session_store
-                .get_session(built.handles.session_id)
-                .await
-            {
-                let mut names: Vec<String> = session.mcp_servers.keys().cloned().collect();
-                names.sort();
-                *self.seen_servers.lock().unwrap() = names;
-            }
+                .configured_mcp_servers()
+                .keys()
+                .cloned()
+                .collect();
             Ok(built)
         }
     }
@@ -2409,7 +2401,7 @@ mod tests {
         let log_path = std::fs::read_dir(sessions.path())
             .unwrap()
             .filter_map(Result::ok)
-            .map(|entry| entry.path().join("events.jsonl"))
+            .map(|entry| entry.path().join("host-events.jsonl"))
             .find(|path| path.is_file())
             .unwrap();
         let events: Vec<everruns_core::Event> = std::fs::read_to_string(log_path)
@@ -2720,7 +2712,7 @@ mod tests {
                 name: "spawn_background".to_string(),
                 arguments: json!({
                     "tool": "bash",
-                    "args": { "command": "printf decisive-validation" },
+                    "args": { "command": "while [ ! -e release-native-wake ]; do sleep 0.01; done; printf decisive-validation" },
                     "title": "validate compact wake",
                     "signal_on_completion": true,
                 }),
@@ -2786,6 +2778,8 @@ mod tests {
                 .contains("spawned background bash"),
             "expected the user turn to run spawn_background, got: {prompt_updates:?}"
         );
+
+        std::fs::write(cwd.join("release-native-wake"), "release").unwrap();
 
         let woke = tokio::time::timeout(Duration::from_secs(20), async {
             let mut text = String::new();
@@ -3168,7 +3162,17 @@ mod tests {
         );
         let events = std::fs::read_to_string(sessions.join(session_id).join("events.jsonl"))
             .expect("read events");
-        assert!(!events.contains("Background work you started has finished:"));
+        let started = events
+            .lines()
+            .filter(|line| {
+                serde_json::from_str::<everruns_core::Event>(line)
+                    .is_ok_and(|event| event.event_type == "turn.started")
+            })
+            .count();
+        assert_eq!(
+            started, 1,
+            "an already-consumed completion must not start another turn"
+        );
     }
 
     /// A persisted local schedule must wake an idle ACP session at its due time,

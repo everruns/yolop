@@ -1,12 +1,15 @@
-// Runtime construction: wires `InProcessRuntime` through a platform
-// `SessionFileSystemFactory` so the built-in `agent_instructions`,
-// `file_system`, and `skills` capabilities operate against the embedder's
-// actual workspace. Only the `bash` tool is custom — it executes through the
-// configured containment provider instead of running against the VFS.
+// Compose registered Engine sessions with Yolop's host services, capabilities,
+// providers and reopenable workspace. SqliteHosting owns canonical execution.
 
 pub mod background_wake;
 mod compaction_checkpoint;
 pub(crate) mod discovered_profiles;
+pub(crate) mod engine;
+mod engine_hosting;
+mod engine_keys;
+mod engine_platform;
+mod engine_workspace;
+pub mod migration;
 mod session_start;
 // Stopgap classifiers for OpenRouter account gates (403 attestation, 404
 // data-policy / guardrail). Replace with the upstream structured error once
@@ -16,6 +19,7 @@ pub(crate) mod reasoning;
 pub mod session;
 pub mod session_log;
 pub(crate) mod speed;
+pub(crate) mod turn_scope;
 
 use crate::capabilities::mcp::McpCapability as YolopMcpCapability;
 use crate::capabilities::memory::{GlobalMemoryCapability, MEMORY_CAPABILITY_ID, MemoryStore};
@@ -64,12 +68,12 @@ use everruns_core::builtins::{
 // host 0.19 absorbed the session services; the standalone crate's copy writes to
 // a store this runtime no longer reads.
 use everruns_core::host::{
-    RuntimeHostAdapter, SESSION_CAPABILITY_ID, SESSION_STORAGE_CAPABILITY_ID, SessionCapability,
+    SESSION_CAPABILITY_ID, SESSION_STORAGE_CAPABILITY_ID, SessionCapability,
     SessionStorageCapability,
 };
 // #3111/#3119 moved the hosted and environment capability implementations out
 // of everruns-core into the platform and integration crates.
-use everruns::local::{LocalBackends, LocalProfile, LocalScheduleRunnerHandle};
+use everruns::local::{LocalBackends, LocalProfile};
 use everruns_capabilities::capabilities::{
     SESSION_TASKS_CAPABILITY_ID, SUBAGENTS_CAPABILITY_ID, USER_HOOKS_CAPABILITY_ID,
     UserHooksCapability,
@@ -82,14 +86,14 @@ use everruns_contracts::{
     DriverId, ModelProfile, ReasoningEffort, ReasoningEffortConfig, ReasoningEffortValue,
 };
 use everruns_contracts::{DriverRegistry, ProviderMetadata};
+#[cfg(test)]
 use everruns_core::SessionStore;
 use everruns_core::SessionTaskRegistry;
 use everruns_core::command::{CommandDescriptor, CommandResult, ExecuteCommandRequest};
 use everruns_core::host::RuntimeProviderStore;
 use everruns_core::host::{
-    AgentBuilder, CapabilityDelta, HarnessBuilder, HostBackends, InProcessRuntime,
-    InProcessRuntimeBuilder, RealDiskFileStore, RuntimeSessionStore, SessionBuilder,
-    WriteBlocklistFileStore,
+    AgentBuilder, CapabilityDelta, HarnessBuilder, HostBackends, RealDiskFileStore,
+    RuntimeSessionStore, SessionBuilder, WriteBlocklistFileStore,
 };
 use everruns_core::host::{SessionFileSystemFactory, SessionFileSystemFactoryContext};
 use everruns_core::mcp::{McpAuthProvider, McpAuthRequest, McpCredential};
@@ -110,7 +114,6 @@ use everruns_integrations::filesystem::{FileSystemCapability, SESSION_FILE_SYSTE
 use everruns_integrations::web_fetch::{WEB_FETCH_CAPABILITY_ID, WebFetchCapability};
 use everruns_integrations::web_search::{WEB_SEARCH_CAPABILITY_ID, WebSearchCapability};
 use everruns_llmsim::LlmSimConfig;
-use everruns_llmsim::LlmSimRuntimeExt;
 use ignore::WalkBuilder;
 use regex::RegexBuilder;
 
@@ -246,6 +249,7 @@ fn mcp_connection_for(
         endpoint,
         auth_mode: server.auth_mode.clone(),
         protocol_mode: server.protocol_mode,
+        tool_timeout_ms: server.tool_timeout_ms,
         // 0.33 made form-mode elicitation opt-in per server; carry the
         // server's own policy (`url` unless its config says otherwise).
         elicitation_policy: server.elicitation_policy,
@@ -257,7 +261,6 @@ fn mcp_connection_for(
         secret_bindings: Default::default(),
         acted_as: Default::default(),
         connect_in_chat: Default::default(),
-        tool_timeout_ms: None,
     })
 }
 
@@ -871,7 +874,31 @@ impl SessionFileSystem for CodingCliSessionFileStore {
     }
 
     fn resolve_path(&self, input: &str) -> String {
-        self.display_path(input)
+        // Framework policy checks the logical workspace namespace. Physical
+        // host roots belong only in display_path, or a hidden temp/config
+        // directory would become part of the model's access policy.
+        if let Some((index, (_, path))) = self
+            .skill_roots
+            .iter()
+            .enumerate()
+            .find(|(_, (root, _))| Path::new(input).starts_with(root))
+        {
+            let relative = Path::new(input)
+                .strip_prefix(path.root())
+                .unwrap_or_else(|_| Path::new(""));
+            return format!("/workspace/skills/{index}/{}", relative.display());
+        }
+        if let Some(relative) = self.session_artifact_path(input) {
+            return format!("/workspace{relative}");
+        }
+        if let Ok(root) = self.workspace.host_root() {
+            let candidate = Path::new(input);
+            if let Ok(relative) = candidate.strip_prefix(&root) {
+                return format!("/workspace/{}", relative.display());
+            }
+        }
+        let relative = everruns_core::session_path::to_session_path(input);
+        format!("/workspace{relative}")
     }
 
     fn display_path(&self, path: &str) -> String {
@@ -2842,6 +2869,9 @@ where
     // expiry in-turn; kept until the everruns release with the native fix ships.
     if reasoning::is_expired_response_chain_error(&error) {
         tracing::warn!("previous server response expired; turn retried statelessly");
+        if let Some(metadata) = input.metadata.as_mut() {
+            metadata.remove("yolop.observe_admission");
+        }
         return run(input).await;
     }
     // What the model names comes first: on a mid-turn `set_model` the level is
@@ -2877,6 +2907,9 @@ where
     }
 
     let mut retry = input;
+    if let Some(metadata) = retry.metadata.as_mut() {
+        metadata.remove("yolop.observe_admission");
+    }
     reasoning::apply_reasoning_effort(&mut retry, &effort);
     run(retry).await
 }
@@ -3360,7 +3393,6 @@ pub struct BuiltRuntime {
     /// Owns the local schedule poller for this host session. Dropping the host
     /// stops new schedule claims; due prompts share `background_wake` with
     /// ordinary background-task completion signals.
-    pub schedule_runner: LocalScheduleRunnerHandle,
     /// Shared repointable workspace disk for host-path tools (`bash`, `!shell`).
     pub workspace_host: Arc<WorkspaceHost>,
     /// Shared Everruns session task registry, backed by `everruns-local`. The
@@ -3378,7 +3410,7 @@ pub struct RuntimeHandles {
     /// [`RuntimeHandles::flush_trace_exporters`] at teardown; `None` once
     /// flushed, so a second call is a no-op.
     trace_flush: Arc<tokio::sync::Mutex<Option<crate::extensions::trace::TraceFlush>>>,
-    pub runtime: Arc<InProcessRuntime>,
+    pub runtime: Arc<engine::EngineRuntime>,
     settings: Arc<SettingsStore>,
     pending_model_choice: Arc<RwLock<Option<ProviderChoice>>>,
     pub session_id: SessionId,
@@ -3460,10 +3492,9 @@ impl RuntimeHandles {
         prompt: &str,
         input: InputMessage,
     ) -> anyhow::Result<everruns_core::host::TurnResult> {
-        let checkpoint = self.checkpoints.start_turn(prompt)?;
+        let _ = prompt;
         let result = self.runtime.run_turn(self.session_id, input).await;
         let success = result.as_ref().is_ok_and(|turn| turn.success);
-        checkpoint.finish(success)?;
         if success {
             let warning = SetupController::persist_pending_model_choice(
                 &self.settings,
@@ -3474,7 +3505,7 @@ impl RuntimeHandles {
             }
         }
         self.checkpoints.apply_queued_confirmation().await;
-        Ok(result?)
+        result
     }
 
     /// Run a turn, repairing the one provider rejection the host can repair
@@ -3529,11 +3560,8 @@ impl RuntimeHandles {
     /// `.mcp.json`) and swap it into the live session, so add / remove /
     /// enable / disable take effect on the next turn without a restart.
     ///
-    /// The runtime resolves a session's scoped MCP servers per turn from
-    /// `session.mcp_servers` and never negatively caches a failed or empty
-    /// discovery, so upserting the session here is enough: newly enabled
-    /// servers are discovered cold on the next turn and removed ones simply
-    /// drop out of the tool set. Returns the sorted names now active.
+    /// Engine resolves this capability's current scoped servers when building
+    /// model context. No mutable shadow session catalog is updated here.
     pub async fn reload_mcp_servers(&self) -> anyhow::Result<Vec<String>> {
         self.mcp_config.reload().await
     }
@@ -3542,11 +3570,13 @@ impl RuntimeHandles {
     /// servers (`mcp_<server>__<tool>`). Used by `/tools` so the listing
     /// matches what the next turn can call after login/reload — not the frozen
     /// startup capability list.
+    #[cfg(test)]
+    pub(crate) fn configured_mcp_servers(&self) -> ScopedMcpServers {
+        self.mcp_config.effective_servers()
+    }
+
     pub async fn list_mcp_tool_names(&self) -> Vec<String> {
-        let Ok(Some(session)) = self.session_store.get_session(self.session_id).await else {
-            return Vec::new();
-        };
-        discover_mcp_tool_names(&self.connections, &session.mcp_servers).await
+        discover_mcp_tool_names(&self.connections, &self.mcp_config.effective_servers()).await
     }
 
     /// Activate a registered `ext:<name>` capability on the live session so its
@@ -3558,10 +3588,9 @@ impl RuntimeHandles {
         &self,
         capability_id: &str,
     ) -> anyhow::Result<CapabilityDelta> {
-        Ok(self
-            .runtime
+        self.runtime
             .activate_capability(self.session_id, CapabilityRef::new(capability_id))
-            .await?)
+            .await
     }
 
     /// Deactivate a capability from the live session overlay. Enabled
@@ -3571,10 +3600,9 @@ impl RuntimeHandles {
         &self,
         capability_id: &str,
     ) -> anyhow::Result<CapabilityDelta> {
-        Ok(self
-            .runtime
+        self.runtime
             .deactivate_capability(self.session_id, capability_id)
-            .await?)
+            .await
     }
 }
 
@@ -4048,19 +4076,19 @@ impl Default for BuildOptions {
 
 /// Session command registry for the agent-facing `run_command` tool.
 ///
-/// Holds the same late-bound `Weak<InProcessRuntime>` the wake seam uses: the
+/// Holds the same late-bound `Weak<EngineRuntime>` the wake seam uses: the
 /// capability is constructed while the runtime is still being built, and the
 /// cell is set once `build()` returns, long before a turn can call a tool.
 /// Listing and executing go through `runtime.list_commands` /
 /// `runtime.execute_command`, the single registry every host reads, so the
 /// agent can run whatever the user could type.
 struct RuntimeCommandDispatch {
-    runtime: Arc<std::sync::OnceLock<std::sync::Weak<InProcessRuntime>>>,
+    runtime: Arc<std::sync::OnceLock<std::sync::Weak<engine::EngineRuntime>>>,
     session_id: SessionId,
 }
 
 impl RuntimeCommandDispatch {
-    fn runtime(&self) -> everruns_contracts::error::Result<Arc<InProcessRuntime>> {
+    fn runtime(&self) -> everruns_contracts::error::Result<Arc<engine::EngineRuntime>> {
         self.runtime
             .get()
             .and_then(std::sync::Weak::upgrade)
@@ -4141,7 +4169,7 @@ impl everruns_core::ProviderStore for YolopProviderStore {
 
     async fn get_provider_config(
         &self,
-        _provider: &everruns_contracts::runtime_provider::ProviderKey,
+        provider: &everruns_contracts::runtime_provider::ProviderKey,
     ) -> everruns_contracts::error::Result<
         Option<everruns_contracts::driver_registry::ProviderConfig>,
     > {
@@ -4159,7 +4187,24 @@ impl everruns_core::ProviderStore for YolopProviderStore {
         // yet": the provider stays constructible so configuration commands still
         // run, and provider operations fail locally at the credential boundary
         // instead of sending an empty key and surfacing a remote 401.
-        let Some(resolved) = self.resolved() else {
+        let selected = self.selection();
+        let resolved = if selected.as_ref().is_some_and(|model| {
+            model.provider_key() == *provider
+                || (provider.as_str() == "codex" && model.provider_key().as_str() == "openai-codex")
+        }) {
+            self.resolved().or_else(|| self.selection())
+        } else {
+            resolve_for_settings(provider.as_str(), &self.settings.snapshot())
+                .ok()
+                .and_then(|resolved| {
+                    resolved
+                        .choice
+                        .model_with_provider(&self.settings.snapshot())
+                        .ok()
+                })
+                .filter(|model| model.provider_key() == *provider)
+        };
+        let Some(resolved) = resolved else {
             return Ok(None);
         };
         if resolved.provider_type == DriverId::LlmSim {
@@ -4452,7 +4497,52 @@ pub async fn build_with_options(
         default_connections_path().unwrap_or_else(|| PathBuf::from("connections.toml"));
     let connections = Arc::new(ConnectionStore::open(connections_path));
     let connection_catalog = Arc::new(ConnectionCatalog::with_defaults());
+    use everruns::hosting::SessionHosting;
     let connection_resolver = Arc::new(YolopConnectionResolver::new(connections.clone()));
+    std::fs::create_dir_all(&sessions_dir)?;
+    let authority_path = sessions_dir.join("engine.sqlite");
+    let authority_key = engine_keys::open_or_create(&sessions_dir)?;
+    let native_hosting = everruns::hosting::SqliteHosting::open(&authority_path)?
+        .with_secret_keys(&authority_key, &[])?;
+    let retained_binding = match native_hosting.status(session_id).await {
+        Ok(status) => Some(status.binding),
+        Err(AgentLoopError::SessionNotFound(_)) => None,
+        Err(error) => return Err(error.into()),
+    };
+    let authority_catalog = Arc::new(engine::AuthorityCatalog {
+        hosting: native_hosting.clone(),
+        template: std::sync::OnceLock::new(),
+    });
+    let engine_build = retained_binding
+        .as_ref()
+        .map(|binding| binding.behavior.clone())
+        .unwrap_or_else(|| everruns::hosting::AgentBuild::new("yolop", format!("v1:{session_id}")));
+    anyhow::ensure!(
+        engine_build.agent == "yolop"
+            && engine_build
+                .build_id
+                .strip_prefix("v1:")
+                .is_some_and(|id| id.parse::<SessionId>().is_ok()),
+        "unsupported retained Yolop build: {} {}",
+        engine_build.agent,
+        engine_build.build_id
+    );
+    let mut migration_source = if retained_binding.is_none() && log_path.exists() {
+        Some(
+            migration::LegacySessionSource::read_for_runtime(
+                &session_dir,
+                session_id,
+                &sessions_dir,
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
+    let session_lease = match migration_source.as_mut() {
+        Some(source) => source.take_lease(),
+        None => session_log::lock_session(&session_dir)?,
+    };
 
     // Replay anything already on disk for this id. Missing file → empty.
     // Pass `session_id` so events for any other session get skipped
@@ -4460,19 +4550,19 @@ pub async fn build_with_options(
     let replayed = replay(&log_path, session_id)?;
     let next_sequence = replayed.max_sequence.map(|m| m + 1).unwrap_or(1);
 
-    // JsonlEventEmitter is the EventBus: emits to memory + appends
-    // replay-relevant lines to the per-session JSONL file. `next_sequence`
-    // carries the sequence counter across resumes so `Event.sequence`
-    // stays monotonic within a session.
+    // The emitter observes native events and persists only host diagnostics.
+    // JSONL supplies legacy import and frontend bootstrap until authority sync.
     let materializer = Arc::new(session_log::SessionMaterializer::new(
         session_dir.clone(),
         initial_workspace,
     ));
-    let event_bus_typed = Arc::new(JsonlEventEmitter::open_with_materializer(
+    let event_bus_typed = Arc::new(JsonlEventEmitter::observe_authority(
         &log_path,
-        next_sequence,
         materializer.clone(),
-    )?);
+        session_lease,
+    ));
+    event_bus_typed.load_host_diagnostics(session_id).await?;
+    event_bus_typed.observe_sequence(next_sequence.saturating_sub(1));
     let checkpoints = Arc::new(CheckpointManager::open(
         session_id,
         session_dir.clone(),
@@ -4497,22 +4587,14 @@ pub async fn build_with_options(
         update_session_workspace_title(&session_dir, &title)?;
     }
 
-    // Only the selected timeline branch enters the live stores. Abandoned
-    // suffixes remain in events.jsonl for redo and local history inspection.
+    // Bootstrap presentation only. Native synchronization replaces this view.
     event_bus_typed.seed_replayed(active_events).await;
-    // Start from the in-memory backend bundle, preserving Yolop's durable
-    // canonical event log, then let everruns-local attach the SQLite-backed
-    // task registry and schedule store.
-    //
-    // The same emitter fills both event slots, and they are different
-    // contracts: `event_log` is the durable, sole conversation write path,
-    // while `event_sink` is lossy post-commit observation feeding the TUI and
-    // ACP streams. There is no message store any more — messages are a
-    // projection of the canonical log, which is why the replayed branch is
-    // seeded into the emitter above rather than into a second store.
+    // Legacy descriptors below exist only to import old local service state.
+    // Their EventLog rejects canonical writes in authority-owned mode.
     let event_log: Arc<dyn everruns_core::host::EventLog> = event_bus_typed.clone();
     let event_sink: Arc<dyn everruns_core::host::EventSink> = event_bus_typed.clone();
     let provider_state = Arc::new(std::sync::RwLock::new(provider.clone()));
+    let runtime_cell = Arc::new(std::sync::OnceLock::new());
     let yolop_provider_store: Arc<dyn everruns_core::host::RuntimeProviderStore> =
         Arc::new(YolopProviderStore {
             provider: provider_state.clone(),
@@ -4523,10 +4605,10 @@ pub async fn build_with_options(
         .with_event_log(event_log)
         .with_event_sink(event_sink)
         .with_compaction_checkpoint_store(compaction_checkpoints)
-        .with_connection_resolver(connection_resolver);
+        .with_connection_resolver(connection_resolver.clone());
     let local_profile = LocalProfile::new(sessions_dir.join("everruns-local"))
         .with_workspace_root(effective_root.clone());
-    let mut local_backends = LocalBackends::new(local_profile, base_backends)
+    let local_backends = LocalBackends::new(local_profile, base_backends)
         .context("initialize everruns-local backend stores")?;
     let coordination_store = CoordinationStore::new(local_backends.db.clone())
         .context("initialize session coordination store")?
@@ -4534,35 +4616,36 @@ pub async fn build_with_options(
     // Assignment changes this process makes for a coordinator hosted elsewhere
     // (this session is its thread) reach that coordinator through its inbox.
     let task_registry: Arc<dyn SessionTaskRegistry> = Arc::new(
-        everruns_core::ObservingTaskRegistry::new(local_backends.task_registry.clone())
-            .with_observer(Arc::new(CoordinatorInboxWaker::new(
-                coordination_store.clone(),
-                session_id,
-            ))),
+        everruns_core::ObservingTaskRegistry::new(
+            native_hosting
+                .reader(session_id)
+                .session_task_registry
+                .context("native task registry unavailable")?,
+        )
+        .with_observer(Arc::new(CoordinatorInboxWaker::new(
+            coordination_store.clone(),
+            session_id,
+        ))),
     );
-    local_backends.runtime_backends = local_backends
-        .runtime_backends
-        .with_session_task_registry(task_registry.clone());
+
     let thread_coordinator = thread_of;
     let thread_launcher = options
         .thread_launcher
         .clone()
         .unwrap_or_else(process_thread_launcher);
     let task_schedule_store: Arc<dyn everruns_core::session_services::SessionScheduleStore> =
-        Arc::new(
-            local_backends
-                .schedule_store()
-                .context("open local schedule store for task controls")?,
-        );
+        Arc::new(everruns::local::LocalScheduleStore::new(
+            everruns::local::SqliteDb::open(&authority_path)?,
+            everruns_contracts::runtime::organization::DEFAULT_ORG_ID,
+            everruns_contracts::typed_id::PrincipalId::from_seed(1),
+        )?);
     checkpoints.attach_task_registry(task_registry.clone());
-    // Install the local platform seam. Host-session messages are queued onto
-    // `background_wake`; child sub-agent messages run synchronously through the
-    // in-process runtime once it has been built below.
-    let runtime_cell = Arc::new(std::sync::OnceLock::new());
+    // Retain product thread routing and authenticated task handoff enrichment.
+    // Native platform services own child creation and execution.
     let wake_runner = Arc::new(everruns::local::HostRoutedRunner::new(
         crate::runtime::background_wake::WakeRunner::new(
             runtime_cell.clone(),
-            local_backends.runtime_backends.session_store.clone(),
+            authority_catalog.clone(),
             Some(task_registry.clone()),
             provider_state.clone(),
         )
@@ -4584,7 +4667,7 @@ pub async fn build_with_options(
         session_id,
         project_id,
         effective_root.clone(),
-        background_wake_tx,
+        background_wake_tx.clone(),
         event_bus_typed.subscribe(),
         thread_launcher,
         options.serve_release.clone(),
@@ -4594,10 +4677,8 @@ pub async fn build_with_options(
         },
     )
     .context("start session coordination host")?;
-    let schedule_runner = local_backends
-        .start_schedule_runner(wake_runner.clone())
-        .context("start everruns-local schedule runner")?;
-    let local_backends = local_backends.with_platform_runner(wake_runner);
+    // Native hosting owns schedule execution. This runner remains only a
+    // routing adapter for the product's cross-process coordination inbox.
     let backends = local_backends.runtime_backends;
     // Shared between `ModelState` (for banner labels) and
     // `ModelsCapability` (which mutates it on a successful `/setup`).
@@ -5035,11 +5116,8 @@ pub async fn build_with_options(
     // so there is exactly one prompt block (framing plus administration).
     let mcp_config = Arc::new(crate::capabilities::mcp::McpSessionConfig {
         settings: settings.clone(),
-        sessions: backends.session_store.clone(),
-        session_id,
         workspace_root: canonical_root.clone(),
         client_servers: options.client_mcp_servers.clone(),
-        reload_lock: tokio::sync::Mutex::new(()),
     });
     capabilities.register(YolopMcpCapability {
         store: Arc::new(McpConfigStore::new(
@@ -5085,7 +5163,7 @@ pub async fn build_with_options(
     capabilities.register(BackgroundCapability {
         session_id,
         task_registry: task_registry.clone(),
-        session_store: backends.session_store.clone(),
+        session_store: authority_catalog.clone(),
     });
     // Terminal-side commands. Registered only when the host can apply their
     // effects (the TUI). The capability declares help/tools/mcp/cwd/model/
@@ -5241,31 +5319,21 @@ pub async fn build_with_options(
     };
     let model_driver_registry = driver_registry.clone();
 
-    // 0.18 replaced PlatformDefinition with HostComposition; same shape.
-    // Fire session-start hooks (config plus capability contributions such as
-    // the built-in rex handshake) once per process. Advisory only: hook
-    // failures never abort startup.
+    // Host process-start hooks run independently of native turn activation.
     session_start::fire_session_start_hooks(&capabilities, &harness_capabilities, session_id).await;
 
-    let platform_builder = everruns_core::host::HostComposition::builder()
-        .capability_registry(capabilities)
-        .driver_registry(driver_registry)
-        // Core's default transport is offline. Preserve the prior MCP-enabled
-        // host's runtime egress and environment proxy policy explicitly.
-        .egress_service(Arc::new(
-            everruns_core::host::DirectEgressService::for_runtime_traffic_from_env(),
-        ))
-        .session_file_system_factory(Arc::new(CodingCliSessionFileSystemFactory {
-            workspace: workspace_host.clone(),
-            session_dir: session_dir.clone(),
-            materializer: materializer.clone(),
-            skill_global: skill_dirs.global.clone(),
-            skill_profile: skill_dirs.profile.clone(),
-            skill_system: skill_dirs.system.clone(),
-            skill_environment: skill_dirs.environment.clone(),
-            extension_skills: extension_skill_scopes.clone(),
-        }));
-    let platform = platform_builder.build();
+    let files = CodingCliSessionFileSystemFactory {
+        workspace: workspace_host.clone(),
+        session_dir: session_dir.clone(),
+        materializer: materializer.clone(),
+        skill_global: skill_dirs.global.clone(),
+        skill_profile: skill_dirs.profile.clone(),
+        skill_system: skill_dirs.system.clone(),
+        skill_environment: skill_dirs.environment.clone(),
+        extension_skills: extension_skill_scopes.clone(),
+    }
+    .create_session_file_system(Default::default())
+    .await?;
 
     // Seed harness/agent/session explicitly so Yolop can attach harness
     // metadata that Everruns forwards to LLM calls and observability.
@@ -5289,7 +5357,6 @@ pub async fn build_with_options(
             everruns_core::builtins::tool_approval::TOOL_APPROVAL_CAPABILITY_ID,
         ));
     }
-    let session_mcp_servers = mcp_servers.clone();
 
     // A profile's `instructions` ride after `system.md` so a profile can give
     // the agent a standing job (triage, review, release duty) without editing
@@ -5298,7 +5365,7 @@ pub async fn build_with_options(
         Some(extra) => format!("{SYSTEM_PROMPT}\n\n## Profile instructions\n\n{extra}\n"),
         None => SYSTEM_PROMPT.to_string(),
     };
-    let mut harness_builder = HarnessBuilder::new("yolop", harness_prompt)
+    let mut harness_builder = HarnessBuilder::new("yolop", &harness_prompt)
         .metadata_entry("app", "yolop")
         .metadata_entry("yolop_version", env!("CARGO_PKG_VERSION"))
         .metadata_entry("everruns_core_version", env!("YOLOP_EVERRUNS_CORE_VERSION"))
@@ -5326,7 +5393,6 @@ pub async fn build_with_options(
         .id(session_id)
         .title(runtime_session_title)
         .capabilities(session_extension_capabilities)
-        .mcp_servers(session_mcp_servers)
         .tag("example")
         .tag("coding");
 
@@ -5338,56 +5404,238 @@ pub async fn build_with_options(
     // scoped MCP servers (`RuntimeHandles::reload_mcp_servers`) without
     // rebuilding the runtime. Cloned before `backends` is moved into the
     // builder below.
-    let session_store = backends.session_store.clone();
+    let session_store: Arc<dyn RuntimeSessionStore> = authority_catalog.clone();
+    authority_catalog
+        .template
+        .set(host_session.clone())
+        .map_err(|_| anyhow!("catalog initialized twice"))?;
 
-    let mut builder = InProcessRuntimeBuilder::new()
-        .mcp_auth_provider(Arc::new(StoredMcpAuthProvider::new(connections.clone())))
-        .host_composition(platform)
-        // The builder now takes a credential-free selection; credentials reach
-        // the driver through the provider store's config.
-        .backends(backends)
-        .harness(harness_builder.build())
-        .agent(agent_builder.build())
-        .session(host_session);
-    // Always register the llmsim driver so `/setup` can switch to offline mode.
-    // mid-session, even if the user started with anthropic or openai.
+    backends
+        .session_store
+        .add_session(host_session.clone())
+        .await?;
+    let mut driver_registry = model_driver_registry.clone();
     let llmsim_config = options.llmsim_override.unwrap_or_else(|| {
-        LlmSimConfig::fixed(
-            "I'm running in offline mode (llmsim — no API key set). \
-             Set ANTHROPIC_API_KEY or OPENAI_API_KEY for real responses.",
-        )
-        .with_model("llmsim-yolop")
+        LlmSimConfig::fixed("I'm running in offline mode (llmsim, no API key set). Set ANTHROPIC_API_KEY or OPENAI_API_KEY for real responses.")
+            .with_model("llmsim-yolop")
     });
-    builder = builder.llm_sim(llmsim_config);
-    // `llm_sim` only registers the driver; `llm_sim_as_default` is the variant
-    // that changes model selection. Yolop selects its own default explicitly.
-    builder = builder.default_model(default_model.model_spec());
-    // EVE-806 / production stalls: everruns recovers silent streams when the
-    // elapsed retry budget can absorb full stall windows. Yolop always installs
-    // that aligned policy (tests may override both knobs via BuildOptions).
-    builder = builder
+    driver_registry.register_provider(everruns_llmsim::llm_sim_provider(llmsim_config))?;
+    let services = everruns::hosting::services::HostServices::new()
+        .providers(everruns::hosting::services::HostProviders::shared(
+            provider_store.clone(),
+            driver_registry,
+        ))
         .provider_stall_timeout(
             options
                 .provider_stall_timeout
                 .unwrap_or(PROVIDER_STALL_TIMEOUT),
         )
-        .provider_retry_config(
+        .provider_retry(
             options
                 .provider_retry_config
                 .unwrap_or_else(provider_recovery_config),
+        )
+        .shared_mcp_auth(Arc::new(StoredMcpAuthProvider::new(connections.clone())))
+        .request_metadata(
+            everruns::hosting::services::RequestMetadata::new()
+                .entry("app", "yolop")
+                .entry("yolop_version", env!("CARGO_PKG_VERSION"))
+                .entry("everruns_core_version", env!("YOLOP_EVERRUNS_CORE_VERSION"))
+                .openrouter_attribution("https://github.com/everruns/yolop", "Yolop"),
         );
-    let runtime = Arc::new(builder.build().await?);
+    let hosting = engine_hosting::YolopHosting {
+        native: native_hosting.clone(),
+        build: engine_build.clone(),
+        root: session_id,
+        restore_gate: Arc::new(tokio::sync::RwLock::new(())),
+        coordination: coordination_store.clone(),
+        connections: connection_resolver.clone(),
+        schedules: task_schedule_store.clone(),
+        platform: Arc::new(engine_platform::PlatformServices {
+            session_dir: session_dir.clone(),
+            runtime: runtime_cell.clone(),
+            router: wake_runner.clone(),
+            settings: settings.clone(),
+            wakes: background_wake_tx.clone(),
+            notified: std::sync::Mutex::new(std::collections::HashSet::new()),
+        }),
+        observer: Arc::new(CoordinatorInboxWaker::new(
+            coordination_store.clone(),
+            session_id,
+        )),
+    };
+    let engine = everruns::Engine::builder()
+        .hosting(hosting.clone())
+        .host_listener(engine::FrontendObserver {
+            root: session_id,
+            platform: hosting.platform.clone(),
+            events: event_bus_typed.clone(),
+        })
+        .build();
+    for capability in capabilities.list() {
+        if !matches!(
+            capability.id(),
+            SESSION_CAPABILITY_ID | SESSION_STORAGE_CAPABILITY_ID
+        ) {
+            engine.register_shared_capability(capability.clone())?;
+        }
+    }
+    let mut behavior_binding = retained_binding.clone();
+    while behavior_binding
+        .as_ref()
+        .is_some_and(|binding| binding.metadata.get("yolop_build").is_none())
+    {
+        let Some(parent) = behavior_binding
+            .as_ref()
+            .and_then(|binding| binding.metadata.get("parent_session_id"))
+            .and_then(serde_json::Value::as_str)
+            .and_then(|value| value.parse().ok())
+        else {
+            break;
+        };
+        behavior_binding = Some(native_hosting.status(parent).await?.binding);
+    }
+    let retained = behavior_binding
+        .as_ref()
+        .and_then(|binding| binding.metadata.get("yolop_build"))
+        .map(|value| serde_json::from_value::<engine::RetainedBehavior>(value.clone()))
+        .transpose()
+        .context("invalid retained Yolop behavior descriptor")?;
+    anyhow::ensure!(
+        retained_binding.is_none() || retained.is_some(),
+        "retained Yolop behavior descriptor is unavailable"
+    );
+    let instructions = retained
+        .as_ref()
+        .map(|behavior| behavior.instructions.clone())
+        .unwrap_or_else(|| format!("{harness_prompt}\n\n{AGENT_PROMPT}"));
+    let selection: everruns_contracts::model_spec::ModelSpec = retained
+        .as_ref()
+        .map(|behavior| behavior.model.clone())
+        .unwrap_or_else(|| default_model.model_spec());
+    let native_agent = everruns::Agent::builder()
+        .name("Yolop")
+        .instructions(&instructions)
+        .model(everruns::Model::on(
+            selection.provider.as_str(),
+            selection.model.clone(),
+        ))
+        .parallel_tool_calls(true)
+        .workspace_policy(everruns::WorkspacePolicy::read_write())
+        .host_services(services)
+        .on_turn_start_with_recovery(everruns::HookRecovery::Idempotent, {
+            let runtime = runtime_cell.clone();
+            let checkpoints = checkpoints.clone();
+            move |context| {
+                let runtime = runtime.clone();
+                let checkpoints = checkpoints.clone();
+                async move {
+                    if context.session_id != session_id {
+                        return Ok::<(), anyhow::Error>(());
+                    }
+                    let runtime = runtime
+                        .get()
+                        .and_then(std::sync::Weak::upgrade)
+                        .context("Engine host unavailable")?;
+                    runtime.begin_checkpoint(&checkpoints).await
+                }
+            }
+        })
+        .on_completion_with_recovery(everruns::HookRecovery::Idempotent, {
+            let runtime = runtime_cell.clone();
+            let checkpoints = checkpoints.clone();
+            move |context| {
+                let runtime = runtime.clone();
+                let checkpoints = checkpoints.clone();
+                async move {
+                    if context.session_id != session_id {
+                        return Ok::<(), anyhow::Error>(());
+                    }
+                    let runtime = runtime
+                        .get()
+                        .and_then(std::sync::Weak::upgrade)
+                        .context("Engine host unavailable")?;
+                    runtime.observe_pending_admissions().await?;
+                    runtime.synchronize().await?;
+                    checkpoints.finish_pending(context.turn.success)
+                }
+            }
+        });
+    let mut native_harness = everruns::Harness::builder("yolop");
+    let harness_definition = harness_builder.build();
+    let retained_caps: Option<Vec<CapabilityRef>> = retained
+        .as_ref()
+        .map(|behavior| behavior.capabilities.clone());
+    let native_capabilities: Vec<CapabilityRef> = retained_caps
+        .unwrap_or_else(|| harness_definition.definition.capabilities.clone())
+        .into_iter()
+        .map(|cap| {
+            CapabilityRef::with_config(
+                cap.id(),
+                if cap.config_value().is_null() {
+                    serde_json::json!({})
+                } else {
+                    cap.config_value().clone()
+                },
+            )
+        })
+        .collect();
+    for capability in &native_capabilities {
+        native_harness = native_harness.capability(capability.clone());
+    }
+    let native_agent = native_agent.build()?;
+    engine.register_agent_with_environment(
+        engine_build.clone(),
+        native_agent,
+        Some(native_harness.build()?),
+        "yolop.workspace.v1",
+        engine_workspace::YolopEnvironment::new(session_id, files.clone())?,
+    )?;
+    let creation_metadata = serde_json::json!({
+        "parent_session_id": thread_coordinator,
+        "yolop_build": { "instructions": instructions, "model": selection.clone(), "capabilities": native_capabilities },
+    });
+    if retained_binding.is_none() {
+        if let Some(source) = &migration_source {
+            source
+                .cut_over(&engine, &engine_build, backends.clone(), creation_metadata)
+                .await?;
+        } else {
+            engine
+                .create_registered_with_metadata(session_id, &engine_build, creation_metadata)
+                .await?;
+            for capability in &host_session.capabilities {
+                engine
+                    .resume(session_id)
+                    .await?
+                    .activate_capability(capability.clone())
+                    .await?;
+            }
+        }
+    }
+    let runtime = engine::EngineRuntime::new(
+        engine,
+        hosting,
+        files,
+        provider_state.clone(),
+        selection.clone(),
+        event_bus_typed.clone(),
+        capabilities
+            .list()
+            .iter()
+            .map(|cap| cap.id().to_string())
+            .collect(),
+    );
+    runtime.synchronize().await?;
     runtime_cell
         .set(Arc::downgrade(&runtime))
         .map_err(|_| anyhow!("runtime initialized more than once"))?;
-
+    checkpoints.attach_engine(&runtime);
+    checkpoints.recover_restore().await?;
+    runtime.observe_pending_admissions().await?;
     let context = runtime.load_context(session_id).await?;
-    let tool_names = context
-        .runtime_agent
-        .tools
-        .iter()
-        .map(|t| t.name().to_string())
-        .collect();
+    runtime.start_supervisor();
+    let tool_names = context.tools.iter().map(|t| t.name.clone()).collect();
     let capability_commands = runtime.list_commands(session_id).await?;
     let skill_commands = crate::capabilities::skills::user_invocable_commands(
         &skill_dirs,
@@ -5465,7 +5713,6 @@ pub async fn build_with_options(
         ask_rx,
         sandbox_approval_rx,
         background_wake: background_wake_rx,
-        schedule_runner,
         workspace_host,
         task_registry,
         task_schedule_store,
@@ -5641,13 +5888,14 @@ mod tests {
             .expect("selected");
         assert_eq!(spec.model, "gpt-5.4");
         assert_eq!(spec.provider.to_string(), "openai");
+        let config = store
+            .get_provider_config(&key)
+            .await
+            .expect("config")
+            .expect("selected service");
         assert!(
-            store
-                .get_provider_config(&key)
-                .await
-                .expect("config")
-                .is_none(),
-            "an unconfigured provider must report no credentials, not a keyless config"
+            config.api_key.is_none(),
+            "an unconfigured selected service carries no credential"
         );
 
         // Storing a token turns the same selection into a usable config.
@@ -6248,8 +6496,6 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn build_keeps_connectors_cli_only() {
-        use everruns_core::host::RuntimeHostAdapter;
-
         let workspace = tempfile::tempdir().expect("workspace");
         let sessions = tempfile::tempdir().expect("sessions");
         let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
@@ -6395,11 +6641,10 @@ mod tests {
 
         assert!(
             context
-                .runtime_agent
-                .system_prompt
+                .instructions
                 .contains("`sessions`, search local Yolop sessions"),
             "a cold session must be told `yolop sessions search` exists: {}",
-            context.runtime_agent.system_prompt
+            context.instructions
         );
     }
 
@@ -7301,7 +7546,17 @@ mod tests {
                 .expect("get subagent task")
                 .expect("subagent task remains present");
         }
-        assert_eq!(task.state, SessionTaskState::Succeeded);
+        assert_eq!(
+            task.state,
+            SessionTaskState::Succeeded,
+            "task: {task:?}; child status: {:?}",
+            built
+                .handles
+                .runtime
+                .engine
+                .session_status(task.links.child_session_id.unwrap())
+                .await
+        );
         let child_id = task
             .links
             .child_session_id
@@ -7346,8 +7601,6 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn build_uses_everruns_local_backend_stores() {
-        use everruns_core::host::RuntimeHostAdapter;
-
         let workspace = tempfile::tempdir().expect("workspace");
         let sessions = tempfile::tempdir().expect("sessions");
         let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
@@ -7426,19 +7679,19 @@ mod tests {
             .await
             .expect("load context");
         assert_eq!(
-            context.embedder_metadata.get("app").map(String::as_str),
+            context.request_metadata.get("app").map(String::as_str),
             Some("yolop")
         );
         assert_eq!(
             context
-                .embedder_metadata
+                .request_metadata
                 .get("yolop_version")
                 .map(String::as_str),
             Some(env!("CARGO_PKG_VERSION"))
         );
         assert_eq!(
             context
-                .embedder_metadata
+                .request_metadata
                 .get("everruns_core_version")
                 .map(String::as_str),
             Some(env!("YOLOP_EVERRUNS_CORE_VERSION"))
@@ -7449,14 +7702,14 @@ mod tests {
         };
         assert_eq!(
             context
-                .embedder_metadata
+                .request_metadata
                 .get(OPENROUTER_HTTP_REFERER_METADATA_KEY)
                 .map(String::as_str),
             Some("https://github.com/everruns/yolop")
         );
         assert_eq!(
             context
-                .embedder_metadata
+                .request_metadata
                 .get(OPENROUTER_X_TITLE_METADATA_KEY)
                 .map(String::as_str),
             Some("Yolop")
@@ -7731,20 +7984,7 @@ mod tests {
             "mcp servers: {:?}",
             built.startup.mcp_server_names
         );
-        let docs = {
-            use everruns_core::SessionStore;
-            built
-                .handles
-                .session_store
-                .get_session(built.handles.session_id)
-                .await
-                .expect("get session")
-                .expect("session exists")
-                .mcp_servers
-                .get("docs")
-                .cloned()
-                .expect("docs server present")
-        };
+        let docs = built.handles.configured_mcp_servers()["docs"].clone();
         assert_eq!(
             docs.url, "https://client.example.com/mcp",
             "client entry must override the file entry on name collision"
@@ -7754,22 +7994,15 @@ mod tests {
             names.contains(&"issues".to_string()),
             "reload must retain client-only servers"
         );
-        let session = built
-            .handles
-            .session_store
-            .get_session(built.handles.session_id)
-            .await
-            .unwrap()
-            .unwrap();
         assert_eq!(
-            session.mcp_servers["docs"].url, "https://client.example.com/mcp",
+            built.handles.configured_mcp_servers()["docs"].url,
+            "https://client.example.com/mcp",
             "reload must retain client precedence"
         );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn mcp_refresh_targets_the_executing_child_session() {
-        use everruns_core::tool_hooks::PostToolExecHook;
+    async fn mcp_refresh_exposes_changes_without_mutating_session_catalogs() {
         let workspace = tempfile::tempdir().unwrap();
         let sessions = tempfile::tempdir().unwrap();
         let built = build_with_options(
@@ -7784,37 +8017,25 @@ mod tests {
         .unwrap();
         let store = &built.handles.session_store;
         let parent_id = built.handles.session_id;
-        let mut child = store.get_session(parent_id).await.unwrap().unwrap();
-        child.id = SessionId::new();
-        let child_id = child.id;
-        store.add_session(child).await.unwrap();
-        let context = built.handles.runtime.load_context(parent_id).await.unwrap();
-        let bash = context
-            .runtime_agent
-            .tools
-            .iter()
-            .find(|tool| tool.name() == "bash")
+        let child_id = SessionId::new();
+        built
+            .handles
+            .runtime
+            .engine
+            .create_registered_with_metadata(
+                child_id,
+                &built.handles.runtime.build,
+                serde_json::json!({"parent_session_id": parent_id}),
+            )
+            .await
             .unwrap();
         std::fs::write(
             workspace.path().join(".mcp.json"),
             r#"{"mcpServers":{"child-added":{"url":"https://example.com/mcp"}}}"#,
         )
         .unwrap();
-        let mut result = everruns_contracts::ToolResult::default();
-        built
-            .handles
-            .mcp_config
-            .after_exec(
-                &everruns_contracts::ToolCall {
-                    id: "install".into(),
-                    name: "bash".into(),
-                    arguments: serde_json::json!({}),
-                },
-                bash,
-                &mut result,
-                &everruns_core::ToolContext::new(child_id),
-            )
-            .await;
+        let names = built.handles.reload_mcp_servers().await.unwrap();
+        assert!(names.iter().any(|name| name == "child-added"));
         assert!(
             !store
                 .get_session(parent_id)
@@ -7831,6 +8052,12 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .mcp_servers
+                .is_empty()
+        );
+        assert!(
+            built
+                .handles
+                .configured_mcp_servers()
                 .contains_key("child-added")
         );
     }
@@ -8320,10 +8547,9 @@ mod tests {
             .await
             .expect("assemble context");
         let names: Vec<&str> = context
-            .runtime_agent
             .tools
             .iter()
-            .map(|tool| tool.name())
+            .map(|tool| tool.name.as_str())
             .collect();
         assert!(names.contains(&"list_skills"));
         assert!(names.contains(&"activate_skill"));
@@ -10149,7 +10375,7 @@ mod tests {
     }
 
     #[test]
-    fn file_tool_narration_uses_real_workspace_path() {
+    fn file_tool_narration_uses_logical_workspace_path() {
         use everruns_core::tool_narration::{
             ToolNarrationContext, ToolNarrationPhase, narrate_list_directory,
         };
@@ -10166,10 +10392,10 @@ mod tests {
         );
 
         assert!(
-            narration.contains(&workspace_root.join("src").display().to_string()),
-            "narration should use the active host path: {narration}"
+            narration.contains("/workspace/src"),
+            "narration should use the logical workspace path: {narration}"
         );
-        assert!(!narration.contains("/workspace"));
+        assert!(!narration.contains(&workspace_root.display().to_string()));
     }
 
     #[tokio::test]
@@ -10653,7 +10879,7 @@ mod tests {
                     tool_calls_count: 0,
                     success: true,
                     error: None,
-                    stop_reason: everruns_core::host::TurnStopReason::EndTurn,
+                    stop_reason: everruns_contracts::turn::TurnStopReason::EndTurn,
                     turn_id: everruns_contracts::typed_id::TurnId::new(),
                 })
             }
@@ -10734,9 +10960,9 @@ mod tests {
                             .to_string()
                     }),
                     stop_reason: if effort.is_some() {
-                        everruns_core::host::TurnStopReason::EndTurn
+                        everruns_contracts::turn::TurnStopReason::EndTurn
                     } else {
-                        everruns_core::host::TurnStopReason::Error
+                        everruns_contracts::turn::TurnStopReason::Error
                     },
                     turn_id: everruns_contracts::typed_id::TurnId::new(),
                 })
@@ -10813,9 +11039,9 @@ mod tests {
                             .to_string()
                     }),
                     stop_reason: if effort.is_some() {
-                        everruns_core::host::TurnStopReason::EndTurn
+                        everruns_contracts::turn::TurnStopReason::EndTurn
                     } else {
-                        everruns_core::host::TurnStopReason::Error
+                        everruns_contracts::turn::TurnStopReason::Error
                     },
                     turn_id: everruns_contracts::typed_id::TurnId::new(),
                 })
@@ -10898,9 +11124,9 @@ mod tests {
                             .to_string()
                     }),
                     stop_reason: if first {
-                        everruns_core::host::TurnStopReason::Error
+                        everruns_contracts::turn::TurnStopReason::Error
                     } else {
-                        everruns_core::host::TurnStopReason::EndTurn
+                        everruns_contracts::turn::TurnStopReason::EndTurn
                     },
                     turn_id: everruns_contracts::typed_id::TurnId::new(),
                 })
@@ -11815,21 +12041,19 @@ mod tests {
 
         assert!(
             context
-                .runtime_agent
-                .system_prompt
+                .instructions
                 .contains("Route incoming work to the right session."),
             "profile instructions are part of the prompt"
         );
         assert!(
             !context
-                .runtime_agent
                 .tools
                 .iter()
-                .any(|tool| tool.name() == "search_skills"),
+                .any(|tool| tool.name.as_str() == "search_skills"),
             "a profile `enabled = false` entry masks the capability's tools"
         );
         assert!(
-            context.runtime_agent.system_prompt.contains("intake"),
+            context.instructions.contains("intake"),
             "the profile's skills directory is a discoverable scope"
         );
         assert!(
@@ -11897,41 +12121,38 @@ mod tests {
             .unwrap()
             .len();
         // Capability sections are joined with a five-byte separator.
-        let prompt_bytes = context.runtime_agent.system_prompt.len() - ask_prompt_bytes - 5;
+        let prompt_bytes = context.instructions.len() - ask_prompt_bytes - 5;
         let schema_bytes: usize = context
-            .runtime_agent
             .tools
             .iter()
-            .filter(|tool| tool.name() != "ask_user")
+            .filter(|tool| tool.name.as_str() != "ask_user")
             .map(|tool| {
-                serde_json::to_vec(tool.parameters())
+                serde_json::to_vec(&tool.parameters)
                     .expect("serialize schema")
                     .len()
             })
             .sum();
         let tool_definition_bytes: usize = context
-            .runtime_agent
             .tools
             .iter()
-            .filter(|tool| tool.name() != "ask_user")
+            .filter(|tool| tool.name.as_str() != "ask_user")
             .map(|tool| {
                 serde_json::to_vec(&serde_json::json!({
-                    "name": tool.name(),
-                    "description": tool.description(),
-                    "parameters": tool.parameters(),
+                    "name": tool.name.as_str(),
+                    "description": tool.description.as_str(),
+                    "parameters": &tool.parameters,
                 }))
                 .expect("serialize provider-visible tool definition")
                 .len()
             })
             .sum();
         let mut schemas: Vec<_> = context
-            .runtime_agent
             .tools
             .iter()
             .map(|tool| {
                 (
-                    tool.name().to_string(),
-                    serde_json::to_vec(tool.parameters())
+                    tool.name.as_str().to_string(),
+                    serde_json::to_vec(&tool.parameters)
                         .expect("serialize schema")
                         .len(),
                 )
@@ -11941,12 +12162,12 @@ mod tests {
 
         eprintln!(
             "cold-start composition: prompt={prompt_bytes} bytes, tool_definitions={tool_definition_bytes} bytes, schemas={schema_bytes} bytes, tools={}, largest_schemas={:?}",
-            context.runtime_agent.tools.len(),
+            context.tools.len(),
             &schemas[..schemas.len().min(20)],
         );
 
         assert!(prompt_bytes > SYSTEM_PROMPT.len());
-        assert!(!context.runtime_agent.tools.is_empty());
+        assert!(!context.tools.is_empty());
         assert!(schema_bytes > 0);
         assert!(
             prompt_bytes <= BASELINE_PROMPT_BYTES,
@@ -12039,7 +12260,7 @@ mod tests {
             .await
             .expect("context before install");
         assert!(
-            !before.runtime_agent.tools.iter().any(|t| t.name() == "say"),
+            !before.tools.iter().any(|t| t.name.as_str() == "say"),
             "the extension's tool must be absent before it is installed"
         );
 
@@ -12092,17 +12313,12 @@ mod tests {
             .await
             .expect("context after activation");
         assert!(
-            context
-                .runtime_agent
-                .tools
-                .iter()
-                .any(|t| t.name() == "say"),
+            context.tools.iter().any(|t| t.name.as_str() == "say"),
             "the extension's tool must be present without a restart: {:?}",
             context
-                .runtime_agent
                 .tools
                 .iter()
-                .map(|tool| tool.name().to_string())
+                .map(|tool| tool.name.as_str().to_string())
                 .collect::<Vec<_>>()
         );
 
@@ -12173,13 +12389,12 @@ mod tests {
         // of the system prompt. The model-visibility assertion lives after the
         // turn, against the captured provider messages.
         let initial_write = initial
-            .runtime_agent
             .tools
             .iter()
-            .find(|tool| tool.name() == "write_file")
+            .find(|tool| tool.name.as_str() == "write_file")
             .expect("write_file definition");
         assert_eq!(
-            initial_write.parameters(),
+            &initial_write.parameters,
             &serde_json::json!({"type": "object", "additionalProperties": true})
         );
 
@@ -12210,7 +12425,8 @@ mod tests {
         );
         assert_eq!(
             std::fs::read_to_string(workspace.path().join("note.txt")).expect("read note"),
-            "after\n"
+            "after\n",
+            "provider transcript: {provider_text}"
         );
 
         let revealed = built
@@ -12220,13 +12436,12 @@ mod tests {
             .await
             .expect("revealed context");
         let revealed_write = revealed
-            .runtime_agent
             .tools
             .iter()
-            .find(|tool| tool.name() == "write_file")
+            .find(|tool| tool.name.as_str() == "write_file")
             .expect("revealed write_file definition");
         assert!(
-            revealed_write.parameters().get("properties").is_some(),
+            &revealed_write.parameters.get("properties").is_some(),
             "tool_search must restore the authoritative structured-call schema"
         );
     }

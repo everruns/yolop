@@ -1,5 +1,70 @@
 # Knowledge Log
 
+## 2026-10-26, Retry confirmed native restores in process
+
+A failed confirmed restore retains its durable command and execution fence.
+Retrying the original confirmation finishes that command without restarting or
+selecting history twice. New previews cannot replace the pending recovery
+snapshot. See [Checkpointing](specs/checkpointing.md).
+
+## 2026-10-25, Windows CPython dependency correction
+
+Refreshed the complete Everruns git family together to consume published
+Bashkit 0.20.1 and Wasmtime 48.0.7. The hosted integration catalog retains
+Python. Its CPython component avoids the unsupported Windows COFF static
+alignment while preserving the 64 KiB runtime alignment Wasmtime requires.
+The source exception for Engine adoption and the publication hold are unchanged.
+See [Engine-owned execution](specs/engine-execution.md),
+[the upstream correction](https://github.com/everruns/bashkit/pull/2777), and
+[Everruns consumption](https://github.com/everruns/everruns/pull/4924).
+
+## 2026-10-25, Native Engine execution and retained-session import
+
+Replaced direct Core runtime construction with registered Engine sessions and
+SQLite hosting. Frontends observe admitted turns, cancellation waits for its
+authority outcome, and native hosting owns linked children, tasks and schedules.
+Saved-session import retains event identities, branch and compaction lineage,
+including mixed child journals. A durable restore intent fences execution until
+conversation selection and workspace restoration agree after restart. Native
+schedule admission and child task settlement gaps are tracked in OSS EVE-1309
+and EVE-1310. See [Engine-owned execution](specs/engine-execution.md).
+
+## 2026-10-19, Direct Engine authority cutover
+
+Changed the migration target to registered Engine sessions with coherent SQLite
+hosting from the first cutover. Yolop decodes its saved files and orchestrates
+import; the older facade lane is not an intermediate execution path. Source
+decoding retains abandoned history, redo and every compaction replacement, and
+refuses damaged input instead of silently dropping it. Generic authority-owned
+branch selection and compaction lineage are tracked by OSS EVE-1305.
+See [Engine-owned execution](specs/engine-execution.md).
+
+## 2026-10-19, Everruns git source for Engine adoption
+
+The Engine migration consumes the complete Everruns family from upstream git
+main, with the tested commit retained in Cargo.lock. This work-specific source
+exception enables adoption of merged Framework contracts before their crates.io
+release. Production crate publication returns to aligned published pins.
+The pinned Framework now provides host services, session controls and persisted
+capability overlays. Explicit completion-review requests and host request
+metadata remain upstream contracts, tracked by OSS EVE-1303 and EVE-1302.
+See [Engine-owned execution](specs/engine-execution.md).
+
+## 2026-10-18, Engine execution ownership
+
+Defined the target Engine authority boundary against Everruns main at
+`93e72bca`, including the distinction between coherent hosting and the legacy
+facade lane. Engine API adoption can preserve the existing local stores;
+coherent hosting additionally needs an authority cutover. Recorded missing
+composition and configuration contracts, local services, lossless import and
+checkpoint branching. The migration gate covers every host, background
+and child execution, retained history and process-loss recovery. Execution has
+not migrated. OSS Everruns issues EVE-1296, EVE-1297 and EVE-1299 track the
+immediate contracts; EVE-1298 tracks the later authority cutover. A downstream
+probe reproduces the loss of a persisted session capability overlay on Engine
+resume while title and history survive. Existing sessions must retain full
+history and rewind. See [Engine-owned execution](specs/engine-execution.md).
+
 ## 2026-10-16, Configurable continuation budgets
 
 Automatic recovery defaults to five turns. Schema-backed turn, token, and time

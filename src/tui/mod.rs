@@ -1,4 +1,3 @@
-use everruns_core::host::RuntimeHostAdapter;
 // TUI app state and event loop.
 // Decision: keep the TUI surface tiny. Transcript output is published into the
 // native terminal scrollback; the renderer owns only a short footer at the
@@ -304,7 +303,6 @@ pub struct App {
     /// knowledge/specs/background.md.
     background_wake: crate::runtime::background_wake::WakeReceiver,
     /// Retained for the TUI lifetime so due local schedules keep polling.
-    _schedule_runner: everruns::local::LocalScheduleRunnerHandle,
     /// Everruns session-task registry used by `spawn_background`; the TUI reads
     /// it for the background status segment and panel.
     task_registry: Arc<dyn SessionTaskRegistry>,
@@ -823,7 +821,6 @@ impl App {
             models_tx,
             models_rx,
             background_wake: runtime.background_wake,
-            _schedule_runner: runtime.schedule_runner,
             task_registry: runtime.task_registry,
             task_schedule_store: runtime.task_schedule_store,
             session_store,
@@ -3278,6 +3275,32 @@ impl App {
         let Ok(message) = self.background_wake.try_recv() else {
             return false;
         };
+        if message.already_observed() {
+            self.push_system("✓ background task completion already handled".to_string());
+            return false;
+        }
+        if let Some(id) = message.admission() {
+            if let Ok(session) = self
+                .session
+                .handles()
+                .runtime
+                .session(self.session.session_id())
+                .await
+                && let Ok(Some(sent)) = session.admission(id).await
+                && sent
+                    .assignment()
+                    .await
+                    .ok()
+                    .flatten()
+                    .is_some_and(|assignment| assignment.steered)
+            {
+                return false;
+            }
+            self.push_system("↻ Engine background turn".to_string());
+            let handle = self.session.observe_admission(id);
+            self.begin_turn(handle, None);
+            return true;
+        }
         let message = crate::runtime::background_wake::coalesce_pending_wakes(
             message,
             &mut self.background_wake,
@@ -4117,7 +4140,7 @@ impl App {
     }
     fn start_completion_review(&mut self, result: Option<everruns_core::host::TurnResult>) {
         let Some(result) = result else { return };
-        if result.stop_reason == everruns_core::host::TurnStopReason::Cancelled {
+        if result.stop_reason == everruns_contracts::turn::TurnStopReason::Cancelled {
             return;
         }
         let handles = self.session.handles().clone();
@@ -9903,7 +9926,9 @@ flowchart TD
         );
         assert!(app.queued_messages.is_empty());
         tokio::time::timeout(Duration::from_secs(3), async {
-            while !fixture._workspace.path().join("review.marker").exists() {
+            while !std::fs::read_to_string(fixture._workspace.path().join("review.marker"))
+                .is_ok_and(|content| content == "review-interrupted")
+            {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         })

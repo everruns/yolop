@@ -9,6 +9,7 @@ use crate::exec::worktree::WorktreeManager;
 use crate::runtime::session_log::{JsonlEventEmitter, SessionMaterializer, replay};
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::{DateTime, Utc};
+use everruns::hosting::SequenceRange;
 use everruns_contracts::typed_id::SessionId;
 use everruns_core::Event;
 use everruns_core::SessionTaskRegistry;
@@ -48,7 +49,8 @@ const WRITE_BLOCKLIST: &[&str] = &[
 const TIMELINE_FILE: &str = "timeline.jsonl";
 const MAX_PROMPT_PREVIEW_CHARS: usize = 120;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum RestoreMode {
     Conversation,
     Workspace,
@@ -87,6 +89,7 @@ struct CheckpointNode {
     prompt: String,
     event_start: i32,
     event_end: Option<i32>,
+    native_before: Option<Vec<SequenceRange>>,
     snapshot: Option<WorkspaceSnapshot>,
     snapshot_error: Option<String>,
     created_at: DateTime<Utc>,
@@ -94,6 +97,7 @@ struct CheckpointNode {
 
 #[derive(Clone, Debug)]
 struct RedoState {
+    native_ranges: Option<Vec<SequenceRange>>,
     head: Option<String>,
     snapshot: Option<WorkspaceSnapshot>,
 }
@@ -105,6 +109,153 @@ struct TimelineState {
     head: Option<String>,
     pending: Option<String>,
     redo: Option<RedoState>,
+    last_restore: Option<everruns_contracts::typed_id::MessageId>,
+}
+
+/// Yolop's conversation lineage decoded for an authority migration. Workspace
+/// snapshots remain Yolop-owned and are retained alongside their turn boundary.
+#[derive(Serialize)]
+pub struct LegacyConversation {
+    pub baseline_end: i32,
+    pub checkpoints: Vec<LegacyTurnCheckpoint>,
+    pub head: Option<String>,
+    pub pending: Option<String>,
+    pub redo: Option<LegacyRedo>,
+    pub active_ranges: Vec<(i32, i32)>,
+}
+
+#[derive(Serialize)]
+pub struct LegacyTurnCheckpoint {
+    pub id: String,
+    pub parent: Option<String>,
+    pub prompt: String,
+    pub event_start: i32,
+    pub event_end: Option<i32>,
+    pub workspace_tree: Option<String>,
+    pub workspace_ref: Option<String>,
+    pub workspace_error: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Serialize)]
+pub struct LegacyRedo {
+    pub head: Option<String>,
+    pub workspace_tree: Option<String>,
+    pub workspace_ref: Option<String>,
+}
+
+pub(crate) fn read_legacy_conversation(
+    session_dir: &Path,
+    maximum: i32,
+    digest: &mut sha2::Sha256,
+) -> Result<LegacyConversation> {
+    let records: Vec<TimelineRecord> =
+        crate::runtime::migration::read_records(&session_dir.join(TIMELINE_FILE), digest)?;
+    let mut state = TimelineState::default();
+    for record in records {
+        match &record {
+            TimelineRecord::Initialized { baseline_end, .. } => {
+                if !(0..=maximum).contains(baseline_end) || !state.nodes.is_empty() {
+                    bail!("migration timeline has an invalid baseline");
+                }
+            }
+            TimelineRecord::CheckpointCreated {
+                id,
+                parent,
+                event_start,
+                ..
+            } => {
+                if state.pending.is_some()
+                    || state.nodes.contains_key(id)
+                    || parent != &state.head
+                    || *event_start <= state.baseline_end
+                    || i64::from(*event_start) > i64::from(maximum) + 1
+                    || parent.as_ref().is_some_and(|parent| {
+                        state
+                            .nodes
+                            .get(parent)
+                            .is_none_or(|node| node.event_end.is_none_or(|end| end >= *event_start))
+                    })
+                {
+                    bail!("migration timeline has an invalid checkpoint lineage");
+                }
+            }
+            TimelineRecord::TurnCompleted {
+                checkpoint_id,
+                event_end,
+                ..
+            } => {
+                if state.pending.as_ref() != Some(checkpoint_id)
+                    || state.nodes.get(checkpoint_id).is_none_or(|node| {
+                        i64::from(*event_end) < i64::from(node.event_start) - 1
+                            || *event_end > maximum
+                    })
+                {
+                    bail!("migration timeline has an invalid turn boundary");
+                }
+            }
+            TimelineRecord::HeadMoved {
+                from,
+                to,
+                redo_head,
+                ..
+            } => {
+                if state.pending.is_some()
+                    || from != &state.head
+                    || [to, redo_head]
+                        .into_iter()
+                        .flatten()
+                        .any(|head| !state.nodes.contains_key(head))
+                {
+                    bail!("migration timeline has an invalid history head");
+                }
+            }
+            TimelineRecord::RedoCleared { .. } => {}
+        }
+        apply_record(&mut state, record);
+    }
+    // Uncheckpointed logs predate the timeline, and all their events form
+    // the baseline. This mirrors opening them without materializing a file.
+    if state.nodes.is_empty() {
+        state.baseline_end = maximum;
+    }
+    let mut active_ranges = Vec::new();
+    if state.baseline_end > 0 {
+        active_ranges.push((1, state.baseline_end));
+    }
+    for id in active_path(&state).into_iter().chain(state.pending.clone()) {
+        let node = &state.nodes[&id];
+        let end = node.event_end.unwrap_or(maximum);
+        if node.event_start <= end {
+            active_ranges.push((node.event_start, end));
+        }
+    }
+    Ok(LegacyConversation {
+        baseline_end: state.baseline_end,
+        checkpoints: state
+            .nodes
+            .into_values()
+            .map(|node| LegacyTurnCheckpoint {
+                id: node.id,
+                parent: node.parent,
+                prompt: node.prompt,
+                event_start: node.event_start,
+                event_end: node.event_end,
+                workspace_tree: node.snapshot.as_ref().map(|snapshot| snapshot.tree.clone()),
+                workspace_ref: node.snapshot.and_then(|snapshot| snapshot.reference),
+                workspace_error: node.snapshot_error,
+                created_at: node.created_at,
+            })
+            .collect(),
+        head: state.head,
+        pending: state.pending,
+        redo: state.redo.map(|redo| LegacyRedo {
+            head: redo.head,
+            workspace_tree: redo.snapshot.as_ref().map(|snapshot| snapshot.tree.clone()),
+            workspace_ref: redo.snapshot.and_then(|snapshot| snapshot.reference),
+        }),
+        active_ranges,
+    })
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -119,6 +270,8 @@ enum TimelineRecord {
         parent: Option<String>,
         prompt: String,
         event_start: i32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        native_before: Option<Vec<SequenceRange>>,
         snapshot: Option<WorkspaceSnapshot>,
         snapshot_error: Option<String>,
         created_at: DateTime<Utc>,
@@ -134,6 +287,10 @@ enum TimelineRecord {
         to: Option<String>,
         redo_head: Option<String>,
         redo_snapshot: Option<WorkspaceSnapshot>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        native_redo: Option<Vec<SequenceRange>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        restore_command: Option<everruns_contracts::typed_id::MessageId>,
         moved_at: DateTime<Utc>,
     },
     RedoCleared {
@@ -150,13 +307,13 @@ pub struct CheckpointSummary {
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 enum RestoreTarget {
     Rewind { checkpoint_id: String },
     Redo,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct PreparedRestore {
     token: String,
     target: RestoreTarget,
@@ -165,6 +322,18 @@ struct PreparedRestore {
     workspace_target: Option<WorkspaceSnapshot>,
     recovery_snapshot: Option<WorkspaceSnapshot>,
     changed_paths: Vec<String>,
+}
+
+pub(crate) const RESTORE_INTENT_FILE: &str = "restore-intent.json";
+
+#[derive(Serialize, Deserialize)]
+struct NativeRestoreIntent {
+    command: everruns_contracts::typed_id::MessageId,
+    revision: u64,
+    branch: String,
+    native_redo: Vec<SequenceRange>,
+    ranges: Vec<SequenceRange>,
+    prepared: PreparedRestore,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -221,30 +390,7 @@ pub struct CheckpointManager {
     restored_prompt: Mutex<Option<String>>,
     task_registry: RwLock<Option<Arc<dyn SessionTaskRegistry>>>,
     snapshot_nonce: AtomicU64,
-}
-
-pub struct TurnCheckpoint {
-    manager: Arc<CheckpointManager>,
-    id: String,
-    finished: bool,
-}
-
-impl TurnCheckpoint {
-    pub fn finish(mut self, success: bool) -> Result<()> {
-        self.manager.finish_turn(&self.id, success)?;
-        self.finished = true;
-        Ok(())
-    }
-}
-
-impl Drop for TurnCheckpoint {
-    fn drop(&mut self) {
-        if !self.finished
-            && let Err(error) = self.manager.finish_turn(&self.id, false)
-        {
-            tracing::warn!(%error, checkpoint = %self.id, "close interrupted checkpoint");
-        }
-    }
+    engine: std::sync::OnceLock<std::sync::Weak<crate::runtime::engine::EngineRuntime>>,
 }
 
 impl CheckpointManager {
@@ -286,6 +432,7 @@ impl CheckpointManager {
             restored_prompt: Mutex::new(None),
             task_registry: RwLock::new(None),
             snapshot_nonce: AtomicU64::new(0),
+            engine: std::sync::OnceLock::new(),
         };
         manager.close_interrupted_turn()?;
         Ok(manager)
@@ -311,14 +458,44 @@ impl CheckpointManager {
         event_sequence_is_active(&state, sequence)
     }
 
+    #[cfg(test)]
     pub fn begin_turn(&self, prompt: &str) -> Result<String> {
+        self.begin_turn_at(prompt, self.events.last_sequence().saturating_add(1))
+    }
+
+    /// The authority has already admitted the input before its lifecycle gate
+    /// opens. Snapshot the workspace before effects, using that input's exact
+    /// journal position rather than a potentially later queued admission.
+    #[cfg(test)]
+    pub(crate) fn begin_turn_at(&self, prompt: &str, event_start: i32) -> Result<String> {
+        self.begin_native_turn(prompt, event_start, None)
+    }
+
+    pub(crate) fn begin_native_turn(
+        &self,
+        prompt: &str,
+        event_start: i32,
+        native_before: Option<Vec<SequenceRange>>,
+    ) -> Result<String> {
+        if native_before.is_some()
+            && let Some(existing) = self
+                .state
+                .lock()
+                .expect("checkpoint state lock")
+                .nodes
+                .values()
+                .find(|node| node.event_start == event_start)
+                .map(|node| node.id.clone())
+        {
+            return Ok(existing);
+        }
         self.materializer.ensure()?;
         self.close_interrupted_turn()?;
         if let Some(prepared) = self.prepared.lock().expect("prepared restore lock").take() {
             self.delete_snapshot_ref(prepared.recovery_snapshot.as_ref());
         }
         let mut state = self.state.lock().expect("checkpoint state lock");
-        let persisted_sequence = self.events.last_sequence();
+        let persisted_sequence = event_start.saturating_sub(1);
         if !self.timeline_path.exists() {
             let record = TimelineRecord::Initialized {
                 baseline_end: state.baseline_end.max(persisted_sequence),
@@ -343,7 +520,6 @@ impl CheckpointManager {
             )?;
             self.delete_snapshot_ref(redo.snapshot.as_ref());
         }
-        let event_start = persisted_sequence.saturating_add(1);
         let id = format!("cp_{event_start}_{}", state.nodes.len() + 1);
         let (snapshot, snapshot_error) = match self.capture_workspace(&id, true) {
             Ok(snapshot) => (snapshot, None),
@@ -354,6 +530,7 @@ impl CheckpointManager {
             parent: state.head.clone(),
             prompt: prompt.to_string(),
             event_start,
+            native_before,
             snapshot: snapshot.clone(),
             snapshot_error: snapshot_error.clone(),
             created_at: Utc::now(),
@@ -363,12 +540,17 @@ impl CheckpointManager {
         Ok(id)
     }
 
-    pub fn start_turn(self: &Arc<Self>, prompt: &str) -> Result<TurnCheckpoint> {
-        Ok(TurnCheckpoint {
-            manager: self.clone(),
-            id: self.begin_turn(prompt)?,
-            finished: false,
-        })
+    pub(crate) fn finish_pending(&self, success: bool) -> Result<()> {
+        let pending = self
+            .state
+            .lock()
+            .expect("checkpoint state lock")
+            .pending
+            .clone();
+        if let Some(id) = pending {
+            self.finish_turn(&id, success)?;
+        }
+        Ok(())
     }
 
     pub fn finish_turn(&self, checkpoint_id: &str, success: bool) -> Result<()> {
@@ -460,6 +642,7 @@ impl CheckpointManager {
     }
 
     pub fn prepare_rewind(&self, checkpoint_id: &str, mode: RestoreMode) -> Result<RestorePreview> {
+        self.ensure_no_pending_restore()?;
         let (node, conversation_head) = {
             let state = self.state.lock().expect("checkpoint state lock");
             let active = active_path(&state);
@@ -500,6 +683,7 @@ impl CheckpointManager {
     }
 
     pub fn prepare_redo(&self, mode: RestoreMode) -> Result<RestorePreview> {
+        self.ensure_no_pending_restore()?;
         let redo = self
             .state
             .lock()
@@ -531,8 +715,30 @@ impl CheckpointManager {
         })
     }
 
+    pub(crate) fn attach_engine(&self, engine: &Arc<crate::runtime::engine::EngineRuntime>) {
+        self.engine
+            .set(Arc::downgrade(engine))
+            .expect("checkpoint Engine already attached");
+    }
+
     pub async fn confirm(&self, token: &str) -> Result<String> {
+        let engine = self.engine.get().and_then(std::sync::Weak::upgrade);
+        let _restore = match &engine {
+            Some(engine) => Some(engine.restore_gate.write().await),
+            None => None,
+        };
         self.ensure_no_active_tasks().await?;
+        if let Some(engine) = &engine
+            && let Some(intent) = self.read_restore_intent()?
+        {
+            anyhow::ensure!(
+                intent.prepared.token == token,
+                "confirmation token does not match the pending restore"
+            );
+            // A confirmed restore may already have moved history or files.
+            // Retry its durable command, never a new selection or preview.
+            return self.complete_native_restore(engine, &intent).await;
+        }
         let prepared = self
             .prepared
             .lock()
@@ -543,15 +749,7 @@ impl CheckpointManager {
             *self.prepared.lock().expect("prepared restore lock") = Some(prepared);
             bail!("confirmation token does not match the pending restore");
         }
-        let is_redo = matches!(&prepared.target, RestoreTarget::Redo);
-
-        let restored_prompt = match &prepared.target {
-            RestoreTarget::Rewind { checkpoint_id } if prepared.mode.includes_conversation() => {
-                self.active_prompt_for(checkpoint_id)
-            }
-            _ => None,
-        };
-
+        // Verify the preview before either the conversation or workspace moves.
         if prepared.mode.includes_workspace() {
             let current = self
                 .capture_workspace(&format!("verify_{}", self.events.last_sequence()), false)?
@@ -559,23 +757,90 @@ impl CheckpointManager {
             let recovery = prepared
                 .recovery_snapshot
                 .as_ref()
-                .ok_or_else(|| anyhow!("recovery snapshot is missing"))?;
+                .context("recovery snapshot is missing")?;
             if current.tree != recovery.tree {
                 self.delete_snapshot_ref(prepared.recovery_snapshot.as_ref());
                 bail!("workspace changed after preview; request a fresh restore preview");
             }
+        }
+        if let Some(engine) = &engine {
+            let lineage = engine.engine.history_lineage(self.session_id).await?;
+            let ranges = self.restore_ranges(&prepared);
+            let intent = NativeRestoreIntent {
+                command: everruns_contracts::typed_id::MessageId::new(),
+                revision: lineage.revision,
+                branch: format!("restore:{}", prepared.token),
+                native_redo: lineage.active_ranges().to_vec(),
+                ranges,
+                prepared,
+            };
+            if let Err(error) = self.write_restore_intent(&intent) {
+                *self.prepared.lock().expect("prepared restore lock") = Some(intent.prepared);
+                return Err(error);
+            }
+            self.complete_native_restore(engine, &intent).await
+        } else {
+            self.restore_prepared_workspace(&prepared)?;
+            self.record_restored_head(&prepared, None, None)?;
+            if prepared.mode.includes_conversation() {
+                self.reseed_active_conversation().await?;
+            }
+            self.finish_restore_presentation(&prepared)
+        }
+    }
+
+    fn restore_ranges(&self, prepared: &PreparedRestore) -> Vec<SequenceRange> {
+        let state = self.state.lock().expect("checkpoint state lock");
+        let native = match &prepared.target {
+            RestoreTarget::Rewind { checkpoint_id } => state
+                .nodes
+                .get(checkpoint_id)
+                .and_then(|node| node.native_before.clone()),
+            RestoreTarget::Redo => state
+                .redo
+                .as_ref()
+                .and_then(|redo| redo.native_ranges.clone()),
+        };
+        native.unwrap_or_else(|| {
+            let mut selected = state.clone();
+            selected.head = prepared.conversation_head.clone();
+            selected.pending = None;
+            let mut ranges = Vec::new();
+            if selected.baseline_end > 0 {
+                ranges.push(SequenceRange::new(1, selected.baseline_end));
+            }
+            for id in active_path(&selected) {
+                let node = &selected.nodes[&id];
+                if let Some(end) = node.event_end
+                    && node.event_start <= end
+                {
+                    ranges.push(SequenceRange::new(node.event_start, end));
+                }
+            }
+            ranges
+        })
+    }
+
+    fn restore_prepared_workspace(&self, prepared: &PreparedRestore) -> Result<()> {
+        if prepared.mode.includes_workspace() {
             let target = prepared
                 .workspace_target
                 .as_ref()
-                .ok_or_else(|| anyhow!("selected checkpoint has no workspace snapshot"))?;
-            if let Err(error) = self.restore_workspace(target) {
-                let _ = self.restore_workspace(recovery);
-                return Err(error.context("restore workspace"));
-            }
+                .context("selected checkpoint has no workspace snapshot")?;
+            self.restore_workspace(target)
+                .context("restore workspace")?;
         }
+        Ok(())
+    }
 
-        {
-            let mut state = self.state.lock().expect("checkpoint state lock");
+    fn record_restored_head(
+        &self,
+        prepared: &PreparedRestore,
+        native_redo: Option<Vec<SequenceRange>>,
+        command: Option<everruns_contracts::typed_id::MessageId>,
+    ) -> Result<()> {
+        let mut state = self.state.lock().expect("checkpoint state lock");
+        if command.is_none() || state.last_restore != command {
             let from = state.head.clone();
             let to = if prepared.mode.includes_conversation() {
                 prepared.conversation_head.clone()
@@ -587,28 +852,41 @@ impl CheckpointManager {
                 to,
                 redo_head: from,
                 redo_snapshot: prepared.recovery_snapshot.clone(),
+                native_redo,
+                restore_command: command,
                 moved_at: Utc::now(),
             };
             append_record(&self.timeline_path, &record)?;
             apply_record(&mut state, record);
-            if is_redo {
-                let cleared = TimelineRecord::RedoCleared {
-                    cleared_at: Utc::now(),
-                };
-                append_record(&self.timeline_path, &cleared)?;
-                apply_record(&mut state, cleared);
-            }
         }
+        if matches!(&prepared.target, RestoreTarget::Redo) && state.redo.is_some() {
+            let record = TimelineRecord::RedoCleared {
+                cleared_at: Utc::now(),
+            };
+            append_record(&self.timeline_path, &record)?;
+            apply_record(&mut state, record);
+        }
+        Ok(())
+    }
 
+    fn finish_restore_presentation(&self, prepared: &PreparedRestore) -> Result<String> {
         if prepared.mode.includes_conversation() {
-            self.reseed_active_conversation().await?;
-            *self.restored_prompt.lock().expect("restored prompt lock") = restored_prompt;
+            *self.restored_prompt.lock().expect("restored prompt lock") = match &prepared.target {
+                RestoreTarget::Rewind { checkpoint_id } => self
+                    .state
+                    .lock()
+                    .expect("checkpoint state lock")
+                    .nodes
+                    .get(checkpoint_id)
+                    .map(|node| node.prompt.clone()),
+                RestoreTarget::Redo => None,
+            };
         }
-        let action = match prepared.target {
+        let action = match &prepared.target {
             RestoreTarget::Rewind { checkpoint_id } => format!("restored `{checkpoint_id}`"),
             RestoreTarget::Redo => "restored the abandoned branch".to_string(),
         };
-        if is_redo {
+        if matches!(&prepared.target, RestoreTarget::Redo) {
             self.delete_snapshot_ref(prepared.workspace_target.as_ref());
             self.delete_snapshot_ref(prepared.recovery_snapshot.as_ref());
         }
@@ -619,12 +897,127 @@ impl CheckpointManager {
         ))
     }
 
-    pub fn queue_confirmation(&self, token: &str) -> Result<()> {
-        let prepared = self.prepared.lock().expect("prepared restore lock");
-        let Some(prepared) = prepared.as_ref() else {
-            bail!("no restore is awaiting confirmation");
+    fn write_restore_intent(&self, intent: &NativeRestoreIntent) -> Result<()> {
+        let path = self.session_dir.join(RESTORE_INTENT_FILE);
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&path).context("create restore intent")?;
+        serde_json::to_writer(&mut file, intent)?;
+        file.write_all(b"\n")?;
+        file.sync_all()?;
+        #[cfg(unix)]
+        File::open(&self.session_dir)?.sync_all()?;
+        Ok(())
+    }
+
+    async fn complete_native_restore(
+        &self,
+        engine: &crate::runtime::engine::EngineRuntime,
+        intent: &NativeRestoreIntent,
+    ) -> Result<String> {
+        if intent.prepared.mode.includes_conversation()
+            && let Err(error) = engine
+                .engine
+                .select_history_branch(
+                    self.session_id,
+                    intent.command.uuid(),
+                    intent.revision,
+                    &intent.branch,
+                    Some(intent.ranges.clone()),
+                )
+                .await
+        {
+            // A refused selection changed neither side. Release the local
+            // intent fence so newly admitted work can become quiescent.
+            let lineage = engine.engine.history_lineage(self.session_id).await?;
+            if lineage.revision == intent.revision && lineage.branch(&intent.branch).is_none() {
+                std::fs::remove_file(self.session_dir.join(RESTORE_INTENT_FILE))?;
+                #[cfg(unix)]
+                File::open(&self.session_dir)?.sync_all()?;
+            }
+            return Err(error.into());
+        }
+        self.restore_prepared_workspace(&intent.prepared)?;
+        self.record_restored_head(
+            &intent.prepared,
+            Some(intent.native_redo.clone()),
+            Some(intent.command),
+        )?;
+        engine.synchronize().await?;
+        std::fs::remove_file(self.session_dir.join(RESTORE_INTENT_FILE))?;
+        #[cfg(unix)]
+        File::open(&self.session_dir)?.sync_all()?;
+        self.finish_restore_presentation(&intent.prepared)
+    }
+
+    fn read_restore_intent(&self) -> Result<Option<NativeRestoreIntent>> {
+        let path = self.session_dir.join(RESTORE_INTENT_FILE);
+        if !path.try_exists()? {
+            return Ok(None);
+        }
+        let mut records: Vec<NativeRestoreIntent> =
+            crate::runtime::migration::read_records(&path, &mut sha2::Sha256::default())?;
+        anyhow::ensure!(records.len() == 1, "invalid restore intent journal");
+        Ok(records.pop())
+    }
+
+    fn ensure_no_pending_restore(&self) -> Result<()> {
+        if let Some(intent) = self.read_restore_intent()? {
+            bail!(
+                "a confirmed restore is incomplete; retry confirmation `{}` before requesting a new preview",
+                intent.prepared.token
+            );
+        }
+        Ok(())
+    }
+
+    /// Finish a previously confirmed restore before this process starts any
+    /// Engine activation. A retained intent fences claims until both durable
+    /// conversation selection and workspace restoration have completed.
+    pub(crate) async fn recover_restore(&self) -> Result<()> {
+        let path = self.session_dir.join(RESTORE_INTENT_FILE);
+        if !path.exists() {
+            return Ok(());
+        }
+        let engine = self
+            .engine
+            .get()
+            .and_then(std::sync::Weak::upgrade)
+            .context("Engine restore host unavailable")?;
+        let _restore = engine.restore_gate.write().await;
+        let Some(intent) = self.read_restore_intent()? else {
+            return Ok(());
         };
-        if prepared.token != token {
+        match self.complete_native_restore(&engine, &intent).await {
+            Ok(_) => Ok(()),
+            Err(error) if !path.exists() => {
+                *self.notice.lock().expect("restore notice lock") = Some(format!(
+                    "Restore was not applied: {error}. Request a fresh preview."
+                ));
+                Ok(())
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    pub fn queue_confirmation(&self, token: &str) -> Result<()> {
+        let pending_token = if let Some(intent) = self.read_restore_intent()? {
+            intent.prepared.token
+        } else {
+            self.prepared
+                .lock()
+                .expect("prepared restore lock")
+                .as_ref()
+                .context("no restore is awaiting confirmation")?
+                .token
+                .clone()
+        };
+        if pending_token != token {
             bail!("confirmation token does not match the pending restore");
         }
         *self
@@ -665,15 +1058,6 @@ impl CheckpointManager {
         if let Ok(mut slot) = self.task_registry.write() {
             *slot = Some(registry);
         }
-    }
-
-    pub fn active_prompt_for(&self, checkpoint_id: &str) -> Option<String> {
-        self.state
-            .lock()
-            .ok()?
-            .nodes
-            .get(checkpoint_id)
-            .map(|node| node.prompt.clone())
     }
 
     async fn reseed_active_conversation(&self) -> Result<()> {
@@ -990,6 +1374,7 @@ fn apply_record(state: &mut TimelineState, record: TimelineRecord) {
             parent,
             prompt,
             event_start,
+            native_before,
             snapshot,
             snapshot_error,
             created_at,
@@ -1003,6 +1388,7 @@ fn apply_record(state: &mut TimelineState, record: TimelineRecord) {
                     prompt,
                     event_start,
                     event_end: None,
+                    native_before,
                     snapshot,
                     snapshot_error,
                     created_at,
@@ -1026,10 +1412,14 @@ fn apply_record(state: &mut TimelineState, record: TimelineRecord) {
             to,
             redo_head,
             redo_snapshot,
+            native_redo,
+            restore_command,
             ..
         } => {
+            state.last_restore = restore_command;
             state.head = to;
             state.redo = Some(RedoState {
+                native_ranges: native_redo,
                 head: redo_head,
                 snapshot: redo_snapshot,
             });
@@ -1286,6 +1676,253 @@ mod tests {
             ))
             .await
             .expect("emit user");
+    }
+
+    #[tokio::test]
+    async fn failed_native_restore_can_retry_confirmation_without_restarting() {
+        use crate::runtime::{BuildOptions, ProviderChoice, build_with_options};
+        let repo = tempfile::tempdir().unwrap();
+        git(repo.path(), &["init", "-q"]);
+        git(repo.path(), &["config", "user.name", "Test User"]);
+        git(repo.path(), &["config", "user.email", "test@example.com"]);
+        std::fs::write(repo.path().join("tracked.txt"), "base").unwrap();
+        git(repo.path(), &["add", "tracked.txt"]);
+        git(repo.path(), &["commit", "-qm", "base"]);
+        let data = tempfile::tempdir().unwrap();
+        let settings = Arc::new(crate::config::SettingsStore::open(
+            data.path().join("settings.toml"),
+        ));
+        settings.set_worktrees_mode(WorktreesMode::Always).unwrap();
+        let built = build_with_options(
+            repo.path().into(),
+            ProviderChoice::Sim,
+            None,
+            data.path().into(),
+            settings,
+            BuildOptions {
+                llmsim_override: Some(everruns_llmsim::LlmSimConfig::fixed("reply")),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let manager = &built.handles.checkpoints;
+        let active = manager.worktree.active_root();
+        for prompt in ["alpha", "beta"] {
+            built
+                .handles
+                .run_checkpointed_turn(prompt, built.model.input_message(prompt))
+                .await
+                .unwrap();
+            std::fs::write(active.join("tracked.txt"), prompt).unwrap();
+        }
+        let preview = manager.prepare_undo(RestoreMode::Both).unwrap();
+        let timeline_backup = manager.timeline_path.with_extension("backup");
+        std::fs::rename(&manager.timeline_path, &timeline_backup).unwrap();
+        std::fs::create_dir(&manager.timeline_path).unwrap();
+        // The authority and files move, but the local timeline write fails.
+        assert!(manager.confirm(&preview.token).await.is_err());
+        let intent_path = manager.session_dir.join(RESTORE_INTENT_FILE);
+        let intent_bytes = std::fs::read(&intent_path).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(active.join("tracked.txt")).unwrap(),
+            "alpha"
+        );
+        assert!(manager.confirm("another-token").await.is_err());
+        assert_eq!(std::fs::read(&intent_path).unwrap(), intent_bytes);
+        assert!(manager.prepare_undo(RestoreMode::Both).is_err());
+        assert!(manager.prepare_redo(RestoreMode::Both).is_err());
+        std::fs::remove_dir(&manager.timeline_path).unwrap();
+        std::fs::rename(&timeline_backup, &manager.timeline_path).unwrap();
+        // Hosts can queue the original confirmation again in this process.
+        manager.queue_confirmation(&preview.token).unwrap();
+        manager.apply_queued_confirmation().await;
+        assert!(manager.take_notice().unwrap().starts_with("restored "));
+        assert!(!intent_path.exists());
+        let events = built.handles.runtime.events().await.unwrap();
+        let inputs: Vec<_> = messages_from_events(&events)
+            .into_iter()
+            .filter(|message| message.role == everruns_core::RuntimeMessageRole::User)
+            .map(|message| message.text().unwrap_or_default().to_string())
+            .collect();
+        assert_eq!(inputs, ["alpha"]);
+        let redo = manager.prepare_redo(RestoreMode::Both).unwrap();
+        manager.confirm(&redo.token).await.unwrap();
+        assert_eq!(
+            std::fs::read_to_string(active.join("tracked.txt")).unwrap(),
+            "beta"
+        );
+        drop(built);
+        git(
+            repo.path(),
+            &["worktree", "remove", "--force", active.to_str().unwrap()],
+        );
+    }
+
+    #[tokio::test]
+    async fn native_restore_recovers_each_durable_boundary_and_preserves_redo() {
+        use crate::runtime::{BuildOptions, ProviderChoice, build_with_options};
+        for boundary in 0..3 {
+            let repo = tempfile::tempdir().unwrap();
+            git(repo.path(), &["init", "-q"]);
+            git(repo.path(), &["config", "user.name", "Test User"]);
+            git(repo.path(), &["config", "user.email", "test@example.com"]);
+            std::fs::write(repo.path().join("tracked.txt"), "base").unwrap();
+            git(repo.path(), &["add", "tracked.txt"]);
+            git(repo.path(), &["commit", "-qm", "base"]);
+            let data = tempfile::tempdir().unwrap();
+            let settings = Arc::new(crate::config::SettingsStore::open(
+                data.path().join("settings.toml"),
+            ));
+            settings.set_worktrees_mode(WorktreesMode::Always).unwrap();
+            let options = || BuildOptions {
+                llmsim_override: Some(everruns_llmsim::LlmSimConfig::fixed("reply")),
+                ..Default::default()
+            };
+            let built = build_with_options(
+                repo.path().into(),
+                ProviderChoice::Sim,
+                None,
+                data.path().into(),
+                settings.clone(),
+                options(),
+            )
+            .await
+            .unwrap();
+            let id = built.handles.session_id;
+            let active = built.handles.checkpoints.worktree.active_root();
+            assert_ne!(active, repo.path());
+            for prompt in ["alpha", "beta"] {
+                built
+                    .handles
+                    .run_checkpointed_turn(prompt, built.model.input_message(prompt))
+                    .await
+                    .unwrap();
+                std::fs::write(active.join("tracked.txt"), prompt).unwrap();
+            }
+            let manager = &built.handles.checkpoints;
+            let preview = manager.prepare_undo(RestoreMode::Both).unwrap();
+            if boundary == 0 {
+                // A stale file preview must leave the authority head untouched.
+                let before = built
+                    .handles
+                    .runtime
+                    .engine
+                    .history_lineage(id)
+                    .await
+                    .unwrap();
+                std::fs::write(active.join("tracked.txt"), "manual edit").unwrap();
+                assert!(
+                    manager
+                        .confirm(&preview.token)
+                        .await
+                        .unwrap_err()
+                        .to_string()
+                        .contains("changed after preview")
+                );
+                assert_eq!(
+                    built
+                        .handles
+                        .runtime
+                        .engine
+                        .history_lineage(id)
+                        .await
+                        .unwrap()
+                        .revision,
+                    before.revision
+                );
+                std::fs::write(active.join("tracked.txt"), "beta").unwrap();
+                manager.prepare_undo(RestoreMode::Both).unwrap();
+            }
+            let prepared = manager.prepared.lock().unwrap().take().unwrap();
+            let lineage = built
+                .handles
+                .runtime
+                .engine
+                .history_lineage(id)
+                .await
+                .unwrap();
+            let intent = NativeRestoreIntent {
+                command: everruns_contracts::typed_id::MessageId::new(),
+                revision: lineage.revision,
+                branch: format!("restore:{}", prepared.token),
+                native_redo: lineage.active_ranges().to_vec(),
+                ranges: manager.restore_ranges(&prepared),
+                prepared,
+            };
+            manager.write_restore_intent(&intent).unwrap();
+            if boundary >= 1 {
+                built
+                    .handles
+                    .runtime
+                    .engine
+                    .select_history_branch(
+                        id,
+                        intent.command.uuid(),
+                        intent.revision,
+                        &intent.branch,
+                        Some(intent.ranges.clone()),
+                    )
+                    .await
+                    .unwrap();
+            }
+            if boundary >= 2 {
+                manager
+                    .restore_prepared_workspace(&intent.prepared)
+                    .unwrap();
+                manager
+                    .record_restored_head(
+                        &intent.prepared,
+                        Some(intent.native_redo.clone()),
+                        Some(intent.command),
+                    )
+                    .unwrap();
+            }
+            let session_dir = manager.session_dir.clone();
+            drop(built);
+            let reopened = build_with_options(
+                repo.path().into(),
+                ProviderChoice::Sim,
+                Some(id),
+                data.path().into(),
+                settings,
+                options(),
+            )
+            .await
+            .unwrap();
+            let events = reopened.handles.runtime.events().await.unwrap();
+            let inputs: Vec<_> = messages_from_events(&events)
+                .into_iter()
+                .filter(|message| message.role == everruns_core::RuntimeMessageRole::User)
+                .map(|message| message.text().unwrap_or_default().to_string())
+                .collect();
+            assert_eq!(inputs, ["alpha"], "restore boundary {boundary}");
+            assert_eq!(
+                std::fs::read_to_string(active.join("tracked.txt")).unwrap(),
+                "alpha"
+            );
+            assert!(!session_dir.join(RESTORE_INTENT_FILE).exists());
+            let redo = reopened
+                .handles
+                .checkpoints
+                .prepare_redo(RestoreMode::Both)
+                .unwrap();
+            reopened
+                .handles
+                .checkpoints
+                .confirm(&redo.token)
+                .await
+                .unwrap();
+            assert_eq!(
+                std::fs::read_to_string(active.join("tracked.txt")).unwrap(),
+                "beta"
+            );
+            drop(reopened);
+            git(
+                repo.path(),
+                &["worktree", "remove", "--force", active.to_str().unwrap()],
+            );
+        }
     }
 
     #[tokio::test]

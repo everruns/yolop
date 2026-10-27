@@ -30,7 +30,6 @@ use everruns_contracts::typed_id::SessionId as RuntimeSessionId;
 use everruns_core::ContentPart;
 use everruns_core::builtins::ask_user::AskUser;
 use everruns_core::command::{CommandDescriptor, CommandSource, ExecuteCommandRequest};
-use everruns_core::host::RuntimeHostAdapter;
 use everruns_core::{InputMessage, ScopedMcpServers};
 use everruns_core::{McpServerTransportType, ScopedMcpServer};
 use futures::{AsyncBufReadExt, AsyncWriteExt, StreamExt};
@@ -322,7 +321,6 @@ struct Session {
     /// `current_mode_update` instead of silently drifting from the picker.
     last_mode: StdMutex<ApprovalMode>,
     /// Retained for the ACP session lifetime so due local schedules keep polling.
-    _schedule_runner: everruns::local::LocalScheduleRunnerHandle,
     task_registry: Arc<dyn everruns_core::session_task::SessionTaskRegistry>,
     completion: tokio::sync::Mutex<CompletionController>,
     /// Serializes turns for this session. Both a client prompt and a background
@@ -792,7 +790,6 @@ fn register_session<F: RuntimeFactory>(
         cancel: StdMutex::new(None),
         last_mode: StdMutex::new(built.settings.snapshot().approval_mode()),
         settings: built.settings,
-        _schedule_runner: built.schedule_runner,
         task_registry,
         completion: tokio::sync::Mutex::new(CompletionController::default()),
         turn_lock: tokio::sync::Mutex::new(()),
@@ -927,16 +924,44 @@ fn spawn_background_wake_drain(
                     ))
                     .as_ref(),
             );
-            if !message.is_coordination()
-                && session.handles.runtime.events().await.is_ok_and(|events| {
-                    crate::runtime::background_wake::completion_already_observed(&message, &events)
-                })
+            if let Some(id) = message.admission()
+                && let Ok(engine_session) = session
+                    .handles
+                    .runtime
+                    .session(session.handles.session_id)
+                    .await
+                && let Ok(Some(admission)) = engine_session.admission(id).await
+                && admission
+                    .assignment()
+                    .await
+                    .ok()
+                    .flatten()
+                    .is_some_and(|assignment| assignment.steered)
             {
                 peer.session_update(
                     &session.acp_id,
-                    SessionUpdate::AgentMessageChunk(protocol::text_chunk(
-                        "✓ background task completion already handled",
-                    )),
+                    SessionUpdate::AgentMessageChunk(protocol::text_chunk(format!(
+                        "{}\n✓ background task completion already handled",
+                        message.notice_text()
+                    ))),
+                );
+                continue;
+            }
+            if message.already_observed()
+                || (message.admission().is_none()
+                    && !message.is_coordination()
+                    && session.handles.runtime.events().await.is_ok_and(|events| {
+                        crate::runtime::background_wake::completion_already_observed(
+                            &message, &events,
+                        )
+                    }))
+            {
+                peer.session_update(
+                    &session.acp_id,
+                    SessionUpdate::AgentMessageChunk(protocol::text_chunk(format!(
+                        "{}\n✓ background task completion already handled",
+                        message.notice_text()
+                    ))),
                 );
                 continue;
             }
@@ -1797,9 +1822,10 @@ async fn run_prompt_once(
     peer: Arc<Peer>,
     session: Arc<Session>,
     prompt: String,
-    input: InputMessage,
+    mut input: InputMessage,
     cancel_rx: &mut oneshot::Receiver<()>,
 ) -> (StopReason, Option<everruns_core::host::TurnResult>) {
+    let mut scope = crate::runtime::turn_scope::TurnScope::new(&mut input);
     let handles = session.handles.clone();
     let session_id = handles.session_id;
     let acp_id = session.acp_id.clone();
@@ -1807,7 +1833,20 @@ async fn run_prompt_once(
     // Subscribe before launching the turn so no early events are missed; the
     // broadcast only delivers events emitted after `subscribe`.
     let mut live = handles.events.subscribe();
-    let events_before = handles.runtime.events().await.map(|e| e.len()).unwrap_or(0);
+    let initial_events = handles.runtime.events().await.unwrap_or_default();
+    let observed = input
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("yolop.observe_admission"))
+        .and_then(Value::as_str);
+    let events_before = observed
+        .and_then(|id| {
+            initial_events.iter().position(|event| {
+                matches!(&event.data,
+        everruns_core::EventData::InputMessage(input) if input.message.id.to_string() == id)
+            })
+        })
+        .unwrap_or(initial_events.len());
     let turn_handles = handles.clone();
     let turn_model = session.model.clone();
     // Set when the turn was retried with a reasoning effort, so the client's
@@ -1841,7 +1880,7 @@ async fn run_prompt_once(
             }
             recv = live.recv() => match recv {
                 Ok(event) => {
-                    if event.session_id == session_id {
+                    if event.session_id == session_id && scope.accepts(&handles.runtime, &event).await {
                         for update in translator.on_event(&event) {
                             peer.session_update(&acp_id, update);
                         }
@@ -1851,7 +1890,7 @@ async fn run_prompt_once(
                     // Overflow: catch up from the canonical event log and
                     // resubscribe at the current head.
                     live = handles.events.subscribe();
-                    drain_events(&peer, &handles, events_before, &mut translator, &acp_id).await;
+                    drain_events(&peer, &handles, events_before, &mut scope, &mut translator, &acp_id).await;
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             },
@@ -1865,7 +1904,15 @@ async fn run_prompt_once(
 
     // Flush any tail events emitted between the last poll and completion. The
     // translator dedups by event id, so already-streamed events are skipped.
-    drain_events(&peer, &handles, events_before, &mut translator, &acp_id).await;
+    drain_events(
+        &peer,
+        &handles,
+        events_before,
+        &mut scope,
+        &mut translator,
+        &acp_id,
+    )
+    .await;
 
     if cancelled {
         // Dropping the runtime's active act future cancels its per-tool
@@ -1873,6 +1920,9 @@ async fn run_prompt_once(
         // observed cooperative cancellation when the client sees `cancelled`.
         turn.abort();
         let _ = turn.await;
+        if let Err(error) = scope.cancel(&handles.runtime).await {
+            tracing::warn!(%error, "Engine cancellation acknowledgement failed");
+        }
         handles.report_herdr_state(crate::capabilities::herdr::HerdrState::Idle);
         return (StopReason::Cancelled, None);
     }
@@ -2015,12 +2065,13 @@ async fn drain_events(
     peer: &Arc<Peer>,
     handles: &RuntimeHandles,
     events_before: usize,
+    scope: &mut crate::runtime::turn_scope::TurnScope,
     translator: &mut Translator,
     acp_id: &str,
 ) {
     let events = handles.runtime.events().await.unwrap_or_default();
     for event in events.iter().skip(events_before) {
-        if event.session_id != handles.session_id {
+        if event.session_id != handles.session_id || !scope.accepts(&handles.runtime, event).await {
             continue;
         }
         for update in translator.on_event(event) {
@@ -2170,9 +2221,9 @@ mod tests {
             success,
             error: error.map(str::to_string),
             stop_reason: if success {
-                everruns_core::host::TurnStopReason::EndTurn
+                everruns_contracts::turn::TurnStopReason::EndTurn
             } else {
-                everruns_core::host::TurnStopReason::Error
+                everruns_contracts::turn::TurnStopReason::Error
             },
             turn_id: everruns_contracts::typed_id::TurnId::new(),
         }

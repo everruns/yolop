@@ -130,7 +130,9 @@ Do not declare release-ready for surfaces the pass did not actually check.
 
 - `everruns-core` and every `everruns-*` provider crate stay on exact version
   pins. The graph is large and transitive drift is the failure mode the pins
-  prevent.
+  prevent. The user-authorized [Engine adoption](engine-execution.md) work
+  temporarily uses one git-main source pinned by Cargo.lock across that family.
+  Return to published pins before a Yolop crate release.
 - Reviews consider the whole published family (`everruns`,
   `everruns-core`, `everruns-contracts`, `everruns-drivers`,
   `everruns-integrations-duckduckgo`, `everruns-capabilities`), not only the

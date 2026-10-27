@@ -1,7 +1,7 @@
 //! Black-box end-to-end MCP tests.
 //!
 //! These spin up a **real** stdio MCP server (the small Python fixture in
-//! `tests/fixtures/mcp_echo_server.py`) and drive a real `InProcessRuntime`
+//! `tests/fixtures/mcp_echo_server.py`) and drive a registered Engine session
 //! against it, with the bundled llmsim scripted to call the server's tools.
 //! Nothing here is mocked except the LLM: live `tools/list` discovery and real
 //! `tools/call` execution over the stdio transport all run for real. The
@@ -119,22 +119,14 @@ fn write_mcp_json(workspace_root: &Path, value: &serde_json::Value) {
     .expect("write .mcp.json");
 }
 
-/// Names of the MCP servers currently attached to the live session (i.e. what
-/// the next turn will resolve). Reads the stored session directly rather than
-/// the on-disk config, so it reflects reloads applied via
-/// `RuntimeHandles::reload_mcp_servers`.
+/// Live host contribution resolved by every Engine context assembly.
 async fn live_mcp_server_names(runtime: &BuiltRuntime) -> Vec<String> {
-    use everruns_core::SessionStore;
-    let session = runtime
+    runtime
         .handles
-        .session_store
-        .get_session(runtime.handles.session_id)
-        .await
-        .expect("get session")
-        .expect("session exists");
-    let mut names: Vec<String> = session.mcp_servers.keys().cloned().collect();
-    names.sort();
-    names
+        .configured_mcp_servers()
+        .keys()
+        .cloned()
+        .collect()
 }
 
 /// Build a runtime whose workspace `.mcp.json` is seeded with `mcp_json`.
