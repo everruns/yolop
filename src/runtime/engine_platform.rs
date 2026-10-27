@@ -1,7 +1,7 @@
 //! Product routing and notification policy around native delegation services.
 use super::{
     background_wake::{WakeRunner, WakeSender},
-    engine::EngineRuntime,
+    engine::SessionHost,
 };
 use async_trait::async_trait;
 use everruns_capabilities::{PlatformCreateSessionRequest, PlatformMessage, PlatformStore};
@@ -13,8 +13,9 @@ use everruns_core::{AgentDefinition, ExecutionSession, HarnessDefinition, Sessio
 use std::sync::{Arc, OnceLock, Weak};
 
 pub struct PlatformServices {
+    pub instance: MessageId,
     pub session_dir: std::path::PathBuf,
-    pub runtime: Arc<OnceLock<Weak<EngineRuntime>>>,
+    pub host: Arc<OnceLock<Weak<SessionHost>>>,
     pub router: Arc<everruns::local::HostRoutedRunner<WakeRunner>>,
     pub settings: Arc<crate::config::SettingsStore>,
     pub wakes: WakeSender,
@@ -27,11 +28,12 @@ impl PlatformServices {
         if notified.contains(&input.id) {
             return;
         }
-        if self
-            .runtime
-            .get()
-            .and_then(Weak::upgrade)
-            .is_some_and(|runtime| runtime.is_live_input(input))
+        if input
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("yolop.frontend_host"))
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|host| host == self.instance.to_string())
         {
             notified.insert(input.id);
             return;
@@ -60,9 +62,9 @@ pub struct PlatformAdapter {
 }
 
 impl PlatformAdapter {
-    fn runtime(&self) -> Result<Arc<EngineRuntime>> {
+    fn host(&self) -> Result<Arc<SessionHost>> {
         self.services
-            .runtime
+            .host
             .get()
             .and_then(Weak::upgrade)
             .ok_or_else(|| {
@@ -101,12 +103,18 @@ impl PlatformStore for PlatformAdapter {
         let parent = request.parent_session_id;
         let child = self.inner.create_session_with_options(request).await?;
         if let Some(parent) = parent {
-            let runtime = self.runtime()?;
+            let runtime = self.host()?;
             use everruns::hosting::SessionHosting;
-            let configuration = runtime.hosting.query_snapshot(parent).await?.configuration;
+            let configuration = runtime
+                .profile
+                .native
+                .query_snapshot(parent)
+                .await?
+                .configuration;
             if let Some(model) = configuration.model.flatten() {
                 runtime
-                    .session(child.id)
+                    .engine
+                    .resume(child.id)
                     .await
                     .map_err(host_error)?
                     .set_model(everruns::Model::on(model.provider.as_str(), model.model))
@@ -115,7 +123,8 @@ impl PlatformStore for PlatformAdapter {
             }
             if let Some(effort) = configuration.reasoning_effort {
                 runtime
-                    .session(child.id)
+                    .engine
+                    .resume(child.id)
                     .await
                     .map_err(host_error)?
                     .set_reasoning_effort(effort)
@@ -154,7 +163,7 @@ impl PlatformStore for PlatformAdapter {
         let wake = self.services.router.inner().wake_message(id, content).await;
         let task_ids = wake.task_ids();
         if let Some(task_id) = task_ids.first() {
-            let runtime = self.runtime()?;
+            let runtime = self.host()?;
             if super::background_wake::completion_already_observed(
                 &wake,
                 &runtime.session_events(id).await.map_err(host_error)?,
@@ -175,16 +184,11 @@ impl PlatformStore for PlatformAdapter {
             let namespace = uuid::Uuid::from_u128(0x796f6c6f_702d_7461_736b_2d77616b6531);
             let input_id =
                 MessageId::from_uuid(uuid::Uuid::new_v5(&namespace, identity.as_bytes()));
-            let wake = wake.resolve_artifacts(
-                runtime
-                    .file_store(everruns_core::host::in_process_internal_org_id(
-                        everruns_core::DEFAULT_ORG_PUBLIC_ID,
-                    ))
-                    .as_ref(),
-            );
+            let wake = wake.resolve_artifacts(runtime.files.clone().as_ref());
             let input = super::background_wake::input_for_wake(&wake).with_causal_context(causes);
             runtime
-                .session(id)
+                .engine
+                .resume(id)
                 .await
                 .map_err(host_error)?
                 .send_with_id(input_id, input)
@@ -204,44 +208,7 @@ impl PlatformStore for PlatformAdapter {
         self.inner.get_messages(id, limit).await
     }
     async fn wait_for_idle(&self, id: SessionId, timeout: Option<u64>) -> Result<String> {
-        let status = self.inner.wait_for_idle(id, timeout).await?;
-        if status == "idle" {
-            let runtime = self.runtime()?;
-            let events = runtime.session_events(id).await.map_err(host_error)?;
-            if let Some(input) = events.iter().rev().find_map(|event| match &event.data {
-                everruns_core::EventData::InputMessage(input) => Some(input.message.id),
-                _ => None,
-            }) {
-                use everruns::hosting::SessionHosting;
-                if let Some(assignment) = runtime
-                    .hosting
-                    .record(id, &format!("assignment/{input}"))
-                    .await?
-                {
-                    let assignment: everruns::hosting::TurnAssignment =
-                        serde_json::from_value(assignment).map_err(host_error)?;
-                    if let Some(outcome) = runtime
-                        .hosting
-                        .record(id, &format!("outcome/{}", assignment.turn_id))
-                        .await?
-                    {
-                        let outcome: everruns::Turn =
-                            serde_json::from_value(outcome).map_err(host_error)?;
-                        return Ok(if outcome.success {
-                            "completed"
-                        } else if outcome.stop_reason
-                            == everruns_contracts::turn::TurnStopReason::Cancelled
-                        {
-                            "canceled"
-                        } else {
-                            "failed"
-                        }
-                        .into());
-                    }
-                }
-            }
-        }
-        Ok(status)
+        self.inner.wait_for_idle(id, timeout).await
     }
     async fn get_agent_harness_id(&self, id: AgentId) -> Result<Option<HarnessId>> {
         self.inner.get_agent_harness_id(id).await

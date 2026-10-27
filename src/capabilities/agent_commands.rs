@@ -1,11 +1,11 @@
 //! `run_command`: the agent's door into the session's command registry.
 //!
 //! Slash commands are contributed by capabilities and listed by
-//! `runtime.list_commands`, one registry per session (see
+//! `Session::commands`, one registry per session (see
 //! [`crate::capabilities::client_commands`] for the terminal-side ones and
 //! `knowledge/specs/commands.md` for the contract). This capability gives the
 //! model the same door: `run_command` resolves a name against that live
-//! registry and executes it through `runtime.execute_command`, exactly as
+//! registry and executes it through `Session::run_command`, exactly as
 //! typing the slash command would. It keeps no allowlist, so a command becomes
 //! agent-reachable the moment a capability, extension, or MCP server registers
 //! it.
@@ -372,7 +372,7 @@ mod tests {
     use std::sync::Mutex;
 
     /// Registry stand-in: records what was executed and answers from a fixed
-    /// descriptor list, standing in for `runtime.list_commands`.
+    /// descriptor list, standing in for `Session::commands`.
     struct RecordingDispatch {
         commands: Vec<CommandDescriptor>,
         executed: Mutex<Vec<(String, Option<String>)>>,

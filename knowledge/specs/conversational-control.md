@@ -101,7 +101,7 @@ Notes:
   block described in [`extensions.md`](./extensions.md), not from per-capability
   prompt text.
 - `run_command` runs on every host and dispatches the whole registry, not a
-  curated subset, through `runtime.execute_command`. Hosts differ only in what
+  curated subset, through `Session::run_command`. Hosts differ only in what
   their registry holds: terminal commands exist in the TUI, where the host port
   also returns `/mcp` and `/tools` transcript output. `Skill` commands stay
   prompt-activated and `/shell` stays typed-only (the agent has `bash`). See

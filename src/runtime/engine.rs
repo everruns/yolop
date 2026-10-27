@@ -4,14 +4,15 @@
 //! execution, cancellation, controls and history selection go through Engine.
 
 use anyhow::{Context, Result};
-use everruns::hosting::{AgentBuild, SessionHosting, SqliteHosting};
-use everruns::{Engine, Session};
+use everruns::Engine;
+use everruns::Turn;
+#[cfg(test)]
+use everruns::hosting::AgentBuild;
+use everruns::hosting::{SessionHosting, SqliteHosting};
 use everruns_contracts::{CapabilityRef, typed_id::SessionId};
-use everruns_core::command::{
-    CommandArg, CommandDescriptor, CommandResult, CommandSource, ExecuteCommandRequest,
-};
-use everruns_core::host::{CapabilityDelta, TurnResult};
-use everruns_core::{Event, InputMessage, RuntimeMessage, SessionFileSystem};
+#[cfg(test)]
+use everruns_core::InputMessage;
+use everruns_core::{Event, RuntimeMessage, SessionFileSystem};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -24,14 +25,10 @@ pub(super) struct RetainedBehavior {
     pub capabilities: Vec<CapabilityRef>,
 }
 
-pub struct EngineRuntime {
+pub struct SessionHost {
     pub engine: Engine,
-    pub hosting: SqliteHosting,
     pub profile: super::engine_hosting::YolopHosting,
-    pub build: AgentBuild,
-    pub root: SessionId,
-    pub restore_gate: Arc<tokio::sync::RwLock<()>>,
-    files: Arc<dyn SessionFileSystem>,
+    pub(crate) files: Arc<dyn SessionFileSystem>,
     selection: Arc<std::sync::RwLock<super::ProviderChoice>>,
     default_model: everruns_contracts::model_spec::ModelSpec,
     events: Arc<JsonlEventEmitter>,
@@ -40,15 +37,9 @@ pub struct EngineRuntime {
     registered: std::sync::RwLock<std::collections::HashSet<String>>,
     shutdown: everruns::CancellationToken,
     supervisor: std::sync::Mutex<Option<tokio::task::AbortHandle>>,
-    active_runs: std::sync::Mutex<
-        std::collections::HashMap<
-            everruns_contracts::typed_id::MessageId,
-            std::sync::Weak<ActiveRun>,
-        >,
-    >,
 }
 
-impl Drop for EngineRuntime {
+impl Drop for SessionHost {
     fn drop(&mut self) {
         self.shutdown.cancel();
         if let Some(supervisor) = self.supervisor.lock().expect("supervisor lock").take() {
@@ -58,7 +49,7 @@ impl Drop for EngineRuntime {
     }
 }
 
-impl EngineRuntime {
+impl SessionHost {
     pub fn new(
         engine: Engine,
         profile: super::engine_hosting::YolopHosting,
@@ -70,10 +61,6 @@ impl EngineRuntime {
     ) -> Arc<Self> {
         Arc::new(Self {
             engine,
-            hosting: profile.native.clone(),
-            restore_gate: profile.restore_gate.clone(),
-            build: profile.build.clone(),
-            root: profile.root,
             files,
             selection,
             default_model,
@@ -84,69 +71,29 @@ impl EngineRuntime {
             registered: std::sync::RwLock::new(registered),
             shutdown: everruns::CancellationToken::new(),
             supervisor: std::sync::Mutex::new(None),
-            active_runs: std::sync::Mutex::new(std::collections::HashMap::new()),
         })
-    }
-
-    pub async fn session(&self, id: SessionId) -> Result<Session> {
-        Ok(self.engine.resume(id).await?)
-    }
-
-    pub fn is_live_input(&self, input: &RuntimeMessage) -> bool {
-        input
-            .metadata
-            .as_ref()
-            .and_then(|metadata| metadata.get(super::turn_scope::RUN_METADATA))
-            .and_then(serde_json::Value::as_str)
-            .and_then(|value| {
-                value
-                    .parse::<everruns_contracts::typed_id::MessageId>()
-                    .ok()
-            })
-            .and_then(|id| {
-                self.active_runs
-                    .lock()
-                    .expect("active runs lock")
-                    .get(&id)
-                    .and_then(std::sync::Weak::upgrade)
-            })
-            .is_some()
     }
 
     /// Lifecycle and startup reads recover UI observation when a lossy listener
     /// misses admission. Execution is already owned by the native supervisor.
     pub async fn observe_pending_admissions(&self) -> Result<()> {
         let imported = self.imported_boundary().await?;
-        for event in self.session_events(self.root).await? {
+        let session = self.engine.resume(self.profile.root).await?;
+        for event in self.session_events(self.profile.root).await? {
             if event.sequence.is_some_and(|sequence| sequence <= imported) {
                 continue;
             }
             let everruns_core::EventData::InputMessage(input) = event.data else {
                 continue;
             };
-            if self
-                .hosting
-                .receipt(self.root, input.message.id)
-                .await?
-                .is_none()
-            {
+            let Some(admission) = session.admission(input.message.id).await? else {
                 continue;
-            }
-            if let Some(assignment) = self
-                .hosting
-                .record(self.root, &format!("assignment/{}", input.message.id))
-                .await?
-            {
-                let assignment: everruns::hosting::TurnAssignment =
-                    serde_json::from_value(assignment)?;
-                if self
-                    .hosting
-                    .record(self.root, &format!("outcome/{}", assignment.turn_id))
-                    .await?
-                    .is_some()
-                {
-                    continue;
-                }
+            };
+            if matches!(
+                admission.state().await?,
+                everruns::hosting::AdmissionState::Complete { .. }
+            ) {
+                continue;
             }
             self.profile.platform.observe_input(&input.message);
         }
@@ -155,8 +102,9 @@ impl EngineRuntime {
 
     async fn imported_boundary(&self) -> Result<i32> {
         Ok(self
-            .hosting
-            .record(self.root, "cutover")
+            .profile
+            .native
+            .record(self.profile.root, "cutover")
             .await?
             .and_then(|record| {
                 record
@@ -169,7 +117,7 @@ impl EngineRuntime {
     }
 
     pub fn start_supervisor(self: &Arc<Self>) {
-        let hosting = self.hosting.clone();
+        let hosting = self.profile.native.clone();
         let engine = self.engine.clone();
         let shutdown = self.shutdown.clone();
         let supervisor = tokio::spawn(async move {
@@ -180,64 +128,11 @@ impl EngineRuntime {
         *self.supervisor.lock().expect("supervisor lock") = Some(supervisor.abort_handle());
     }
 
-    pub async fn run_turn(&self, id: SessionId, mut input: InputMessage) -> Result<TurnResult> {
-        if let Some(id) = input
-            .metadata
-            .as_ref()
-            .and_then(|metadata| metadata.get("yolop.observe_admission"))
-            .and_then(serde_json::Value::as_str)
-            .map(str::parse)
-            .transpose()?
-        {
-            return self.wait_admission(id).await;
-        }
-        input
-            .metadata
-            .get_or_insert_default()
-            .insert("yolop.frontend_input".into(), serde_json::Value::Bool(true));
-        self.sync_model(id).await?;
-        // Admission must not outlive the workspace locator needed to reopen it.
-        self.events.materializer().ensure()?;
-        let session = self.session(id).await?;
-        // Frontends abort their waiter task on interruption. Engine execution
-        // outlives a waiter, so dropping it must also cancel its own admission.
-        let run_id = input
-            .metadata
-            .as_ref()
-            .and_then(|metadata| metadata.get(super::turn_scope::RUN_METADATA))
-            .and_then(serde_json::Value::as_str)
-            .and_then(|value| value.parse().ok())
-            .unwrap_or_default();
-        input.metadata.get_or_insert_default().insert(
-            super::turn_scope::RUN_METADATA.into(),
-            serde_json::json!(run_id),
-        );
-        let run = Arc::new(ActiveRun {
-            cancellation: everruns::CancellationToken::new(),
-            finished: std::sync::atomic::AtomicBool::new(false),
-            changed: tokio::sync::Notify::new(),
-        });
-        {
-            let mut active = self.active_runs.lock().expect("active runs lock");
-            active.retain(|_, run| run.strong_count() > 0);
-            active.insert(run_id, Arc::downgrade(&run));
-        }
-        let _cancel_on_drop = CancelOnDrop(run.cancellation.clone());
-        let task = tokio::spawn(async move {
-            let _finished = RunFinished(run.clone());
-            session
-                .run_with(
-                    input,
-                    everruns::RunOptions::new().cancel_token(run.cancellation.clone()),
-                )
-                .await
-        });
-        let turn = task.await?;
-        self.synchronize().await?;
-        self.turn_result(id, turn?).await
-    }
-
-    async fn turn_result(&self, id: SessionId, mut turn: everruns::Turn) -> Result<TurnResult> {
+    pub(super) async fn turn_result(
+        &self,
+        id: SessionId,
+        mut turn: everruns::Turn,
+    ) -> Result<Turn> {
         if !turn.success
             && let Some(error) = self
                 .session_events(id)
@@ -263,38 +158,11 @@ impl EngineRuntime {
         {
             turn.error = Some(error);
         }
-        Ok(TurnResult {
-            response: turn.response,
-            iterations: turn.iterations,
-            tool_calls_count: turn.tool_calls,
-            success: turn.success,
-            error: turn.error,
-            stop_reason: turn.stop_reason,
-            turn_id: turn.turn_id.parse()?,
-        })
-    }
-
-    pub async fn cancel_run(&self, id: everruns_contracts::typed_id::MessageId) {
-        let run = self
-            .active_runs
-            .lock()
-            .expect("active runs lock")
-            .get(&id)
-            .and_then(std::sync::Weak::upgrade);
-        if let Some(run) = run {
-            run.cancellation.cancel();
-            loop {
-                let changed = run.changed.notified();
-                if run.finished.load(std::sync::atomic::Ordering::Acquire) {
-                    break;
-                }
-                changed.await;
-            }
-        }
+        Ok(turn)
     }
 
     pub async fn events(&self) -> Result<Vec<Event>> {
-        let mut events = self.session_events(self.root).await?;
+        let mut events = self.session_events(self.profile.root).await?;
         let turns: std::collections::HashSet<_> = events
             .iter()
             .filter_map(|event| event.context.turn_id)
@@ -316,22 +184,7 @@ impl EngineRuntime {
     }
 
     pub async fn session_events(&self, id: SessionId) -> Result<Vec<Event>> {
-        use everruns_core::host::{EventReadLimit, EventReadRequest};
-        let log = self.hosting.reader(id).event_log;
-        let mut events = Vec::new();
-        let mut cursor = None;
-        loop {
-            let mut request = EventReadRequest::new(id, EventReadLimit::new(256)?);
-            if let Some(next) = cursor.take() {
-                request = request.with_cursor(next);
-            }
-            let page = log.read_page(request).await?;
-            events.extend(page.events);
-            match page.next_cursor {
-                Some(next) => cursor = Some(next),
-                None => return Ok(events),
-            }
-        }
+        read_events(&self.profile.native, id).await
     }
 
     pub async fn messages(&self, id: SessionId) -> Result<Vec<RuntimeMessage>> {
@@ -342,7 +195,7 @@ impl EngineRuntime {
     /// neither it nor a JSONL file determines what the next turn can see.
     pub async fn synchronize(&self) -> Result<()> {
         let _guard = self.refresh.lock().await;
-        let events = self.session_events(self.root).await?;
+        let events = self.session_events(self.profile.root).await?;
         if !events.is_empty() {
             self.events.materializer().ensure()?;
         }
@@ -361,18 +214,15 @@ impl EngineRuntime {
                 .unwrap_or(0),
         );
         if !events.is_empty() || self.export_path.exists() {
-            self.hosting
-                .rebuild_jsonl_export(self.root, &self.export_path)?;
+            self.profile
+                .native
+                .rebuild_jsonl_export(self.profile.root, &self.export_path)?;
         }
         Ok(())
     }
 
-    pub fn file_store(&self, _org: i64) -> Arc<dyn SessionFileSystem> {
-        self.files.clone()
-    }
-
-    async fn sync_model(&self, id: SessionId) -> Result<()> {
-        if id != self.root {
+    pub(super) async fn sync_model(&self, id: SessionId) -> Result<()> {
+        if id != self.profile.root {
             return Ok(());
         }
         let selection = self
@@ -388,13 +238,14 @@ impl EngineRuntime {
                     .context("invalid selected reasoning effort")
             })
             .transpose()?;
-        let configuration = self.hosting.query_snapshot(id).await?.configuration;
+        let configuration = self.profile.native.query_snapshot(id).await?.configuration;
         let effective = configuration
             .model
             .flatten()
             .unwrap_or_else(|| self.default_model.clone());
         if effective != desired {
-            self.session(id)
+            self.engine
+                .resume(id)
                 .await?
                 .set_model(everruns::Model::on(
                     desired.provider.as_str(),
@@ -403,101 +254,13 @@ impl EngineRuntime {
                 .await?;
         }
         if configuration.reasoning_effort.flatten() != effort {
-            self.session(id).await?.set_reasoning_effort(effort).await?;
+            self.engine
+                .resume(id)
+                .await?
+                .set_reasoning_effort(effort)
+                .await?;
         }
         Ok(())
-    }
-
-    pub async fn load_context(&self, id: SessionId) -> Result<everruns::SessionContext> {
-        self.sync_model(id).await?;
-        Ok(self.session(id).await?.command_context().await?)
-    }
-
-    pub async fn list_commands(
-        &self,
-        id: SessionId,
-    ) -> everruns_contracts::Result<Vec<CommandDescriptor>> {
-        let commands = self
-            .session(id)
-            .await
-            .map_err(host_error)?
-            .commands()
-            .await
-            .map_err(host_error)?;
-        Ok(commands
-            .into_iter()
-            .map(|command| CommandDescriptor {
-                name: command.name,
-                description: command.description,
-                source: CommandSource::System,
-                args: command
-                    .arguments
-                    .into_iter()
-                    .map(|arg| CommandArg {
-                        name: arg.name,
-                        description: arg.description,
-                        required: arg.required,
-                        suggestions: arg.suggestions,
-                    })
-                    .collect(),
-            })
-            .collect())
-    }
-
-    pub async fn execute_command(
-        &self,
-        id: SessionId,
-        request: ExecuteCommandRequest,
-    ) -> everruns_contracts::Result<CommandResult> {
-        let result = self
-            .session(id)
-            .await
-            .map_err(host_error)?
-            .run_command(&request.name, request.arguments.as_deref())
-            .await
-            .map_err(host_error)?;
-        Ok(CommandResult {
-            success: result.success,
-            message: result.message,
-            error_code: result.error_code,
-            error_fields: None,
-        })
-    }
-
-    pub async fn activate_capability(
-        &self,
-        id: SessionId,
-        reference: CapabilityRef,
-    ) -> Result<CapabilityDelta> {
-        let change = self
-            .session(id)
-            .await?
-            .activate_capability(reference)
-            .await?;
-        Ok(CapabilityDelta {
-            capability_id: change.capability_id,
-            changed: change.changed,
-            active: change.active,
-            surfaces_dirty: change.changed,
-        })
-    }
-
-    pub async fn deactivate_capability(
-        &self,
-        id: SessionId,
-        capability: &str,
-    ) -> Result<CapabilityDelta> {
-        let change = self
-            .session(id)
-            .await?
-            .deactivate_capability(capability)
-            .await?;
-        Ok(CapabilityDelta {
-            capability_id: change.capability_id,
-            changed: change.changed,
-            active: change.active,
-            surfaces_dirty: change.changed,
-        })
     }
 
     pub fn is_capability_registered(&self, id: &str) -> bool {
@@ -527,7 +290,7 @@ impl EngineRuntime {
         &self,
         _org: i64,
     ) -> Option<Arc<dyn everruns_core::SessionTaskRegistry>> {
-        self.profile.reader(self.root).session_task_registry
+        self.profile.reader(self.profile.root).session_task_registry
     }
 
     #[cfg(test)]
@@ -536,7 +299,7 @@ impl EngineRuntime {
         org: i64,
     ) -> Option<Arc<dyn everruns_core::session_services::SessionScheduleStore>> {
         self.profile
-            .reader(self.root)
+            .reader(self.profile.root)
             .schedule_store_factory
             .map(|factory| factory(org))
     }
@@ -546,18 +309,43 @@ impl EngineRuntime {
         &self,
         _org: i64,
     ) -> Option<Arc<dyn everruns_core::connection_services::UserConnectionResolver>> {
-        self.profile.reader(self.root).connection_resolver
+        self.profile.reader(self.profile.root).connection_resolver
     }
 }
 
-fn host_error(error: impl std::fmt::Display) -> everruns_contracts::AgentLoopError {
+/// Read active canonical history before an Engine session has been reconstructed.
+pub(super) async fn read_events(
+    hosting: &impl SessionHosting,
+    id: SessionId,
+) -> Result<Vec<Event>> {
+    use everruns_core::host::{EventReadLimit, EventReadRequest};
+    let log = hosting.reader(id).event_log;
+    let mut events = Vec::new();
+    let mut cursor = None;
+    loop {
+        let mut request = EventReadRequest::new(id, EventReadLimit::new(256)?);
+        if let Some(next) = cursor.take() {
+            request = request.with_cursor(next);
+        }
+        let page = log.read_page(request).await?;
+        events.extend(page.events);
+        match page.next_cursor {
+            Some(next) => cursor = Some(next),
+            None => return Ok(events),
+        }
+    }
+}
+
+pub(super) fn host_error(error: impl std::fmt::Display) -> everruns_contracts::AgentLoopError {
     everruns_contracts::AgentLoopError::config(error.to_string())
 }
 
-struct CancelOnDrop(everruns::CancellationToken);
+pub(super) struct CancelOnDrop(pub Option<everruns::CancellationToken>);
 impl Drop for CancelOnDrop {
     fn drop(&mut self) {
-        self.0.cancel();
+        if let Some(cancellation) = &self.0 {
+            cancellation.cancel();
+        }
     }
 }
 
@@ -581,7 +369,7 @@ impl everruns_core::EventListener for FrontendObserver {
     }
 }
 
-impl EngineRuntime {
+impl SessionHost {
     pub async fn begin_checkpoint(
         &self,
         checkpoints: &crate::session_state::checkpoint::CheckpointManager,
@@ -590,56 +378,38 @@ impl EngineRuntime {
         self.synchronize().await?;
         let events = self.events().await?;
         let imported = self.imported_boundary().await?;
+        let session = self.engine.resume(self.profile.root).await?;
         for event in events.iter().rev() {
             let everruns_core::EventData::InputMessage(input) = &event.data else {
                 continue;
             };
-            let Some(assignment) = self
-                .hosting
-                .record(self.root, &format!("assignment/{}", input.message.id))
-                .await?
-            else {
+            let Some(admission) = session.admission(input.message.id).await? else {
                 continue;
             };
-            if assignment
-                .get("steered")
-                .and_then(serde_json::Value::as_bool)
-                == Some(true)
+            let Some(assignment) = admission.assignment().await? else {
+                continue;
+            };
+            if assignment.steered
+                || matches!(
+                    admission.state().await?,
+                    everruns::hosting::AdmissionState::Complete { .. }
+                )
             {
                 continue;
             }
-            let turn = assignment
-                .get("turn_id")
-                .and_then(serde_json::Value::as_str)
-                .context("invalid Engine assignment")?;
-            if self
-                .hosting
-                .record(self.root, &format!("outcome/{turn}"))
-                .await?
-                .is_some()
-            {
-                continue;
-            }
+            let turn = assignment.turn_id;
             let mut before = Vec::new();
             for prior in &events {
                 let include = if prior.sequence.is_some_and(|sequence| sequence <= imported) {
                     true
                 } else if let everruns_core::EventData::InputMessage(input) = &prior.data {
-                    self.hosting
-                        .record(self.root, &format!("assignment/{}", input.message.id))
-                        .await?
-                        .and_then(|value| {
-                            value
-                                .get("turn_id")
-                                .and_then(serde_json::Value::as_str)
-                                .map(str::to_string)
-                        })
-                        .is_some_and(|assigned| assigned != turn)
+                    let assignment = match session.admission(input.message.id).await? {
+                        Some(admission) => admission.assignment().await?,
+                        None => None,
+                    };
+                    assignment.is_some_and(|assigned| assigned.turn_id != turn)
                 } else {
-                    prior
-                        .context
-                        .turn_id
-                        .is_none_or(|id| id.to_string() != turn)
+                    prior.context.turn_id.is_none_or(|id| id != turn)
                 };
                 if include && let Some(sequence) = prior.sequence {
                     match before.last_mut() {
@@ -703,66 +473,8 @@ impl everruns_core::SessionStore for AuthorityCatalog {
         }))
     }
 }
-#[async_trait::async_trait]
-impl everruns_core::host::SessionMutator for AuthorityCatalog {
-    async fn update_session_title(
-        &self,
-        _: SessionId,
-        _: String,
-    ) -> everruns_contracts::Result<everruns_core::ExecutionSession> {
-        Err(host_error(
-            "session mutations require an Engine execution epoch",
-        ))
-    }
-}
-#[async_trait::async_trait]
-impl everruns_core::host::RuntimeSessionStore for AuthorityCatalog {
-    async fn add_session(
-        &self,
-        _: everruns_core::ExecutionSession,
-    ) -> everruns_contracts::Result<()> {
-        Err(host_error(
-            "create sessions through registered Engine hosting",
-        ))
-    }
-}
 
-impl EngineRuntime {
-    pub async fn wait_admission(
-        &self,
-        input: everruns_contracts::typed_id::MessageId,
-    ) -> Result<TurnResult> {
-        let sent = self
-            .session(self.root)
-            .await?
-            .admission(input)
-            .await?
-            .context("Engine admission not found")?;
-        let cancellation = tokio_util::sync::CancellationToken::new();
-        let _cancel_on_drop = AdmissionCancelOnDrop(cancellation.clone());
-        let task = tokio::spawn(async move {
-            tokio::select! {
-                result = sent.wait() => result,
-                () = cancellation.cancelled() => {
-                    sent.cancel(everruns_contracts::typed_id::MessageId::new().uuid()).await.map_err(|error| everruns::RunError::from(everruns_contracts::AgentLoopError::config(error.to_string())))?;
-                    sent.wait().await
-                }
-            }
-        });
-        let turn = task.await??;
-        self.synchronize().await?;
-        self.turn_result(self.root, turn).await
-    }
-}
-
-struct AdmissionCancelOnDrop(tokio_util::sync::CancellationToken);
-impl Drop for AdmissionCancelOnDrop {
-    fn drop(&mut self) {
-        self.0.cancel();
-    }
-}
-
-impl EngineRuntime {
+impl SessionHost {
     /// Completion review must not race an independently admitted Engine turn
     /// or spend the simulator/provider's next call before a just-finished task
     /// has delivered its result. Task facts and receipts remain authoritative.
@@ -770,37 +482,26 @@ impl EngineRuntime {
         &self,
         completed: everruns_contracts::typed_id::TurnId,
     ) -> Result<bool> {
-        let events = self.session_events(self.root).await?;
+        let events = self.session_events(self.profile.root).await?;
         let imported = self.imported_boundary().await?;
+        let session = self.engine.resume(self.profile.root).await?;
         for event in events.iter().rev() {
             if event.sequence.is_some_and(|sequence| sequence <= imported) {
                 continue;
             }
             if let everruns_core::EventData::InputMessage(input) = &event.data {
                 // Imported historical inputs have no outstanding native receipt.
-                if self
-                    .hosting
-                    .receipt(self.root, input.message.id)
-                    .await?
-                    .is_none()
-                {
+                let Some(admission) = session.admission(input.message.id).await? else {
                     continue;
-                }
-                let Some(assignment) = self
-                    .hosting
-                    .record(self.root, &format!("assignment/{}", input.message.id))
-                    .await?
-                else {
+                };
+                let Some(assignment) = admission.assignment().await? else {
                     return Ok(true);
                 };
-                let assignment: everruns::hosting::TurnAssignment =
-                    serde_json::from_value(assignment)?;
                 if assignment.turn_id != completed
-                    && self
-                        .hosting
-                        .record(self.root, &format!("outcome/{}", assignment.turn_id))
-                        .await?
-                        .is_none()
+                    && !matches!(
+                        admission.state().await?,
+                        everruns::hosting::AdmissionState::Complete { .. }
+                    )
                 {
                     return Ok(true);
                 }
@@ -815,9 +516,9 @@ impl EngineRuntime {
             .map(|event| event.ts);
         if let (Some(started), Some(tasks)) = (
             started,
-            self.profile.reader(self.root).session_task_registry,
+            self.profile.reader(self.profile.root).session_task_registry,
         ) {
-            for task in tasks.list(self.root, None).await? {
+            for task in tasks.list(self.profile.root, None).await? {
                 if task.kind == "background_tool"
                     && task.state.is_terminal()
                     && task.created_at >= started
@@ -841,27 +542,59 @@ impl EngineRuntime {
     }
 }
 
-struct ActiveRun {
-    cancellation: everruns::CancellationToken,
-    finished: std::sync::atomic::AtomicBool,
-    changed: tokio::sync::Notify,
-}
-struct RunFinished(Arc<ActiveRun>);
-impl Drop for RunFinished {
-    fn drop(&mut self) {
-        self.0
-            .finished
-            .store(true, std::sync::atomic::Ordering::Release);
-        self.0.changed.notify_waiters();
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::super::{BuildOptions, ProviderChoice, build_with_options};
     use super::*;
     use crate::config::SettingsStore;
     use crate::session_state::checkpoint::RestoreMode;
+
+    #[tokio::test]
+    async fn native_resume_bootstraps_transcript_when_jsonl_export_is_stale() {
+        let workspace = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let settings = Arc::new(SettingsStore::open(data.path().join("settings.toml")));
+        let build = |session| {
+            build_with_options(
+                workspace.path().into(),
+                ProviderChoice::Sim,
+                session,
+                data.path().into(),
+                settings.clone(),
+                BuildOptions::default(),
+            )
+        };
+        let built = build(None).await.unwrap();
+        let id = built.handles.session_id;
+        let turn = built
+            .handles
+            .run_checkpointed_turn(built.model.input_message("retained question"))
+            .await
+            .unwrap();
+        assert!(turn.success, "{turn:?}");
+        let export = built.handles.host.export_path.clone();
+        drop(built);
+        // A crash can leave the presentation export behind the committed turn.
+        std::fs::write(export, b"").unwrap();
+        let resumed = build(Some(id)).await.unwrap();
+        assert!(resumed.startup.replayed_events > 0);
+        let session =
+            super::super::session::Session::new(resumed.handles.clone(), resumed.model.clone());
+        let lines = session
+            .replayed_lines(resumed.startup.replayed_events)
+            .await
+            .unwrap();
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.text.contains("retained question")),
+            "{lines:?}"
+        );
+        assert!(
+            lines.iter().any(|line| line.text.contains(&turn.response)),
+            "{lines:?}"
+        );
+    }
 
     #[tokio::test]
     async fn unknown_or_missing_retained_behavior_refuses_resume_without_admission() {
@@ -939,10 +672,11 @@ mod tests {
         )
         .await
         .unwrap();
-        let runtime = &built.handles.runtime;
+        let runtime = &built.handles.host;
         runtime.events.materializer().ensure().unwrap();
         let admission = runtime
-            .session(built.handles.session_id)
+            .engine
+            .resume(built.handles.session_id)
             .await
             .unwrap()
             .send("automatic recovery ask")
@@ -959,8 +693,8 @@ mod tests {
             .handles
             .run_turn_with_reasoning_recovery(
                 &built.model,
-                "automatic recovery ask",
                 input,
+                everruns::CancellationToken::new(),
                 &|_| {},
             )
             .await
@@ -977,8 +711,8 @@ mod tests {
         );
         let mut recovered_output = false;
         for event in &events {
-            let accepted = scope.accepts(runtime, event).await;
-            if event.context.turn_id == Some(result.turn_id) {
+            let accepted = scope.accepts(&built.handles.session, event).await;
+            if event.context.turn_id == Some(result.turn_id.parse().unwrap()) {
                 assert!(accepted, "recovery output escaped its frontend scope");
                 recovered_output = true;
             }
@@ -1006,11 +740,12 @@ mod tests {
         )
         .await
         .unwrap();
-        let runtime = &built.handles.runtime;
+        let runtime = &built.handles.host;
         let id = built.handles.session_id;
         assert_eq!(
             runtime
-                .hosting
+                .profile
+                .native
                 .query_snapshot(id)
                 .await
                 .unwrap()
@@ -1031,7 +766,8 @@ mod tests {
             tokio::task::yield_now().await;
         }
         runtime
-            .session(id)
+            .engine
+            .resume(id)
             .await
             .unwrap()
             .send("prepare delegation")
@@ -1044,16 +780,12 @@ mod tests {
             .unwrap()
             .unwrap();
         use everruns::hosting::EnvironmentFactory;
-        let environment = super::super::engine_workspace::YolopEnvironment::new(
-            id,
-            runtime.file_store(everruns_core::host::in_process_internal_org_id(
-                everruns_core::DEFAULT_ORG_PUBLIC_ID,
-            )),
-        )
-        .unwrap()
-        .open(id)
-        .await
-        .unwrap();
+        let environment =
+            super::super::engine_workspace::YolopEnvironment::new(id, runtime.files.clone())
+                .unwrap()
+                .open(id)
+                .await
+                .unwrap();
         let backends = runtime
             .profile
             .prepare_activation(
@@ -1091,7 +823,8 @@ mod tests {
             .unwrap();
         assert_eq!(
             runtime
-                .hosting
+                .profile
+                .native
                 .query_snapshot(child.id)
                 .await
                 .unwrap()
@@ -1105,11 +838,21 @@ mod tests {
         {
             *reasoning_effort = Some("high".into());
         }
-        runtime.load_context(id).await.unwrap();
-        runtime.load_context(child.id).await.unwrap();
+        runtime.sync_model(id).await.unwrap();
+        built.handles.session.command_context().await.unwrap();
+        runtime.sync_model(child.id).await.unwrap();
+        runtime
+            .engine
+            .resume(child.id)
+            .await
+            .unwrap()
+            .command_context()
+            .await
+            .unwrap();
         assert_eq!(
             runtime
-                .hosting
+                .profile
+                .native
                 .query_snapshot(id)
                 .await
                 .unwrap()
@@ -1119,7 +862,8 @@ mod tests {
         );
         assert_eq!(
             runtime
-                .hosting
+                .profile
+                .native
                 .query_snapshot(child.id)
                 .await
                 .unwrap()
@@ -1176,13 +920,13 @@ mod tests {
         )
         .await
         .unwrap();
-        let runtime = built.handles.runtime.clone();
-        let id = built.handles.session_id;
+        let runtime = built.handles.host.clone();
         let mut input = built.model.input_message("cancel this");
         let mut first = super::super::turn_scope::TurnScope::new(&mut input);
         let worker = tokio::spawn({
-            let runtime = runtime.clone();
-            async move { runtime.run_turn(id, input).await }
+            let handles = built.handles.clone();
+            let cancellation = first.cancellation();
+            async move { handles.execute_input(input, cancellation).await }
         });
         tokio::time::timeout(std::time::Duration::from_secs(10), async {
             loop {
@@ -1200,28 +944,28 @@ mod tests {
         })
         .await
         .unwrap();
-        first.cancel(&runtime).await.unwrap();
+        first.cancel(&built.handles.session).await.unwrap();
         let cancelled = worker.await.unwrap().unwrap();
         assert_eq!(
             cancelled.stop_reason,
             everruns_contracts::turn::TurnStopReason::Cancelled
         );
         for event in runtime.events().await.unwrap() {
-            first.accepts(&runtime, &event).await;
+            first.accepts(&built.handles.session, &event).await;
         }
         let next = built
             .handles
-            .run_checkpointed_turn("next", built.model.input_message("next"))
+            .run_checkpointed_turn(built.model.input_message("next"))
             .await
             .unwrap();
         assert!(next.success, "{next:?}");
         assert_eq!(next.response, "next answer");
         let mut saw_next = false;
         for event in runtime.events().await.unwrap() {
-            if event.context.turn_id == Some(next.turn_id) {
+            if event.context.turn_id == Some(next.turn_id.parse().unwrap()) {
                 saw_next = true;
                 assert!(
-                    !first.accepts(&runtime, &event).await,
+                    !first.accepts(&built.handles.session, &event).await,
                     "cancelled frontend consumed another turn's event"
                 );
             }
@@ -1251,7 +995,7 @@ mod tests {
         .unwrap();
         let supervisor = built
             .handles
-            .runtime
+            .host
             .supervisor
             .lock()
             .unwrap()
@@ -1261,28 +1005,31 @@ mod tests {
         while !supervisor.is_finished() {
             tokio::task::yield_now().await;
         }
-        let runtime = built.handles.runtime.clone();
-        let id = built.handles.session_id;
+        let handles = built.handles.clone();
         let _worker = tokio::spawn(async move {
-            runtime
-                .run_turn(id, InputMessage::user("recover this admitted ask"))
+            handles
+                .execute_input(
+                    InputMessage::user("recover this admitted ask"),
+                    everruns::CancellationToken::new(),
+                )
                 .await
         });
         let input = loop {
-            if let Some(input) = built
-                .handles
-                .runtime
-                .events()
-                .await
-                .unwrap()
-                .iter()
-                .find_map(|event| {
-                    if let everruns_core::EventData::InputMessage(input) = &event.data {
-                        Some(input.message.id)
-                    } else {
-                        None
-                    }
-                })
+            if let Some(input) =
+                built
+                    .handles
+                    .host
+                    .events()
+                    .await
+                    .unwrap()
+                    .iter()
+                    .find_map(|event| {
+                        if let everruns_core::EventData::InputMessage(input) = &event.data {
+                            Some(input.message.id)
+                        } else {
+                            None
+                        }
+                    })
             {
                 break input;
             }
@@ -1363,7 +1110,7 @@ mod tests {
             std::fs::canonicalize(directory.path().join("workspace")).unwrap(),
             "accepted input lost its original workspace"
         );
-        let session = built.handles.runtime.session(id).await.unwrap();
+        let session = built.handles.host.engine.resume(id).await.unwrap();
         let admission = session.admission(input).await.unwrap().unwrap();
         let result = tokio::time::timeout(std::time::Duration::from_secs(20), admission.wait())
             .await
@@ -1371,25 +1118,26 @@ mod tests {
             .unwrap();
         assert!(result.success);
         let mut replay_input = InputMessage::user("recover this admitted ask");
-        replay_input.metadata = built
-            .handles
-            .runtime
-            .events()
-            .await
-            .unwrap()
-            .iter()
-            .find_map(|event| {
-                if let everruns_core::EventData::InputMessage(message) = &event.data
-                    && message.message.id == input
-                {
-                    message.message.metadata.clone()
-                } else {
-                    None
-                }
-            });
+        replay_input.metadata =
+            built
+                .handles
+                .host
+                .events()
+                .await
+                .unwrap()
+                .iter()
+                .find_map(|event| {
+                    if let everruns_core::EventData::InputMessage(message) = &event.data
+                        && message.message.id == input
+                    {
+                        message.message.metadata.clone()
+                    } else {
+                        None
+                    }
+                });
         let replay = session.send_with_id(input, replay_input).await.unwrap();
         assert_eq!(replay.wait().await.unwrap().turn_id, result.turn_id);
-        let events = built.handles.runtime.events().await.unwrap();
+        let events = built.handles.host.events().await.unwrap();
         assert_eq!(events.iter().filter(|event| matches!(&event.data, everruns_core::EventData::InputMessage(message) if message.message.id == input)).count(), 1);
         assert_eq!(
             events
@@ -1415,7 +1163,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let runtime = &built.handles.runtime;
+        let runtime = &built.handles.host;
         let id = built.handles.session_id;
         let supervisor = runtime.supervisor.lock().unwrap().take().unwrap();
         supervisor.abort();
@@ -1423,7 +1171,8 @@ mod tests {
             tokio::task::yield_now().await;
         }
         runtime
-            .session(id)
+            .engine
+            .resume(id)
             .await
             .unwrap()
             .send("pending")
@@ -1501,19 +1250,19 @@ mod tests {
         .unwrap();
         let result = built
             .handles
-            .run_checkpointed_turn("next", built.model.input_message("next"))
+            .run_checkpointed_turn(built.model.input_message("next"))
             .await
             .unwrap();
         assert!(result.success);
         assert!(
             !built
                 .handles
-                .runtime
-                .has_owed_work(result.turn_id)
+                .host
+                .has_owed_work(result.turn_id.parse().unwrap())
                 .await
                 .unwrap()
         );
-        let history = built.handles.runtime.events().await.unwrap();
+        let history = built.handles.host.events().await.unwrap();
         assert!(
             history
                 .iter()
@@ -1536,7 +1285,7 @@ mod tests {
             .confirm(&undo.token)
             .await
             .unwrap();
-        let history = built.handles.runtime.events().await.unwrap();
+        let history = built.handles.host.events().await.unwrap();
         assert!(history.iter().any(|event| event.id == original.id));
         assert_eq!(
             messages_from_events(&history)
@@ -1571,7 +1320,7 @@ mod tests {
             assert!(
                 built
                     .handles
-                    .run_checkpointed_turn(prompt, built.model.input_message(prompt))
+                    .run_checkpointed_turn(built.model.input_message(prompt))
                     .await
                     .unwrap()
                     .success
@@ -1596,10 +1345,7 @@ mod tests {
                 .filter_map(|message| message.text().map(str::to_string))
                 .collect::<Vec<_>>()
         };
-        assert_eq!(
-            texts(built.handles.runtime.events().await.unwrap()),
-            ["alpha"]
-        );
+        assert_eq!(texts(built.handles.host.events().await.unwrap()), ["alpha"]);
         let redo = built
             .handles
             .checkpoints
@@ -1612,7 +1358,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            texts(built.handles.runtime.events().await.unwrap()),
+            texts(built.handles.host.events().await.unwrap()),
             ["alpha", "beta"]
         );
         let rewind = built
@@ -1629,13 +1375,13 @@ mod tests {
         assert!(
             built
                 .handles
-                .run_checkpointed_turn("gamma", built.model.input_message("gamma"))
+                .run_checkpointed_turn(built.model.input_message("gamma"))
                 .await
                 .unwrap()
                 .success
         );
         assert_eq!(
-            texts(built.handles.runtime.events().await.unwrap()),
+            texts(built.handles.host.events().await.unwrap()),
             ["alpha", "gamma"]
         );
         let raw = std::fs::read_to_string(&built.startup.session_log_path).unwrap();
@@ -1652,7 +1398,7 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(
-            texts(reopened.handles.runtime.events().await.unwrap()),
+            texts(reopened.handles.host.events().await.unwrap()),
             ["alpha", "gamma"]
         );
         assert_eq!(reopened.handles.checkpoints.list().len(), 2);

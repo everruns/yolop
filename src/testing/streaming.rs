@@ -74,10 +74,13 @@ async fn llmsim_emits_multiple_output_message_deltas_on_broadcast() {
     let handles = runtime.handles.clone();
     let mut live = handles.events.subscribe();
 
-    let session_id = handles.session_id;
     let input = runtime.model.input_message("anything");
-    let runtime_clone = handles.runtime.clone();
-    let turn = tokio::spawn(async move { runtime_clone.run_turn(session_id, input).await });
+    let runtime_clone = handles.clone();
+    let turn = tokio::spawn(async move {
+        runtime_clone
+            .execute_input(input, everruns::CancellationToken::new())
+            .await
+    });
 
     let mut deltas: Vec<String> = Vec::new();
     let mut got_completed = false;
@@ -138,8 +141,12 @@ async fn live_deltas_drive_streaming_preview_through_handle_live_event() {
 
     let session_id = handles.session_id;
     let input = runtime.model.input_message("anything");
-    let runtime_clone = handles.runtime.clone();
-    let turn = tokio::spawn(async move { runtime_clone.run_turn(session_id, input).await });
+    let runtime_clone = handles.clone();
+    let turn = tokio::spawn(async move {
+        runtime_clone
+            .execute_input(input, everruns::CancellationToken::new())
+            .await
+    });
 
     let (tx, mut rx) = mpsc::unbounded_channel::<TurnEvent>();
     let mut emitted = HashSet::new();
@@ -217,12 +224,10 @@ async fn broadcast_does_not_persist_delta_events_to_jsonl() {
     let log_path = runtime.startup.session_log_path.clone();
     let mut live = runtime.handles.events.subscribe();
 
-    let session_id = runtime.handles.session_id;
     let input = runtime.model.input_message("anything");
     runtime
         .handles
-        .runtime
-        .run_turn(session_id, input)
+        .execute_input(input, everruns::CancellationToken::new())
         .await
         .expect("turn");
 

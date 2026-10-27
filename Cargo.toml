@@ -150,7 +150,7 @@ everruns-contracts = { git = "https://github.com/everruns/everruns.git", branch 
 everruns-core = { git = "https://github.com/everruns/everruns.git", branch = "main", features = ["host", "builtins", "mcp-stdio", "direct-egress"] }
 everruns-drivers = { git = "https://github.com/everruns/everruns.git", branch = "main", default-features = false, features = ["openai", "anthropic", "meta", "openrouter", "chatgpt", "codex", "mistral", "fireworks", "vercel", "cloudflare", "mai", "gemini"] }
 everruns-capabilities = { git = "https://github.com/everruns/everruns.git", branch = "main", features = ["hosted-integration-catalog"] }
-# The facade's local backend supplies SQLite, git workspace and durable logs.
+# Registered Engine hosting owns SQLite execution; legacy local stores are import-only.
 # TypeSafe supplies the Muse actionable-promise classifier.
 everruns = { git = "https://github.com/everruns/everruns.git", branch = "main", default-features = false, features = ["local", "typesafe", "mcp-stdio"] }
 # LLMSim is a user-facing offline provider, so it remains a production dependency.

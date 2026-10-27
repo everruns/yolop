@@ -390,7 +390,7 @@ pub struct CheckpointManager {
     restored_prompt: Mutex<Option<String>>,
     task_registry: RwLock<Option<Arc<dyn SessionTaskRegistry>>>,
     snapshot_nonce: AtomicU64,
-    engine: std::sync::OnceLock<std::sync::Weak<crate::runtime::engine::EngineRuntime>>,
+    engine: std::sync::OnceLock<std::sync::Weak<crate::runtime::engine::SessionHost>>,
 }
 
 impl CheckpointManager {
@@ -715,7 +715,7 @@ impl CheckpointManager {
         })
     }
 
-    pub(crate) fn attach_engine(&self, engine: &Arc<crate::runtime::engine::EngineRuntime>) {
+    pub(crate) fn attach_engine(&self, engine: &Arc<crate::runtime::engine::SessionHost>) {
         self.engine
             .set(Arc::downgrade(engine))
             .expect("checkpoint Engine already attached");
@@ -724,7 +724,7 @@ impl CheckpointManager {
     pub async fn confirm(&self, token: &str) -> Result<String> {
         let engine = self.engine.get().and_then(std::sync::Weak::upgrade);
         let _restore = match &engine {
-            Some(engine) => Some(engine.restore_gate.write().await),
+            Some(engine) => Some(engine.profile.restore_gate.write().await),
             None => None,
         };
         self.ensure_no_active_tasks().await?;
@@ -917,7 +917,7 @@ impl CheckpointManager {
 
     async fn complete_native_restore(
         &self,
-        engine: &crate::runtime::engine::EngineRuntime,
+        engine: &crate::runtime::engine::SessionHost,
         intent: &NativeRestoreIntent,
     ) -> Result<String> {
         if intent.prepared.mode.includes_conversation()
@@ -989,7 +989,7 @@ impl CheckpointManager {
             .get()
             .and_then(std::sync::Weak::upgrade)
             .context("Engine restore host unavailable")?;
-        let _restore = engine.restore_gate.write().await;
+        let _restore = engine.profile.restore_gate.write().await;
         let Some(intent) = self.read_restore_intent()? else {
             return Ok(());
         };
@@ -1711,7 +1711,7 @@ mod tests {
         for prompt in ["alpha", "beta"] {
             built
                 .handles
-                .run_checkpointed_turn(prompt, built.model.input_message(prompt))
+                .run_checkpointed_turn(built.model.input_message(prompt))
                 .await
                 .unwrap();
             std::fs::write(active.join("tracked.txt"), prompt).unwrap();
@@ -1739,7 +1739,7 @@ mod tests {
         manager.apply_queued_confirmation().await;
         assert!(manager.take_notice().unwrap().starts_with("restored "));
         assert!(!intent_path.exists());
-        let events = built.handles.runtime.events().await.unwrap();
+        let events = built.handles.host.events().await.unwrap();
         let inputs: Vec<_> = messages_from_events(&events)
             .into_iter()
             .filter(|message| message.role == everruns_core::RuntimeMessageRole::User)
@@ -1795,7 +1795,7 @@ mod tests {
             for prompt in ["alpha", "beta"] {
                 built
                     .handles
-                    .run_checkpointed_turn(prompt, built.model.input_message(prompt))
+                    .run_checkpointed_turn(built.model.input_message(prompt))
                     .await
                     .unwrap();
                 std::fs::write(active.join("tracked.txt"), prompt).unwrap();
@@ -1804,13 +1804,7 @@ mod tests {
             let preview = manager.prepare_undo(RestoreMode::Both).unwrap();
             if boundary == 0 {
                 // A stale file preview must leave the authority head untouched.
-                let before = built
-                    .handles
-                    .runtime
-                    .engine
-                    .history_lineage(id)
-                    .await
-                    .unwrap();
+                let before = built.handles.host.engine.history_lineage(id).await.unwrap();
                 std::fs::write(active.join("tracked.txt"), "manual edit").unwrap();
                 assert!(
                     manager
@@ -1823,7 +1817,7 @@ mod tests {
                 assert_eq!(
                     built
                         .handles
-                        .runtime
+                        .host
                         .engine
                         .history_lineage(id)
                         .await
@@ -1835,13 +1829,7 @@ mod tests {
                 manager.prepare_undo(RestoreMode::Both).unwrap();
             }
             let prepared = manager.prepared.lock().unwrap().take().unwrap();
-            let lineage = built
-                .handles
-                .runtime
-                .engine
-                .history_lineage(id)
-                .await
-                .unwrap();
+            let lineage = built.handles.host.engine.history_lineage(id).await.unwrap();
             let intent = NativeRestoreIntent {
                 command: everruns_contracts::typed_id::MessageId::new(),
                 revision: lineage.revision,
@@ -1854,7 +1842,7 @@ mod tests {
             if boundary >= 1 {
                 built
                     .handles
-                    .runtime
+                    .host
                     .engine
                     .select_history_branch(
                         id,
@@ -1890,7 +1878,7 @@ mod tests {
             )
             .await
             .unwrap();
-            let events = reopened.handles.runtime.events().await.unwrap();
+            let events = reopened.handles.host.events().await.unwrap();
             let inputs: Vec<_> = messages_from_events(&events)
                 .into_iter()
                 .filter(|message| message.role == everruns_core::RuntimeMessageRole::User)

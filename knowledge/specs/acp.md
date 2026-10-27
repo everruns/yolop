@@ -242,7 +242,7 @@ capability-sourced slash commands such as `/setup` and user-invocable skill
 commands. ACP clients run commands by sending their literal text in
 `session/prompt` (for example, `/setup status`). `!<command>` and
 `!shell <command>` are accepted shortcuts for `/shell <command>`. System
-commands execute through `runtime.execute_command` and stream a command-shaped
+commands execute through `Session::run_command` and stream a command-shaped
 `tool_call` / `tool_call_update` pair with structured `rawInput`, `rawOutput`,
 and text `content`; skill commands are forwarded as prompt text so the model
 can activate the skill.

@@ -260,7 +260,7 @@ pub struct App {
     status_layout: StatusLayout,
     session_tokens: Option<u64>,
     /// Terminal-side commands emitted by `ClientCommandsCapability` (via
-    /// `runtime.execute_command`). Drained in the event loop; see
+    /// `Session::run_command`). Drained in the event loop; see
     /// [`App::apply_ui_command`].
     ui_rx: mpsc::UnboundedReceiver<UiRequest>,
     /// Live status-bar text per extension (`ext:<name>` → status), pushed by
@@ -3283,8 +3283,9 @@ impl App {
             if let Ok(session) = self
                 .session
                 .handles()
-                .runtime
-                .session(self.session.session_id())
+                .host
+                .engine
+                .resume(self.session.session_id())
                 .await
                 && let Ok(Some(sent)) = session.admission(id).await
                 && sent
@@ -3305,15 +3306,7 @@ impl App {
             message,
             &mut self.background_wake,
         )
-        .resolve_artifacts(
-            self.session
-                .handles()
-                .runtime
-                .file_store(everruns_core::host::in_process_internal_org_id(
-                    everruns_core::DEFAULT_ORG_PUBLIC_ID,
-                ))
-                .as_ref(),
-        );
+        .resolve_artifacts(self.session.handles().host.files.clone().as_ref());
         if !message.is_coordination() && self.session.completion_already_observed(&message).await {
             self.push_system("✓ background task completion already handled".to_string());
             return false;
@@ -4138,7 +4131,7 @@ impl App {
     fn begin_user_request(&mut self, _prompt: &str) {
         self.completion.reset();
     }
-    fn start_completion_review(&mut self, result: Option<everruns_core::host::TurnResult>) {
+    fn start_completion_review(&mut self, result: Option<everruns::Turn>) {
         let Some(result) = result else { return };
         if result.stop_reason == everruns_contracts::turn::TurnStopReason::Cancelled {
             return;
@@ -4214,7 +4207,7 @@ impl App {
 
     /// Dispatch a capability-provided slash command.
     ///
-    /// `System` commands execute through `runtime.execute_command` — the
+    /// `System` commands execute through `Session::run_command` — the
     /// capability's own handler runs and the result is rendered inline. This
     /// is the path `/setup` now takes. `Skill` commands match the web UI's
     /// behavior: the literal `/name args` text is sent as a chat message so
@@ -4342,7 +4335,7 @@ impl App {
         input: everruns_core::message_retriever::InputMessage,
     ) {
         self.prepare_turn(&prompt);
-        let handle = self.session.run_turn_input(prompt, input);
+        let handle = self.session.run_turn_input(input);
         self.begin_turn(handle, None);
     }
 
@@ -8558,7 +8551,7 @@ flowchart TD
         .expect("resume rewound session");
         let resumed_text = resumed
             .handles
-            .runtime
+            .host
             .messages(session_id)
             .await
             .expect("resumed messages")
@@ -8675,8 +8668,7 @@ flowchart TD
         let input = first.model.input_message(prompt.to_string());
         first
             .handles
-            .runtime
-            .run_turn(session_id, input)
+            .execute_input(input, everruns::CancellationToken::new())
             .await
             .expect("first turn");
         drop(first);
@@ -10433,11 +10425,12 @@ flowchart TD
         )
         .await
         .expect("build scripted runtime");
-        let session_id = scripted.handles.session_id;
         let input = scripted.model.input_message("use echo");
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(20),
-            scripted.handles.runtime.run_turn(session_id, input),
+            scripted
+                .handles
+                .execute_input(input, everruns::CancellationToken::new()),
         )
         .await
         .expect("timeout")

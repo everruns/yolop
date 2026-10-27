@@ -29,7 +29,7 @@ use everruns_contracts::tool_types::{
 use everruns_contracts::typed_id::SessionId as RuntimeSessionId;
 use everruns_core::ContentPart;
 use everruns_core::builtins::ask_user::AskUser;
-use everruns_core::command::{CommandDescriptor, CommandSource, ExecuteCommandRequest};
+use everruns_core::command::{CommandDescriptor, CommandSource};
 use everruns_core::{InputMessage, ScopedMcpServers};
 use everruns_core::{McpServerTransportType, ScopedMcpServer};
 use futures::{AsyncBufReadExt, AsyncWriteExt, StreamExt};
@@ -42,7 +42,7 @@ use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 use crate::capabilities::{ApprovalDecision, ToolApprover};
 use crate::config::{ApprovalMode, SettingsStore};
 use crate::runtime::background_wake::{
-    WakeHandoff, WakeMessage, WakeReceiver, coalesce_pending_wakes, frame_wake_prompt,
+    WakeHandoff, WakeMessage, WakeReceiver, coalesce_pending_wakes,
 };
 use crate::runtime::{BuiltRuntime, ModelState, RuntimeHandles};
 use crate::session_state::task_completion::CompletionController;
@@ -845,7 +845,7 @@ async fn reconcile_finished_background_tasks(session: &Arc<Session>) -> Vec<Stri
             return Vec::new();
         }
     };
-    let events = match session.handles.runtime.events().await {
+    let events = match session.handles.host.events().await {
         Ok(events) => events,
         Err(err) => {
             tracing::debug!(%err, "acp: reconcile load events failed");
@@ -915,20 +915,14 @@ fn spawn_background_wake_drain(
             let _turn = session.turn_lock.lock().await;
             // Completions that accumulated while the foreground turn held the
             // lock are one observation point, not separate model obligations.
-            let message = coalesce_pending_wakes(message, &mut wake_rx).resolve_artifacts(
-                session
-                    .handles
-                    .runtime
-                    .file_store(everruns_core::host::in_process_internal_org_id(
-                        everruns_core::DEFAULT_ORG_PUBLIC_ID,
-                    ))
-                    .as_ref(),
-            );
+            let message = coalesce_pending_wakes(message, &mut wake_rx)
+                .resolve_artifacts(session.handles.host.files.clone().as_ref());
             if let Some(id) = message.admission()
                 && let Ok(engine_session) = session
                     .handles
-                    .runtime
-                    .session(session.handles.session_id)
+                    .host
+                    .engine
+                    .resume(session.handles.session_id)
                     .await
                 && let Ok(Some(admission)) = engine_session.admission(id).await
                 && admission
@@ -950,7 +944,7 @@ fn spawn_background_wake_drain(
             if message.already_observed()
                 || (message.admission().is_none()
                     && !message.is_coordination()
-                    && session.handles.runtime.events().await.is_ok_and(|events| {
+                    && session.handles.host.events().await.is_ok_and(|events| {
                         crate::runtime::background_wake::completion_already_observed(
                             &message, &events,
                         )
@@ -981,9 +975,8 @@ fn spawn_background_wake_drain(
             // Specific notice first: the client shows facts even when the wake
             // turn below emits no text of its own.
             mark_background_reported(&session, &message);
-            let prompt = frame_wake_prompt(&message);
             let input = crate::runtime::background_wake::input_for_wake(&message);
-            run_prompt(peer.clone(), session.clone(), prompt, input).await;
+            run_prompt(peer.clone(), session.clone(), input).await;
         }
     })
 }
@@ -994,7 +987,7 @@ async fn replay_session_history(
 ) -> std::result::Result<(), agent_client_protocol::Error> {
     let events = session
         .handles
-        .runtime
+        .host
         .events()
         .await
         .map_err(|e| internal_error(format!("load session history: {e}")))?;
@@ -1129,7 +1122,7 @@ async fn handle_prompt<F: RuntimeFactory>(
     }
     let stop_reason = match parsed_command {
         Some(command) => run_slash_command(server, peer, session.clone(), command).await,
-        None => run_prompt(peer, session.clone(), prompt, input).await,
+        None => run_prompt(peer, session.clone(), input).await,
     };
     // A level changed mid-turn (the `set_approval_mode` tool, `/setup approval`)
     // must reach the client's mode picker, not just the settings file.
@@ -1424,15 +1417,13 @@ async fn run_slash_command<F: RuntimeFactory>(
                 ),
             );
 
-            let request = ExecuteCommandRequest {
-                name: descriptor.name.clone(),
-                arguments: if args.is_empty() { None } else { Some(args) },
-                controls: None,
-            };
             let (success, message, raw_output) = match session
                 .handles
-                .runtime
-                .execute_command(session.handles.session_id, request)
+                .session
+                .run_command(
+                    &descriptor.name,
+                    (!args.is_empty()).then_some(args.as_str()),
+                )
                 .await
             {
                 Ok(result) => {
@@ -1440,7 +1431,7 @@ async fn run_slash_command<F: RuntimeFactory>(
                     (
                         result.success,
                         format!("{prefix}{}", result.message),
-                        serde_json::to_value(result).expect("command result serializes"),
+                        json!({ "success": result.success, "message": result.message, "error_code": result.error_code, "error_fields": Value::Null }),
                     )
                 }
                 Err(err) => (
@@ -1474,7 +1465,7 @@ async fn run_slash_command<F: RuntimeFactory>(
                 format!("/{name} {args}")
             };
             let input = session.model.input_message(text.clone());
-            run_prompt(peer, session, text, input).await
+            run_prompt(peer, session, input).await
         }
     }
 }
@@ -1728,13 +1719,9 @@ fn command_title(prefix: &str, name: &str, args: &str) -> String {
 }
 
 async fn refresh_available_commands(peer: &Arc<Peer>, session: &Arc<Session>) {
-    match session
-        .handles
-        .runtime
-        .list_commands(session.handles.session_id)
-        .await
-    {
-        Ok(mut commands) => {
+    match session.handles.session.commands().await {
+        Ok(commands) => {
+            let mut commands = crate::runtime::session::command_descriptors(commands);
             commands.extend(session.skill_commands.clone());
             *session.commands.lock().unwrap() = commands.clone();
             notify_available_commands(peer, &session.acp_id, &commands);
@@ -1780,17 +1767,12 @@ fn prompt_image_parts_with_limit(
 
 /// Drive one prompt turn: stream the runtime's events to the client as
 /// `session/update`s and resolve a stop reason. Honours `session/cancel`.
-async fn run_prompt(
-    peer: Arc<Peer>,
-    session: Arc<Session>,
-    mut prompt: String,
-    mut input: InputMessage,
-) -> StopReason {
+async fn run_prompt(peer: Arc<Peer>, session: Arc<Session>, mut input: InputMessage) -> StopReason {
     let mut provider_interruption_followups = 0usize;
     let mut cancel_rx = session.arm_cancel();
     loop {
         let (stop, result) =
-            run_prompt_once(peer.clone(), session.clone(), prompt, input, &mut cancel_rx).await;
+            run_prompt_once(peer.clone(), session.clone(), input, &mut cancel_rx).await;
         if stop == StopReason::Cancelled {
             return stop;
         }
@@ -1811,9 +1793,8 @@ async fn run_prompt(
             let Some(next) = followup else { return stop };
             next
         };
-        prompt = next;
         input = crate::session_state::task_completion::tag_continuation(
-            session.model.input_message(prompt.clone()),
+            session.model.input_message(next),
         );
     }
 }
@@ -1821,10 +1802,9 @@ async fn run_prompt(
 async fn run_prompt_once(
     peer: Arc<Peer>,
     session: Arc<Session>,
-    prompt: String,
     mut input: InputMessage,
     cancel_rx: &mut oneshot::Receiver<()>,
-) -> (StopReason, Option<everruns_core::host::TurnResult>) {
+) -> (StopReason, Option<everruns::Turn>) {
     let mut scope = crate::runtime::turn_scope::TurnScope::new(&mut input);
     let handles = session.handles.clone();
     let session_id = handles.session_id;
@@ -1833,7 +1813,7 @@ async fn run_prompt_once(
     // Subscribe before launching the turn so no early events are missed; the
     // broadcast only delivers events emitted after `subscribe`.
     let mut live = handles.events.subscribe();
-    let initial_events = handles.runtime.events().await.unwrap_or_default();
+    let initial_events = handles.host.events().await.unwrap_or_default();
     let observed = input
         .metadata
         .as_ref()
@@ -1855,6 +1835,7 @@ async fn run_prompt_once(
     let turn_recovered = recovered.clone();
     let turn_peer = peer.clone();
     let turn_acp_id = acp_id.clone();
+    let cancellation = scope.cancellation();
     let turn = tokio::spawn(async move {
         let notice = move |text: String| {
             turn_recovered.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -1864,7 +1845,7 @@ async fn run_prompt_once(
             );
         };
         turn_handles
-            .run_turn_with_reasoning_recovery(&turn_model, &prompt, input, &notice)
+            .run_turn_with_reasoning_recovery(&turn_model, input, cancellation, &notice)
             .await
     });
 
@@ -1876,11 +1857,14 @@ async fn run_prompt_once(
             biased;
             _ = &mut *cancel_rx => {
                 cancelled = true;
+                if let Err(error) = scope.cancel(&handles.session).await {
+                    tracing::warn!(%error, "Engine cancellation acknowledgement failed");
+                }
                 break;
             }
             recv = live.recv() => match recv {
                 Ok(event) => {
-                    if event.session_id == session_id && scope.accepts(&handles.runtime, &event).await {
+                    if event.session_id == session_id && scope.accepts(&handles.session, &event).await {
                         for update in translator.on_event(&event) {
                             peer.session_update(&acp_id, update);
                         }
@@ -1915,14 +1899,8 @@ async fn run_prompt_once(
     .await;
 
     if cancelled {
-        // Dropping the runtime's active act future cancels its per-tool
-        // ToolContext token. Await teardown before replying so child work has
-        // observed cooperative cancellation when the client sees `cancelled`.
-        turn.abort();
+        // Reply only after native cancellation and lifecycle finalization commit.
         let _ = turn.await;
-        if let Err(error) = scope.cancel(&handles.runtime).await {
-            tracing::warn!(%error, "Engine cancellation acknowledgement failed");
-        }
         handles.report_herdr_state(crate::capabilities::herdr::HerdrState::Idle);
         return (StopReason::Cancelled, None);
     }
@@ -1976,7 +1954,7 @@ async fn run_prompt_once(
 const PROVIDER_INTERRUPTION_CONTINUATION: &str = "The provider connection was interrupted during the previous model step. Continue the current task from the durable conversation state. Do not repeat completed tool calls or settled work.";
 
 fn provider_interruption_followup(
-    turn_result: &everruns_core::host::TurnResult,
+    turn_result: &everruns::Turn,
     followups: usize,
 ) -> Option<String> {
     if followups == 0
@@ -2002,7 +1980,7 @@ fn provider_interruption_followup(
 async fn completion_followup(
     peer: &Arc<Peer>,
     session: &Arc<Session>,
-    result: &everruns_core::host::TurnResult,
+    result: &everruns::Turn,
 ) -> Option<String> {
     let background = match session
         .task_registry
@@ -2069,9 +2047,9 @@ async fn drain_events(
     translator: &mut Translator,
     acp_id: &str,
 ) {
-    let events = handles.runtime.events().await.unwrap_or_default();
+    let events = handles.host.events().await.unwrap_or_default();
     for event in events.iter().skip(events_before) {
-        if event.session_id != handles.session_id || !scope.accepts(&handles.runtime, event).await {
+        if event.session_id != handles.session_id || !scope.accepts(&handles.session, event).await {
             continue;
         }
         for update in translator.on_event(event) {
@@ -2213,7 +2191,7 @@ mod tests {
         );
     }
 
-    fn turn_result(success: bool, error: Option<&str>) -> everruns_core::host::TurnResult {
+    fn turn_result(success: bool, error: Option<&str>) -> everruns::Turn {
         everruns_core::host::TurnResult {
             response: String::new(),
             iterations: 1,
@@ -2227,6 +2205,7 @@ mod tests {
             },
             turn_id: everruns_contracts::typed_id::TurnId::new(),
         }
+        .into()
     }
 
     #[test]

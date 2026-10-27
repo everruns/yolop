@@ -1,6 +1,4 @@
-//! The session facade: the single owner of [`RuntimeHandles`] and the only
-//! place that drives `everruns_core` runtime APIs (`run_turn`, `messages`,
-//! `events`, `execute_command`, the live event broadcast).
+//! Terminal presentation and interaction over native Everruns sessions.
 //!
 //! The TUI (`crate::tui`) talks to a [`Session`] and consumes the
 //! [`crate::tui::transcript::TurnEvent`] stream it produces; it never subscribes to
@@ -18,7 +16,7 @@ use everruns_core::ContentPart;
 use everruns_core::Event;
 use everruns_core::InputMessage;
 use everruns_core::Tool;
-use everruns_core::command::ExecuteCommandRequest;
+use everruns_core::command::{CommandArg, CommandDescriptor, CommandSource};
 use serde_json::Value;
 use tokio::sync::{broadcast, mpsc, oneshot};
 
@@ -106,11 +104,7 @@ impl Session {
     /// Registration is not activation: the caller still activates the id.
     pub fn register_installed_extension(&self, name: &str) -> Result<bool> {
         let capability_id = crate::extensions::extension_capability_id(name);
-        if self
-            .handles
-            .runtime
-            .is_capability_registered(&capability_id)
-        {
+        if self.handles.host.is_capability_registered(&capability_id) {
             return Ok(false);
         }
         let factory = self
@@ -119,14 +113,14 @@ impl Session {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("this session has no extensions directory"))?;
         let capability = factory(name).map_err(|error| anyhow::anyhow!(error))?;
-        self.handles.runtime.register_capability(capability)?;
+        self.handles.host.register_capability(capability)?;
         Ok(true)
     }
 
     pub async fn activate_capability(
         &self,
         capability_id: &str,
-    ) -> Result<everruns_core::host::CapabilityDelta> {
+    ) -> Result<everruns::CapabilityChange> {
         self.handles.activate_capability(capability_id).await
     }
 
@@ -135,14 +129,14 @@ impl Session {
     pub async fn deactivate_capability(
         &self,
         capability_id: &str,
-    ) -> Result<everruns_core::host::CapabilityDelta> {
+    ) -> Result<everruns::CapabilityChange> {
         self.handles.deactivate_capability(capability_id).await
     }
 
-    /// Translate the prefix of persisted events that were replayed from disk
+    /// Translate the canonical events selected at startup
     /// into transcript lines (used to seed the transcript on resume).
     pub async fn replayed_lines(&self, count: usize) -> Result<Vec<ChatLine>> {
-        let events = self.handles.runtime.events().await?;
+        let events = self.handles.host.events().await?;
         Ok(events
             .iter()
             .take(count)
@@ -153,7 +147,7 @@ impl Session {
     pub async fn active_lines(&self) -> Result<Vec<ChatLine>> {
         Ok(self
             .handles
-            .runtime
+            .host
             .events()
             .await?
             .iter()
@@ -162,7 +156,7 @@ impl Session {
     }
 
     pub(crate) async fn completion_already_observed(&self, message: &WakeMessage) -> bool {
-        self.handles.runtime.events().await.is_ok_and(|events| {
+        self.handles.host.events().await.is_ok_and(|events| {
             crate::runtime::background_wake::completion_already_observed(message, &events)
         })
     }
@@ -182,15 +176,10 @@ impl Session {
         name: &str,
         arguments: Option<String>,
     ) -> Result<CommandOutcome> {
-        let request = ExecuteCommandRequest {
-            name: name.to_string(),
-            arguments,
-            controls: None,
-        };
         let result = self
             .handles
-            .runtime
-            .execute_command(self.handles.session_id, request)
+            .session
+            .run_command(name, arguments.as_deref())
             .await?;
         Ok(CommandOutcome {
             success: result.success,
@@ -203,31 +192,30 @@ impl Session {
     /// finishes with `Done` (or `Failed`).
     pub fn run_turn(&self, prompt: String, images: Vec<ContentPart>) -> TurnHandle {
         let input = self.model.input_message_with_images(prompt.clone(), images);
-        self.run_turn_input(prompt, input)
+        self.run_turn_input(input)
     }
 
     /// Run a turn with a host-constructed input. Automatic wakeups use this to
     /// attach provenance metadata without letting display text forge it.
-    pub fn run_turn_input(&self, prompt: String, input: InputMessage) -> TurnHandle {
+    pub fn run_turn_input(&self, input: InputMessage) -> TurnHandle {
         let admission = input
             .metadata
             .as_ref()
             .and_then(|metadata| metadata.get("yolop.observe_admission"))
             .and_then(serde_json::Value::as_str)
             .and_then(|value| value.parse().ok());
-        self.observe_or_run(prompt, input, admission)
+        self.observe_or_run(input, admission)
     }
 
     pub(crate) fn observe_admission(
         &self,
         id: everruns_contracts::typed_id::MessageId,
     ) -> TurnHandle {
-        self.observe_or_run(String::new(), InputMessage::user(""), Some(id))
+        self.observe_or_run(InputMessage::user(""), Some(id))
     }
 
     fn observe_or_run(
         &self,
-        prompt: String,
         mut input: InputMessage,
         admission: Option<everruns_contracts::typed_id::MessageId>,
     ) -> TurnHandle {
@@ -262,13 +250,13 @@ impl Session {
                 });
                 return;
             }
-            let mut events_before = match handles.runtime.events().await {
+            let mut events_before = match handles.host.events().await {
                 Ok(e) => e.len(),
                 Err(_) => 0,
             };
 
             if let Some(id) = admission
-                && let Ok(events) = handles.runtime.events().await
+                && let Ok(events) = handles.host.events().await
                 && let Some(position) = events.iter().position(|event| {
                     matches!(&event.data,
                         everruns_core::EventData::InputMessage(input) if input.message.id == id)
@@ -281,6 +269,7 @@ impl Session {
             let notices = tx.clone();
             let retried = Arc::new(std::sync::atomic::AtomicBool::new(false));
             let turn_retried = retried.clone();
+            let cancellation = scope.cancellation();
             let mut turn = tokio::spawn(async move {
                 let notice = move |text: String| {
                     turn_retried.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -290,10 +279,15 @@ impl Session {
                     }]));
                 };
                 match admission {
-                    Some(id) => turn_handles.runtime.wait_admission(id).await,
+                    Some(_) => turn_handles.execute_input(input, cancellation).await,
                     None => {
                         turn_handles
-                            .run_turn_with_reasoning_recovery(&turn_model, &prompt, input, &notice)
+                            .run_turn_with_reasoning_recovery(
+                                &turn_model,
+                                input,
+                                cancellation,
+                                &notice,
+                            )
                             .await
                     }
                 }
@@ -315,7 +309,9 @@ impl Session {
                     biased;
                     _ = &mut cancel_rx => {
                         cancelled = true;
-                        turn.abort();
+                        if let Err(error) = scope.cancel(&handles.session).await {
+                            tracing::warn!(%error, "Engine cancellation acknowledgement failed");
+                        }
                         break;
                     }
                     recv = live.recv() => match recv {
@@ -323,7 +319,7 @@ impl Session {
                             if event.session_id != session_id {
                                 continue;
                             }
-                            if !scope.accepts(&handles.runtime, &event).await { continue; }
+                            if !scope.accepts(&handles.session, &event).await { continue; }
                             handle_live_event(
                                 &event,
                                 &mut emitted_events,
@@ -361,9 +357,6 @@ impl Session {
 
             if cancelled {
                 let _ = turn.await;
-                if let Err(error) = scope.cancel(&handles.runtime).await {
-                    tracing::warn!(%error, "Engine cancellation acknowledgement failed");
-                }
                 handles.report_herdr_state(crate::capabilities::herdr::HerdrState::Idle);
                 let _ = tx.send(TurnEvent::Stream(None));
                 let _ = tx.send(TurnEvent::Done {
@@ -418,8 +411,8 @@ impl Session {
             };
 
             let mut scoped_events = Vec::new();
-            for event in handles.runtime.events().await.unwrap_or_default() {
-                if scope.accepts(&handles.runtime, &event).await {
+            for event in handles.host.events().await.unwrap_or_default() {
+                if scope.accepts(&handles.session, &event).await {
                     scoped_events.push(event);
                 }
             }
@@ -708,9 +701,9 @@ async fn catch_up_events(
     router: &mut DeltaRouter,
     tx: &mpsc::UnboundedSender<TurnEvent>,
 ) {
-    let events = handles.runtime.events().await.unwrap_or_default();
+    let events = handles.host.events().await.unwrap_or_default();
     for event in events.iter().skip(*cursor) {
-        if event.session_id == session_id && scope.accepts(&handles.runtime, event).await {
+        if event.session_id == session_id && scope.accepts(&handles.session, event).await {
             handle_live_event(event, emitted_events, router, tx);
         }
     }
@@ -754,6 +747,28 @@ fn route_catch_up_events(
     if !lines.is_empty() {
         let _ = tx.send(TurnEvent::Lines(lines));
     }
+}
+
+/// Compose native capability commands with Yolop's skill command presentation.
+pub(crate) fn command_descriptors(commands: Vec<everruns::CommandInfo>) -> Vec<CommandDescriptor> {
+    commands
+        .into_iter()
+        .map(|command| CommandDescriptor {
+            name: command.name,
+            description: command.description,
+            source: CommandSource::System,
+            args: command
+                .arguments
+                .into_iter()
+                .map(|arg| CommandArg {
+                    name: arg.name,
+                    description: arg.description,
+                    required: arg.required,
+                    suggestions: arg.suggestions,
+                })
+                .collect(),
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -865,7 +880,7 @@ mod tests {
                     chat_calls: captured_calls.clone(),
                 })
             });
-        let runtime = built.handles.runtime.clone();
+        let runtime = built.handles.host.clone();
         let session_id = built.handles.session_id;
         let session = Session::new(built.handles, model);
 

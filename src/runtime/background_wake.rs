@@ -22,7 +22,7 @@ use everruns_core::EventData;
 use everruns_core::ExecutionSession;
 use everruns_core::InputMessage;
 use everruns_core::RuntimeMessageRole;
-use everruns_core::host::{RuntimeSessionStore, SessionBuilder};
+use everruns_core::SessionStore;
 use everruns_core::{PlatformCreateSessionRequest, PlatformMessage};
 use everruns_core::{SessionTask, SessionTaskRegistry};
 use everruns_core::{TaskTransition, wake_text_for};
@@ -339,8 +339,8 @@ pub(crate) fn coalesce_pending_wakes(
 /// Local platform runner for host wakes and child sub-agent sessions.
 /// Host routing itself is owned by Everruns' [`HostRoutedRunner`].
 pub struct WakeRunner {
-    runtime: Arc<OnceLock<Weak<super::engine::EngineRuntime>>>,
-    sessions: Arc<dyn RuntimeSessionStore>,
+    host: Arc<OnceLock<Weak<super::engine::SessionHost>>>,
+    sessions: Arc<dyn SessionStore>,
     tasks: Option<Arc<dyn SessionTaskRegistry>>,
     child_turn_locks: Mutex<HashMap<SessionId, Arc<AsyncMutex<()>>>>,
     /// The live model selection, read for its reasoning level. A child-session
@@ -355,13 +355,13 @@ pub struct WakeRunner {
 
 impl WakeRunner {
     pub fn new(
-        runtime: Arc<OnceLock<Weak<super::engine::EngineRuntime>>>,
-        sessions: Arc<dyn RuntimeSessionStore>,
+        runtime: Arc<OnceLock<Weak<super::engine::SessionHost>>>,
+        sessions: Arc<dyn SessionStore>,
         tasks: Option<Arc<dyn SessionTaskRegistry>>,
         provider: Arc<RwLock<crate::runtime::ProviderChoice>>,
     ) -> Self {
         Self {
-            runtime,
+            host: runtime,
             sessions,
             tasks,
             child_turn_locks: Mutex::new(HashMap::new()),
@@ -410,8 +410,8 @@ impl WakeRunner {
             .map(str::to_string)
     }
 
-    fn runtime(&self) -> Result<Arc<super::engine::EngineRuntime>> {
-        self.runtime
+    fn host(&self) -> Result<Arc<super::engine::SessionHost>> {
+        self.host
             .get()
             .ok_or_else(|| AgentLoopError::config("runtime not initialized yet"))
             .and_then(|runtime| {
@@ -748,17 +748,15 @@ impl LocalSessionRunner for WakeRunner {
         if self.sessions.get_session(session_id).await?.is_none() {
             return Err(AgentLoopError::session_not_found(session_id));
         }
-        let runtime = self.runtime()?;
+        let runtime = self.host()?;
+        runtime
+            .sync_model(session_id)
+            .await
+            .map_err(|error| AgentLoopError::config(error.to_string()))?;
         let wake = self
             .wake_message(session_id, content)
             .await
-            .resolve_artifacts(
-                runtime
-                    .file_store(everruns_core::host::in_process_internal_org_id(
-                        everruns_core::DEFAULT_ORG_PUBLIC_ID,
-                    ))
-                    .as_ref(),
-            );
+            .resolve_artifacts(runtime.files.clone().as_ref());
         let turn_lock = self.child_turn_lock(session_id);
         let _guard = turn_lock.lock().await;
         let mut input = input_for_wake(&wake);
@@ -766,9 +764,16 @@ impl LocalSessionRunner for WakeRunner {
             &mut input,
             self.reasoning_effort().as_deref(),
         );
-        let result = self
-            .runtime()?
-            .run_turn(session_id, input)
+        let result = runtime
+            .engine
+            .resume(session_id)
+            .await
+            .map_err(|error| AgentLoopError::tool(error.to_string()))?
+            .run(input)
+            .await
+            .map_err(|error| AgentLoopError::tool(error.to_string()))?;
+        runtime
+            .synchronize()
             .await
             .map_err(|error| AgentLoopError::tool(error.to_string()))?;
         if result.success {
@@ -789,18 +794,16 @@ impl LocalSessionRunner for WakeRunner {
         _locale: Option<&str>,
         parent_session_id: Option<SessionId>,
     ) -> Result<ExecutionSession> {
-        let mut session = SessionBuilder::new(harness_id)
-            .id(SessionId::new())
-            .title(title.unwrap_or("sub-agent"))
-            .build();
+        let mut session = ExecutionSession::with_own_workspace(SessionId::new(), harness_id);
+        session.title = Some(title.unwrap_or("sub-agent").into());
         session.agent_id = agent_id;
         session.parent_session_id = parent_session_id;
-        let runtime = self.runtime()?;
+        let runtime = self.host()?;
         runtime
             .engine
             .create_registered_with_metadata(
                 session.id,
-                &runtime.build,
+                &runtime.profile.build,
                 json!({"parent_session_id":parent_session_id}),
             )
             .await?;
@@ -819,19 +822,18 @@ impl LocalSessionRunner for WakeRunner {
         // `seed` applies to detached sessions. The unified tool schema exposes
         // it for every target, so tolerate it on linked children instead of
         // turning an otherwise valid spawn into an internal error.
-        let mut session = SessionBuilder::new(request.harness_id)
-            .id(SessionId::new())
-            .title(request.title.as_deref().unwrap_or("sub-agent"))
-            .build();
+        let mut session =
+            ExecutionSession::with_own_workspace(SessionId::new(), request.harness_id);
+        session.title = Some(request.title.unwrap_or_else(|| "sub-agent".into()));
         session.agent_id = request.agent_id;
         session.parent_session_id = request.parent_session_id;
         session.goal = request.goal;
-        let runtime = self.runtime()?;
+        let runtime = self.host()?;
         runtime
             .engine
             .create_registered_with_metadata(
                 session.id,
-                &runtime.build,
+                &runtime.profile.build,
                 json!({"parent_session_id":session.parent_session_id}),
             )
             .await?;
@@ -860,7 +862,7 @@ impl LocalSessionRunner for WakeRunner {
                 .messages(&thread)
                 .map_err(|error| AgentLoopError::store(error.to_string()))?,
             None => self
-                .runtime()?
+                .host()?
                 .messages(session_id)
                 .await
                 .map_err(|error| AgentLoopError::store(error.to_string()))?,

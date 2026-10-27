@@ -6,13 +6,17 @@ description: Defines native Engine execution, retained-session import, and local
 
 # Engine-owned execution
 
+Yolop is the primary coding-agent demonstration of Everruns. Framework adoption
+preserves all product features while replacing application-owned execution
+plumbing with public framework primitives.
+
 Yolop executes registered Everruns `Engine` sessions on `SqliteHosting`.
 Foreground TUI, inline, print, ACP, automatic inputs and linked subagents use
 this authority. Runtime construction supplies Agent, Harness, HostServices and
 a reopenable Environment. It does not construct or drive a Core runtime.
 
 The Everruns family consumes git `main`, locked together at
-[`e405378518b9e68ac03bfcef951c8c4237db9c0a`](https://github.com/everruns/everruns/tree/e405378518b9e68ac03bfcef951c8c4237db9c0a).
+[`2206d44e16c2eb5f4de8792c8b4c63dee00246cd`](https://github.com/everruns/everruns/tree/2206d44e16c2eb5f4de8792c8b4c63dee00246cd).
 This source exception is authorized for Engine adoption. A crates.io release
 must return all family dependencies to aligned published versions first.
 
@@ -26,10 +30,19 @@ must return all family dependencies to aligned published versions first.
 | Environment and workspace head | Stable workspace identity and access through Yolop's filesystem |
 | Yolop | Frontends, credentials, approvals, coding capabilities, coordination and workspace checkpoints |
 
-The application adapter in [engine.rs](../../src/runtime/engine.rs) contains no
-Core runtime handle or writable conversation store. Native session controls
-order model, effort, capability activation and commands. Scoped MCP configuration
-is supplied by its host capability and resolved again for each model context.
+Frontends hold a native `Session` for execution, typed admission observation,
+cancellation, capability activation, commands and context inspection. Native
+`Turn` outcomes, including hook failures, reach every frontend unchanged except
+for product-facing provider error detail. There is no global run registry or
+Core runtime facade.
+
+The application host in [engine.rs](../../src/runtime/engine.rs) owns model
+selection policy, checkpoint hooks, supervisor lifetime and the presentation
+cache. It contains no Core runtime handle or writable conversation store.
+Command descriptors are translated only at the UI and capability boundaries
+where Yolop composes native commands with local skill commands. Scoped MCP
+configuration is supplied by its host capability and resolved again for each
+model context.
 Tool-less completion review uses the Framework's explicit completion request.
 HostServices preserves capability hooks, provider recovery, MCP auth and request
 metadata. Dynamic capability registration is distinct from session activation.
@@ -58,8 +71,9 @@ The root binding retains its behavior descriptor and compatibility build ID;
 a descendant resolves that descriptor through its parent bindings.
 
 `events.jsonl` is a rebuildable raw authority export, including abandoned
-branches. It is not a second canonical writer. Frontend event observation is
-lossy and catches up with bounded authority reads. Product budget diagnostics
+branches. It is not a second canonical writer. Resume bootstraps its transcript
+from active canonical history, even if the export is stale or empty. Frontend
+event observation is lossy and catches up with bounded authority reads. Product budget diagnostics
 live separately in `host-events.jsonl` without canonical sequence numbers and
 are filtered against active turn lineage after rewind.
 
@@ -87,7 +101,9 @@ retryable; the root moves after its children. Original compaction-attempt and
 workspace files remain local product metadata.
 
 Source-only legacy backend descriptors let the Framework read old tasks,
-schedules and storage during import. They never execute a legacy turn. Native
+schedules and storage during import. They are constructed only for a legacy
+source, never during fresh or native-session startup, and never execute a
+legacy turn. Coordination retains its separate product database. Native
 cutover records its boundary and ownership atomically. Repeating the same
 import replays that decision. Live legacy workers or conflicting state refuse
 cutover. Once imported, every new input uses the native authority.
@@ -107,16 +123,14 @@ The required host services, session controls, import, completion requests and
 history lineage contracts are available on the pinned main. The earlier facade
 session-overlay fix, EVE-1299, is historical and is not a cutover dependency.
 
-Two native service gaps are tracked in Everruns OSS:
+The pinned framework includes both native service corrections:
 
-- [EVE-1309](https://linear.app/everruns/issue/EVE-1309): native schedule delivery
-  lacks a stable occurrence admission ID across the delivery/acknowledgement
-  crash window. Leased delivery retries are available; exactly-once schedule
-  admission is not claimed.
-- [EVE-1310](https://linear.app/everruns/issue/EVE-1310): foreground subagent task
-  settlement does not recognize the native runner's idle status as a committed
-  result. Yolop's platform adapter reads the actual assigned turn outcome and
-  maps it to the existing terminal task vocabulary. Bare idle is not success.
+- [EVE-1309](https://linear.app/everruns/issue/EVE-1309): schedule delivery retains
+  a stable occurrence admission identity across delivery and acknowledgement
+  retries.
+- [EVE-1310](https://linear.app/everruns/issue/EVE-1310): native child waits report
+  the actual terminal turn outcome and settle foreground subagent tasks. Yolop
+  delegates this behavior directly to the framework.
 
 Background completion admission uses a stable ID derived from session, task,
 attempt and terminal state. Engine can steer a fast completion into an active
