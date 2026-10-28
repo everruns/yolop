@@ -287,6 +287,14 @@ def analyze_reports(reports: list[dict]) -> tuple[list[str], list[str], list[str
             for metric in ("tool_calls", "llm_calls", "input_tokens", "cost_usd"):
                 base = medians[("baseline", metric)]
                 candidate_value = medians[("candidate", metric)]
+                if metric in ("input_tokens", "cost_usd"):
+                    # Tokens and cost are bimodal on identical behavior: add-fn
+                    # ran 14k or 24k input tokens at the same 5-6 calls in both
+                    # binaries (nightlies 2026-10-27, 2026-10-28), so 2 of 5 high
+                    # trials flip the median by +60%. The noise only adds, so
+                    # compare the cheapest trial: a real regression raises it.
+                    base = min(value(case, metric) for case in baseline)
+                    candidate_value = min(value(case, metric) for case in candidate)
                 # Call counts are small integers: at a median of 8, a single extra
                 # call is already +12.5% (nightly 2026-10-14, 8 -> 9) on identical
                 # behavior. Count metrics get one call of slack; tokens and cost

@@ -159,6 +159,26 @@ class AnalyzeTests(unittest.TestCase):
         _, failures, _ = analyzer.analyze({"cases": cases})
         self.assertEqual(failures, [])
 
+    def test_control_token_outlier_trials_do_not_move_the_gate(self):
+        # Nightly 2026-10-28: add-fn ran 14k or 24k tokens at identical calls, so
+        # three high candidate trials of five flip the median by +63%.
+        cases = focused_cases()
+        for sample in sorted(analyzer.CONTROLS):
+            for trial in range(5):
+                high = trial < 3
+                cases += [
+                    case(sample, "baseline", True, tokens=100, cost=0.01),
+                    case(
+                        sample,
+                        "candidate",
+                        True,
+                        tokens=170 if high else 100,
+                        cost=0.017 if high else 0.01,
+                    ),
+                ]
+        _, failures, _ = analyzer.analyze({"cases": cases})
+        self.assertEqual(failures, [])
+
     def test_control_cost_past_noise_ceiling_still_regresses(self):
         cases = focused_cases() + control_cases(candidate_cost=0.013)
         _, failures, _ = analyzer.analyze({"cases": cases})
