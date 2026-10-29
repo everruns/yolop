@@ -2887,8 +2887,13 @@ fn classify_tool(data: &Value) -> ToolKind {
             "git blame",
             "git grep",
             "git ls-files",
+            // Read-only `sessions` shapes only: `sessions send` mutates. A model that
+            // opens with `sessions --help && ... sessions search` (the 2026-10-29
+            // nightly's shape) is still sessions-first through the search match.
+            "yolop sessions --help",
             "yolop sessions search",
             "yolop sessions list",
+            "yolop sessions live",
         ]
         .iter()
         .any(|prefix| command.starts_with(prefix))
@@ -4382,6 +4387,17 @@ mod tests {
         assert_eq!(m.ast_edit_tool_calls, 2);
         assert_eq!(m.ast_edit_tool_calls_failed, 1);
         assert_eq!(m.exploration_tools_before_first_mutation, 0);
+    }
+
+    #[test]
+    fn sessions_help_chained_with_search_counts_as_sessions_first() {
+        let jsonl = r#"
+{"type":"tool.completed","data":{"tool_name":"bash","success":true,"result":[{"type":"text","text":"{\"command\":\"yolop sessions --help && printf '\\\\n---\\\\n' && yolop sessions search ABC\",\"exit_code\":0,\"success\":true,\"stdout\":\"\"}"}]}}
+{"type":"tool.completed","data":{"tool_name":"read_file","success":true,"tool_call_fingerprint":"r1","result":[{"type":"text","text":"{\"path\":\"x\"}"}]}}
+"#;
+        let m = parse_events(jsonl);
+        assert_eq!(m.sessions_search_calls, 1);
+        assert_eq!(m.sessions_search_first_exploration, 1);
     }
 
     #[test]
