@@ -2844,16 +2844,6 @@ fn is_sessions_search_call(name: &str, data: &Value) -> bool {
     command.contains("sessions") && command.contains("search")
 }
 
-/// A `yolop sessions ...` first call counts as reaching for sessions first, even
-/// when the model opens with `sessions --help` (or chains it before the search):
-/// the 2026-10-29 nightly failed all three candidate trials on that compound
-/// command, which classified as non-exploration, though every trial found the
-/// session before touching the repo.
-fn is_sessions_first_call(name: &str, data: &Value) -> bool {
-    is_sessions_search_call(name, data)
-        || (name == "bash" && normalized_command(&tool_command(data)).starts_with("yolop sessions"))
-}
-
 fn sessions_search_result_sessions(data: &Value) -> Option<Vec<Value>> {
     let value = tool_result_value(data)?;
     if let Some(sessions) = value.get("sessions").and_then(Value::as_array) {
@@ -2897,7 +2887,13 @@ fn classify_tool(data: &Value) -> ToolKind {
             "git blame",
             "git grep",
             "git ls-files",
-            "yolop sessions",
+            // Read-only `sessions` shapes only: `sessions send` mutates. A model that
+            // opens with `sessions --help && ... sessions search` (the 2026-10-29
+            // nightly's shape) is still sessions-first through the search match.
+            "yolop sessions --help",
+            "yolop sessions search",
+            "yolop sessions list",
+            "yolop sessions live",
         ]
         .iter()
         .any(|prefix| command.starts_with(prefix))
@@ -3323,7 +3319,7 @@ fn parse_events(jsonl: &str) -> Mined {
                         current_exploration_without_progress = 0;
                     }
                     ToolKind::Exploration => {
-                        if !saw_exploration && is_sessions_first_call(name, &data) {
+                        if !saw_exploration && is_sessions_search_call(name, &data) {
                             m.sessions_search_first_exploration = 1;
                         }
                         saw_exploration = true;
