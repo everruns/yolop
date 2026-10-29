@@ -1,4 +1,5 @@
 use std::io::{Read, Write};
+use std::num::NonZeroU16;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver};
@@ -171,7 +172,9 @@ impl TuiHarness {
     /// under test when that action follows a PTY resize.
     pub fn screen_lines(&mut self) -> Vec<String> {
         self.drain_output();
-        let mut parser = vt100::Parser::new(self.rows, self.cols, 0);
+        let rows = NonZeroU16::new(self.rows).expect("harness rows are non-zero");
+        let cols = NonZeroU16::new(self.cols).expect("harness cols are non-zero");
+        let mut parser = vt100::Parser::new(rows, cols, 0);
         parser.process(&self.output);
         parser
             .screen()
