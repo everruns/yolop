@@ -36,6 +36,10 @@ enum SetupAction {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         api_key: Option<String>,
     },
+    /// Non-interactive logout: clear the provider's saved credential.
+    Logout {
+        provider: String,
+    },
 }
 
 pub(crate) struct SetupCliCapability {
@@ -110,6 +114,12 @@ impl SetupCliCapability {
                             .action(ArgAction::Set),
                     ),
             )
+            .subcommand(
+                Command::new("logout")
+                    .about("Log out of a provider")
+                    .after_help("Examples:\n  Log out of Codex:\n    yolop setup logout codex")
+                    .arg(Arg::new("provider").help("Provider to log out").required(true)),
+            )
     }
 
     fn action(matches: &ArgMatches) -> anyhow::Result<SetupAction> {
@@ -131,6 +141,12 @@ impl SetupCliCapability {
                     .clone(),
                 device: matches.get_flag("device"),
                 api_key: matches.get_one::<String>("api-key").cloned(),
+            },
+            Some(("logout", matches)) => SetupAction::Logout {
+                provider: matches
+                    .get_one::<String>("provider")
+                    .expect("provider is required")
+                    .clone(),
             },
             Some((action, _)) => anyhow::bail!("unsupported setup action: {action}"),
         })
@@ -426,6 +442,119 @@ impl SetupCliCapability {
             }
         }
     }
+
+    /// Name of the token env var keeping `provider` signed in, if any.
+    fn logout_env_name(provider: &str) -> Option<String> {
+        let runtime_provider = crate::runtime::Provider::from_name(provider)?;
+        runtime_provider
+            .token_env_vars()
+            .iter()
+            .find(|name| std::env::var_os(name).is_some_and(|value| !value.is_empty()))
+            .map(|name| name.to_string())
+    }
+
+    /// Clear one provider's saved credential without the TUI picker.
+    /// Codex clears its OAuth file, the custom endpoint clears its base URL
+    /// plus token, every other keyed provider clears its saved token. A set
+    /// env var keeps the provider connected after the saved credential is
+    /// gone, so the message names it instead of claiming a logout the status
+    /// row would contradict. Logging out also drops the default provider when
+    /// it points at the provider being cleared.
+    async fn detached_logout(&self, provider: &str) -> ToolExecutionResult {
+        let settings = match self.detached_settings() {
+            Ok(settings) => settings,
+            Err(error) => return error,
+        };
+        if crate::runtime::Provider::from_name(provider).is_none() {
+            return ToolExecutionResult::tool_error(format!(
+                "unknown provider '{provider}'; run `yolop setup status` to list providers"
+            ));
+        }
+        if matches!(provider, "llmsim" | "ollama" | "local") {
+            return ToolExecutionResult::Success(json!({
+                "message": "setup: needs no login, nothing to clear"
+            }));
+        }
+        if provider == "codex" {
+            let cleared = match crate::auth::siwc::clear_login(settings).await {
+                Ok(cleared) => cleared,
+                Err(error) => {
+                    return ToolExecutionResult::tool_error(format!(
+                        "setup: logout failed: {error}"
+                    ));
+                }
+            };
+            if cleared {
+                Self::reset_default_provider(settings, provider);
+            }
+            let message = match (cleared, Self::logout_env_name(provider)) {
+                (true, Some(env)) => format!(
+                    "setup: logged out of Codex (cleared login) \u{b7} still signed in via {env} (unset it to fully sign out)"
+                ),
+                (true, None) => "setup: logged out of Codex".to_string(),
+                (false, Some(env)) => format!(
+                    "setup: Codex is signed in via {env} (no saved login to clear, unset it to sign out)"
+                ),
+                (false, None) => "setup: Codex is not logged in".to_string(),
+            };
+            return ToolExecutionResult::Success(json!({ "message": message }));
+        }
+        if provider == "custom" {
+            let snapshot = settings.snapshot();
+            let had_saved = snapshot.has_token(provider)
+                || crate::runtime::custom_base_url(&snapshot).is_some();
+            if !had_saved {
+                let message = match Self::logout_env_name(provider) {
+                    Some(env) => format!(
+                        "setup: custom endpoint is set via {env} (nothing saved to clear, unset it to sign out)"
+                    ),
+                    None => "setup: custom endpoint is not configured".to_string(),
+                };
+                return ToolExecutionResult::Success(json!({ "message": message }));
+            }
+            if let Err(error) = settings.clear_token(provider) {
+                return ToolExecutionResult::tool_error(format!("setup: logout failed: {error}"));
+            }
+            if let Err(error) = settings.clear_base_url(provider) {
+                return ToolExecutionResult::tool_error(format!("setup: logout failed: {error}"));
+            }
+            Self::reset_default_provider(settings, provider);
+            let message = match Self::logout_env_name(provider) {
+                Some(env) => format!(
+                    "setup: logged out of custom (cleared endpoint) \u{b7} still signed in via {env} (unset it to fully sign out)"
+                ),
+                None => "setup: logged out of custom (cleared endpoint)".to_string(),
+            };
+            return ToolExecutionResult::Success(json!({ "message": message }));
+        }
+        let cleared = match settings.clear_token(provider) {
+            Ok(cleared) => cleared,
+            Err(error) => {
+                return ToolExecutionResult::tool_error(format!("setup: logout failed: {error}"));
+            }
+        };
+        if cleared {
+            Self::reset_default_provider(settings, provider);
+        }
+        let message = match (cleared, Self::logout_env_name(provider)) {
+            (true, Some(env)) => format!(
+                "setup: logged out of {provider} (cleared saved key) \u{b7} still signed in via {env} (unset it to fully sign out)"
+            ),
+            (true, None) => format!("setup: logged out of {provider} (cleared saved key)"),
+            (false, Some(env)) => format!(
+                "setup: {provider} is signed in via {env} (no saved key to clear, unset it to sign out)"
+            ),
+            (false, None) => format!("setup: {provider} is not logged in"),
+        };
+        ToolExecutionResult::Success(json!({ "message": message }))
+    }
+
+    /// Drop the default provider when logout cleared the provider it points at.
+    fn reset_default_provider(settings: &crate::config::SettingsStore, provider: &str) {
+        if settings.snapshot().default_provider.as_deref() == Some(provider) {
+            let _ = settings.set_default_provider(None);
+        }
+    }
 }
 
 fn on_off(value: bool) -> &'static str {
@@ -608,6 +737,7 @@ impl ControlCapability for SetupCliCapability {
                     self.detached_login(&provider, device, api_key).await
                 }
             }
+            SetupAction::Logout { provider } => self.detached_logout(&provider).await,
         }
     }
 
@@ -850,5 +980,143 @@ mod tests {
             .and_then(Value::as_str)
             .unwrap_or_default();
         assert!(message.contains("needs no login"), "message: {message}");
+    }
+
+    #[tokio::test]
+    async fn setup_logout_action_captures_provider() {
+        let action = parse(&["setup", "logout", "codex"]);
+        assert!(
+            matches!(action, SetupAction::Logout { provider } if provider == "codex"),
+            "logout must capture the provider"
+        );
+    }
+
+    #[tokio::test]
+    async fn detached_logout_clears_saved_token_and_default() {
+        let settings = test_settings();
+        settings
+            .set_token("openrouter".to_string(), "sk-test".to_string())
+            .expect("save token");
+        settings
+            .set_default_provider(Some("openrouter".to_string()))
+            .expect("set default");
+        let result = SetupCliCapability::detached(settings.clone())
+            .execute_control(
+                &serde_json::to_value(SetupAction::Logout {
+                    provider: "openrouter".to_string(),
+                })
+                .unwrap(),
+            )
+            .await;
+        let ToolExecutionResult::Success(value) = result else {
+            panic!("expected logout success");
+        };
+        let message = value
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        assert!(message.contains("logged out"), "message: {message}");
+        assert!(
+            !settings.snapshot().has_token("openrouter"),
+            "saved key should be gone after logout"
+        );
+        assert!(
+            settings.snapshot().default_provider.is_none(),
+            "default must not point at the logged-out provider"
+        );
+    }
+
+    #[tokio::test]
+    async fn detached_logout_reports_env_after_clearing_saved_key() {
+        let previous = std::env::var_os("OPENROUTER_API_KEY");
+        unsafe { std::env::set_var("OPENROUTER_API_KEY", "sk-env") };
+        let settings = test_settings();
+        settings
+            .set_token("openrouter".to_string(), "sk-saved".to_string())
+            .expect("save token");
+        let result = SetupCliCapability::detached(settings.clone())
+            .execute_control(
+                &serde_json::to_value(SetupAction::Logout {
+                    provider: "openrouter".to_string(),
+                })
+                .unwrap(),
+            )
+            .await;
+        let ToolExecutionResult::Success(value) = result else {
+            panic!("expected logout success");
+        };
+        let message = value
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        assert!(
+            message.contains("still signed in via OPENROUTER_API_KEY"),
+            "logout must warn that the env var keeps the provider signed in: {message}"
+        );
+        assert!(
+            !settings.snapshot().has_token("openrouter"),
+            "saved key should be gone after logout"
+        );
+        if let Some(value) = previous {
+            unsafe { std::env::set_var("OPENROUTER_API_KEY", value) };
+        } else {
+            unsafe { std::env::remove_var("OPENROUTER_API_KEY") };
+        }
+    }
+
+    #[tokio::test]
+    async fn detached_logout_clears_custom_endpoint() {
+        let settings = test_settings();
+        settings
+            .set_token("custom".to_string(), "sk-test".to_string())
+            .expect("save token");
+        settings
+            .set_base_url("custom".to_string(), "https://example.test/v1".to_string())
+            .expect("save base url");
+        let result = SetupCliCapability::detached(settings.clone())
+            .execute_control(
+                &serde_json::to_value(SetupAction::Logout {
+                    provider: "custom".to_string(),
+                })
+                .unwrap(),
+            )
+            .await;
+        let ToolExecutionResult::Success(value) = result else {
+            panic!("expected logout success");
+        };
+        let message = value
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        assert!(message.contains("logged out"), "message: {message}");
+        let snapshot = settings.snapshot();
+        assert!(
+            !snapshot.has_token("custom"),
+            "saved custom key should be gone after logout"
+        );
+        assert!(
+            crate::runtime::custom_base_url(&snapshot).is_none(),
+            "custom base URL should be gone after logout"
+        );
+    }
+
+    #[tokio::test]
+    async fn detached_logout_rejects_unknown_provider() {
+        let result = SetupCliCapability::detached(test_settings())
+            .execute_control(
+                &serde_json::to_value(SetupAction::Logout {
+                    provider: "nope".to_string(),
+                })
+                .unwrap(),
+            )
+            .await;
+        assert!(
+            matches!(result, ToolExecutionResult::ToolError { .. }),
+            "unknown provider should fail"
+        );
+        assert!(
+            format!("{result:?}").contains("unknown provider"),
+            "error should name the problem: {result:?}"
+        );
     }
 }
