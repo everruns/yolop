@@ -109,6 +109,7 @@ editor can drive it without hard-coding `memory`.
 | `disclosed_titles` | 15      | Memory titles injected into the prompt each turn.        |
 | `recall_limit`     | 5       | Default number of memories `recall` returns.             |
 | `soft_cap`         | 200     | Warn (never delete) once more than this many exist.      |
+| `report_only_inspection` | false | Local heuristic reports for visible titles, approved writes and selected recalls. |
 
 Missing or null config falls back to defaults; `validate_config` rejects wrong
 types on the write path, while the per-turn read paths fall back to defaults and
@@ -118,6 +119,44 @@ log on bad input rather than dropping the capability.
 nudge the model to `forget` stale memories or promote stable guidance to a
 skill. Yolop never silently drops a user's memory. Setting it to `0` disables
 the warning.
+
+## Opt-in local inspection
+
+The memory capability's `report_only_inspection` config is off by default.
+With it enabled, successful `remember` results and selected `recall` results
+carry local heuristic reports. Findings never authorize writes or deletion:
+the existing dedicated memory approval gate still runs before mutations.
+Inspection never deletes, quarantines, sends content to an external scanner,
+or persists reports beside the user's notes.
+
+Automatic disclosure inspects only the titles already selected by
+`disclosed_titles`. Its summary contains title-derived finding counts and a
+limitation notice, never body-derived counts, body hashes, excerpts, or findings
+from hidden notes. Loading a store therefore does not disclose all its contents
+through inspection. Recall inspects only the notes returned by the existing
+scope, ID, query and limit rules; a missing note has no report.
+
+Reports bind the canonical memory section (the same representation used to
+save each note), update timestamp, note ID, selected scope, observed store
+identity, and shared inspection ruleset. A digest identifies the physical store
+without adding its path to the report. This is observed provenance, not publisher
+authentication or an approval token. Reports are computed from the exact saved
+or returned note snapshot; there is no name-only review cache. Reopening the same
+store preserves the binding for unchanged notes, while content, version, scope,
+ID or store changes invalidate it.
+
+The adapter in [memory/inspection.rs](../../src/capabilities/memory/inspection.rs)
+uses Everruns' shared artifact inspector. It does not vendor another ruleset.
+The adapter needs an upstream revision containing that inspector; until the
+locked Everruns family is updated, combined local validation uses an external
+Cargo patch config against the sibling checkout. No path dependency belongs
+in the committed manifest or lockfile. Ordinary Yolop builds remain blocked on
+that upstream dependency update for this change.
+
+Inspection is heuristic. False positives and missed attacks are expected, and
+empty findings do not establish prompt-injection safety. Hosted Everruns memory
+mounts, automatic body inspection, and persisted human review decisions are not
+part of this Yolop integration.
 
 ## Non-goals
 

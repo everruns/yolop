@@ -1,5 +1,12 @@
 # Knowledge Log
 
+## 2026-10-30, Report-only memory inspection
+
+Added opt-in local inspection to approved writes and selected recalls, including
+notes loaded from disk. Automatic disclosure inspects only visible titles and
+exposes no body-derived findings or hashes. Reports bind canonical content,
+version, note identity, scope, store and shared ruleset. See [Memory](specs/memory.md).
+
 ## 2026-10-27, Native Session APIs and application host boundary
 
 Yolop demonstrates Everruns while retaining all product features. Frontends now
