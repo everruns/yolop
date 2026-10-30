@@ -231,13 +231,13 @@ impl ClientUiContext {
     ///
     /// A listed capability is a claim yolop can stand behind; an absent one
     /// means "not known to render", which is why the list is additive rather
-    /// than a per-capability true/false. That distinction is load-bearing for
+    /// than a per-capability true/false. This matters for
     /// ACP: the editor renders agent messages as markdown, but nothing in the
     /// protocol says whether it draws Mermaid, so `supports_markdown` is listed
     /// and `supports_markdown_mermaid` is not.
     ///
-    /// The TUI renders the transcript itself and claims both — full-screen and
-    /// the inline mirror share one markdown path, so they cannot diverge.
+    /// The TUI supports both. Full-screen and the inline mirror share one
+    /// markdown renderer.
     /// `--print` writes raw text to stdout and headless runs have no viewer at
     /// all, so neither claims anything.
     fn ui_capabilities(&self) -> &'static [&'static str] {
