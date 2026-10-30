@@ -673,6 +673,19 @@ fn failed_turn_transcript(
     error: &str,
     current_effort: Option<&str>,
 ) -> Vec<ChatLine> {
+    // Credit exhaustion gets one markdown block with blank-line separated
+    // paragraphs and clickable links, so ACP/TUI render it readably instead
+    // of gluing the raw provider text to the key URL and hint.
+    if let Some(exhaustion) = crate::runtime::credit_watcher::CreditExhaustion::detect(error) {
+        let mut lines = assistant;
+        lines.retain(|line| !attestation::is_generic_provider_apology(&line.text));
+        let summary = turn_failure_message(error);
+        lines.push(ChatLine {
+            author: Author::Assistant,
+            text: exhaustion.markdown_block(&summary),
+        });
+        return lines;
+    }
     let hints = turn_failure_hints(error, current_effort);
     let mut lines = assistant;
     if !hints.is_empty() {
@@ -1116,6 +1129,47 @@ mod tests {
             lines[0].text
         );
         assert!(lines[1].text.starts_with("turn error: "));
+    }
+
+    /// The transcript a max-tokens credit exhaustion leaves behind: one
+    /// Assistant markdown block with the counts and clickable links, no
+    /// separate raw "turn error" line for Paseo to glue onto the key URL.
+    #[test]
+    fn max_tokens_credit_exhaustion_is_one_linked_block() {
+        let error = "The AI provider account is out of credits for this request: it \
+            asked for up to 65536 output tokens, but the balance covers 53197. Add \
+            credits or lower the max output tokens to continue. OpenRouter (402 \
+            Payment Required): This request requires more credits, or fewer \
+            max_tokens. You requested up to 65536 tokens, but can only afford 53197. \
+            To increase, visit \
+            https://openrouter.ai/workspaces/default/keys/490a6ef336b30e2bdc5b2b3234982eed7d96396e2f23d2819fd348c40e9809 \
+            and adjust the key's daily limit. OpenRouter paused this request: it would \
+            exceed your available credits while other requests are still in flight.";
+
+        let lines = failed_turn_transcript(Vec::new(), error, None);
+
+        assert_eq!(
+            lines.len(),
+            1,
+            "one block, no separate raw error line: {lines:?}"
+        );
+        assert_eq!(lines[0].author, Author::Assistant);
+        assert!(
+            lines[0].text.contains("65536")
+                && lines[0].text.contains("53197")
+                && lines[0]
+                    .text
+                    .contains("[OpenRouter credits](https://openrouter.ai/settings/credits)")
+                && lines[0]
+                    .text
+                    .contains("[key's daily limit](https://openrouter.ai/workspaces/")
+                && lines[0].text.contains("\n\n")
+                && !lines[0].text.contains("turn error:")
+                && lines[0].text.contains("Details:"),
+            "the block keeps the counts, links both URLs, separates paragraphs, \
+             and never glues sentences: {}",
+            lines[0].text
+        );
     }
 
     /// The transcript an expired Codex login leaves behind: the generic

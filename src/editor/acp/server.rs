@@ -1836,6 +1836,10 @@ async fn run_prompt_once(
     let turn_peer = peer.clone();
     let turn_acp_id = acp_id.clone();
     let cancellation = scope.cancellation();
+    // Clone for the credit watcher: the turn below moves `input`, but a
+    // credit-exhausted turn needs the same message to retry once when the
+    // background probe sees balance again.
+    let watcher_input = input.clone();
     let turn = tokio::spawn(async move {
         let notice = move |text: String| {
             turn_recovered.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -1919,21 +1923,42 @@ async fn run_prompt_once(
         Ok(Ok(result)) if result.success => (StopReason::EndTurn, Some(result)),
         Ok(Ok(result)) => {
             if let Some(error) = &result.error {
-                peer.session_update(
-                    &acp_id,
-                    SessionUpdate::AgentMessageChunk(protocol::text_chunk(format!(
-                        "turn error: {}",
-                        crate::runtime::session::turn_failure_message(error)
-                    ))),
-                );
-                for hint in crate::runtime::session::turn_failure_hints(
-                    error,
-                    session.model.reasoning_effort().as_deref(),
-                ) {
+                if let Some(exhaustion) =
+                    crate::runtime::credit_watcher::CreditExhaustion::detect(error)
+                {
+                    // One markdown block with blank-line separated paragraphs so
+                    // Paseo renders clickable links instead of gluing the raw
+                    // provider text, the key URL, and the hint into one run.
+                    let summary = crate::runtime::session::turn_failure_message(error);
                     peer.session_update(
                         &acp_id,
-                        SessionUpdate::AgentMessageChunk(protocol::text_chunk(hint)),
+                        SessionUpdate::AgentMessageChunk(protocol::text_chunk(
+                            exhaustion.markdown_block(&summary),
+                        )),
                     );
+                    spawn_credit_watcher(
+                        peer.clone(),
+                        session.clone(),
+                        watcher_input.clone(),
+                        exhaustion,
+                    );
+                } else {
+                    peer.session_update(
+                        &acp_id,
+                        SessionUpdate::AgentMessageChunk(protocol::text_chunk(format!(
+                            "turn error: {}",
+                            crate::runtime::session::turn_failure_message(error)
+                        ))),
+                    );
+                    for hint in crate::runtime::session::turn_failure_hints(
+                        error,
+                        session.model.reasoning_effort().as_deref(),
+                    ) {
+                        peer.session_update(
+                            &acp_id,
+                            SessionUpdate::AgentMessageChunk(protocol::text_chunk(hint)),
+                        );
+                    }
                 }
             }
             (StopReason::EndTurn, Some(result))
@@ -2056,6 +2081,57 @@ async fn drain_events(
             peer.session_update(acp_id, update);
         }
     }
+}
+
+/// Deterministic credit watcher: fixed 60s probes of the key endpoint (no
+/// token spend). Posts when credits are back and retries the paused turn
+/// once, then stops. Bounded so it cannot poll forever.
+fn spawn_credit_watcher(
+    peer: Arc<Peer>,
+    session: Arc<Session>,
+    input: InputMessage,
+    _exhaustion: crate::runtime::credit_watcher::CreditExhaustion,
+) {
+    use crate::runtime::credit_watcher::{CreditWatcher, ProbeOutcome, probe_openrouter_key};
+
+    let api_key = std::env::var("OPENROUTER_API_KEY").ok();
+    let Some(api_key) = api_key else {
+        return;
+    };
+    if api_key.trim().is_empty() {
+        return;
+    }
+    let acp_id = session.acp_id.clone();
+    tokio::spawn(async move {
+        let mut watcher = CreditWatcher::start();
+        loop {
+            tokio::time::sleep(watcher.poll_interval).await;
+            match probe_openrouter_key(&api_key).await {
+                ProbeOutcome::Available => {
+                    peer.session_update(
+                        &acp_id,
+                        SessionUpdate::AgentMessageChunk(protocol::text_chunk(
+                            CreditWatcher::credits_back_message(),
+                        )),
+                    );
+                    let (_cancel_tx, mut cancel_rx) = oneshot::channel();
+                    run_prompt_once(peer, session, input, &mut cancel_rx).await;
+                    break;
+                }
+                ProbeOutcome::Exhausted | ProbeOutcome::Unknown => {
+                    if !watcher.record_probe() {
+                        peer.session_update(
+                            &acp_id,
+                            SessionUpdate::AgentMessageChunk(protocol::text_chunk(
+                                "Credit watcher gave up after an hour of 60s probes. Add credits or lower max output tokens, then send your next message to retry.",
+                            )),
+                        );
+                        break;
+                    }
+                }
+            }
+        }
+    });
 }
 
 #[cfg(test)]
