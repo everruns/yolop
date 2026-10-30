@@ -127,15 +127,25 @@ pub async fn clear_login(settings: &SettingsStore) -> Result<bool> {
         return Ok(false);
     };
     if auth.open_source.is_some() {
-        let client = auth
-            .client_id
-            .as_deref()
-            .ok_or_else(|| anyhow!("Missing revocation client"))?;
-        let refresh = auth
-            .refresh_token
-            .as_deref()
-            .ok_or_else(|| anyhow!("Missing revocation token"))?;
-        everruns_drivers::chatgpt::oauth::revoke_refresh_token(client, refresh).await?;
+        // Best effort: local logout must succeed even when revocation fails
+        // (offline, expired session, missing fields). A stale file that
+        // survives a logout leaves the setup screen reading "signed in".
+        match (auth.client_id.as_deref(), auth.refresh_token.as_deref()) {
+            (Some(client), Some(refresh)) => {
+                if let Err(err) =
+                    everruns_drivers::chatgpt::oauth::revoke_refresh_token(client, refresh).await
+                {
+                    tracing::warn!(
+                        "codex logout: revoke failed, clearing local login anyway: {err}"
+                    );
+                }
+            }
+            _ => {
+                tracing::warn!(
+                    "codex logout: missing revocation fields, clearing local login anyway"
+                );
+            }
+        }
     }
     settings.clear_codex_auth_under_lease()
 }

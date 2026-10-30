@@ -267,8 +267,11 @@ impl App {
 
     /// Message for logging out of one provider from the Provider step.
     /// `x` calls this without leaving the picker so logout stays visible
-    /// next to the status it clears. Codex clears its OAuth file, every
-    /// other keyed provider clears its saved token.
+    /// next to the status it clears. Codex clears its OAuth file, the custom
+    /// endpoint clears its base URL plus token, every other keyed provider
+    /// clears its saved token. A set env var keeps the provider connected
+    /// after the saved credential is gone, so the message names it instead
+    /// of claiming a logout that the status row would contradict.
     pub(crate) async fn logout_provider_message(
         settings: &crate::config::SettingsStore,
         provider: &str,
@@ -278,14 +281,59 @@ impl App {
         }
         if provider == "codex" {
             return match crate::auth::siwc::clear_login(settings).await {
-                Ok(true) => "setup: logged out of Codex".to_string(),
-                Ok(false) => "setup: Codex is not logged in".to_string(),
+                Ok(true) => match Self::detected_env_var(provider) {
+                    Some(env) => format!(
+                        "setup: logged out of Codex (cleared login) \u{b7} still signed in via {env} (unset it to fully sign out)"
+                    ),
+                    None => "setup: logged out of Codex".to_string(),
+                },
+                Ok(false) => match Self::detected_env_var(provider) {
+                    Some(env) => format!(
+                        "setup: Codex is signed in via {env} (no saved login to clear, unset it to sign out)"
+                    ),
+                    None => "setup: Codex is not logged in".to_string(),
+                },
                 Err(error) => format!("setup: logout failed: {error}"),
             };
         }
+        if provider == "custom" {
+            let snapshot = settings.snapshot();
+            let had_saved = snapshot.has_token(provider)
+                || crate::runtime::custom_base_url(&snapshot).is_some();
+            if !had_saved {
+                return match Self::detected_env_var(provider) {
+                    Some(env) => format!(
+                        "setup: custom endpoint is set via {env} (nothing saved to clear, unset it to sign out)"
+                    ),
+                    None => "setup: custom endpoint is not configured".to_string(),
+                };
+            }
+            if let Err(error) = settings.clear_token(provider) {
+                return format!("setup: logout failed: {error}");
+            }
+            if let Err(error) = settings.clear_base_url(provider) {
+                return format!("setup: logout failed: {error}");
+            }
+            return match Self::detected_env_var(provider) {
+                Some(env) => format!(
+                    "setup: logged out of custom (cleared endpoint) \u{b7} still signed in via {env} (unset it to fully sign out)"
+                ),
+                None => "setup: logged out of custom (cleared endpoint)".to_string(),
+            };
+        }
         match settings.clear_token(provider) {
-            Ok(true) => format!("setup: logged out of {provider} (cleared saved key)"),
-            Ok(false) => format!("setup: {provider} is not logged in"),
+            Ok(true) => match Self::detected_env_var(provider) {
+                Some(env) => format!(
+                    "setup: logged out of {provider} (cleared saved key) \u{b7} still signed in via {env} (unset it to fully sign out)"
+                ),
+                None => format!("setup: logged out of {provider} (cleared saved key)"),
+            },
+            Ok(false) => match Self::detected_env_var(provider) {
+                Some(env) => format!(
+                    "setup: {provider} is signed in via {env} (no saved key to clear, unset it to sign out)"
+                ),
+                None => format!("setup: {provider} is not logged in"),
+            },
             Err(error) => format!("setup: logout failed: {error}"),
         }
     }
@@ -1967,6 +2015,8 @@ mod tests {
 
     #[tokio::test]
     async fn provider_logout_clears_saved_token() {
+        let previous = std::env::var_os("OPENAI_API_KEY");
+        unsafe { std::env::remove_var("OPENAI_API_KEY") };
         let dir = tempfile::tempdir().expect("temp dir");
         let store = crate::config::SettingsStore::open(dir.path().join("settings.toml"));
         store
@@ -1985,6 +2035,89 @@ mod tests {
         assert!(
             again.contains("not logged in"),
             "second logout should report nothing to clear: {again}"
+        );
+        if let Some(value) = previous {
+            unsafe { std::env::set_var("OPENAI_API_KEY", value) };
+        }
+    }
+
+    #[tokio::test]
+    async fn provider_logout_names_env_when_saved_key_is_gone() {
+        let previous = std::env::var_os("MISTRAL_API_KEY");
+        unsafe { std::env::set_var("MISTRAL_API_KEY", "sk-env") };
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = crate::config::SettingsStore::open(dir.path().join("settings.toml"));
+        let message = App::logout_provider_message(&store, "mistral").await;
+        assert!(
+            message.contains("MISTRAL_API_KEY"),
+            "logout should name the env var that keeps the provider signed in: {message}"
+        );
+        assert!(
+            !message.contains("not logged in"),
+            "an env-signed provider must not read as logged out: {message}"
+        );
+        if let Some(value) = previous {
+            unsafe { std::env::set_var("MISTRAL_API_KEY", value) };
+        } else {
+            unsafe { std::env::remove_var("MISTRAL_API_KEY") };
+        }
+    }
+
+    #[tokio::test]
+    async fn provider_logout_reports_env_after_clearing_saved_key() {
+        // Uses fireworks (not mistral like the test above) so the two env
+        // probes cannot race each other under parallel test threads.
+        let previous = std::env::var_os("FIREWORKS_API_KEY");
+        unsafe { std::env::set_var("FIREWORKS_API_KEY", "sk-env") };
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = crate::config::SettingsStore::open(dir.path().join("settings.toml"));
+        store
+            .set_token("fireworks".to_string(), "sk-saved".to_string())
+            .expect("save token");
+        let message = App::logout_provider_message(&store, "fireworks").await;
+        assert!(
+            message.contains("still signed in via FIREWORKS_API_KEY"),
+            "logout must warn that the env var keeps the provider signed in: {message}"
+        );
+        assert!(
+            !store.snapshot().has_token("fireworks"),
+            "saved key should be gone after logout"
+        );
+        if let Some(value) = previous {
+            unsafe { std::env::set_var("FIREWORKS_API_KEY", value) };
+        } else {
+            unsafe { std::env::remove_var("FIREWORKS_API_KEY") };
+        }
+    }
+
+    #[tokio::test]
+    async fn provider_logout_clears_custom_endpoint() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = crate::config::SettingsStore::open(dir.path().join("settings.toml"));
+        store
+            .set_token("custom".to_string(), "sk-test".to_string())
+            .expect("save token");
+        store
+            .set_base_url("custom".to_string(), "https://example.test/v1".to_string())
+            .expect("save base url");
+        let message = App::logout_provider_message(&store, "custom").await;
+        assert!(
+            message.contains("logged out"),
+            "custom logout should confirm: {message}"
+        );
+        let snapshot = store.snapshot();
+        assert!(
+            !snapshot.has_token("custom"),
+            "saved custom key should be gone after logout"
+        );
+        assert!(
+            crate::runtime::custom_base_url(&snapshot).is_none(),
+            "custom base URL should be gone after logout"
+        );
+        let (connected, _) = App::provider_status(&store.snapshot(), "custom");
+        assert!(
+            !connected,
+            "custom endpoint must not read as connected after logout"
         );
     }
 
