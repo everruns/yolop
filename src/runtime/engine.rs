@@ -1036,11 +1036,18 @@ mod tests {
             tokio::task::yield_now().await;
         };
         std::fs::write(
-            directory.join("admitted.json"),
+            directory.join("admitted.json.tmp"),
             serde_json::to_vec(&serde_json::json!({
                 "session":built.handles.session_id,"input":input,
             }))
             .unwrap(),
+        )
+        .unwrap();
+        // File existence signals the parent to kill this process. Publish only
+        // after the complete admission record has been written.
+        std::fs::rename(
+            directory.join("admitted.json.tmp"),
+            directory.join("admitted.json"),
         )
         .unwrap();
         std::future::pending::<()>().await;
