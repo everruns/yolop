@@ -112,8 +112,8 @@ browser grant is reported as pending.
 
 **OAuth login** (`/mcp login <name>`, or `yolop mcp login <name>` headlessly, remote HTTP servers) is discovery-based:
 protected-resource metadata (RFC 9728) → authorization-server metadata
-(RFC 8414 / OpenID discovery) → dynamic client registration (RFC 7591) when the
-server offers it → authorization code + PKCE (RFC 7636) through the browser with
+(RFC 8414 / OpenID discovery) → client identification → authorization code +
+PKCE (RFC 7636) through the browser with
 a loopback redirect. The authorize URL is printed in the transcript before the
 host waits on the callback (so fullscreen and inline both stay usable if the
 browser is invisible), and the wait runs in the background so the event loop is
@@ -126,6 +126,16 @@ per turn, a fresh login takes effect on the next message, no restart (composes
 with live reload above). Agent-driven `/mcp` and `/tools` via `run_command` return the
 host's response text in the tool result; `/tools` includes live discovered
 `mcp_*` names from the session's scoped servers.
+
+Client identification uses the shared upstream CIMD negotiation. A distributor
+can set `YOLOP_MCP_CLIENT_METADATA_URL` to its hosted public-client document.
+When the issuer advertises support, that exact URL becomes the client ID;
+otherwise login falls back to dynamic registration (RFC 7591). An explicitly
+supplied client keeps precedence. There is no built-in URL until a document is
+published. The document must declare the native loopback callback with dynamic
+port matching, `token_endpoint_auth_method: "none"`, and refresh-token support
+if desired. Yolop does not fetch this document or retry failed authorization
+with DCR; it keeps the same callback and token storage adapters.
 
 ## Trust model
 
@@ -144,8 +154,8 @@ host's response text in the tool result; `/tools` includes live discovered
 ## Non-goals (for now)
 
 - OAuth **device-code** flow (browser + loopback covers the CLI case); a
-  configured `client_id` for servers without dynamic registration (DCR-only for
-  now).
+  per-server configured `client_id` in the settings UI for servers without
+  automatic registration.
 - MCP **resources** and **prompts** (tools are the 90% case).
 
 ## Where it lives

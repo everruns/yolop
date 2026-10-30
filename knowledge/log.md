@@ -1,5 +1,11 @@
 # Knowledge Log
 
+## 2026-10-30, Outbound MCP client metadata negotiation
+
+Use the shared Everruns OAuth client's CIMD negotiation when a distributor
+supplies a hosted metadata URL, with DCR fallback and the existing native
+callback and token persistence. See [MCP](specs/mcp.md).
+
 ## 2026-10-27, Native Session APIs and application host boundary
 
 Yolop demonstrates Everruns while retaining all product features. Frontends now
