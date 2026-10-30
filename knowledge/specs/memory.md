@@ -147,11 +147,11 @@ ID or store changes invalidate it.
 
 The adapter in [memory/inspection.rs](../../src/capabilities/memory/inspection.rs)
 uses Everruns' shared artifact inspector. It does not vendor another ruleset.
-The adapter needs an upstream revision containing that inspector; until the
-locked Everruns family is updated, combined local validation uses an external
-Cargo patch config against the sibling checkout. No path dependency belongs
-in the committed manifest or lockfile. Ordinary Yolop builds remain blocked on
-that upstream dependency update for this change.
+The whole Everruns family must use the same locked upstream revision containing
+that inspector. No sibling path dependency or duplicated scanner belongs in
+the committed manifest or lockfile. The existing temporary git dependency must
+return to published pins before a Yolop crate release, as required by
+[Maintenance](maintenance.md).
 
 Inspection is heuristic. False positives and missed attacks are expected, and
 empty findings do not establish prompt-injection safety. Hosted Everruns memory

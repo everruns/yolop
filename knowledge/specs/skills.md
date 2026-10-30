@@ -29,7 +29,15 @@ supplies only the embedder-specific glue (`crate::capabilities::skills`):
    writes to them.
 
 This spec owns the scope set and the yolop wiring; the capability contract and
-`SKILL.md` format are owned upstream (see `everruns` `specs/skills-registry.md`).
+`SKILL.md` format are owned upstream (see
+[Everruns skills registry](https://github.com/everruns/everruns/blob/main/knowledge/project/skills-registry.md)).
+
+The generic `skills` capability config accepts opt-in `report_only_inspection`.
+The upstream capability reports on catalog entries and activation snapshots,
+binding each report to content, version, observed origin and ruleset. This is
+heuristic reporting, not an approval or guaranteed injection protection; it
+does not execute substitutions, remove skills or contact external scanners.
+Yolop passes the config through without a second scanner or trust policy.
 
 > History: yolop previously **vendored** the whole capability because the
 > upstream `SkillsCapability` scanned a single VFS path and the embedded runtime
