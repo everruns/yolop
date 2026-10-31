@@ -115,8 +115,7 @@ impl CreditExhaustion {
     /// watcher notice, and a trimmed raw excerpt. Links are markdown so Paseo
     /// renders them clickable.
     pub fn markdown_block(&self, raw_excerpt: &str) -> String {
-        let mut block =
-            String::from("**Out of credits: turn paused, background checker running.**\n\n");
+        let mut block = String::from("**Out of credits: turn paused.**\n\n");
         match (self.requested_tokens, self.affordable_tokens) {
             (Some(req), Some(afford)) => {
                 block.push_str(&format!(
