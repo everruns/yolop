@@ -147,11 +147,10 @@ ID or store changes invalidate it.
 
 The adapter in [memory/inspection.rs](../../src/capabilities/memory/inspection.rs)
 uses Everruns' shared artifact inspector. It does not vendor another ruleset.
-The whole Everruns family must use the same locked upstream revision containing
-that inspector. No sibling path dependency or duplicated scanner belongs in
-the committed manifest or lockfile. The existing temporary git dependency must
-return to published pins before a Yolop crate release, as required by
-[Maintenance](maintenance.md).
+The whole Everruns family must use the same published version containing
+that inspector (0.50.1 or later). No sibling path or git dependency or
+duplicated scanner belongs in the committed manifest or lockfile, as required
+by [Maintenance](maintenance.md).
 
 Inspection is heuristic. False positives and missed attacks are expected, and
 empty findings do not establish prompt-injection safety. Hosted Everruns memory
