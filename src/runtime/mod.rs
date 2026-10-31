@@ -3461,6 +3461,10 @@ pub(crate) type ExtensionFactory =
     Arc<dyn Fn(&str) -> Result<Arc<dyn everruns_core::Capability>, String> + Send + Sync>;
 
 impl RuntimeHandles {
+    /// Cache reads bill far below fresh input and repeat the same prefix each
+    /// turn, so the continuation budget discounts them instead of re-billing
+    /// full context every repair.
+    pub(crate) const CACHED_TOKEN_DIVISOR: u64 = 10;
     /// Stop trace forwarding and wait for each extension server to flush.
     ///
     /// Every host path that ends a session calls this before dropping the
@@ -3574,7 +3578,8 @@ impl RuntimeHandles {
 
     /// Provider-reported tokens consumed by one agent turn. Completion gates
     /// use the durable event stream so TUI, print, and ACP share one budget
-    /// accounting rule.
+    /// accounting rule. Cache reads repeat the same prefix every turn and bill
+    /// near a tenth of fresh input, so they count discounted toward the budget.
     pub(crate) async fn turn_tokens(&self, turn_id: everruns_contracts::typed_id::TurnId) -> u64 {
         self.host
             .events()
@@ -3588,16 +3593,31 @@ impl RuntimeHandles {
                 }
                 _ => None,
             })
-            // Cache accounting is additive: everruns usage buckets are disjoint
-            // (input + output + cache_read + cache_creation), so cache_read_tokens
-            // overlap the same prefix each turn and must never be subtracted from input.
             .map(|usage| {
-                u64::from(usage.input_tokens)
-                    + u64::from(usage.output_tokens)
-                    + u64::from(usage.cache_read_tokens.unwrap_or(0))
-                    + u64::from(usage.cache_creation_tokens.unwrap_or(0))
+                Self::budgeted_usage_tokens(
+                    usage.input_tokens,
+                    usage.output_tokens,
+                    usage.cache_read_tokens.unwrap_or(0),
+                    usage.cache_creation_tokens.unwrap_or(0),
+                )
             })
             .sum()
+    }
+
+    /// Budget charge for one LLM generation. Everruns buckets are disjoint
+    /// (input excludes cached prefix), so a naive sum re-bills the same cached
+    /// context every continuation turn and trips the token budget after a few
+    /// large-context turns. Cache writes stay full price; reads discount tenfold.
+    pub(crate) fn budgeted_usage_tokens(
+        input: u32,
+        output: u32,
+        cache_read: u32,
+        cache_creation: u32,
+    ) -> u64 {
+        u64::from(input)
+            + u64::from(output)
+            + u64::from(cache_creation)
+            + u64::from(cache_read) / Self::CACHED_TOKEN_DIVISOR
     }
 
     /// Re-read the merged MCP server config (global settings + workspace
@@ -5743,6 +5763,21 @@ mod tests {
     use std::sync::Mutex;
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn continuation_budget_discounts_repeated_cache_reads() {
+        // A merge-resolution turn rereads a large cached prefix plus a little
+        // new work. Full weighting bills 53_500 and trips 256k in five turns;
+        // discounted reads bill 8_500, so the budget tracks new work.
+        let billed = RuntimeHandles::budgeted_usage_tokens(2_000, 1_000, 50_000, 500);
+        assert_eq!(billed, 2_000 + 1_000 + 500 + 5_000);
+        let naive = 2_000u64 + 1_000 + 50_000 + 500;
+        assert!(
+            billed < naive,
+            "cached prefix must discount, got {billed} vs {naive}"
+        );
+        assert_eq!(RuntimeHandles::budgeted_usage_tokens(100, 50, 0, 0), 150);
+    }
 
     // Guards the two properties that make the local default usable at all. A
     // safetensors default would download full-precision weights only to
