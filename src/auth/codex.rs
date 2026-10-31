@@ -121,12 +121,32 @@ struct DeviceTokenResponse {
     code_verifier: String,
 }
 
+/// Re-auth keeps the saved login's route when the user gave no explicit one,
+/// so a Codex OAuth user is not silently switched to the open-source default
+/// (whose token cannot call Codex-only models).
+fn keep_saved_codex_route(
+    explicit: Option<crate::auth::siwc::SignInRoute>,
+    saved_is_codex_route: bool,
+) -> bool {
+    explicit.is_none() && saved_is_codex_route
+}
+
 /// Browser sign-in through the configured route (`chatgpt_sign_in` /
 /// `YOLOP_CHATGPT_SIGN_IN`): the open-source Sign in with ChatGPT route
 /// (`crate::auth::siwc`) by default, or the Codex client. The caller saves the
 /// returned login either way.
 pub async fn sign_in_with_browser(settings: &SettingsStore) -> Result<CodexAuth> {
     let snapshot = settings.snapshot();
+    let saved_is_codex_route = snapshot
+        .codex_auth
+        .as_ref()
+        .is_some_and(|auth| auth.open_source.is_none());
+    if keep_saved_codex_route(
+        crate::auth::siwc::explicit_sign_in(&snapshot)?,
+        saved_is_codex_route,
+    ) {
+        return login_with_browser(&configured_client_id(&snapshot)?).await;
+    }
     match crate::auth::siwc::configured_sign_in(&snapshot)? {
         crate::auth::siwc::SignInRoute::Codex => {
             login_with_browser(&configured_client_id(&snapshot)?).await
@@ -495,6 +515,16 @@ mod tests {
         assert!(!should_refresh(None));
         assert!(should_refresh(Some(now_epoch_millis() + 1_000)));
         assert!(!should_refresh(Some(now_epoch_millis() + 300_000)));
+    }
+
+    #[test]
+    fn reauth_keeps_the_saved_route_without_an_explicit_override() {
+        use crate::auth::siwc::SignInRoute;
+
+        assert!(keep_saved_codex_route(None, true));
+        assert!(!keep_saved_codex_route(None, false));
+        assert!(!keep_saved_codex_route(Some(SignInRoute::OpenSource), true));
+        assert!(!keep_saved_codex_route(Some(SignInRoute::Codex), true));
     }
 
     #[test]
