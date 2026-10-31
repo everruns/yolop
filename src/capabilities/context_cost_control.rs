@@ -199,9 +199,9 @@ mod tests {
     }
 
     #[test]
-    fn masks_old_large_tool_results_without_dropping_messages() {
+    fn masks_old_large_tool_results_in_batches_without_dropping_messages() {
         let mut messages = Vec::new();
-        for index in 0..4 {
+        for index in 0..10 {
             let call_id = format!("call_{index}");
             messages.push(RuntimeMessage::assistant_with_tools(
                 "",
@@ -221,14 +221,28 @@ mod tests {
             .expect("serialize messages")
             .len();
 
+        let context = ModelViewContext {
+            session_id: SessionId::new(),
+            prior_usage: None,
+            provider_managed_reduction: false,
+        };
+        // Small histories retain the cached prefix until upstream's masking
+        // batch or byte threshold is reached.
+        let waiting = messages[..8].to_vec();
+        let unchanged = ContextCostControlModelViewProvider.apply_model_view(
+            waiting.clone(),
+            &serde_json::json!({}),
+            &context,
+        );
+        assert_eq!(
+            serde_json::to_value(&unchanged).unwrap(),
+            serde_json::to_value(&waiting).unwrap()
+        );
+
         let reduced = ContextCostControlModelViewProvider.apply_model_view(
             messages.clone(),
             &serde_json::json!({}),
-            &ModelViewContext {
-                session_id: SessionId::new(),
-                prior_usage: None,
-                provider_managed_reduction: false,
-            },
+            &context,
         );
         let bytes_after = serde_json::to_vec(&reduced)
             .expect("serialize reduced messages")
@@ -237,7 +251,8 @@ mod tests {
         assert_eq!(reduced.len(), messages.len());
         assert!(bytes_after * 4 < bytes_before * 3);
         assert_ne!(reduced[1].content, messages[1].content);
-        assert_eq!(reduced[6].content, messages[6].content);
-        assert_eq!(reduced[7].content, messages[7].content);
+        for index in 16..20 {
+            assert_eq!(reduced[index].content, messages[index].content);
+        }
     }
 }

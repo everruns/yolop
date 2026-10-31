@@ -1,5 +1,12 @@
 # Knowledge Log
 
+## 2026-10-31, Upstream masking batches
+
+The aligned Everruns update preserves cached prompt prefixes while stale tool
+results wait for a masking batch. Yolop's composition coverage now verifies
+both waiting histories and eventual masking, with recent results intact. See
+[Tool-output retention and recovery](specs/tool-output.md).
+
 ## 2026-10-30, Report-only memory inspection
 
 Added opt-in local inspection to approved writes and selected recalls, including

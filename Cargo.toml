@@ -146,16 +146,16 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Engine adoption uses Framework APIs before their crates.io release.
 # Keep the entire family on one exact upstream revision and refresh it together.
-everruns-contracts = { git = "https://github.com/everruns/everruns.git", rev = "1fd34f88f92615570ef47e4c00c3001db9cad657", default-features = false, features = ["definition"] }
-everruns-core = { git = "https://github.com/everruns/everruns.git", rev = "1fd34f88f92615570ef47e4c00c3001db9cad657", features = ["host", "builtins", "mcp-stdio", "direct-egress"] }
-everruns-drivers = { git = "https://github.com/everruns/everruns.git", rev = "1fd34f88f92615570ef47e4c00c3001db9cad657", default-features = false, features = ["openai", "anthropic", "meta", "openrouter", "chatgpt", "codex", "mistral", "fireworks", "vercel", "cloudflare", "mai", "gemini"] }
-everruns-capabilities = { git = "https://github.com/everruns/everruns.git", rev = "1fd34f88f92615570ef47e4c00c3001db9cad657", features = ["hosted-integration-catalog"] }
+everruns-contracts = { git = "https://github.com/everruns/everruns.git", rev = "cd396e905e525d12031f9ad9a4c4638fe904ce31", default-features = false, features = ["definition"] }
+everruns-core = { git = "https://github.com/everruns/everruns.git", rev = "cd396e905e525d12031f9ad9a4c4638fe904ce31", features = ["host", "builtins", "mcp-stdio", "direct-egress"] }
+everruns-drivers = { git = "https://github.com/everruns/everruns.git", rev = "cd396e905e525d12031f9ad9a4c4638fe904ce31", default-features = false, features = ["openai", "anthropic", "meta", "openrouter", "chatgpt", "codex", "mistral", "fireworks", "vercel", "cloudflare", "mai", "gemini"] }
+everruns-capabilities = { git = "https://github.com/everruns/everruns.git", rev = "cd396e905e525d12031f9ad9a4c4638fe904ce31", features = ["hosted-integration-catalog"] }
 # Registered Engine hosting owns SQLite execution; legacy local stores are import-only.
 # TypeSafe supplies the Muse actionable-promise classifier.
-everruns = { git = "https://github.com/everruns/everruns.git", rev = "1fd34f88f92615570ef47e4c00c3001db9cad657", default-features = false, features = ["local", "typesafe", "mcp-stdio"] }
+everruns = { git = "https://github.com/everruns/everruns.git", rev = "cd396e905e525d12031f9ad9a4c4638fe904ce31", default-features = false, features = ["local", "typesafe", "mcp-stdio"] }
 # LLMSim is a user-facing offline provider, so it remains a production dependency.
-everruns-llmsim = { git = "https://github.com/everruns/everruns.git", rev = "1fd34f88f92615570ef47e4c00c3001db9cad657", features = ["host"] }
-everruns-integrations = { git = "https://github.com/everruns/everruns.git", rev = "1fd34f88f92615570ef47e4c00c3001db9cad657", features = ["filesystem", "web-fetch", "web-search", "duckduckgo", "parallel", "daytona", "e2b"] }
+everruns-llmsim = { git = "https://github.com/everruns/everruns.git", rev = "cd396e905e525d12031f9ad9a4c4638fe904ce31", features = ["host"] }
+everruns-integrations = { git = "https://github.com/everruns/everruns.git", rev = "cd396e905e525d12031f9ad9a4c4638fe904ce31", features = ["filesystem", "web-fetch", "web-search", "duckduckgo", "parallel", "daytona", "e2b"] }
 arboard = { version = "3", features = ["wayland-data-control"] }
 futures = "0.3"
 html-escape = "0.3"

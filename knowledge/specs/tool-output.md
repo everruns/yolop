@@ -47,6 +47,13 @@ message and the provider-visible `Tool error: <reason>` text. ACP also includes
 the reason in tool content when marking a call failed. A client's generic
 failure label does not replace that diagnostic in the model transcript.
 
+Context cost control follows Everruns' batched stale-result masking policy.
+Results waiting for a batch stay verbatim to preserve the provider's cached
+prefix; sufficiently large waiting payloads can advance masking earlier.
+Recent results and stored evidence remain intact. The composition regression
+in [context_cost_control.rs](../../src/capabilities/context_cost_control.rs)
+covers both the waiting history and the eventual masking boundary.
+
 ## Evidence
 
 The dependency-isolated `output-persistence` study checks leading-evidence
