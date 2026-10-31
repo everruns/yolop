@@ -320,6 +320,9 @@ struct Session {
     /// `set_approval_mode` tool, `/setup approval`) surfaces as a
     /// `current_mode_update` instead of silently drifting from the picker.
     last_mode: StdMutex<ApprovalMode>,
+    /// The options actually sent to the client. Seeding from a later settings
+    /// snapshot can lose an edit made just after the new/load response.
+    last_config_options: StdMutex<Option<Vec<SessionConfigOption>>>,
     /// Retained for the ACP session lifetime so due local schedules keep polling.
     task_registry: Arc<dyn everruns_core::session_task::SessionTaskRegistry>,
     completion: tokio::sync::Mutex<CompletionController>,
@@ -504,8 +507,10 @@ where
                     match handle_new_session(&server, &peer, params).await {
                         Ok(result) => {
                             let session_id = result.session_id.to_string();
+                            let config_options = result.config_options.clone();
                             responder.respond(result)?;
                             if let Some(session) = server.session(&session_id) {
+                                *session.last_config_options.lock().unwrap() = config_options;
                                 let commands = session.commands.lock().unwrap().clone();
                                 notify_available_commands(&peer, &session_id, &commands);
                                 offer_setup_page(&server, &peer, &session).await;
@@ -530,8 +535,10 @@ where
                     });
                     match handle_load_session(&server, &peer, params).await {
                         Ok((result, session_id)) => {
+                            let config_options = result.config_options.clone();
                             responder.respond(result)?;
                             if let Some(session) = server.session(&session_id) {
+                                *session.last_config_options.lock().unwrap() = config_options;
                                 let commands = session.commands.lock().unwrap().clone();
                                 notify_available_commands(&peer, &session_id, &commands);
                             }
@@ -789,6 +796,7 @@ fn register_session<F: RuntimeFactory>(
         skill_commands,
         cancel: StdMutex::new(None),
         last_mode: StdMutex::new(built.settings.snapshot().approval_mode()),
+        last_config_options: StdMutex::new(None),
         settings: built.settings,
         task_registry,
         completion: tokio::sync::Mutex::new(CompletionController::default()),
@@ -1180,11 +1188,11 @@ fn emit_mode_change_if_needed(peer: &Peer, session: &Session) {
 }
 
 async fn emit_config_options(peer: &Peer, session: &Session) {
+    let options = session_config_options(&session.model).await;
+    *session.last_config_options.lock().unwrap() = Some(options.clone());
     peer.session_update(
         &session.acp_id,
-        SessionUpdate::ConfigOptionUpdate(ConfigOptionUpdate::new(
-            session_config_options(&session.model).await,
-        )),
+        SessionUpdate::ConfigOptionUpdate(ConfigOptionUpdate::new(options)),
     );
 }
 
@@ -1658,10 +1666,10 @@ const SETTINGS_WATCH_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Starts the settings-file watcher once per process. Whenever settings change
 /// on disk, every open session re-resolves its config options and the host is
-/// pushed `ConfigOptionUpdate` for the ones that changed. New sessions already
-/// receive fresh options in their new/load response, so they only seed the
-/// baseline. Mirrors the setup-page watcher above and drops out on teardown,
-/// so it never holds the session map open across `serve` calls.
+/// pushed `ConfigOptionUpdate` for the ones that changed. Compare with the
+/// options sent in the new/load response, even when the file changes before
+/// this task first runs. Sessions without a response are not observed yet.
+/// Mirrors the setup-page watcher above and drops out on teardown.
 fn maybe_spawn_settings_watcher<F: RuntimeFactory>(server: &Arc<Server<F>>, peer: &Arc<Peer>) {
     if server.settings_watch.swap(true, Ordering::Relaxed) {
         return;
@@ -1671,13 +1679,6 @@ fn maybe_spawn_settings_watcher<F: RuntimeFactory>(server: &Arc<Server<F>>, peer
         let peer = peer.clone();
         let mut shutdown = server.shutdown.clone();
         async move {
-            let mut baseline: HashMap<String, Vec<SessionConfigOption>> = HashMap::new();
-            for session in server.sessions() {
-                baseline.insert(
-                    session.acp_id.clone(),
-                    session_config_options(&session.model).await,
-                );
-            }
             let mut interval = tokio::time::interval(SETTINGS_WATCH_INTERVAL);
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
@@ -1688,20 +1689,15 @@ fn maybe_spawn_settings_watcher<F: RuntimeFactory>(server: &Arc<Server<F>>, peer
                 if *shutdown.borrow() {
                     break;
                 }
-                let live: std::collections::HashSet<String> =
-                    server.sessions().iter().map(|s| s.acp_id.clone()).collect();
-                baseline.retain(|id, _| live.contains(id));
                 for session in server.sessions() {
                     let current = session_config_options(&session.model).await;
-                    match baseline.get(&session.acp_id) {
-                        None => {
-                            baseline.insert(session.acp_id.clone(), current);
-                        }
-                        Some(previous) if previous == &current => {}
-                        Some(_) => {
-                            emit_config_options(&peer, &session).await;
-                            baseline.insert(session.acp_id.clone(), current);
-                        }
+                    let mut previous = session.last_config_options.lock().unwrap();
+                    if previous.as_ref().is_some_and(|options| options != &current) {
+                        *previous = Some(current.clone());
+                        peer.session_update(
+                            &session.acp_id,
+                            SessionUpdate::ConfigOptionUpdate(ConfigOptionUpdate::new(current)),
+                        );
                     }
                 }
             }

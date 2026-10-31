@@ -1,5 +1,11 @@
 # Knowledge Log
 
+## 2026-10-31, ACP settings observation starts at the response
+
+Keep the settings watch baseline tied to the options sent in new/load responses
+and notifications. An edit between the response and watcher startup must still
+reach the editor. See [ACP](specs/acp.md).
+
 ## 2026-10-31, Dependency security corrections
 
 Keep the Everruns family aligned while consuming Bashkit 0.20.2 and Wasmtime

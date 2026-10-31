@@ -72,6 +72,8 @@ never fails only because a provider lost its credentials, while one-shot print
 mode remains fail-fast.
 
 Clients change either option with `session/set_config_option`. Yolop validates the selected provider, model, and reasoning effort, applies the change only to that live ACP session, and returns the complete refreshed `configOptions` list. After authentication, a `/setup` command, or a conversational model tool changes provider connectivity or selection, Yolop also pushes ACP's standard `config_option_update` to every affected open session. A background watcher re-reads `settings.toml` every second, so an edit from another yolop process or by hand pushes fresh `config_option_update`s to each open session whose options changed. Invalid option IDs and unsupported values return ACP `InvalidParams`.
+The watcher compares against the options actually sent to the client, so edits
+immediately after a new/load response remain visible even before its first poll.
 When the process was launched with `--profile`, that profile supplies the
 initial model before any live ACP selection.
 
