@@ -2887,16 +2887,26 @@ fn classify_tool(data: &Value) -> ToolKind {
             "git blame",
             "git grep",
             "git ls-files",
-            // Read-only `sessions` shapes only: `sessions send` mutates. A model that
-            // opens with `sessions --help && ... sessions search` (the 2026-10-29
-            // nightly's shape) is still sessions-first through the search match.
-            "yolop sessions --help",
-            "yolop sessions search",
-            "yolop sessions list",
-            "yolop sessions live",
         ]
         .iter()
         .any(|prefix| command.starts_with(prefix))
+    {
+        return ToolKind::Exploration;
+    }
+    // Sessions shapes use `contains`, not `starts_with`: the model wraps the
+    // call (`set -euo pipefail`, `printf` banners, `&&` chains), so the
+    // sessions invocation is rarely at offset 0 (nightly #230/#231).
+    // Read-only shapes only: `sessions send` mutates. A model that opens with
+    // `sessions --help && ... sessions search` is still sessions-first through
+    // the search match.
+    if [
+        "yolop sessions --help",
+        "yolop sessions search",
+        "yolop sessions list",
+        "yolop sessions live",
+    ]
+    .iter()
+    .any(|marker| command.contains(marker))
     {
         return ToolKind::Exploration;
     }
@@ -2948,7 +2958,7 @@ fn parse_events(jsonl: &str) -> Mined {
     let mut m = Mined::default();
     let mut current_exploration_without_progress = 0_u64;
     let mut saw_mutation = false;
-    let mut saw_exploration = false;
+    let mut saw_non_sessions_exploration = false;
     let mut saw_progress_warning = false;
     let mut saw_checkpoint_recommended = false;
     let mut saw_truncated_repo_map = false;
@@ -3319,10 +3329,22 @@ fn parse_events(jsonl: &str) -> Mined {
                         current_exploration_without_progress = 0;
                     }
                     ToolKind::Exploration => {
-                        if !saw_exploration && is_sessions_search_call(name, &data) {
+                        // Sessions-first means no repo exploration before the
+                        // first `sessions search`. A standalone `sessions --help`
+                        // before the search still counts (nightly #230).
+                        if !saw_non_sessions_exploration
+                            && is_sessions_search_call(name, &data)
+                        {
                             m.sessions_search_first_exploration = 1;
                         }
-                        saw_exploration = true;
+                        // Sessions shapes (`yolop sessions ...`) never block a
+                        // later search; only repo exploration does.
+                        let is_sessions_shape = name == "bash"
+                            && normalized_command(&tool_command(&data))
+                                .contains("yolop sessions");
+                        if !is_sessions_shape {
+                            saw_non_sessions_exploration = true;
+                        }
                         if let Some(fingerprint) =
                             data.get("tool_call_fingerprint").and_then(Value::as_str)
                             && !exploration_fingerprints.insert(fingerprint.to_string())
@@ -4398,6 +4420,38 @@ mod tests {
         let m = parse_events(jsonl);
         assert_eq!(m.sessions_search_calls, 1);
         assert_eq!(m.sessions_search_first_exploration, 1);
+    }
+
+    #[test]
+    fn sessions_help_then_search_split_counts_as_sessions_first() {
+        let jsonl = r#"
+{"type":"tool.completed","data":{"tool_name":"bash","success":true,"result":[{"type":"text","text":"{\"command\":\"yolop sessions --help\",\"exit_code\":0,\"success\":true,\"stdout\":\"\"}"}]}}
+{"type":"tool.completed","data":{"tool_name":"bash","success":true,"result":[{"type":"text","text":"{\"command\":\"yolop sessions search --query ABC\",\"exit_code\":0,\"success\":true,\"stdout\":\"\"}"}]}}
+"#;
+        let m = parse_events(jsonl);
+        assert_eq!(m.sessions_search_calls, 1);
+        assert_eq!(m.sessions_search_first_exploration, 1);
+    }
+
+    #[test]
+    fn sessions_search_wrapped_in_shell_prelude_counts_as_sessions_first() {
+        let jsonl = r#"
+{"type":"tool.completed","data":{"tool_name":"bash","success":true,"result":[{"type":"text","text":"{\"command\":\"set -euo pipefail\\nprintf hi\\nyolop sessions search ABC\",\"exit_code\":0,\"success\":true,\"stdout\":\"\"}"}]}}
+"#;
+        let m = parse_events(jsonl);
+        assert_eq!(m.sessions_search_calls, 1);
+        assert_eq!(m.sessions_search_first_exploration, 1);
+    }
+
+    #[test]
+    fn sessions_search_after_repo_exploration_does_not_count_as_first() {
+        let jsonl = r#"
+{"type":"tool.completed","data":{"tool_name":"bash","success":true,"result":[{"type":"text","text":"{\"command\":\"rg foo .\",\"exit_code\":0,\"success\":true,\"stdout\":\"\"}"}]}}
+{"type":"tool.completed","data":{"tool_name":"bash","success":true,"result":[{"type":"text","text":"{\"command\":\"yolop sessions search --query ABC\",\"exit_code\":0,\"success\":true,\"stdout\":\"\"}"}]}}
+"#;
+        let m = parse_events(jsonl);
+        assert_eq!(m.sessions_search_calls, 1);
+        assert_eq!(m.sessions_search_first_exploration, 0);
     }
 
     #[test]
