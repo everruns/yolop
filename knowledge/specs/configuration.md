@@ -48,7 +48,7 @@ Keys are addressed the way a human would name them:
 | `approval_policy`         | text   | Hard shell approval policy (`untrusted` / `on-failure` / `on-request` / `never`). |
 | `attribution`             | bool   | Commit/PR attribution on/off.                                  |
 | `continuation_max_turns` | integer | Maximum automatic continuations, default 5. |
-| `continuation_max_tokens` | integer | Provider-reported tokens across continuations, default 256000. |
+| `continuation_max_tokens` | integer | Budget-weighted tokens across continuations, default 256000. Cache reads count tenfold discounted. |
 | `continuation_max_seconds` | integer | Seconds from the first continuation, default 600. |
 | `proactive_wake`          | bool   | Auto-start a turn when a background task finishes (TUI); on by default. |
 | `acp_setup_page`          | bool   | Offer the loopback provider setup page to ACP clients; off by default (see [ACP](acp.md)). |
