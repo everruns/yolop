@@ -29,6 +29,8 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+mod inspection;
+
 pub(crate) const MEMORY_CAPABILITY_ID: &str = "memory";
 
 /// Structured memory file name, co-located with `settings.toml` in the yolop
@@ -55,6 +57,8 @@ pub(crate) struct MemoryConfig {
     /// Once memory holds more than this, `remember`/`recall` nudge the model to
     /// prune. A soft limit only — yolop never silently drops a user's memory.
     pub soft_cap: usize,
+    /// Local heuristic reports. Does not authorize writes or widen disclosure.
+    pub report_only_inspection: bool,
 }
 
 impl Default for MemoryConfig {
@@ -63,6 +67,7 @@ impl Default for MemoryConfig {
             disclosed_titles: 15,
             recall_limit: 5,
             soft_cap: 200,
+            report_only_inspection: false,
         }
     }
 }
@@ -70,9 +75,9 @@ impl Default for MemoryConfig {
 impl MemoryConfig {
     /// Parse config from a capability config `Value` (from
     /// `CapabilityRef.config`, the generic capability-config system).
-    /// `Null` / missing keys fall back to defaults. Strict on types so the same
-    /// parse backs `validate_config`: a present key must be a non-negative
-    /// integer or it is rejected.
+    /// Null config / missing keys fall back to defaults. Numeric keys accept
+    /// non-negative integers; inspection requires an explicit boolean. This
+    /// same parse backs `validate_config`.
     pub(crate) fn from_value(config: &Value) -> Result<Self, String> {
         let mut cfg = Self::default();
         if config.is_null() {
@@ -104,6 +109,11 @@ impl MemoryConfig {
         read("disclosed_titles", &mut cfg.disclosed_titles, 0)?;
         read("recall_limit", &mut cfg.recall_limit, 1)?;
         read("soft_cap", &mut cfg.soft_cap, 0)?;
+        if let Some(value) = obj.get("report_only_inspection") {
+            cfg.report_only_inspection = value
+                .as_bool()
+                .ok_or("`report_only_inspection` must be a boolean")?;
+        }
         Ok(cfg)
     }
 
@@ -133,6 +143,12 @@ impl MemoryConfig {
                     "title": "Soft cap",
                     "description": "Warn (never delete) once more than this many memories exist. 0 disables the warning.",
                     "default": default.soft_cap,
+                },
+                "report_only_inspection": {
+                    "type": "boolean",
+                    "default": false,
+                    "title": "Report-only inspection",
+                    "description": "Inspect visible titles and explicitly written or recalled memories locally. Heuristic only; never deletes, blocks, approves, or sends content to external scanners.",
                 }
             },
             "additionalProperties": false
@@ -798,6 +814,20 @@ impl Capability for GlobalMemoryCapability {
             1,
         );
         let mut prompt = global + &repository;
+        if cfg.report_only_inspection {
+            // Inspect only the titles already disclosed. Body findings, hashes,
+            // and hidden-note counts would create a new disclosure channel.
+            prompt.push_str(&inspection::title_summary(
+                &global_titles,
+                "global",
+                &self.memory,
+            ));
+            prompt.push_str(&inspection::title_summary(
+                &repository_titles,
+                "repository",
+                &self.repository_memory,
+            ));
+        }
         if detailed {
             prompt.push_str("\n\n");
             prompt.push_str(&render_memory_how_to(
@@ -995,13 +1025,17 @@ impl Tool for RememberTool {
                     message.push_str(". ");
                     message.push_str(&note);
                 }
-                ToolExecutionResult::success(json!({
+                let mut result = json!({
                     "ok": true,
                     "created": outcome.created,
                     "id": outcome.memory.id,
                     "total": outcome.total,
                     "message": message,
-                }))
+                });
+                if self.config.report_only_inspection {
+                    result["inspection"] = inspection::report(&outcome.memory, memory, &arguments);
+                }
+                ToolExecutionResult::success(result)
             }
             Err(e) => ToolExecutionResult::tool_error(format!("could not save memory: {e}")),
         }
@@ -1078,7 +1112,7 @@ impl Tool for RecallTool {
             return match memory.get(id) {
                 Some(m) => ToolExecutionResult::success(json!({
                     "ok": true,
-                    "memory": m.to_json(),
+                    "memory": inspection::memory_json(&m, memory, &arguments, self.config.report_only_inspection),
                 })),
                 None => ToolExecutionResult::success(json!({
                     "ok": true,
@@ -1117,7 +1151,7 @@ impl Tool for RecallTool {
             "shown": shown,
             "total_matched": result.total_matched,
             "truncated": result.total_matched > shown,
-            "matches": result.matches.iter().map(Memory::to_json).collect::<Vec<_>>(),
+            "matches": result.matches.iter().map(|m| inspection::memory_json(m, memory, &arguments, self.config.report_only_inspection)).collect::<Vec<_>>(),
             "message": message,
         }))
     }

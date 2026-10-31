@@ -313,6 +313,26 @@ Full protocol and SDK guide: [docs/extensions.md](docs/extensions.md).
 - **Memory** is a structured `MEMORY.md` of durable, cross-session memories, managed in natural language ("remember that I prefer terse answers") with `remember`, `recall`, and `forget`. Only titles load each turn; bodies recall on demand, and mutations require explicit approval.
 - **Hooks** run your commands on agent lifecycle events (before a tool runs, after it finishes, on session stop). They live in `hooks.json` under the config dir: [docs/features/hooks.md](docs/features/hooks.md).
 
+Opt into local skill or memory reports independently in `settings.toml`:
+
+```toml
+[[capabilities]]
+ref = "skills"
+report_only_inspection = true
+
+[[capabilities]]
+ref = "memory"
+report_only_inspection = true
+```
+
+Skill catalogs and activations include reports tied to the raw `SKILL.md`.
+Successful memory writes and selected recalls include reports tied to the note's
+content, version and observed origin. Automatic disclosure checks only titles
+already shown. Inspection never deletes notes, contacts external scanners or
+replaces mutation approval. It is heuristic, not guaranteed injection protection.
+This requires the shared inspector in the pinned Everruns source revision;
+published Everruns 0.49.0 does not contain it.
+
 ## Reference
 
 ### CLI essentials

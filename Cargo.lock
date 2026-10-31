@@ -2557,7 +2557,7 @@ dependencies = [
 [[package]]
 name = "everruns"
 version = "0.50.0"
-source = "git+https://github.com/everruns/everruns.git?rev=1e871e9c75cfe2901ac7a9ac565c67f7a1eca3dc#1e871e9c75cfe2901ac7a9ac565c67f7a1eca3dc"
+source = "git+https://github.com/everruns/everruns.git?rev=cd396e905e525d12031f9ad9a4c4638fe904ce31#cd396e905e525d12031f9ad9a4c4638fe904ce31"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -2588,7 +2588,7 @@ dependencies = [
 [[package]]
 name = "everruns-ard"
 version = "0.50.0"
-source = "git+https://github.com/everruns/everruns.git?rev=1e871e9c75cfe2901ac7a9ac565c67f7a1eca3dc#1e871e9c75cfe2901ac7a9ac565c67f7a1eca3dc"
+source = "git+https://github.com/everruns/everruns.git?rev=cd396e905e525d12031f9ad9a4c4638fe904ce31#cd396e905e525d12031f9ad9a4c4638fe904ce31"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2605,7 +2605,7 @@ dependencies = [
 [[package]]
 name = "everruns-capabilities"
 version = "0.50.0"
-source = "git+https://github.com/everruns/everruns.git?rev=1e871e9c75cfe2901ac7a9ac565c67f7a1eca3dc#1e871e9c75cfe2901ac7a9ac565c67f7a1eca3dc"
+source = "git+https://github.com/everruns/everruns.git?rev=cd396e905e525d12031f9ad9a4c4638fe904ce31#cd396e905e525d12031f9ad9a4c4638fe904ce31"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2628,7 +2628,7 @@ dependencies = [
 [[package]]
 name = "everruns-cli-contract"
 version = "0.50.0"
-source = "git+https://github.com/everruns/everruns.git?rev=1e871e9c75cfe2901ac7a9ac565c67f7a1eca3dc#1e871e9c75cfe2901ac7a9ac565c67f7a1eca3dc"
+source = "git+https://github.com/everruns/everruns.git?rev=cd396e905e525d12031f9ad9a4c4638fe904ce31#cd396e905e525d12031f9ad9a4c4638fe904ce31"
 dependencies = [
  "clap",
  "serde",
@@ -2638,7 +2638,7 @@ dependencies = [
 [[package]]
 name = "everruns-contracts"
 version = "0.50.0"
-source = "git+https://github.com/everruns/everruns.git?rev=1e871e9c75cfe2901ac7a9ac565c67f7a1eca3dc#1e871e9c75cfe2901ac7a9ac565c67f7a1eca3dc"
+source = "git+https://github.com/everruns/everruns.git?rev=cd396e905e525d12031f9ad9a4c4638fe904ce31#cd396e905e525d12031f9ad9a4c4638fe904ce31"
 dependencies = [
  "aho-corasick",
  "anyhow",
@@ -2681,7 +2681,7 @@ dependencies = [
 [[package]]
 name = "everruns-core"
 version = "0.50.0"
-source = "git+https://github.com/everruns/everruns.git?rev=1e871e9c75cfe2901ac7a9ac565c67f7a1eca3dc#1e871e9c75cfe2901ac7a9ac565c67f7a1eca3dc"
+source = "git+https://github.com/everruns/everruns.git?rev=cd396e905e525d12031f9ad9a4c4638fe904ce31#cd396e905e525d12031f9ad9a4c4638fe904ce31"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2719,7 +2719,7 @@ dependencies = [
 [[package]]
 name = "everruns-drivers"
 version = "0.50.0"
-source = "git+https://github.com/everruns/everruns.git?rev=1e871e9c75cfe2901ac7a9ac565c67f7a1eca3dc#1e871e9c75cfe2901ac7a9ac565c67f7a1eca3dc"
+source = "git+https://github.com/everruns/everruns.git?rev=cd396e905e525d12031f9ad9a4c4638fe904ce31#cd396e905e525d12031f9ad9a4c4638fe904ce31"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2745,7 +2745,7 @@ dependencies = [
 [[package]]
 name = "everruns-integrations"
 version = "0.50.0"
-source = "git+https://github.com/everruns/everruns.git?rev=1e871e9c75cfe2901ac7a9ac565c67f7a1eca3dc#1e871e9c75cfe2901ac7a9ac565c67f7a1eca3dc"
+source = "git+https://github.com/everruns/everruns.git?rev=cd396e905e525d12031f9ad9a4c4638fe904ce31#cd396e905e525d12031f9ad9a4c4638fe904ce31"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2799,7 +2799,7 @@ dependencies = [
 [[package]]
 name = "everruns-integrations-experimental"
 version = "0.50.0"
-source = "git+https://github.com/everruns/everruns.git?rev=1e871e9c75cfe2901ac7a9ac565c67f7a1eca3dc#1e871e9c75cfe2901ac7a9ac565c67f7a1eca3dc"
+source = "git+https://github.com/everruns/everruns.git?rev=cd396e905e525d12031f9ad9a4c4638fe904ce31#cd396e905e525d12031f9ad9a4c4638fe904ce31"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2815,7 +2815,7 @@ dependencies = [
 [[package]]
 name = "everruns-llmsim"
 version = "0.50.0"
-source = "git+https://github.com/everruns/everruns.git?rev=1e871e9c75cfe2901ac7a9ac565c67f7a1eca3dc#1e871e9c75cfe2901ac7a9ac565c67f7a1eca3dc"
+source = "git+https://github.com/everruns/everruns.git?rev=cd396e905e525d12031f9ad9a4c4638fe904ce31#cd396e905e525d12031f9ad9a4c4638fe904ce31"
 dependencies = [
  "anyhow",
  "async-trait",

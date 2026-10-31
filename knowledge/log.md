@@ -14,6 +14,15 @@ lockfile versions to clear published advisories, and replace the yanked Windows
 clipboard package. The temporary git-source exception and publication hold
 remain unchanged. See [Maintenance](specs/maintenance.md).
 
+## 2026-10-30, Report-only memory inspection
+
+Added opt-in local inspection to approved writes and selected recalls, including
+notes loaded from disk. Automatic disclosure inspects only visible titles and
+exposes no body-derived findings or hashes. Reports bind canonical content,
+version, note identity, scope, store and shared ruleset. The same aligned upstream
+revision provides opt-in skill catalog and activation reports. See
+[Memory](specs/memory.md) and [Skills](specs/skills.md).
+
 ## 2026-10-30, Outbound MCP client metadata negotiation
 
 Use the shared Everruns OAuth client's CIMD negotiation when a distributor
