@@ -127,6 +127,17 @@ struct DeviceTokenResponse {
 /// returned login either way.
 pub async fn sign_in_with_browser(settings: &SettingsStore) -> Result<CodexAuth> {
     let snapshot = settings.snapshot();
+    // Without an explicit route override, reauth preserves the existing login
+    // route so a Codex OAuth user is not silently switched to the open-source
+    // default (whose token cannot call Codex-only models).
+    if crate::auth::siwc::explicit_sign_in(&snapshot)?.is_none()
+        && snapshot
+            .codex_auth
+            .as_ref()
+            .is_some_and(|auth| auth.open_source.is_none())
+    {
+        return login_with_browser(&configured_client_id(&snapshot)?).await;
+    }
     match crate::auth::siwc::configured_sign_in(&snapshot)? {
         crate::auth::siwc::SignInRoute::Codex => {
             login_with_browser(&configured_client_id(&snapshot)?).await
