@@ -64,12 +64,9 @@ mod spawn_tests {
             .is_ok_and(|out| out.status.success())
     }
 
-    /// A package whose capability server is the `yolop-yep` `echo` example,
-    /// run via `cargo run --example` so the Rust SDK server is exercised by
-    /// yolop's real client over the wire (the SDK's interop proof).
-    fn sdk_example_package() -> ExtensionPackage {
-        let manifest_path =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("crates/yolop-yep/Cargo.toml");
+    /// The real SDK example runs directly; compilation is fixture setup,
+    /// outside the host's protocol initialization deadline.
+    fn sdk_example_package(executable: &std::path::Path) -> ExtensionPackage {
         let manifest = parse_manifest(
             &json!({
                 "name": "echo",
@@ -77,9 +74,8 @@ mod spawn_tests {
                 "yolop": {
                     "protocol_version": "1.0",
                     "capabilityServer": {
-                        "command": "cargo",
-                        "args": ["run", "-q", "--example", "echo",
-                                 "--manifest-path", manifest_path.display().to_string()]
+                        "command": executable.display().to_string(),
+                        "args": []
                     },
                     "tools": [
                         { "name": "echo", "description": "Echo text.", "never_defer": true }
@@ -106,7 +102,38 @@ mod spawn_tests {
             eprintln!("skipping: cargo not available");
             return;
         }
-        let capability = ExtensionCapability::new(sdk_example_package(), std::env::temp_dir());
+        let build = tokio::process::Command::new("cargo")
+            .args([
+                "build",
+                "--offline",
+                "-p",
+                "yolop-yep",
+                "--example",
+                "echo",
+                "--features",
+                "yolop-yep/schema",
+                "--message-format=json",
+            ])
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .kill_on_drop(true)
+            .output()
+            .await
+            .expect("build SDK fixture");
+        assert!(
+            build.status.success(),
+            "SDK fixture build failed: {}",
+            String::from_utf8_lossy(&build.stderr)
+        );
+        let executable = String::from_utf8_lossy(&build.stdout)
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .find(|message| {
+                message["reason"] == "compiler-artifact" && message["target"]["name"] == "echo"
+            })
+            .and_then(|message| message["executable"].as_str().map(std::path::PathBuf::from))
+            .expect("Cargo reported SDK fixture executable");
+        let capability =
+            ExtensionCapability::new(sdk_example_package(&executable), std::env::temp_dir());
 
         // Tool call round-trips through the SDK-built server.
         let tools = capability.tools();
@@ -520,7 +547,10 @@ mod spawn_tests {
     /// never forwarded to it (D4).
     #[test]
     fn non_declaring_extension_has_no_trace_process() {
-        let capability = ExtensionCapability::new(sdk_example_package(), std::env::temp_dir());
+        let capability = ExtensionCapability::new(
+            sdk_example_package(std::path::Path::new("unused-sdk-fixture")),
+            std::env::temp_dir(),
+        );
         assert!(capability.trace_process(&json!(null)).is_none());
     }
 

@@ -1,5 +1,16 @@
 # Knowledge Log
 
+## 2026-10-30, Preserve execution failure evidence
+
+Unix shell phases stop on unhandled failures and failed pipeline producers.
+Failed commands retain diagnostics in failed runtime events. Print completion
+reviews inspect newly terminal tasks, including silent work, and report bounded
+blocking-task diagnostics at the deadline. CI watcher guidance separates head
+identity from check status. Git history changes require a specific human grant.
+Engine owns recovery and durable wake admission; no legacy runtime or recovery
+inbox is installed. See [background execution](specs/background.md),
+[task completion](specs/task-completion.md), and [tool output](specs/tool-output.md).
+
 ## 2026-10-31, ACP settings observation starts at the response
 
 Keep the settings watch baseline tied to the options sent in new/load responses

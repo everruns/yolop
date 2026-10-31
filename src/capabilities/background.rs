@@ -41,21 +41,16 @@ pub(crate) const BACKGROUND_CAPABILITY_ID: &str = "background";
 // zero turns, so steer the model to detach the wait and rely on the
 // completion wake instead of foreground watches or poll-sleep turns.
 pub(crate) const BACKGROUND_SYSTEM_PROMPT: &str = "<capability id=\"background\">\n\
-    Waiting on an external event, a CI run, a PR review window, a deploy, a long \
-    build, must not consume turns. Do not run watch commands in the foreground and \
-    do not poll status across turns. Start one blocking watch detached via \
-    `spawn_background` (e.g. `gh pr checks --watch`, `gh run watch --exit-status`, \
-    or `until <check>; do sleep 30; done`), say what you are waiting for, and end \
-    the turn: completion wakes you with the result. You can keep working on other \
-    steps while it runs. Print (`-p`) also waits for completion and resumes with \
-    the result; `wait_task` is available for an explicit wait. To inspect background \
-    state, call `list_tasks` once without kind or state filters; scheduled work is a \
-    `monitor`, not a `background_tool`. Scheduled monitors are obligations you own: \
-    before finishing work, cancel any monitor whose purpose is satisfied, superseded, \
-    or no longer needed; keep it armed only when its future wake is still required. \
-    Treat `disarmed: true` or a terminal task state from `cancel_task` as completed \
-    cancellation; `cancellation_pending: true` means cooperative shutdown is still in \
-    progress.\n\
+    Wait on external events without consuming turns or polling across turns. Start \
+    one bounded watch with spawn_background, then end the turn; completion wakes \
+    you. Work on independent steps meanwhile. For CI use gh pr checks --watch \
+    --fail-fast or gh run watch --exit-status. Read headRefOid separately; checks \
+    output has no head SHA. Failure or cancellation ends the watcher. Print (-p) \
+    waits and resumes; wait_task waits explicitly. Inspect list_tasks once without \
+    filters; scheduled work is a monitor. Before finishing, cancel any monitor whose purpose is satisfied, \
+    superseded, or no longer needed; keep it armed only while its future wake is \
+    required. disarmed: true or a terminal task state confirms cancellation; \
+    cancellation_pending: true still awaits cooperative shutdown.\n\
     </capability>";
 
 pub(crate) struct BackgroundCapability {

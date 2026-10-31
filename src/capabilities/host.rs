@@ -535,6 +535,9 @@ impl Capability for CodingBashCapability {
         // don't repeat ourselves.
         None
     }
+    fn post_tool_exec_hooks(&self) -> Vec<Arc<dyn everruns_core::tool_hooks::PostToolExecHook>> {
+        vec![Arc::new(ShellOutcomeHook)]
+    }
     fn tools(&self) -> Vec<Box<dyn Tool>> {
         vec![Box::new(
             BashTool::with_policy(
@@ -592,6 +595,51 @@ impl Capability for CodingBashCapability {
         .execute(json!({ "command": command, "output": "normal" }))
         .await;
         Ok(shell_command_result(result))
+    }
+}
+
+struct ShellOutcomeHook;
+
+#[async_trait]
+impl everruns_core::tool_hooks::PostToolExecHook for ShellOutcomeHook {
+    async fn after_exec(
+        &self,
+        call: &everruns_contracts::ToolCall,
+        _definition: &everruns_contracts::ToolDefinition,
+        result: &mut everruns_contracts::ToolResult,
+        _context: &everruns_core::ToolContext,
+    ) {
+        if call.name != "bash" || result.error.is_some() {
+            return;
+        }
+        let Some(value) = result.result.as_ref() else {
+            return;
+        };
+        if value["success"].as_bool() != Some(false) {
+            return;
+        }
+        // The tool ran, but the command failed. Retain its structured payload
+        // and raw output while making failure visible to events and providers.
+        let mut diagnostic = value.clone();
+        let stdout = value.get("stdout").and_then(serde_json::Value::as_str);
+        let stderr = value.get("stderr").and_then(serde_json::Value::as_str);
+        let payload = everruns_core::exec_tool_result::ExecToolResultPayload::new(
+            stdout.unwrap_or_default(),
+            stderr.unwrap_or_default(),
+            value["exit_code"].as_i64().unwrap_or(-1) as i32,
+            "concise",
+        );
+        // A persisted JSON envelope has preview/artifact references rather
+        // than stream fields. Preserve it without inventing empty streams.
+        if stdout.is_some() {
+            diagnostic["stdout"] = json!(payload.stdout);
+        }
+        if stderr.is_some() {
+            diagnostic["stderr"] = json!(payload.stderr);
+        }
+        result.error = Some(format!(
+            "Shell command failed. Diagnostic result: {diagnostic}"
+        ));
     }
 }
 
@@ -1579,6 +1627,45 @@ pub(crate) mod test_support {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn shell_failure_diagnostic_preserves_structured_stream_references() {
+        use everruns_core::tool_hooks::PostToolExecHook;
+        let directory = tempfile::tempdir().unwrap();
+        let tool = BashTool::new(Workspace::from_path(directory.path().to_path_buf()));
+        let call = everruns_contracts::ToolCall {
+            id: "reference-result".into(),
+            name: "bash".into(),
+            arguments: json!({"command":"false"}),
+        };
+        let value = json!({"success":false,"exit_code":1,
+            "stdout":{"preview":"retained stdout","full_output":"/outputs/command.stdout"},
+            "stderr":{"preview":"retained stderr","full_output":"/outputs/command.stderr"}});
+        let mut result =
+            ToolExecutionResult::success(value.clone()).into_tool_result(&call.id, &call.name);
+        ShellOutcomeHook
+            .after_exec(
+                &call,
+                &tool.to_definition(),
+                &mut result,
+                &everruns_core::ToolContext::new(Default::default()),
+            )
+            .await;
+        let diagnostic: serde_json::Value = serde_json::from_str(
+            result
+                .error
+                .as_ref()
+                .unwrap()
+                .split_once("Diagnostic result: ")
+                .unwrap()
+                .1,
+        )
+        .unwrap();
+        assert_eq!(diagnostic["stdout"], value["stdout"]);
+        assert_eq!(diagnostic["stderr"], value["stderr"]);
+        assert_eq!(result.result, Some(value));
+    }
+
     use test_support::test_controller;
 
     #[test]

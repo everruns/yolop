@@ -206,7 +206,10 @@ fn shell_command(cwd: &Path, script: &str) -> Command {
     #[cfg(not(windows))]
     {
         let mut command = Command::new("bash");
-        command.arg("-lc").arg(script).current_dir(cwd);
+        command
+            .args(["-e", "-o", "pipefail", "-lc"])
+            .arg(script)
+            .current_dir(cwd);
         command
     }
 }
@@ -295,7 +298,7 @@ fn native_command(
         .arg("-p")
         .arg(profile)
         .arg("/bin/bash")
-        .arg("-lc")
+        .args(["-e", "-o", "pipefail", "-lc"])
         .arg(script)
         .current_dir(&cwd);
     apply_native_environment(&mut command, &home, &temp);
@@ -398,7 +401,7 @@ pub(crate) fn run_linux_worker(
     seccompiler::apply_filter(&filter)?;
 
     Err(std::process::Command::new("/bin/bash")
-        .arg("-lc")
+        .args(["-e", "-o", "pipefail", "-lc"])
         .arg(script)
         .exec()
         .into())

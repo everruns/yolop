@@ -8,8 +8,8 @@
 //! [`ModelProfile`] on every [`DiscoveredModel`] (`reasoning` in the array is
 //! what says the model takes a reasoning effort at all). The catalog also names
 //! the actual levels (`reasoning.supported_efforts`); the driver does not map
-//! those yet, so `catalog_scale_override` below carries the hand-verified copy
-//! for the affected models until it does. The runtime applies that correction
+//! those yet, so `catalog_scale_override` below selects the shared curated
+//! profile for the known affected model until it does. The runtime applies that correction
 //! after merging discovered and fallback metadata, so it also covers startup
 //! before this cache is populated.
 //!
@@ -77,17 +77,8 @@ pub(crate) fn reasoning_effort_config(
     profile(provider_type, model).and_then(|profile| profile.reasoning_effort)
 }
 
-/// Catalog-verified effort scales for models whose driver drops the levels.
-/// `everruns-openrouter 0.18.3` maps every reasoning model to the same fixed
-/// low/medium/high scale and drops the catalog's `reasoning.supported_efforts`,
-/// so both its recorded advertisement and the registry fallback are wrong.
-/// Each entry applies only while the selected scale is still exactly that
-/// generic one: the moment the driver maps the real levels, its advertisement
-/// stops matching and this yields to it. An entry's levels are hand-copied from
-/// the provider catalog,
-/// so re-verify against the catalog before extending this table (muse-spark's
-/// entry was read from OpenRouter `/models`: `supported_efforts` `["max",
-/// "xhigh", "high", "medium", "low", "minimal"]`, default `"medium"`).
+/// Correct the known generic gateway fallback using the shared curated
+/// profile. A narrower or newly mapped provider scale still takes precedence.
 pub(crate) fn catalog_scale_override(
     provider_type: &DriverId,
     model: &str,
@@ -119,23 +110,8 @@ pub(crate) fn catalog_scale_override(
         // carries a narrower scale. Its metadata speaks for itself now.
         return None;
     }
-    Some(ReasoningEffortConfig {
-        values: [
-            everruns_contracts::ReasoningEffort::Minimal,
-            everruns_contracts::ReasoningEffort::Low,
-            everruns_contracts::ReasoningEffort::Medium,
-            everruns_contracts::ReasoningEffort::High,
-            everruns_contracts::ReasoningEffort::Xhigh,
-            everruns_contracts::ReasoningEffort::Max,
-        ]
-        .into_iter()
-        .map(|value| everruns_contracts::ReasoningEffortValue {
-            name: format!("{value:?}"),
-            value,
-        })
-        .collect(),
-        default: everruns_contracts::ReasoningEffort::Medium,
-    })
+    everruns_contracts::model_profiles::get_model_profile(provider_type, model)
+        .and_then(|profile| profile.reasoning_effort)
 }
 
 /// A profile shaped like the one OpenRouter's driver derives from

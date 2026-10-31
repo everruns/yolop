@@ -979,6 +979,22 @@ mod tests {
             return;
         };
         let directory = PathBuf::from(directory);
+        let lost_background = std::env::var_os("YOLOP_TEST_LOST_BACKGROUND").is_some();
+        let config = if lost_background {
+            everruns_llmsim::LlmSimConfig::scripted(vec![
+                everruns_llmsim::SimTurn::ToolCalls(vec![everruns_llmsim::SimToolCall {
+                    name: "spawn_background".into(),
+                    arguments: serde_json::json!({
+                        "tool":"bash", "args":{"command":"printf started >> launches; printf retained; sleep 5"},
+                        "title":"restart evidence", "signal_on_completion":false,
+                    }),
+                    id: None,
+                }]),
+                everruns_llmsim::SimTurn::Assistant("Detached work is running.".into()),
+            ])
+        } else {
+            everruns_llmsim::LlmSimConfig::fixed("recovered reply")
+        };
         let settings = Arc::new(SettingsStore::open(directory.join("settings.toml")));
         let built = build_with_options(
             directory.join("workspace"),
@@ -987,12 +1003,50 @@ mod tests {
             directory.join("sessions"),
             settings,
             BuildOptions {
-                llmsim_override: Some(everruns_llmsim::LlmSimConfig::fixed("recovered reply")),
+                llmsim_override: Some(config),
                 ..Default::default()
             },
         )
         .await
         .unwrap();
+        if lost_background {
+            let turn = built
+                .handles
+                .run_checkpointed_turn(built.model.input_message("Start detached work."))
+                .await
+                .unwrap();
+            assert!(turn.success, "{turn:?}");
+            tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                while !directory.join("workspace/launches").exists() {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .unwrap();
+            let task = built
+                .task_registry
+                .list(built.handles.session_id, None)
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|task| task.kind == "background_tool")
+                .unwrap();
+            assert_eq!(task.state, everruns_core::SessionTaskState::Running);
+            std::fs::write(
+                directory.join("background.json.tmp"),
+                serde_json::to_vec(&serde_json::json!({
+                    "session":built.handles.session_id,"task":task.id,"attempt":task.attempt,
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            std::fs::rename(
+                directory.join("background.json.tmp"),
+                directory.join("background.json"),
+            )
+            .unwrap();
+            std::future::pending::<()>().await;
+        }
         let supervisor = built
             .handles
             .host
@@ -1051,6 +1105,84 @@ mod tests {
         )
         .unwrap();
         std::future::pending::<()>().await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn process_death_settles_background_without_replaying_or_claiming_cancellation() {
+        struct Process(std::process::Child);
+        impl Drop for Process {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::create_dir(directory.path().join("workspace")).unwrap();
+        let log = std::fs::File::create(directory.path().join("child.log")).unwrap();
+        let mut child = Process(
+            std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "runtime::engine::tests::native_admission_process_fixture",
+                    "--nocapture",
+                ])
+                .env("YOLOP_TEST_ENGINE_PROCESS_SOURCE", directory.path())
+                .env("YOLOP_TEST_LOST_BACKGROUND", "1")
+                .stdout(log.try_clone().unwrap())
+                .stderr(log)
+                .spawn()
+                .unwrap(),
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(20), async {
+            while !directory.path().join("background.json").exists() {
+                assert!(
+                    child.0.try_wait().unwrap().is_none(),
+                    "fixture exited: {}",
+                    std::fs::read_to_string(directory.path().join("child.log")).unwrap()
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        child.0.kill().unwrap();
+        child.0.wait().unwrap();
+        let saved: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(directory.path().join("background.json")).unwrap(),
+        )
+        .unwrap();
+        let id: SessionId = serde_json::from_value(saved["session"].clone()).unwrap();
+        let built = build_with_options(
+            directory.path().join("workspace"),
+            ProviderChoice::Sim,
+            Some(id),
+            directory.path().join("sessions"),
+            Arc::new(SettingsStore::open(directory.path().join("settings.toml"))),
+            BuildOptions {
+                llmsim_override: Some(everruns_llmsim::LlmSimConfig::fixed("recovered reply")),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let task = built
+            .task_registry
+            .get(id, saved["task"].as_str().unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            task.state,
+            everruns_core::SessionTaskState::Failed,
+            "{task:?}"
+        );
+        assert!(task.attempt > saved["attempt"].as_i64().unwrap() as i32);
+        assert_eq!(task.error.unwrap().kind, "execution_status_unknown");
+        assert_eq!(
+            std::fs::read_to_string(directory.path().join("workspace/launches")).unwrap(),
+            "started"
+        );
     }
 
     #[tokio::test]

@@ -6136,9 +6136,10 @@ mod tests {
         assert!(SYSTEM_PROMPT.contains("system instructions"));
         // ApprovalCapability owns every instruction to pause for confirmation,
         // because approval mode `off` contributes no such instruction. The
-        // unconditional prohibitions below hold in every mode.
+        // explicit-human-approval requirement and prohibitions hold in every mode.
         assert!(!SYSTEM_PROMPT.contains("confirmation"));
-        assert!(SYSTEM_PROMPT.contains("Never\nforce-push, skip hooks, rewrite history"));
+        assert!(SYSTEM_PROMPT.contains("only with explicit human approval for that action"));
+        assert!(SYSTEM_PROMPT.contains("Never skip hooks or change a session-worktree root"));
     }
 
     #[test]
@@ -7385,12 +7386,11 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(completed.iter().any(|data| {
             data.tool_name == "bash"
-                && crate::tui::transcript::result_value(data).is_some_and(|value| {
-                    value
-                        .get("progress_guard_warning")
-                        .and_then(serde_json::Value::as_str)
-                        .is_some_and(|warning| warning.contains("equivalent missing-command"))
-                })
+                && !data.success
+                && data
+                    .error
+                    .as_deref()
+                    .is_some_and(|error| error.contains("equivalent missing-command"))
         }));
         let bash_results = completed
             .iter()
@@ -11569,8 +11569,10 @@ mod tests {
             .join(" ");
 
         assert!(!safety.contains("confirmation"));
-        // Unconditional prohibitions hold in every approval mode.
-        assert!(safety.contains("force-push, skip hooks, rewrite history"));
+        // Git history changes need a human grant even when soft approval is off.
+        assert!(safety.contains("explicit human approval for that action"));
+        assert!(safety.contains("a request to ship"));
+        assert!(safety.contains("Never skip hooks"));
         assert!(safety.contains("change a session-worktree root"));
     }
 

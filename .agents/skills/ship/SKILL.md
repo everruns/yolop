@@ -93,6 +93,15 @@ Every review comment gets an inline reply on its own thread and is marked
 resolved — including nits, low-confidence suggestions, and bot comments. A reply
 is required even when the resolution is a pure code change.
 
+Observe PR identity and CI status through separate structured fields. Capture
+`gh pr view <PR> --json headRefOid --jq .headRefOid`, then wait with
+`gh pr checks <PR> --watch --fail-fast --interval 30` or
+`gh run watch <RUN> --exit-status` under the background task deadline. A terminal
+failure ends the watcher with a nonzero status. Recheck the PR head after the
+wait and immediately before merging; if it changed, validate the new head.
+`gh pr checks` output does not contain a head SHA, so never wait for a SHA to
+appear there. Preserve producer exit status and use fresh verification artifacts.
+
 Merge with `gh pr merge --squash` after CI is green and a final comment sweep is
 clean. Emit the merge tool call in the same response as the green verdict, never
 announce the merge in a text-only response: a text-only response ends the turn
@@ -111,6 +120,7 @@ outward-facing and stops in front of them, which is how a run ends on
 "Squash-merging." and waits for a "do this" that adds nothing: the gate that
 actually protects the merge is green CI and a clean sweep, not a second yes.
 
-The grant covers this change through its merge and nothing else. Anything
-destructive or outside that path — force-pushing, rewriting history, reverting
-on main, touching another PR — still needs the question.
+The grant covers this change through its merge and nothing else. Force-pushing
+or rewriting Git history requires explicit human approval for that specific
+action, including when approval mode is off. A recorded approval cannot create
+that grant. Reverting on main or touching another PR also needs separate approval.

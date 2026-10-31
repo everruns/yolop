@@ -71,3 +71,15 @@ agent loop. See [extensions](extensions.md).
 
 See [background execution](background.md), [tool output](tool-output.md), and
 [progress guard](progress-guard.md).
+
+## Background completion evidence
+
+Print mode retains its ten-minute deadline. A genuine timeout reports bounded blocking
+task IDs, kind, state, attempt, owner, heartbeat age and cancellation intent, without
+dumping task specs. Unknown or live ownership remains an actionable blocker rather than
+being guessed dead.
+
+Print mode also hands off non-monitor attempts that became terminal during the
+foreground turn, even if they finished before the pending-work check or requested
+no wake signal. A terminal snapshot the foreground already read counts as
+observed; terminal history from earlier turns does not trigger another turn.

@@ -287,3 +287,17 @@ Hook configuration is managed under the configuration command: `yolop config hoo
 ## Detached management commands
 
 `yolop config hooks` manages global and workspace hook files through the same `HooksStore` used at startup. Skill package administration is a separate top-level `yolop skills` command. Neither management surface is registered as model tools.
+
+### Provider credit failures
+
+Insufficient provider credit is a terminal failure requiring an account or
+provider change. It is distinct from temporary rate limits and is not repaired
+by retrying the unchanged request. Yolop retains the durable conversation for
+resumption and reports an actionable quota error. Output budgets are not
+automatically reduced after a billing error, because doing so can truncate
+reasoning or tool calls without proving that the smaller request is affordable.
+
+OpenRouter daily free-model limits are usage limits rather than short transient
+rate limits. The provider's daily-limit signal stops immediate retries and its
+absolute reset timestamp is preserved for the user; minute limits keep bounded
+backoff. An explicit user resume may make a new request after conditions change.
