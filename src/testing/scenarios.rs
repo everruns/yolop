@@ -835,8 +835,10 @@ async fn print_reviews_monitors_and_input_requests_without_waiting_for_execution
             })
             .await
             .unwrap();
+        // TURN_TIMEOUT, not a tight bound: an execution wait would block far past it,
+        // while a 3s limit tripped on loaded CI runners (#881, #889).
         let result = tokio::time::timeout(
-            Duration::from_secs(3),
+            TURN_TIMEOUT,
             crate::run_print_mode(runtime, "Report the configured task".into(), vec![], None),
         )
         .await
