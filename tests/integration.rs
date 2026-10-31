@@ -3480,20 +3480,55 @@ fn acp_settings_file_change_pushes_config_option_update() {
     )
     .expect("edit settings.toml");
 
-    let deadline = Instant::now() + Duration::from_secs(25);
-    let mut saw_update = false;
-    while Instant::now() < deadline {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        match line_rx.recv_timeout(remaining) {
-            Ok(line) => {
-                if line.contains("config_option_update") && line.contains("fav-two") {
-                    saw_update = true;
+    let wait_for_model_update = |session_id: &str, model: &str| {
+        let deadline = Instant::now() + Duration::from_secs(25);
+        while Instant::now() < deadline {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            match line_rx.recv_timeout(remaining) {
+                Ok(line) => {
+                    let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else {
+                        continue;
+                    };
+                    if value["params"]["sessionId"] == session_id
+                        && value["params"]["update"]["sessionUpdate"] == "config_option_update"
+                        && line.contains(model)
+                    {
+                        return true;
+                    }
+                }
+                Err(mpsc::RecvTimeoutError::Timeout | mpsc::RecvTimeoutError::Disconnected) => {
                     break;
                 }
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => break,
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
+        false
+    };
+    let first_session_id = new_session["result"]["sessionId"].as_str().unwrap();
+    let saw_update = wait_for_model_update(first_session_id, "fav-two");
+    let mut saw_second_update = false;
+    if saw_update {
+        // A later session joins an already-running watcher. Its baseline must
+        // still be its response, not the settings seen at the watcher's next tick.
+        send(
+            &mut stdin,
+            serde_json::json!({
+                "jsonrpc": "2.0", "id": 2, "method": "session/new",
+                "params": { "cwd": workspace.path().to_str().unwrap(), "mcpServers": [] }
+            }),
+        );
+        let second_session = await_response(2);
+        assert!(second_session.to_string().contains("fav-two"));
+        std::fs::write(
+            &settings_path,
+            "[[models]]\nprovider = \"llmsim\"\nmodel = \"fav-one\"\n\n\
+             [[models]]\nprovider = \"llmsim\"\nmodel = \"fav-two\"\n\n\
+             [[models]]\nprovider = \"llmsim\"\nmodel = \"fav-three\"\n",
+        )
+        .expect("edit settings after second session response");
+        saw_second_update = wait_for_model_update(
+            second_session["result"]["sessionId"].as_str().unwrap(),
+            "fav-three",
+        );
     }
 
     drop(stdin);
@@ -3504,6 +3539,10 @@ fn acp_settings_file_change_pushes_config_option_update() {
     assert!(
         saw_update,
         "no config_option_update for fav-two within 25s; stderr:\n{stderr_text}"
+    );
+    assert!(
+        saw_second_update,
+        "no config_option_update for fav-three in the second session within 25s; stderr:\n{stderr_text}"
     );
 }
 
