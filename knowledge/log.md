@@ -3,7 +3,7 @@
 ## 2026-10-31, Everruns family back on published pins
 
 The temporary Everruns git source from 2026-10-19 is gone: the whole family
-now pins the published 0.50.1 crates, which carry the Engine, host-service and
+now pins the published 0.50.1 crates exactly, which carry the Engine, host-service and
 artifact-inspection contracts Yolop adopted from upstream main. Yolop is
 publishable again. See [Maintenance](specs/maintenance.md).
 
