@@ -540,7 +540,7 @@ pub(crate) fn turn_failure_hints(error: &str, current_effort: Option<&str>) -> V
 fn codex_auth_error_hint(error: &str) -> Option<String> {
     if error.contains("rejected_by_access_enforcement")
         && error.contains("no_matching_rule")
-        && (error.contains("openai-codex") || error.contains("codex"))
+        && error.contains("provider 'openai-codex'")
     {
         // Valid token, wrong login route for this model: the plan login cannot
         // call Codex-only models and vice versa.
