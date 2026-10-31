@@ -23,6 +23,27 @@ pub const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(60);
 /// Default bound: 60 probes at 60s covers one hour of waiting.
 pub const DEFAULT_MAX_PROBES: u32 = 60;
 
+/// User-facing notice appended to the error block when a probe loop started.
+pub fn watcher_running_notice() -> &'static str {
+    "Background checker: probing the key endpoint every 60s without spending tokens. It posts here when credits are back and retries the paused turn once."
+}
+
+/// User-facing notice when no probe loop starts. Never promise a checker.
+pub fn watcher_unavailable_notice() -> &'static str {
+    "No background checker is running for this turn: yolop could not find an OpenRouter key to probe with. Add credits or lower max output tokens above, then send your next message to retry."
+}
+
+/// User-facing notice when a watcher retry still hits empty credits.
+pub fn watcher_still_exhausted_notice() -> &'static str {
+    "Still out of credits after the retry; the checker is standing down. Add credits or lower max output tokens above, then send your next message to retry."
+}
+
+/// User-facing notice when the probe reports an invalid key rather than an
+/// empty balance.
+pub fn watcher_auth_error_notice() -> &'static str {
+    "The background probe got a 401 for this OpenRouter key: the key itself looks invalid or revoked, not just out of credits. Check the key, then send your next message to retry."
+}
+
 /// Parsed credit-exhaustion signal from a provider error string.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CreditExhaustion {
@@ -134,10 +155,6 @@ impl CreditExhaustion {
         } else {
             block.push_str("- Or wait for in-flight requests to settle, then retry.\n");
         }
-        block.push_str(
-            "\nBackground checker: probing the key endpoint every 60s without spending tokens. It posts here when credits are back and retries the paused turn once.\n\n",
-        );
-
         let trimmed = raw_excerpt.trim();
         if !trimmed.is_empty() {
             let excerpt: String = trimmed.chars().take(500).collect();
@@ -186,9 +203,13 @@ fn parse_requested_tokens(error: &str) -> Option<u64> {
         let mut search = error;
         while let Some(idx) = search.to_lowercase().find(needle) {
             let rest = &search[idx + needle.len()..];
-            let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
-            // Skip thousands separators like 65,536 by stripping commas first.
-            let digits: String = digits.chars().collect();
+            let raw: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_digit() || *c == ',')
+                .collect();
+            // Thousands separators (65,536) must not truncate the count at
+            // the comma: strip them before parsing.
+            let digits: String = raw.chars().filter(|c| c.is_ascii_digit()).collect();
             if let Ok(value) = digits.parse::<u64>() {
                 return Some(value);
             }
@@ -274,31 +295,29 @@ fn parse_retry_after(error: &str) -> Option<u64> {
 pub enum ProbeOutcome {
     /// Balance looks usable again.
     Available,
-    /// Still exhausted (401/402 or usage at limit).
+    /// Still exhausted (402, or usage at limit).
     Exhausted,
     /// Transient network/parse failure. Keep waiting.
     Unknown,
+    /// 401 from the key endpoint: the key itself is invalid or revoked,
+    /// distinct from an empty balance. Stop probing and say so.
+    AuthError,
 }
 
 /// Cheap probe: GET the OpenRouter key endpoint with the same bearer key.
 ///
 /// This spends no tokens. `limit: null` means unlimited. Otherwise
 /// `usage < limit` means credits are back.
-pub async fn probe_openrouter_key(api_key: &str) -> ProbeOutcome {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(15))
-        .build();
-    let client = match client {
-        Ok(client) => client,
-        Err(_) => return ProbeOutcome::Unknown,
-    };
+pub async fn probe_openrouter_key(client: &reqwest::Client, api_key: &str) -> ProbeOutcome {
     let response = client.get(KEY_INFO_URL).bearer_auth(api_key).send().await;
     let response = match response {
         Ok(response) => response,
         Err(_) => return ProbeOutcome::Unknown,
     };
-    let status = response.status().as_u16();
-    if status == 401 || status == 402 {
+    if response.status().as_u16() == 401 {
+        return ProbeOutcome::AuthError;
+    }
+    if response.status().as_u16() == 402 {
         return ProbeOutcome::Exhausted;
     }
     if !response.status().is_success() {
@@ -366,6 +385,27 @@ mod tests {
             !block.contains("limitOpenRouter"),
             "must not glue the key URL to the next sentence"
         );
+    }
+
+    #[test]
+    fn parses_thousands_separated_counts() {
+        let error = "OpenRouter (402 Payment Required): This request requires more credits, or fewer max_tokens. You requested up to 65,536 tokens, but can only afford 53,197.";
+        let exhaustion = CreditExhaustion::detect(error).expect("must detect");
+        assert_eq!(exhaustion.requested_tokens, Some(65536));
+        assert_eq!(exhaustion.affordable_tokens, Some(53197));
+    }
+
+    #[test]
+    fn block_never_promises_a_checker() {
+        // The block carries facts and guidance; the running/not-running
+        // notice is appended by the caller that actually starts (or skips)
+        // the probe loop, so no frontend can promise a checker that never
+        // starts.
+        let exhaustion = CreditExhaustion::detect(SCREENSHOT_ERROR).expect("must detect");
+        let block = exhaustion.markdown_block("raw");
+        assert!(!block.contains("Background checker"));
+        assert!(watcher_running_notice().contains("60s"));
+        assert!(watcher_unavailable_notice().contains("No background checker"));
     }
 
     #[test]
