@@ -144,8 +144,8 @@ tree-sitter-zig = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
-# Engine adoption uses Framework APIs before their crates.io release.
-# Keep the entire family on one exact upstream revision and refresh it together.
+# Engine adoption uses the merged Framework APIs before their crates.io release.
+# Keep the entire family on one git source; Cargo.lock pins the tested main commit.
 everruns-contracts = { git = "https://github.com/everruns/everruns.git", rev = "cd396e905e525d12031f9ad9a4c4638fe904ce31", default-features = false, features = ["definition"] }
 everruns-core = { git = "https://github.com/everruns/everruns.git", rev = "cd396e905e525d12031f9ad9a4c4638fe904ce31", features = ["host", "builtins", "mcp-stdio", "direct-egress"] }
 everruns-drivers = { git = "https://github.com/everruns/everruns.git", rev = "cd396e905e525d12031f9ad9a4c4638fe904ce31", default-features = false, features = ["openai", "anthropic", "meta", "openrouter", "chatgpt", "codex", "mistral", "fireworks", "vercel", "cloudflare", "mai", "gemini"] }

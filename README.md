@@ -281,6 +281,24 @@ repository-controlled commands are not executed:
 }
 ```
 
+For OAuth servers supporting Client ID Metadata Documents, a distributor can
+set `YOLOP_MCP_CLIENT_METADATA_URL` to its published HTTPS metadata document.
+Login automatically uses that URL as a public client ID when the authorization
+server advertises support, and otherwise uses dynamic registration. Without
+the variable, login keeps using dynamic registration.
+
+The document must contain its exact URL as `client_id`, a `client_name`,
+`redirect_uris` containing `http://127.0.0.1/callback`, and
+`token_endpoint_auth_method: "none"`, and `application_type: "native"`. The authorization server must support
+native loopback redirect port matching (RFC 8252), since Yolop binds an available
+port for each login. Include `authorization_code` and `refresh_token` in
+`grant_types`, and `code` in `response_types`. Publish the document before
+setting the variable; Yolop has no built-in hosted document.
+
+```bash
+YOLOP_MCP_CLIENT_METADATA_URL=https://client.example/yolop.json yolop mcp login my-server
+```
+
 
 
 ## Extensions

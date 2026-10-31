@@ -2,12 +2,13 @@
 
 use crate::auth::mcp_oauth::McpOAuthTokenSet;
 use anyhow::{Context, Result, anyhow};
-use everruns_core::mcp::oauth::RegisteredClient;
+use everruns_core::mcp::oauth::{LoginOptions, RegisteredClient};
 use std::collections::HashMap;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
 const CALLBACK_PATH: &str = "/callback";
+const CLIENT_METADATA_URL_ENV: &str = "YOLOP_MCP_CLIENT_METADATA_URL";
 
 pub(crate) struct PreparedLogin {
     pub authorize_url: String,
@@ -31,6 +32,31 @@ pub(crate) async fn prepare_login(
     configured_client_id: Option<&str>,
     scope: Option<&str>,
 ) -> Result<PreparedLogin> {
+    // A distributor can publish its own metadata without teaching the client to
+    // fetch arbitrary client documents. No default URL until one is hosted.
+    let metadata_url = match std::env::var(CLIENT_METADATA_URL_ENV) {
+        Ok(value) => Some(value),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(error) => return Err(error).context(CLIENT_METADATA_URL_ENV),
+    };
+    let egress = crate::auth::mcp_oauth::oauth_egress();
+    prepare_login_with_egress(
+        egress.as_ref(),
+        mcp_url,
+        configured_client_id,
+        scope,
+        metadata_url.as_deref(),
+    )
+    .await
+}
+
+async fn prepare_login_with_egress(
+    egress: &dyn everruns_core::EgressService,
+    mcp_url: &str,
+    configured_client_id: Option<&str>,
+    scope: Option<&str>,
+    metadata_url: Option<&str>,
+) -> Result<PreparedLogin> {
     let listener = TcpListener::bind(("127.0.0.1", 0))
         .await
         .context("bind loopback OAuth callback")?;
@@ -43,14 +69,16 @@ pub(crate) async fn prepare_login(
         client_id: client_id.to_string(),
         client_secret: None,
     });
-    let egress = crate::auth::mcp_oauth::oauth_egress();
-    let oauth = everruns_core::mcp::oauth::prepare_login(
-        egress.as_ref(),
+    let oauth = everruns_core::mcp::oauth::prepare_login_with_options(
+        egress,
         mcp_url,
         &redirect_uri,
-        "yolop",
-        configured_client,
-        scope,
+        LoginOptions {
+            client_name: "yolop",
+            client: configured_client,
+            client_metadata_url: metadata_url,
+            scope,
+        },
     )
     .await?;
     Ok(PreparedLogin {
@@ -347,6 +375,91 @@ pub(crate) mod test_support {
 mod tests {
     use super::test_support::MockOAuthServer;
     use super::*;
+
+    struct NegotiationEgress {
+        cimd: bool,
+        sent: std::sync::Mutex<Vec<everruns_core::EgressRequest>>,
+    }
+
+    #[async_trait::async_trait]
+    impl everruns_core::EgressService for NegotiationEgress {
+        async fn send(
+            &self,
+            request: everruns_core::EgressRequest,
+        ) -> everruns_core::EgressResult<everruns_core::EgressResponse> {
+            let body = match request.url.as_str() {
+                "https://mcp.example/.well-known/oauth-protected-resource" => serde_json::json!({
+                    "resource": "https://mcp.example/", "authorization_servers": ["https://auth.example"]
+                }),
+                "https://auth.example/.well-known/oauth-authorization-server" => {
+                    serde_json::json!({
+                        "issuer": "https://auth.example", "authorization_endpoint": "https://auth.example/authorize",
+                        "token_endpoint": "https://auth.example/token", "registration_endpoint": "https://auth.example/register",
+                        "client_id_metadata_document_supported": self.cimd
+                    })
+                }
+                "https://auth.example/register" => serde_json::json!({"client_id": "registered"}),
+                other => panic!("unexpected OAuth request: {other}"),
+            };
+            self.sent.lock().unwrap().push(request);
+            Ok(everruns_core::EgressResponse {
+                status: 200,
+                headers: Default::default(),
+                body: serde_json::to_vec(&body).unwrap(),
+            })
+        }
+
+        async fn send_stream(
+            &self,
+            _: everruns_core::EgressRequest,
+        ) -> everruns_core::EgressResult<everruns_core::EgressStreamResponse> {
+            panic!("OAuth negotiation does not stream")
+        }
+    }
+
+    #[tokio::test]
+    async fn metadata_negotiation_keeps_the_native_callback_and_configured_client() {
+        const METADATA_URL: &str = "https://client.example/yolop.json";
+        for (support, configured, metadata_url, expected) in [
+            (true, None, Some(METADATA_URL), METADATA_URL),
+            (false, None, Some(METADATA_URL), "registered"),
+            (true, None, None, "registered"),
+            (true, Some("configured"), Some(METADATA_URL), "configured"),
+        ] {
+            let egress = NegotiationEgress {
+                cimd: support,
+                sent: Default::default(),
+            };
+            let prepared = prepare_login_with_egress(
+                &egress,
+                "https://mcp.example/",
+                configured,
+                Some("read"),
+                metadata_url,
+            )
+            .await
+            .unwrap();
+            let authorize = reqwest::Url::parse(&prepared.authorize_url).unwrap();
+            let query: HashMap<_, _> = authorize.query_pairs().into_owned().collect();
+            assert_eq!(query["client_id"], expected);
+            assert_eq!(query["code_challenge_method"], "S256");
+            assert_eq!(query["scope"], "read");
+            assert_eq!(
+                query["redirect_uri"],
+                format!(
+                    "http://127.0.0.1:{}/callback",
+                    prepared.listener.local_addr().unwrap().port()
+                )
+            );
+            assert_eq!(prepared.oauth.issuer, "https://auth.example");
+            let sent = egress.sent.lock().unwrap();
+            assert_eq!(
+                sent.iter().filter(|r| r.method == "POST").count(),
+                usize::from(expected == "registered")
+            );
+            assert!(!sent.iter().any(|r| r.url == METADATA_URL));
+        }
+    }
 
     #[tokio::test]
     async fn callback_response_serves_branded_page() {

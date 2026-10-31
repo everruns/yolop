@@ -1,11 +1,12 @@
 # Knowledge Log
 
-## 2026-10-31, Upstream masking batches
+## 2026-10-31, Dependency security corrections
 
-The aligned Everruns update preserves cached prompt prefixes while stale tool
-results wait for a masking batch. Yolop's composition coverage now verifies
-both waiting histories and eventual masking, with recent results intact. See
-[Tool-output retention and recovery](specs/tool-output.md).
+Keep the Everruns family aligned while consuming Bashkit 0.20.2 and Wasmtime
+48.0.8. Refresh compatible TLS, Tokio, Markdown, cryptography, and compression
+lockfile versions to clear published advisories, and replace the yanked Windows
+clipboard package. The temporary git-source exception and publication hold
+remain unchanged. See [Maintenance](specs/maintenance.md).
 
 ## 2026-10-30, Report-only memory inspection
 
@@ -15,6 +16,12 @@ exposes no body-derived findings or hashes. Reports bind canonical content,
 version, note identity, scope, store and shared ruleset. The same aligned upstream
 revision provides opt-in skill catalog and activation reports. See
 [Memory](specs/memory.md) and [Skills](specs/skills.md).
+
+## 2026-10-30, Outbound MCP client metadata negotiation
+
+Use the shared Everruns OAuth client's CIMD negotiation when a distributor
+supplies a hosted metadata URL, with DCR fallback and the existing native
+callback and token persistence. See [MCP](specs/mcp.md).
 
 ## 2026-10-27, Native Session APIs and application host boundary
 

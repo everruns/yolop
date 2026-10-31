@@ -201,7 +201,7 @@ mod tests {
     #[test]
     fn masks_old_large_tool_results_in_batches_without_dropping_messages() {
         let mut messages = Vec::new();
-        for index in 0..10 {
+        for index in 0..12 {
             let call_id = format!("call_{index}");
             messages.push(RuntimeMessage::assistant_with_tools(
                 "",
@@ -226,17 +226,16 @@ mod tests {
             prior_usage: None,
             provider_managed_reduction: false,
         };
-        // Small histories retain the cached prefix until upstream's masking
-        // batch or byte threshold is reached.
-        let waiting = messages[..8].to_vec();
-        let unchanged = ContextCostControlModelViewProvider.apply_model_view(
-            waiting.clone(),
+        // A short history stays verbatim until the upstream masking batch fills.
+        let short = messages[..8].to_vec();
+        let waiting = ContextCostControlModelViewProvider.apply_model_view(
+            short.clone(),
             &serde_json::json!({}),
             &context,
         );
         assert_eq!(
-            serde_json::to_value(&unchanged).unwrap(),
-            serde_json::to_value(&waiting).unwrap()
+            serde_json::to_value(&waiting).unwrap(),
+            serde_json::to_value(&short).unwrap()
         );
 
         let reduced = ContextCostControlModelViewProvider.apply_model_view(
@@ -251,7 +250,7 @@ mod tests {
         assert_eq!(reduced.len(), messages.len());
         assert!(bytes_after * 4 < bytes_before * 3);
         assert_ne!(reduced[1].content, messages[1].content);
-        for index in 16..20 {
+        for index in messages.len() - 4..messages.len() {
             assert_eq!(reduced[index].content, messages[index].content);
         }
     }
