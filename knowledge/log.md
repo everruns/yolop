@@ -1,5 +1,19 @@
 # Knowledge Log
 
+## 2026-10-31, Dependency security corrections
+
+Keep the Everruns family aligned while consuming Bashkit 0.20.2 and Wasmtime
+48.0.8. Refresh compatible TLS, Tokio, Markdown, cryptography, and compression
+lockfile versions to clear published advisories, and replace the yanked Windows
+clipboard package. The temporary git-source exception and publication hold
+remain unchanged. See [Maintenance](specs/maintenance.md).
+
+## 2026-10-30, Outbound MCP client metadata negotiation
+
+Use the shared Everruns OAuth client's CIMD negotiation when a distributor
+supplies a hosted metadata URL, with DCR fallback and the existing native
+callback and token persistence. See [MCP](specs/mcp.md).
+
 ## 2026-10-27, Native Session APIs and application host boundary
 
 Yolop demonstrates Everruns while retaining all product features. Frontends now
