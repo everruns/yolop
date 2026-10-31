@@ -3,6 +3,7 @@
 
 pub mod background_wake;
 mod compaction_checkpoint;
+pub mod credit_watcher;
 pub(crate) mod discovered_profiles;
 pub(crate) mod engine;
 mod engine_hosting;
