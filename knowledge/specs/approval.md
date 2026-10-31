@@ -170,3 +170,12 @@ surfaces rather than capability behavior.
   execution. These controls compose with soft approval; they do not replace it.
 - **No bespoke approval UI.** Consent is spoken in chat; there is deliberately
   no modal or button.
+
+## Git history changes
+
+Force-push and Git history rewriting require explicit human approval for the
+specific action in every approval mode, including off. A request to ship covers
+the normal push and merge flow, not rewriting published history. An agent's
+`record_approval` entry records a human grant and cannot create one. This is a
+system-prompt requirement; arbitrary shell execution is not made safe by a
+command-text filter. Repository and user prohibitions may narrow the grant.

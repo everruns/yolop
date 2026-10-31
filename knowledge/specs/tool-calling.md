@@ -29,14 +29,18 @@ optimization rather than the validation boundary. Yolop applies these layers:
    full authoritative JSON Schema, including when the provider saw a deferred
    stub. The first error blocks only that call and returns JSON containing the
    trusted path, expected shape, received JSON type, and one-retry instruction.
-5. Individual executors retain semantic validation as defense in depth.
+5. A failed call, including a validation rejection, automatically reveals that
+   tool's full registered schema on the next model step through the existing
+   transcript-derived tool disclosure. Other sessions remain deferred.
+6. Individual executors retain semantic validation as defense in depth.
 
 ## Diagnostic safety and bounds
 
 Validation diagnostics never include argument values or model-authored unknown
 property names. They expose JSON types and schema-authored shape metadata only,
 so credentials or user data in a malformed value are not copied into the
-transcript. Expected shapes are depth- and property-bounded, one error is
+transcript. Repeated-failure repair instructions remain in the provider-visible
+error text as well as the structured result; error rendering cannot hide them. Expected shapes are depth- and property-bounded, one error is
 reported per call, diagnostics are capped at 8 KiB, arguments over 1 MiB are
 rejected before execution, and compiled validators use a bounded cache.
 
@@ -53,12 +57,13 @@ model, and is the A/B for whether a trained-in shape reduces edit retries.
 
 ## Provider boundary
 
-Yolop owns the Codex OAuth Responses driver and can emit its strictness flag
-directly. The shared `everruns-openai` Chat Completions adapter does not yet
-carry per-tool strictness metadata, so OpenAI API-key sessions currently rely
-on the provider-independent validation and repair layers. Strict propagation in
-that shared adapter belongs upstream; Yolop must not fork the provider crate to
-paper over the ownership boundary.
+Everruns owns the Codex OAuth lifecycle and OpenAI protocol drivers; Yolop
+adapts its settings and registry. Shared Responses and Chat Completions adapters
+carry strict tool schemas when conversion is sound. Their inverse converts
+introduced optional null placeholders back to omitted properties before calls
+are recorded or approved. Explicit nullable values, required nulls, unknown
+fields, non-strict schemas and ambiguous unions remain for authoritative
+validation. Yolop never repairs those values inside the execution gate.
 
 ## Evidence
 

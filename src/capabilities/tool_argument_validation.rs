@@ -432,6 +432,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn strict_provider_omissions_keep_authoritative_validation() {
+        let schema = json!({"type":"object","properties":{
+            "required":{"type":"string"},
+            "optional":{"type":"string"},
+            "nullable":{"type":["string","null"]}
+        },"required":["required"],"additionalProperties":false});
+        let hook = ToolArgumentValidationHook::default();
+        let definition = tool_definition(schema.clone(), None);
+        let context = ToolContext::new(SessionId::new());
+        let mut arguments = json!({"required":"value","optional":null,"nullable":null});
+        assert!(
+            matches!(
+                hook.before_exec(call(arguments.clone()), &definition, &context)
+                    .await,
+                PreToolUseDecision::Block { .. }
+            ),
+            "ordinary invalid nulls remain rejected"
+        );
+        everruns_contracts::tool_schema_compat::restore_strict_openai_tool_arguments(
+            &schema,
+            &mut arguments,
+        );
+        let expected = json!({"required":"value","nullable":null});
+        assert_eq!(arguments, expected);
+        let PreToolUseDecision::Continue(approved) = hook
+            .before_exec(call(arguments), &definition, &context)
+            .await
+        else {
+            panic!("restored strict arguments should validate");
+        };
+        assert_eq!(
+            approved.arguments, expected,
+            "execution validation must not rewrite canonical arguments"
+        );
+        let mut invalid = json!({"required":null,"optional":null});
+        everruns_contracts::tool_schema_compat::restore_strict_openai_tool_arguments(
+            &schema,
+            &mut invalid,
+        );
+        assert!(
+            matches!(
+                hook.before_exec(call(invalid), &definition, &context).await,
+                PreToolUseDecision::Block { .. }
+            ),
+            "required nulls remain rejected"
+        );
+    }
+
+    #[tokio::test]
     async fn validation_uses_full_schema_when_advertised_schema_is_deferred() {
         let hook = ToolArgumentValidationHook::default();
         let definition = tool_definition(

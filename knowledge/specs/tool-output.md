@@ -34,6 +34,11 @@ limit. Yolop returns a valid bounded JSON envelope with `full_output`,
 provider to receive JSON cut in the middle. Both foreground and background
 artifact references use the session filesystem display contract.
 
+Unix shell calls enable errexit and pipefail, so an unhandled failed step or
+pipeline producer cannot be hidden by later successful output. Expected negative
+checks handle their status explicitly. A failed shell outcome is recorded as a
+failed tool event while retaining structured diagnostics and persisted output.
+
 Shell timeouts retain the stdout and stderr collected before the deadline,
 `success: false`, and `timed_out: true`. On Unix, timeout, output-limit
 termination, and cancellation stop the command process group, preventing a

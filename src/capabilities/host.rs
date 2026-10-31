@@ -535,6 +535,9 @@ impl Capability for CodingBashCapability {
         // don't repeat ourselves.
         None
     }
+    fn post_tool_exec_hooks(&self) -> Vec<Arc<dyn everruns_core::tool_hooks::PostToolExecHook>> {
+        vec![Arc::new(ShellOutcomeHook)]
+    }
     fn tools(&self) -> Vec<Box<dyn Tool>> {
         vec![Box::new(
             BashTool::with_policy(
@@ -592,6 +595,43 @@ impl Capability for CodingBashCapability {
         .execute(json!({ "command": command, "output": "normal" }))
         .await;
         Ok(shell_command_result(result))
+    }
+}
+
+struct ShellOutcomeHook;
+
+#[async_trait]
+impl everruns_core::tool_hooks::PostToolExecHook for ShellOutcomeHook {
+    async fn after_exec(
+        &self,
+        call: &everruns_contracts::ToolCall,
+        _definition: &everruns_contracts::ToolDefinition,
+        result: &mut everruns_contracts::ToolResult,
+        _context: &everruns_core::ToolContext,
+    ) {
+        if call.name != "bash" || result.error.is_some() {
+            return;
+        }
+        let Some(value) = result.result.as_ref() else {
+            return;
+        };
+        if value["success"].as_bool() != Some(false) {
+            return;
+        }
+        // The tool ran, but the command failed. Retain its structured payload
+        // and raw output while making failure visible to events and providers.
+        let mut diagnostic = value.clone();
+        let payload = everruns_core::exec_tool_result::ExecToolResultPayload::new(
+            value["stdout"].as_str().unwrap_or_default(),
+            value["stderr"].as_str().unwrap_or_default(),
+            value["exit_code"].as_i64().unwrap_or(-1) as i32,
+            "concise",
+        );
+        diagnostic["stdout"] = json!(payload.stdout);
+        diagnostic["stderr"] = json!(payload.stderr);
+        result.error = Some(format!(
+            "Shell command failed. Diagnostic result: {diagnostic}"
+        ));
     }
 }
 

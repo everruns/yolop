@@ -298,7 +298,7 @@ impl SessionProgress {
                     self.waiting_warning_emitted = true;
                     self.warning_count += 1;
                     return Some(
-                        "progress_guard: repeated checks of an external event (CI run, PR checks/reviews) without other progress. Do not poll across turns: run one blocking watch detached via spawn_background (e.g. `gh pr checks --watch` or an `until <check>; do sleep 30; done` loop) and end the turn — completion wakes the agent. In one-shot mode, block on the spawned task with wait_task instead."
+                        "progress_guard: repeated checks of an external event (CI run, PR checks/reviews) without other progress. Do not poll across turns: run one blocking watch detached via spawn_background (e.g. `gh pr checks --watch --fail-fast` or `gh run watch --exit-status`, bounded by the task deadline) and end the turn — completion wakes the agent. In one-shot mode, block on the spawned task with wait_task instead."
                             .to_string(),
                     );
                 }
@@ -1289,7 +1289,9 @@ fn classify_semantic_failure(result: &ToolResult) -> Option<SemanticFailureClass
     {
         return Some(SemanticFailureClass::Invocation);
     }
-    if result.error.is_some() {
+    // A command's nonzero status is evidence, not necessarily misuse: failing
+    // regression tests and explicit negative checks are legitimate validation.
+    if result.error.is_some() && !structured_failure {
         Some(SemanticFailureClass::Unknown)
     } else {
         None
@@ -1892,6 +1894,11 @@ fn references_workspace_path(text: &str) -> bool {
 }
 
 fn inject_warning(result: &mut ToolResult, warning: String) {
+    // Providers render error text ahead of structured results. Keep the repair
+    // instruction visible there too, before a large diagnostic can be truncated.
+    if let Some(error) = result.error.as_mut() {
+        *error = format!("{warning}\n\n{error}");
+    }
     let mut object = match result.result.take() {
         Some(Value::Object(object)) => object,
         Some(value) => {
@@ -2655,6 +2662,13 @@ mod tests {
     }
 
     #[test]
+    fn command_failure_events_do_not_turn_expected_validation_into_misuse() {
+        let mut result = failed_bash_result(101, "test result: FAILED. regression reproduced");
+        result.error = Some("Shell command failed.".into());
+        assert_eq!(classify_semantic_failure(&result), None);
+    }
+
+    #[test]
     fn unknown_tool_errors_are_semantic_failures() {
         let result = tool_error_result("No task found with id: task_stale");
 
@@ -2680,6 +2694,30 @@ mod tests {
         assert!(warning.contains("Do not rewrite and retry the same invocation path"));
         assert_eq!(progress.consecutive_equivalent_failures, 2);
         assert!(progress.failure_gate.is_some());
+    }
+
+    #[tokio::test]
+    async fn repeated_rejection_feedback_is_visible_in_the_provider_message() {
+        let hook = ProgressGuardHook {
+            state: Arc::new(Mutex::new(ProgressGuardState::default())),
+        };
+        let context = ToolContext::new(SessionId::new());
+        let call = call("typed_tool", json!({"value": "invalid"}));
+        let mut second = tool_error_result("invalid_tool_arguments");
+        hook.after_exec(
+            &call,
+            &tool_def("typed_tool"),
+            &mut tool_error_result("invalid_tool_arguments"),
+            &context,
+        )
+        .await;
+        hook.after_exec(&call, &tool_def("typed_tool"), &mut second, &context)
+            .await;
+        let message =
+            everruns_core::RuntimeMessage::tool_result("call", second.result, second.error);
+        let text = message.content_to_llm_string();
+        assert!(text.contains("repeated an equivalent unknown failure"));
+        assert!(text.contains("invalid_tool_arguments"));
     }
 
     #[test]

@@ -2627,7 +2627,12 @@ async fn run_print_mode(
                             _ = tokio::signal::ctrl_c() => Err(anyhow::anyhow!("background wait canceled")),
                             next = tokio::time::timeout_at(deadline, wait_for_print_background(
                                 &handles, task_registry.as_ref(), &mut background_wake,
-                            )) => next.context("background work is still pending after ten minutes").and_then(|next| next),
+                            )) => match next {
+                                Ok(next) => next,
+                                Err(_) => Err(print_background_deadline_error(
+                                    task_registry.as_ref(), handles.session_id,
+                                ).await),
+                            },
                         }
                     } else {
                         Err(anyhow::anyhow!(
@@ -2752,6 +2757,58 @@ async fn run_serve_mode(runtime: BuiltRuntime, release: Arc<tokio::sync::Notify>
 // The host waits without spending model turns polling. Wakes use the same
 // provenance and artifact mapping as interactive hosts; signal-disabled tasks
 // still become visible when their durable registry state turns terminal.
+fn pending_background_diagnostics(
+    tasks: &[everruns_core::SessionTask],
+    now: chrono::DateTime<chrono::Utc>,
+) -> String {
+    let pending: Vec<_> = tasks
+        .iter()
+        .filter(|task| {
+            session_state::task_completion::has_pending_execution(std::slice::from_ref(*task))
+        })
+        .collect();
+    if pending.is_empty() {
+        return "No queued or running execution tasks remain; the registry changed at the deadline.".to_string();
+    }
+    let mut lines = vec![format!(
+        "{} execution task(s) still pending:",
+        pending.len()
+    )];
+    for task in pending.iter().take(20) {
+        let id: String = task.id.chars().take(128).collect();
+        let kind: String = task.kind.chars().take(64).collect();
+        let owner = task
+            .worker_id
+            .as_ref()
+            .map(|owner| owner.chars().take(128).collect::<String>());
+        let heartbeat = task
+            .heartbeat_at
+            .map(|at| format!("{}s", now.signed_duration_since(at).num_seconds().max(0)))
+            .unwrap_or_else(|| "unknown".to_string());
+        lines.push(format!(
+            "- task={id:?} kind={kind:?} state={:?} attempt={} owner={:?} heartbeat_age={heartbeat} cancellation={}",
+            task.state, task.attempt, owner.as_deref().unwrap_or("unknown"),
+            if task.cancel_requested_at.is_some() { "requested" } else { "none" },
+        ));
+    }
+    if pending.len() > 20 {
+        lines.push(format!("... {} more pending tasks", pending.len() - 20));
+    }
+    lines.push("Inspect list_tasks/get_task. Live or unknown owners are not guessed dead, and no task is replayed automatically.".to_string());
+    lines.join("\n")
+}
+
+async fn print_background_deadline_error(
+    registry: &dyn everruns_core::SessionTaskRegistry,
+    session_id: SessionId,
+) -> anyhow::Error {
+    let diagnostics = match registry.list(session_id, None).await {
+        Ok(tasks) => pending_background_diagnostics(&tasks, chrono::Utc::now()),
+        Err(error) => format!("Unable to inspect the task registry: {error}"),
+    };
+    anyhow::anyhow!("background work is still pending after ten minutes\n{diagnostics}")
+}
+
 async fn wait_for_print_background(
     handles: &runtime::RuntimeHandles,
     registry: &dyn everruns_core::SessionTaskRegistry,
@@ -3560,5 +3617,41 @@ mod tests {
         .expect("resolve");
 
         assert_eq!(resolved, explicit.path());
+    }
+
+    #[tokio::test]
+    async fn pending_background_diagnostics_are_actionable_bounded_and_do_not_dump_specs() {
+        use everruns_core::SessionTaskRegistry;
+        let registry = everruns::local::LocalSessionTaskRegistry::new(
+            everruns::local::SqliteDb::open_in_memory().unwrap(),
+        )
+        .unwrap();
+        let mut task = registry
+            .create(everruns_core::CreateSessionTask {
+                session_id: SessionId::new(),
+                id: None,
+                kind: "background_tool".to_string(),
+                display_name: "watcher".to_string(),
+                spec: serde_json::json!({"token": "must-not-appear-in-diagnostics"}),
+                state: everruns_core::SessionTaskState::Running,
+                links: everruns_core::TaskLinks::default(),
+                wake_policy: everruns_core::TaskWakePolicy::OnTerminal,
+            })
+            .await
+            .unwrap();
+        let now = chrono::Utc::now();
+        task.worker_id = Some("known-owner".to_string());
+        task.heartbeat_at = Some(now - chrono::Duration::seconds(7));
+        task.cancel_requested_at = Some(now);
+        let text = pending_background_diagnostics(std::slice::from_ref(&task), now);
+        assert!(text.contains(&task.id));
+        assert!(text.contains("known-owner"));
+        assert!(text.contains("heartbeat_age=7s"));
+        assert!(text.contains("cancellation=requested"));
+        assert!(!text.contains("must-not-appear-in-diagnostics"));
+        let many = vec![task.clone(); 23];
+        assert!(pending_background_diagnostics(&many, now).contains("3 more pending tasks"));
+        task.state = everruns_core::SessionTaskState::Failed;
+        assert!(pending_background_diagnostics(&[task], now).starts_with("No queued or running"));
     }
 }

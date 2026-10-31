@@ -507,13 +507,13 @@ impl Tool for BashTool {
         }
         #[cfg(not(windows))]
         {
-            "Run a bash command. Every call starts a fresh non-interactive `bash -lc` \
+            "Run a bash command. Every call starts a fresh non-interactive `bash -e -o pipefail -lc` \
              already rooted at the workspace, so no state persists between calls: the \
              working directory, shell variables, and exports reset every time. A bare \
              `cd` is pointless, you are already at the workspace root; use paths relative \
              to it, or chain within one call (`cd sub && cmd`). The tool reports the shell \
-             process status, so unless the script handles an expected failure, structure \
-             it to return nonzero when a step fails. Captures stdout/stderr with \
+             process status. Errexit and pipefail stop unhandled failures, including \
+             failed pipeline producers, and return nonzero when a step fails; handle expected failures with if or ||. Captures stdout/stderr with \
              configurable verbosity. 120s timeout; run commands that wait on external \
              events (CI runs, deploys) detached via `spawn_background` instead."
         }
@@ -522,7 +522,7 @@ impl Tool for BashTool {
         #[cfg(windows)]
         let command_description = "Shell command to run via PowerShell.";
         #[cfg(not(windows))]
-        let command_description = "Shell command to run via bash -lc.";
+        let command_description = "Shell command to run via bash with errexit and pipefail. Handle expected nonzero exits explicitly with if, ||, or by capturing status.";
         json!({
             "type": "object",
             "properties": {
@@ -773,7 +773,7 @@ mod tests {
         let description = tool.description();
 
         for guarantee in [
-            "fresh non-interactive `bash -lc`",
+            "fresh non-interactive `bash -e -o pipefail -lc`",
             "working directory, shell variables, and exports reset every time",
             "chain within one call (`cd sub && cmd`)",
             "tool reports the shell process status",
@@ -1390,6 +1390,40 @@ mod tests {
             .map(|(_, chunk)| chunk.as_str())
             .collect();
         assert_eq!(streamed_stdout, "12345");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn bash_pipeline_preserves_the_producer_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let tool = BashTool::new(Workspace::from_path(dir.path().to_path_buf()));
+        let result = tool
+            .execute(json!({"command": "printf diagnostic >&2; false | tee proof.log"}))
+            .await;
+        let ToolExecutionResult::Success(value) = result else {
+            panic!("{result:?}");
+        };
+        assert_eq!(value["success"], false);
+        assert_eq!(value["exit_code"], 1);
+        assert!(value["stderr"].as_str().unwrap().contains("diagnostic"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn bash_stops_on_unhandled_failure_and_allows_explicit_negative_checks() {
+        let dir = tempfile::tempdir().unwrap();
+        let tool = BashTool::new(Workspace::from_path(dir.path().to_path_buf()));
+        for (script, success) in [
+            ("false; printf falsely-green", false),
+            ("if false; then exit 1; fi; printf expected-negative", true),
+        ] {
+            let result = tool.execute(json!({"command": script})).await;
+            let ToolExecutionResult::Success(value) = result else {
+                panic!("{result:?}");
+            };
+            assert_eq!(value["success"], success, "{script}");
+            assert!(!value["stdout"].as_str().unwrap().contains("falsely-green"));
+        }
     }
 
     #[tokio::test]

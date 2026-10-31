@@ -557,8 +557,12 @@ async fn print_waits_for_failed_background_work_and_continues_with_or_without_si
         let config = LlmSimConfig::scripted(vec![
             SimTurn::ToolCalls(vec![SimToolCall {
                 name: "spawn_background".into(),
-                arguments: json!({"tool":"bash", "args":{"command":"sleep 0.3; printf FAILED_VALIDATION; exit 101"}, "title":"validate", "signal_on_completion":signal}),
+                arguments: json!({"tool":"bash", "args":{"command":"printf FAILED_VALIDATION; exit 101"}, "title":"validate", "signal_on_completion":signal}),
                 id: None,
+            }]),
+            // Let the detached failure settle before the first candidate final.
+            SimTurn::ToolCalls(vec![SimToolCall {
+                name: "bash".into(), arguments: json!({"command":"sleep 0.2"}), id: None,
             }]),
             SimTurn::Assistant("Validation is running. I will finish the repair afterward.".into()),
             SimTurn::ToolCalls(vec![SimToolCall {
@@ -591,22 +595,55 @@ async fn print_waits_for_failed_background_work_and_continues_with_or_without_si
         let requests = captured.lock().unwrap();
         assert_eq!(
             requests.len(),
-            5,
+            6,
             "background waiting must not spend model calls polling"
         );
         assert!(
-            requests[2]
+            requests[3]
                 .iter()
                 .any(|message| message.content_as_text().contains("ORIGINAL_PRINT_TASK"))
         );
         if signal {
             assert!(
-                requests[2]
+                requests[3]
                     .iter()
                     .any(|message| message.content_as_text().contains("FAILED_VALIDATION"))
             );
         }
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn print_does_not_rehandoff_a_terminal_result_already_read_by_foreground() {
+    let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let config = LlmSimConfig::scripted(vec![
+        SimTurn::ToolCalls(vec![SimToolCall {
+            name: "spawn_background".into(),
+            arguments: json!({"tool":"bash","args":{"command":"printf verified"},"title":"validate","signal_on_completion":true}),
+            id: None,
+        }]),
+        SimTurn::ToolCalls(vec![SimToolCall {
+            name: "bash".into(), arguments: json!({"command":"sleep 0.2"}), id: None,
+        }]),
+        SimTurn::ToolCalls(vec![SimToolCall {
+            name: "list_tasks".into(), arguments: json!({}), id: None,
+        }]),
+        SimTurn::Assistant("Verified the completed task.".into()),
+        SimTurn::Assistant(r#"{"state":"achieved","reason":"verified"}"#.into()),
+    ]).with_on_exhausted(OnExhausted::Error).with_message_capture(captured.clone());
+    let (runtime, _workspace) = build_scripted_runtime(config).await;
+    tokio::time::timeout(
+        TURN_TIMEOUT,
+        crate::run_print_mode(runtime, "Verify this work.".into(), vec![], None),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        captured.lock().unwrap().len(),
+        5,
+        "an observed terminal result must not trigger another model turn"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -811,4 +848,69 @@ async fn print_reviews_monitors_and_input_requests_without_waiting_for_execution
             "candidate must be reviewed"
         );
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn failed_shell_outcome_is_a_failed_runtime_event_with_diagnostics() {
+    use everruns_core::EventData;
+    let (runtime, _) = build_scripted_runtime(LlmSimConfig::scripted(vec![
+        SimTurn::ToolCalls(vec![SimToolCall {
+            name: "bash".into(),
+            arguments: json!({"command": "printf producer-diagnostic >&2; exit 7"}),
+            id: None,
+        }]),
+        SimTurn::Assistant("Recorded the expected command failure.".into()),
+    ]))
+    .await;
+    run_single_turn(
+        &runtime,
+        "Run the negative shell check and report its failure.",
+    )
+    .await;
+    let events = runtime.handles.host.events().await.unwrap();
+    let completed = events
+        .iter()
+        .find_map(|event| match &event.data {
+            EventData::ToolCompleted(data) if data.tool_name == "bash" => Some(data),
+            _ => None,
+        })
+        .expect("shell completion event");
+    assert!(
+        !completed.success,
+        "a nonzero command must not be recorded as success"
+    );
+    assert!(
+        completed
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("producer-diagnostic")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn billing_failure_stops_without_retrying_the_unchanged_request() {
+    use everruns_core::EventData;
+    let (runtime, _) = build_scripted_runtime(
+        LlmSimConfig::scripted(vec![
+            SimTurn::Error(SimError::QuotaExhausted),
+            SimTurn::Assistant("UNEXPECTED_BILLING_RETRY".into()),
+        ])
+        .with_on_exhausted(OnExhausted::Error),
+    )
+    .await;
+    let result = run_single_turn(&runtime, "Run the billing failure check.").await;
+    assert!(!result.success);
+    let events = runtime.handles.host.events().await.unwrap();
+    let failures = events
+        .iter()
+        .filter(|event| {
+            matches!(&event.data,
+        EventData::ReasonCompleted(data) if !data.success)
+        })
+        .count();
+    assert_eq!(failures, 1);
+    let text = serde_json::to_string(&events).unwrap();
+    assert!(text.contains("provider_quota_exhausted"));
+    assert!(!text.contains("UNEXPECTED_BILLING_RETRY"));
 }
