@@ -627,8 +627,14 @@ impl everruns_core::tool_hooks::PostToolExecHook for ShellOutcomeHook {
             value["exit_code"].as_i64().unwrap_or(-1) as i32,
             "concise",
         );
-        diagnostic["stdout"] = json!(payload.stdout);
-        diagnostic["stderr"] = json!(payload.stderr);
+        // A persisted JSON envelope has preview/artifact references rather
+        // than stream fields. Preserve it without inventing empty streams.
+        if value.get("stdout").is_some() {
+            diagnostic["stdout"] = json!(payload.stdout);
+        }
+        if value.get("stderr").is_some() {
+            diagnostic["stderr"] = json!(payload.stderr);
+        }
         result.error = Some(format!(
             "Shell command failed. Diagnostic result: {diagnostic}"
         ));

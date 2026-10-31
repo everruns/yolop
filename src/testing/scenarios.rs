@@ -856,7 +856,7 @@ async fn failed_shell_outcome_is_a_failed_runtime_event_with_diagnostics() {
     let (runtime, _) = build_scripted_runtime(LlmSimConfig::scripted(vec![
         SimTurn::ToolCalls(vec![SimToolCall {
             name: "bash".into(),
-            arguments: json!({"command": "printf producer-diagnostic >&2; exit 7"}),
+            arguments: json!({"command": format!("printf producer-diagnostic >&2; exit 7 # {}", "x".repeat(32 * 1024))}),
             id: None,
         }]),
         SimTurn::Assistant("Recorded the expected command failure.".into()),
@@ -885,6 +885,31 @@ async fn failed_shell_outcome_is_a_failed_runtime_event_with_diagnostics() {
             .as_deref()
             .unwrap_or_default()
             .contains("producer-diagnostic")
+    );
+    let diagnostic: serde_json::Value = serde_json::from_str(
+        completed
+            .error
+            .as_ref()
+            .unwrap()
+            .split_once("Diagnostic result: ")
+            .expect("shell diagnostic")
+            .1,
+    )
+    .expect("diagnostic JSON");
+    assert_eq!(diagnostic["exit_code"], 7);
+    assert_eq!(diagnostic["stderr"], "producer-diagnostic");
+    assert_eq!(diagnostic["command_truncated"], true);
+    assert!(diagnostic["command"].as_str().unwrap().len() <= 512);
+    assert!(
+        events.iter().any(|event| matches!(&event.data,
+            EventData::ToolStarted(data) if data.tool_call.name == "bash"
+                && data.tool_call.arguments["command"].as_str().unwrap().len() > 32 * 1024
+        )),
+        "result previews must not rewrite approved command arguments"
+    );
+    assert!(
+        completed.error.as_ref().unwrap().len() < 8 * 1024,
+        "command text must not crowd the failure evidence out of the provider result"
     );
 }
 

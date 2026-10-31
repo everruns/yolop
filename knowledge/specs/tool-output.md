@@ -38,6 +38,8 @@ Unix shell calls enable errexit and pipefail, so an unhandled failed step or
 pipeline producer cannot be hidden by later successful output. Expected negative
 checks handle their status explicitly. A failed shell outcome is recorded as a
 failed tool event while retaining structured diagnostics and persisted output.
+Shell result command previews are bounded and mark truncation; the canonical
+call and background task specification retain the complete approved command.
 
 Shell timeouts retain the stdout and stderr collected before the deadline,
 `success: false`, and `timed_out: true`. On Unix, timeout, output-limit

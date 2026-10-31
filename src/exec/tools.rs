@@ -47,6 +47,14 @@ impl Workspace {
     }
 }
 
+// Full command arguments remain in the canonical call and background spec.
+// Repeating them here can force JSON persistence to hide small stderr evidence.
+const COMMAND_RESULT_PREVIEW_BYTES: usize = 512;
+
+fn command_result_preview(command: &str) -> &str {
+    &command[..command.floor_char_boundary(COMMAND_RESULT_PREVIEW_BYTES)]
+}
+
 pub struct BashTool {
     ws: Workspace,
     sandbox: Arc<dyn SandboxProvider>,
@@ -581,7 +589,8 @@ impl Tool for BashTool {
         } = payload;
 
         let mut result = json!({
-            "command": command,
+            "command": command_result_preview(&command),
+            "command_truncated": command.len() > COMMAND_RESULT_PREVIEW_BYTES,
             "exit_code": exit_code,
             "success": success,
             "timed_out": output.timed_out,
@@ -662,7 +671,8 @@ impl BackgroundExecutableTool for BashTool {
             })
             .await;
         let result = json!({
-            "command": command,
+            "command": command_result_preview(&command),
+            "command_truncated": command.len() > COMMAND_RESULT_PREVIEW_BYTES,
             "exit_code": exit_code,
             "success": success,
             "timed_out": output.timed_out,
