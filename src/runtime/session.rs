@@ -531,7 +531,19 @@ pub(crate) fn turn_failure_hints(error: &str, current_effort: Option<&str>) -> V
 /// the way out the same way the driver does: sign in again from setup, or
 /// switch to a provider whose credential is healthy.
 fn codex_auth_error_hint(error: &str) -> Option<String> {
-    if error.contains("Codex login is no longer valid")
+    if error.contains("rejected_by_access_enforcement")
+        && error.contains("no_matching_rule")
+        && error.contains("provider 'openai-codex'")
+    {
+        // Valid token, wrong login route for this model: the plan login cannot
+        // call Codex-only models and vice versa.
+        Some(
+            "This Codex login cannot call that model (access enforcement rejected it): \
+            re-login with `yolop setup login codex --device` for Codex OAuth, \
+            or switch to a model your current login can call."
+                .to_string(),
+        )
+    } else if error.contains("Codex login is no longer valid")
         || error.contains("Codex provider requires a saved OAuth access token")
         || error.contains("Codex access was denied")
     {
@@ -1201,6 +1213,38 @@ mod tests {
         assert!(
             lines[0].text.contains("Codex") && lines[0].text.contains("`/setup`"),
             "the hint names Codex and the setup control: {}",
+            lines[0].text
+        );
+        assert!(lines[1].text.starts_with("turn error: "));
+    }
+
+    /// A valid token on the wrong login route: access enforcement rejects the
+    /// model, so the transcript must name the route fix, not a generic apology.
+    #[test]
+    fn a_codex_access_enforcement_rejection_names_the_login_route() {
+        let error = "LLM error: provider 'openai-codex': OpenAI Responses API error \
+            (401 Unauthorized): {\"error\":{\"message\":\"Unauthorized\",\"type\":\"rejected_by_access_enforcement\",\"code\":\"no_matching_rule\"}} \
+            model 'gpt-6.1-sol'";
+
+        let lines = failed_turn_transcript(
+            vec![ChatLine {
+                author: Author::Assistant,
+                text: "There is a misconfiguration with the AI provider. Please contact \
+                    support."
+                    .into(),
+            }],
+            error,
+            None,
+        );
+
+        assert_eq!(
+            lines.len(),
+            2,
+            "the apology is replaced by the way out: {lines:?}"
+        );
+        assert!(
+            lines[0].text.contains("--device") && lines[0].text.contains("Codex"),
+            "the hint names the Codex login route: {}",
             lines[0].text
         );
         assert!(lines[1].text.starts_with("turn error: "));

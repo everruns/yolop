@@ -78,6 +78,11 @@ setting (`codex` or `open-source`, global-only), then `open-source`. An unknown 
 is an error naming its source. The route is recorded on the login it produces,
 so changing the setting affects only the next sign-in, like the client ID.
 
+Re-authentication with no explicit route override keeps the existing login's
+route: a saved Codex OAuth login re-authenticates through Codex OAuth rather
+than silently moving to the open-source default (whose token cannot call
+Codex-only models).
+
 ### Sign-in
 
 1. **Host ID.** On first use Yolop generates `ext_agent_host_id` as a
