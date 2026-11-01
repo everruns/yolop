@@ -2638,8 +2638,19 @@ fn normalized_command(command: &str) -> String {
     command.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+// A failed shell command is recorded with `success: false` and the structured
+// payload folded into `error` as `Shell command failed. Diagnostic result: {json}`.
+// Recover that payload so exit codes and commands still reach the metrics.
+fn failed_shell_diagnostic(data: &Value) -> Option<Value> {
+    let error = data.get("error")?.as_str()?;
+    let (_, json) = error.split_once("Diagnostic result: ")?;
+    serde_json::from_str(json).ok()
+}
+
 fn tool_result_value(data: &Value) -> Option<Value> {
-    let result = data.get("result")?;
+    let Some(result) = data.get("result").filter(|result| !result.is_null()) else {
+        return failed_shell_diagnostic(data);
+    };
     if let Some(items) = result.as_array() {
         for item in items {
             if item.get("type").and_then(Value::as_str) != Some("text") {
@@ -4441,6 +4452,17 @@ mod tests {
         let m = parse_events(jsonl);
         assert_eq!(m.sessions_search_calls, 1);
         assert_eq!(m.sessions_search_first_exploration, 1);
+    }
+
+    #[test]
+    fn failed_shell_event_keeps_command_and_exit_code_from_error_text() {
+        let jsonl = r#"
+{"type":"tool.completed","data":{"tool_name":"bash","success":false,"error":"Shell command failed. Diagnostic result: {\"command\":\"cargo test\",\"exit_code\":101,\"success\":false,\"stdout\":\"\"}"}}
+"#;
+        let m = parse_events(jsonl);
+        assert_eq!(m.validation_tool_calls, 1);
+        assert_eq!(m.inner_tool_failures, 1);
+        assert_eq!(m.tool_calls_failed, 1);
     }
 
     #[test]
