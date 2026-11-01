@@ -2644,7 +2644,11 @@ fn normalized_command(command: &str) -> String {
 fn failed_shell_diagnostic(data: &Value) -> Option<Value> {
     let error = data.get("error")?.as_str()?;
     let (_, json) = error.split_once("Diagnostic result: ")?;
-    serde_json::from_str(json).ok()
+    // Some producers append prose after the JSON, so read only the first value.
+    serde_json::Deserializer::from_str(json)
+        .into_iter::<Value>()
+        .next()?
+        .ok()
 }
 
 fn tool_result_value(data: &Value) -> Option<Value> {
@@ -4463,6 +4467,13 @@ mod tests {
         assert_eq!(m.validation_tool_calls, 1);
         assert_eq!(m.inner_tool_failures, 1);
         assert_eq!(m.tool_calls_failed, 1);
+
+        let suffixed = r#"
+{"type":"tool.completed","data":{"tool_name":"bash","success":false,"error":"Bash command exited. Diagnostic result: {\"command\":\"cargo test\",\"exit_code\":101,\"success\":false}. Complete output is in the task output.log artifact."}}
+"#;
+        let m = parse_events(suffixed);
+        assert_eq!(m.validation_tool_calls, 1);
+        assert_eq!(m.inner_tool_failures, 1);
     }
 
     #[test]
