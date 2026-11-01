@@ -6947,7 +6947,10 @@ mod tests {
                 // Must cover a full stall window after the first failure; the
                 // upstream default of 30s is fine for wall-clock rate limits
                 // but too short once the stall watchdog uses the same budget.
-                max_retry_elapsed: Duration::from_millis(500),
+                // The budget is wall-clock, so leave a loaded CI runner ample
+                // headroom: 500ms flaked with "retry time budget exhausted".
+                // A recovered turn finishes in well under a second either way.
+                max_retry_elapsed: Duration::from_secs(10),
             }),
             ..BuildOptions::default()
         };
