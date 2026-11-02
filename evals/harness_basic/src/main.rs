@@ -2875,7 +2875,8 @@ fn classify_tool(data: &Value) -> ToolKind {
         .and_then(Value::as_str)
         .unwrap_or("unknown");
     match name {
-        "read_file" | "grep_files" | "repo_map" | "ast_grep" | "rg" | "list_directory" | "stat_file" => {
+        "read_file" | "grep_files" | "repo_map" | "ast_grep" | "rg" | "list_directory"
+        | "stat_file" => {
             return ToolKind::Exploration;
         }
         "write_file" | "edit_file" | "delete_file" | "ast_edit" | "apply_patch" | "edit" => {
@@ -3313,10 +3314,16 @@ fn parse_events(jsonl: &str) -> Mined {
                 }) {
                     m.equivalent_failure_warnings += 1;
                 }
-                if data
-                    .get("error")
-                    .and_then(Value::as_str)
-                    .is_some_and(|error| error.contains("equivalent") && error.contains("failure"))
+                // A real block never ran the command, so its error carries no shell
+                // diagnostic. A failed run's error embeds the payload (and the
+                // warning inside it), which is a warning, not a block.
+                if failed_shell_diagnostic(&data).is_none()
+                    && data
+                        .get("error")
+                        .and_then(Value::as_str)
+                        .is_some_and(|error| {
+                            error.contains("equivalent") && error.contains("failure")
+                        })
                 {
                     m.blocked_equivalent_failures += 1;
                 }
@@ -3347,16 +3354,13 @@ fn parse_events(jsonl: &str) -> Mined {
                         // Sessions-first means no repo exploration before the
                         // first `sessions search`. A standalone `sessions --help`
                         // before the search still counts (nightly #230).
-                        if !saw_non_sessions_exploration
-                            && is_sessions_search_call(name, &data)
-                        {
+                        if !saw_non_sessions_exploration && is_sessions_search_call(name, &data) {
                             m.sessions_search_first_exploration = 1;
                         }
                         // Sessions shapes (`yolop sessions ...`) never block a
                         // later search; only repo exploration does.
                         let is_sessions_shape = name == "bash"
-                            && normalized_command(&tool_command(&data))
-                                .contains("yolop sessions");
+                            && normalized_command(&tool_command(&data)).contains("yolop sessions");
                         if !is_sessions_shape {
                             saw_non_sessions_exploration = true;
                         }
@@ -4553,6 +4557,16 @@ mod tests {
         assert_eq!(mined.blocked_equivalent_failures, 1);
         assert_eq!(mined.calls_after_progress_warning, 2);
         assert_eq!(mined.tool_calls_failed, 3);
+    }
+
+    #[test]
+    fn failed_shell_run_with_equivalent_warning_is_not_a_block() {
+        let jsonl = r#"
+{"type":"tool.completed","data":{"tool_name":"bash","success":false,"error":"Shell command failed. Diagnostic result: {\"command\":\"python3 p.py\",\"exit_code\":2,\"success\":false,\"progress_guard_warning\":\"progress_guard: repeated an equivalent failure\"}"}}
+"#;
+        let mined = parse_events(jsonl);
+        assert_eq!(mined.equivalent_failure_warnings, 1);
+        assert_eq!(mined.blocked_equivalent_failures, 0);
     }
 
     #[test]
