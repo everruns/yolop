@@ -80,7 +80,10 @@ was validated, notable risks — using
 [`.github/pull_request_template.md`](../../../.github/pull_request_template.md).
 
 Attach a Before / After with proof a reviewer can check — CLI output or a terminal
-recording (asciinema/VHS) of the agent run, and screenshots for any TUI change.
+recording (asciinema/VHS) of the agent run, and screenshots for any TUI change. Make
+screenshots 2x and lossless; the landing
+[sharp-screenshots skill](https://github.com/everruns/landing/blob/main/.claude/skills/sharp-screenshots/SKILL.md) covers
+terminal captures and why remote captures come out blurry.
 State explicitly when a change has no observable behavior.
 Two sections are never omitted: **Security** (above) and **Follow-ups**
 (everything deferred, one line of rationale each, or "No follow-ups."). Default
