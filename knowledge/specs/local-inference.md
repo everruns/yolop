@@ -148,7 +148,11 @@ is compiled out. Such a build reports the provider unusable so it stays out of
 automatic provider fallback, and fails loudly if selected explicitly, rather
 than silently disappearing from the picker.
 
-## Acceleration
+## Acceleration (suspended with the engine)
+
+While the engine is suspended for security, `metal`/`cuda` are resolving
+aliases with no acceleration and no working engine; the rest of this section
+describes the linked engine and applies again when it returns.
 
 The engine runs on **CPU** unless a GPU backend is compiled in, and the
 difference is not a detail: an 8B model on CPU is slow enough to read as "local
