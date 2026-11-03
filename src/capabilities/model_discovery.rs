@@ -404,13 +404,12 @@ async fn list_openai_compatible_models(
 pub(crate) fn provider_is_usable(settings: &Settings, provider: &str) -> bool {
     match provider {
         "llmsim" => true,
-        // A compiled-in engine is necessary but not sufficient: without the
-        // weights on disk the first turn fails with "not downloaded". Usable
-        // therefore means the engine is linked *and* the model this provider
-        // would resolve to is already pulled — otherwise automatic fallback
-        // (notably ACP's, which must land on something that answers) would
-        // install a provider guaranteed to error.
-        "local" => cfg!(feature = "local-inference") && local_model_is_installed(settings),
+        // Suspended for security (see src/drivers/local.rs): the driver always
+        // errors, so no weights state makes the provider usable. Reporting
+        // false keeps automatic fallback (notably ACP's, which must land on
+        // something that answers) from installing a guaranteed-error provider.
+        // Restore the weights gate when the engine returns.
+        "local" => false,
         "ollama" => provider_env_present("ollama") || settings.has_token("ollama"),
         "custom" => crate::runtime::custom_base_url(settings).is_some(),
         "codex" => provider_env_present("codex") || settings.has_codex_auth(),
@@ -429,9 +428,12 @@ pub(crate) fn any_provider_connected(settings: &Settings) -> bool {
 
 /// Whether the `local` spec this workspace would actually run is downloaded.
 ///
-/// Resolves through the same path the runtime uses, so a saved `[models].local`
-/// or an `EVERRUNS_CLI_MODEL` override is judged rather than the compiled-in
-/// default.
+/// Unused while the engine is suspended (`provider_is_usable` reports false
+/// unconditionally). Kept so restoring the engine is a one-line change in
+/// `provider_is_usable`. Resolves through the same path the runtime uses, so
+/// a saved `[models].local` or an `EVERRUNS_CLI_MODEL` override is judged
+/// rather than the compiled-in default.
+#[allow(dead_code)]
 fn local_model_is_installed(settings: &Settings) -> bool {
     crate::runtime::resolve_for_settings("local", settings)
         .is_ok_and(|resolved| crate::models::is_installed(resolved.choice.model_id()))
@@ -511,30 +513,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn local_is_unusable_until_its_weights_are_downloaded() {
+    fn local_is_unusable_while_the_engine_is_suspended() {
         // Regression guard: `local` was reported usable whenever the engine was
         // compiled in, which put it ahead of `llmsim` in ACP's automatic
-        // fallback and handed the session a provider whose first turn fails
-        // with "not downloaded". CI caught it only because `--all-features`
-        // turns the engine on.
-        //
-        // The store lives in the platform data dir, so this asserts the
-        // no-weights case, which is the one that misroutes fallback. A machine
-        // that happens to have the default model pulled is the genuine
-        // usable case, so it is excluded rather than mocked.
+        // fallback and handed the session a provider whose first turn fails.
+        // While the engine is suspended for security, the driver always
+        // errors, so `local` must never be offered for fallback, weights or
+        // no weights.
         let settings = Settings::default();
-        if crate::models::is_installed(
-            crate::runtime::resolve_for_settings("local", &settings)
-                .expect("local resolves")
-                .choice
-                .model_id(),
-        ) {
-            eprintln!("skipping: the default local model is pulled on this machine");
-            return;
-        }
         assert!(
             !provider_is_usable(&settings, "local"),
-            "local must not be offered for fallback with no weights on disk"
+            "local must not be offered for fallback while its driver is disabled"
         );
     }
 

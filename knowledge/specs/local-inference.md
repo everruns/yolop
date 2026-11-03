@@ -69,7 +69,9 @@ and the `metal`/`cuda` features as resolving aliases with no acceleration.
 
 Cold release builds (the shipped profile), separate target directories, no
 cache, 4-core container. Crate counts come from diffing a `mistralrs`-only
-probe lockfile against this one.
+probe lockfile against this one. While the engine is suspended for security,
+the `local-inference` delta is near zero (`hf-hub` only); the rows below
+describe the linked engine.
 
 | | Default | `--features local-inference` | Delta |
 |---|---|---|---|
@@ -79,19 +81,20 @@ probe lockfile against this one.
 | Release tarball (`.tar.gz`) | 27.8 MiB | not measured | — |
 | Native-toolchain deps | none | none | — |
 
-Debug builds pay a separate, larger price. `mistralrs-core` alone links an
-844 MiB debug rlib, and because a feature set defines a whole graph, a `target/`
-holding both the routine set and `--all-features` compiled 248 crates twice and
-reached 16 GB.
+With the engine linked, debug builds paid a separate, larger price.
+`mistralrs-core` alone linked an 844 MiB debug rlib, and because a feature set
+defines a whole graph, a `target/` holding both the routine set and
+`--all-features` compiled 248 crates twice and reached 16 GB. Suspended, the
+feature adds only `hf-hub`.
 
 So the routine commands stay on `--features yolop-yep/schema`, which resolves to
-the same 519 crates as a default build, and the engine gets one job of its own
-with its own cache ([`ci.yml`](../../.github/workflows/ci.yml)). That job both
-lints and tests: ten tests are behind the feature (the driver's tool-call
-conversion, the downloader's progress accounting), and they are invisible to the
-coverage job because it never enables the feature. Running them there is nearly
-free, since linting `--all-targets` has already compiled them. Locally, use a
-separate `CARGO_TARGET_DIR` when you need the engine compiled.
+the same crates as a default build, and the gated tests get one job of their
+own with its own cache ([`ci.yml`](../../.github/workflows/ci.yml)). That job
+both lints and tests: the tests behind the feature (currently the disabled
+driver plus the downloader's progress accounting) are invisible to the
+coverage job because it never enables the feature. Running them there is
+nearly free, since linting `--all-targets` has already compiled them. The
+historical engine cost above applies when the engine returns.
 
 These rows predate the size-optimized release profile (fat LTO at
 `opt-level = "s"`). On the same container that profile took a default binary
@@ -129,8 +132,8 @@ per target rather than picking one:
 | Asset                              | Features                    | For                              |
 |------------------------------------|-----------------------------|----------------------------------|
 | `yolop-<target>.tar.gz`            | default, no engine          | everyone; what Homebrew installs |
-| `yolop-<target>-metal.tar.gz`      | `metal` (macOS)             | local models on an Apple GPU     |
-| `yolop-<target>-cuda.tar.gz`       | `cuda` (Linux x86_64)       | local models on an NVIDIA GPU    |
+| `yolop-<target>-metal.tar.gz`      | `metal` (macOS; currently an alias for `local-inference`) | no engine while suspended; downloads only |
+| `yolop-<target>-cuda.tar.gz`       | `cuda` (Linux x86_64; currently an alias for `local-inference`) | no engine while suspended; downloads only |
 
 The default asset is the portable one because it is the only build that runs
 wherever the target does. An accelerated build carries a runtime requirement
