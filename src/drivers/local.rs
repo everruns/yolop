@@ -42,3 +42,18 @@ impl ChatDriver for LocalChatDriver {
         Err(disabled())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn local_driver_reports_temporary_disablement() {
+        let err = disabled();
+        assert_eq!(err.llm_error_kind(), Some(LlmErrorKind::Unavailable));
+        assert!(
+            err.to_string().contains("temporarily disabled"),
+            "unexpected message: {err}"
+        );
+    }
+}

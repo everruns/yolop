@@ -22,9 +22,9 @@ path as any hosted endpoint, aimed at loopback. Everything that makes local
 models awkward lives outside yolop: a second program to install, a daemon to
 keep running, and a model store yolop cannot see.
 
-The `local` provider removes that program. The inference engine
-([`mistralrs`](https://crates.io/crates/mistralrs)) is linked into the binary
-and answers requests in-process, with no socket in between.
+The `local` provider removed that program (suspended). The inference engine
+([`mistralrs`](https://crates.io/crates/mistralrs)) was linked into the
+binary and answered requests in-process, with no socket in between.
 
 What it does *not* remove is the download. Weights are gigabytes and cannot ride
 in a crate, so first use fetches them from Hugging Face. The honest framing is
@@ -44,27 +44,26 @@ provider exists to answer that question with evidence rather than argument.
   emit tool calls as JSON inside `<tool_call>`. Both are hard constraints, not
   preferences. A safetensors default means downloading full-precision weights to
   quantize them locally, several times the bytes for the same result. The
-  template shape is narrower still: mistralrs 0.8.1 strips the `<tool_call>`
-  wrapper and JSON-parses what is inside, so a model whose template emits the
-  `<function=…><parameter=…>` XML variant, Qwen3-Coder among them, produces tool
-  calls that never parse. A local model that cannot call tools cannot drive the
-  agent loop, so this disqualifies a model no matter how well it codes.
+  template shape is narrower still: mistralrs 0.8.1 stripped the `<tool_call>`
+  wrapper and JSON-parsed what was inside, so a model whose template emitted the
+  `<function=…><parameter=…>` XML variant, Qwen3-Coder among them, produced tool
+  calls that never parsed. A local model that cannot call tools cannot drive the
+  agent loop, so this disqualified a model no matter how well it coded.
 - No base URL and no credential: `Provider::Local` carries neither, because
   there is no endpoint to address and nothing to authenticate against.
 - Reasoning effort is rejected rather than ignored. A repo id is not an entry in
   a model-profile catalog, so there is no effort configuration to resolve an
   explicit request against.
-- Engines are loaded once and never evicted. A loaded engine is process-lifetime
-  by design, which is why the cache holds `&'static Model`: the engine's
-  streaming handle borrows the model, and an `Arc` would make every response
-  stream self-referential.
+- Engines were loaded once and never evicted (suspended). A loaded engine was
+  process-lifetime by design, which is why the cache held `&'static Model`:
+  the engine's streaming handle borrowed the model, and an `Arc` would have
+  made every response stream self-referential.
 
 ## Feature gate and distribution
 
-The engine dominates build time. The gate exists for that reason alone. It is
-*not* about toolchains (the default engine features are pure Rust, so an enabled
-build still needs no C/C++ compiler) and not about crates.io publishability (an
-optional dependency publishes fine).
+The engine dominated build time, so the gate existed for that reason. While the
+engine is suspended, the gate keeps `hf-hub` downloads behind `local-inference`
+and the `metal`/`cuda` features as resolving aliases with no acceleration.
 
 ### Measured cost
 
