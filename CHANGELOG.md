@@ -10,6 +10,51 @@ mechanical `### What's Changed` list of merged PRs.
 Releases are cut via [`/release`](./.agents/skills/release/SKILL.md), which
 tags the version and publishes to crates.io and the Homebrew tap.
 
+## [0.23.0] - 2026-11-03
+
+### Highlights
+
+- Runtime execution moved to the native Engine, including session import and session APIs throughout.
+- Session-start hooks now fire at startup, with a built-in rex handshake.
+- Setup gains a logout command that cleans up per environment.
+- MCP negotiates hosted OAuth client metadata.
+- Credit exhaustion errors are readable, with a background credit watcher.
+
+### What's Changed
+
+- Point TUI screenshots to the sharp-screenshots skill by @chaliy in #908
+- Do not count a failed shell run's warning as a block by @chaliy in #907
+- Read failed shell diagnostics from the tool error text by @chaliy in #906
+- Give the stream-stall recovery test wall-clock headroom by @chaliy in #905
+- Give the no-execution-wait scenario the turn timeout by @chaliy in #904
+- Move the Everruns family to published 0.50.1 by @chaliy in #903
+- Preserve session failure evidence by @chaliy in #902
+- Preserve login route on reauth and name it in access errors by @chaliy in #901
+- Tolerate wrapped and split sessions-search shapes by @chaliy in #900
+- Discount cache reads in continuation token budget by @chaliy in #899
+- Preserve settings edits after session responses by @chaliy in #898
+- Bump the cargo-minor-and-patch group across 1 directory with 10 updates in #897
+- Readable exhaustion error with background credit watcher by @chaliy in #896
+- Publish admission fixture atomically by @chaliy in #895
+- Add opt-in report-only artifact inspection by @chaliy in #894
+- Negotiate hosted OAuth client metadata by @chaliy in #893
+- Simplify reader-facing prose and comments by @chaliy in #892
+- Bump vt100 to 0.18 by @chaliy in #891
+- Count a chained sessions --help and search as sessions-first by @chaliy in #890
+- Add logout command with env-aware cleanup by @chaliy in #889
+- Bump everruns-core from `2206d44` to `3aebdee` in the cargo group in #882
+- Bump jsonschema from 0.59.0 to 0.60.2 in #881
+- Gate control tokens and cost on the cheapest trial by @chaliy in #878
+- Re-pin search-efficiency baseline to Everruns 0.49 main by @chaliy in #877
+- Use native Engine session APIs throughout by @chaliy in #876
+- Accept positional query in sessions search by @chaliy in #875
+- Upgrade everruns 0.48 to 0.49 by @chaliy in #874
+- Correct v0.22.0 changelog entries by @chaliy in #872
+- Adopt native Engine execution and session import by @chaliy in #871
+- Fire session-start hooks at startup; add built-in rex handshake by @chaliy in #869
+
+**Full Changelog**: https://github.com/everruns/yolop/compare/v0.22.0...v0.23.0
+
 ## [0.22.0] - 2026-10-25
 
 ### Highlights
