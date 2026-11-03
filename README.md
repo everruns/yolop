@@ -244,7 +244,7 @@ Invalid explicit selections fail without substituting another model.
 
 **Custom.** Point any OpenAI compatible endpoint at yolop via `CUSTOM_BASE_URL` (plus `CUSTOM_API_KEY` when needed), or store it in a profile. The model comes from your profile pick, falling back to the provider default.
 
-**Local.** `--provider local` runs inference on your machine: no key, no network. `yolop weights pull` fetches the default Qwen3-30B-A3B (Q4, about 19 GB); `yolop weights pull qwen3-8b` grabs the 5 GB alternative. There is no CPU-only download. Prefer the accelerated release binaries: `metal` on macOS, `cuda` on Linux.
+**Local (temporarily disabled for security).** `--provider local` currently fails with a disabled message: the mistralrs engine depended on zip 7.2.0 with unfixed advisories, with no fixed upstream release yet. `yolop weights pull` still downloads, but inference stays off until mistralrs ships candle-core 0.11.1+ / zip 9.0.5+.
 
 </details>
 

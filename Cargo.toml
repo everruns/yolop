@@ -30,7 +30,7 @@ default = []
 # `cargo install yolop` and the contributor `cargo check` loop. The shipped
 # artifacts turn it on instead — see .github/workflows/cli-binaries.yml, which
 # builds the release binaries (and therefore the Homebrew formula) with it.
-local-inference = ["dep:mistralrs", "dep:hf-hub"]
+local-inference = ["dep:hf-hub"]
 
 # GPU acceleration for `local-inference`. The engine runs on CPU unless one of
 # these is on, and an 8B model on CPU is slow enough to read as "local models
@@ -46,8 +46,8 @@ local-inference = ["dep:mistralrs", "dep:hf-hub"]
 # to build — `cuda` needs `nvcc`, `metal` pulls `objc2`, which is Apple-only.
 # Cargo has no way to exclude a feature from `--all-features`, so the feature
 # list has to be spelled out.
-metal = ["local-inference", "mistralrs/metal"]
-cuda = ["local-inference", "mistralrs/cuda"]
+metal = ["local-inference"]
+cuda = ["local-inference"]
 
 [dependencies]
 agent-client-protocol = "3.3.0"
@@ -80,13 +80,13 @@ tar = "0.4"
 ignore = "0.4"
 include_dir = "0.7"
 jsonschema = { version = "0.60.2", default-features = false }
-# In-process inference engine behind the `local-inference` feature. Pure Rust
-# on CPU (candle underneath), so an enabled build still needs no C/C++
-# toolchain; `metal`/`cuda` do and stay opt-in on top.
-mistralrs = { version = "0.8.1", optional = true }
-# Weight downloads. Already in the tree via mistralrs; depended on directly so
-# yolop owns the fetch (and its progress reporting) instead of the engine doing
-# it invisibly inside the first inference call.
+# Local-model weight downloads behind the `local-inference` feature.
+# The inference engine (mistralrs -> candle-core -> zip 7.2.0) is
+# temporarily removed: mistralrs 0.8.1 pins candle-core 0.10.2 which
+# requires zip ^7.2.0, vulnerable to GHSA advisories fixed in zip
+# 9.0.0/9.0.5, with no fixed mistralrs release on crates.io yet.
+# Re-enable the engine (and metal/cuda acceleration) once mistralrs
+# publishes a release on candle-core 0.11.1+ / zip 9.0.5+.
 hf-hub = { version = "0.4.3", default-features = false, features = [
     "tokio",
     "rustls-tls",

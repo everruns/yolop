@@ -4,7 +4,15 @@ title: Local inference
 description: Defines Yolop's in-process inference provider, why it is feature-gated, and how the gate interacts with distribution.
 ---
 
-# Local inference
+# Local inference (temporarily disabled for security)
+
+> Status 2026-11-03: the mistralrs engine is removed until upstream
+> publishes a fixed release. `mistralrs 0.8.1` pins `candle-core 0.10.2`
+> which requires `zip ^7.2.0`, vulnerable to zip advisories fixed in
+> `9.0.0`/`9.0.5`. `--provider local` still resolves but fails with a
+> disabled message; `yolop weights` listing/removal still work, pulls still
+> download via hf-hub (no zip). Re-enable on mistralrs with candle-core
+> 0.11.1+ / zip 9.0.5+.
 
 ## Why
 
@@ -14,9 +22,9 @@ path as any hosted endpoint, aimed at loopback. Everything that makes local
 models awkward lives outside yolop: a second program to install, a daemon to
 keep running, and a model store yolop cannot see.
 
-The `local` provider removes that program. The inference engine
-([`mistralrs`](https://crates.io/crates/mistralrs)) is linked into the binary
-and answers requests in-process, with no socket in between.
+The `local` provider removed that program (suspended). The inference engine
+([`mistralrs`](https://crates.io/crates/mistralrs)) was linked into the
+binary and answered requests in-process, with no socket in between.
 
 What it does *not* remove is the download. Weights are gigabytes and cannot ride
 in a crate, so first use fetches them from Hugging Face. The honest framing is
@@ -36,33 +44,34 @@ provider exists to answer that question with evidence rather than argument.
   emit tool calls as JSON inside `<tool_call>`. Both are hard constraints, not
   preferences. A safetensors default means downloading full-precision weights to
   quantize them locally, several times the bytes for the same result. The
-  template shape is narrower still: mistralrs 0.8.1 strips the `<tool_call>`
-  wrapper and JSON-parses what is inside, so a model whose template emits the
-  `<function=…><parameter=…>` XML variant, Qwen3-Coder among them, produces tool
-  calls that never parse. A local model that cannot call tools cannot drive the
-  agent loop, so this disqualifies a model no matter how well it codes.
+  template shape is narrower still: mistralrs 0.8.1 stripped the `<tool_call>`
+  wrapper and JSON-parsed what was inside, so a model whose template emitted the
+  `<function=…><parameter=…>` XML variant, Qwen3-Coder among them, produced tool
+  calls that never parsed. A local model that cannot call tools cannot drive the
+  agent loop, so this disqualified a model no matter how well it coded.
 - No base URL and no credential: `Provider::Local` carries neither, because
   there is no endpoint to address and nothing to authenticate against.
 - Reasoning effort is rejected rather than ignored. A repo id is not an entry in
   a model-profile catalog, so there is no effort configuration to resolve an
   explicit request against.
-- Engines are loaded once and never evicted. A loaded engine is process-lifetime
-  by design, which is why the cache holds `&'static Model`: the engine's
-  streaming handle borrows the model, and an `Arc` would make every response
-  stream self-referential.
+- Engines were loaded once and never evicted (suspended). A loaded engine was
+  process-lifetime by design, which is why the cache held `&'static Model`:
+  the engine's streaming handle borrowed the model, and an `Arc` would have
+  made every response stream self-referential.
 
 ## Feature gate and distribution
 
-The engine dominates build time. The gate exists for that reason alone. It is
-*not* about toolchains (the default engine features are pure Rust, so an enabled
-build still needs no C/C++ compiler) and not about crates.io publishability (an
-optional dependency publishes fine).
+The engine dominated build time, so the gate existed for that reason. While the
+engine is suspended, the gate keeps `hf-hub` downloads behind `local-inference`
+and the `metal`/`cuda` features as resolving aliases with no acceleration.
 
 ### Measured cost
 
 Cold release builds (the shipped profile), separate target directories, no
 cache, 4-core container. Crate counts come from diffing a `mistralrs`-only
-probe lockfile against this one.
+probe lockfile against this one. While the engine is suspended for security,
+the `local-inference` delta is near zero (`hf-hub` only); the rows below
+describe the linked engine.
 
 | | Default | `--features local-inference` | Delta |
 |---|---|---|---|
@@ -72,19 +81,20 @@ probe lockfile against this one.
 | Release tarball (`.tar.gz`) | 27.8 MiB | not measured | — |
 | Native-toolchain deps | none | none | — |
 
-Debug builds pay a separate, larger price. `mistralrs-core` alone links an
-844 MiB debug rlib, and because a feature set defines a whole graph, a `target/`
-holding both the routine set and `--all-features` compiled 248 crates twice and
-reached 16 GB.
+With the engine linked, debug builds paid a separate, larger price.
+`mistralrs-core` alone linked an 844 MiB debug rlib, and because a feature set
+defines a whole graph, a `target/` holding both the routine set and
+`--all-features` compiled 248 crates twice and reached 16 GB. Suspended, the
+feature adds only `hf-hub`.
 
 So the routine commands stay on `--features yolop-yep/schema`, which resolves to
-the same 519 crates as a default build, and the engine gets one job of its own
-with its own cache ([`ci.yml`](../../.github/workflows/ci.yml)). That job both
-lints and tests: ten tests are behind the feature (the driver's tool-call
-conversion, the downloader's progress accounting), and they are invisible to the
-coverage job because it never enables the feature. Running them there is nearly
-free, since linting `--all-targets` has already compiled them. Locally, use a
-separate `CARGO_TARGET_DIR` when you need the engine compiled.
+the same crates as a default build, and the gated tests get one job of their
+own with its own cache ([`ci.yml`](../../.github/workflows/ci.yml)). That job
+both lints and tests: the tests behind the feature (currently the disabled
+driver plus the downloader's progress accounting) are invisible to the
+coverage job because it never enables the feature. Running them there is
+nearly free, since linting `--all-targets` has already compiled them. The
+historical engine cost above applies when the engine returns.
 
 These rows predate the size-optimized release profile (fat LTO at
 `opt-level = "s"`). On the same container that profile took a default binary
@@ -122,8 +132,8 @@ per target rather than picking one:
 | Asset                              | Features                    | For                              |
 |------------------------------------|-----------------------------|----------------------------------|
 | `yolop-<target>.tar.gz`            | default, no engine          | everyone; what Homebrew installs |
-| `yolop-<target>-metal.tar.gz`      | `metal` (macOS)             | local models on an Apple GPU     |
-| `yolop-<target>-cuda.tar.gz`       | `cuda` (Linux x86_64)       | local models on an NVIDIA GPU    |
+| `yolop-<target>-metal.tar.gz`      | `metal` (macOS; currently an alias for `local-inference`) | no engine while suspended; downloads only |
+| `yolop-<target>-cuda.tar.gz`       | `cuda` (Linux x86_64; currently an alias for `local-inference`) | no engine while suspended; downloads only |
 
 The default asset is the portable one because it is the only build that runs
 wherever the target does. An accelerated build carries a runtime requirement
@@ -138,7 +148,11 @@ is compiled out. Such a build reports the provider unusable so it stays out of
 automatic provider fallback, and fails loudly if selected explicitly, rather
 than silently disappearing from the picker.
 
-## Acceleration
+## Acceleration (suspended with the engine)
+
+While the engine is suspended for security, `metal`/`cuda` are resolving
+aliases with no acceleration and no working engine; the rest of this section
+describes the linked engine and applies again when it returns.
 
 The engine runs on **CPU** unless a GPU backend is compiled in, and the
 difference is not a detail: an 8B model on CPU is slow enough to read as "local

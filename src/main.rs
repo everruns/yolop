@@ -813,17 +813,15 @@ fn provider_name_for_arg(arg: ProviderArg) -> &'static str {
 /// Reject a provider this build cannot serve, before the runtime starts.
 ///
 /// `local` resolves in every build so the picker and settings stay
-/// feature-independent, but only a `local-inference` build registers a driver
-/// for it. Without this the failure surfaces mid-turn as the driver registry's
-/// "No driver registered for provider type" — an internal message that tells
-/// the user nothing they can act on.
+/// feature-independent. The inference engine is temporarily removed in all
+/// builds (see src/drivers/local.rs), so fail fast here instead of mid-turn
+/// with the driver registry's "No driver registered for provider type".
 fn ensure_provider_is_built_in(provider: &ProviderChoice) -> Result<()> {
-    if matches!(provider, ProviderChoice::Local { .. }) && !cfg!(feature = "local-inference") {
+    if matches!(provider, ProviderChoice::Local { .. }) {
         anyhow::bail!(
-            "this build has no local inference engine, so `--provider local` cannot run. \
-             Download an accelerated build (`yolop-<target>-metal` or `-cuda`) from \
-             https://github.com/everruns/yolop/releases/latest, or build with \
-             `--features metal` / `--features cuda`."
+            "local inference is temporarily disabled for security in this build, so \
+             `--provider local` cannot run. The engine returns once upstream ships a \
+             fixed mistralrs release (candle-core 0.11.1+ / zip 9.0.5+)."
         );
     }
     Ok(())
@@ -1424,11 +1422,13 @@ fn resolve_workspace_root(
 /// dead-end most of the people who read it.
 fn empty_weights_store_hint() -> String {
     if cfg!(feature = "local-inference") {
-        format!("Pull one with `yolop weights pull {DEFAULT_LOCAL_MODEL}`.")
+        format!(
+            "Pull one with `yolop weights pull {DEFAULT_LOCAL_MODEL}` (note: inference is \
+             temporarily disabled for security, so weights cannot run until the engine returns)."
+        )
     } else {
-        "This build has no local inference engine, so there is nothing here to run weights. \
-         Download an accelerated build (`yolop-<target>-metal` or `-cuda`) from \
-         https://github.com/everruns/yolop/releases/latest to pull them."
+        "Local inference is temporarily disabled for security, so there is nothing here to run weights. \
+         Listing and removal still work to clean up earlier downloads."
             .to_string()
     }
 }
@@ -1534,10 +1534,8 @@ async fn run_models_pull(spec: &str) -> Result<()> {
 #[cfg(not(feature = "local-inference"))]
 async fn run_models_pull(_spec: &str) -> Result<()> {
     Err(anyhow::anyhow!(
-        "this build has no local inference engine, so downloaded weights could not be run. \
-         Download an accelerated build (`yolop-<target>-metal` or `-cuda`) from \
-         https://github.com/everruns/yolop/releases/latest, or build with \
-         `--features metal` / `--features cuda`."
+        "local inference is temporarily disabled for security, so downloaded weights could not be run. \
+         Listing and removal still work; pulls return with the engine."
     ))
 }
 
@@ -3461,20 +3459,17 @@ mod tests {
         };
         let result = ensure_provider_is_built_in(&local);
 
-        if cfg!(feature = "local-inference") {
-            assert!(result.is_ok(), "an engine build must accept `local`");
-        } else {
-            // The point is the message: the registry's own failure names an
-            // internal driver id and offers the user no way forward.
-            let err = result.expect_err("a build without the engine must reject `local`");
-            let message = err.to_string();
-            // The default release binary and Homebrew both ship without the
-            // engine, so pointing there would send the user in a circle. The
-            // accelerated download is the only prebuilt answer.
-            assert!(message.contains("releases/latest"), "{message}");
-            assert!(message.contains("--features metal"), "{message}");
-            assert!(!message.contains("brew install"), "{message}");
-        }
+        // The engine is temporarily removed in all builds, so every build
+        // rejects `local` up front. The point is the message: the registry's
+        // own failure names an internal driver id and offers the user no way
+        // forward.
+        let err = result.expect_err("without the engine every build must reject `local`");
+        let message = err.to_string();
+        assert!(message.contains("temporarily disabled"), "{message}");
+        assert!(
+            !message.contains("releases/latest"),
+            "no download restores the engine while it is removed: {message}"
+        );
     }
 
     #[test]
@@ -3483,11 +3478,14 @@ mod tests {
 
         if cfg!(feature = "local-inference") {
             assert!(hint.contains("yolop weights pull"), "{hint}");
+            assert!(hint.contains("temporarily disabled"), "{hint}");
         } else {
             // `weights pull` is compiled out here, so suggesting it would send
-            // the reader to a command that only errors.
+            // the reader to a command that only errors. No download restores
+            // the engine while it is removed.
             assert!(!hint.contains("yolop weights pull"), "{hint}");
-            assert!(hint.contains("releases/latest"), "{hint}");
+            assert!(hint.contains("temporarily disabled"), "{hint}");
+            assert!(!hint.contains("releases/latest"), "{hint}");
         }
     }
 
