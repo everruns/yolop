@@ -4,7 +4,15 @@ title: Local inference
 description: Defines Yolop's in-process inference provider, why it is feature-gated, and how the gate interacts with distribution.
 ---
 
-# Local inference
+# Local inference (temporarily disabled for security)
+
+> Status 2026-11-03: the mistralrs engine is removed until upstream
+> publishes a fixed release. `mistralrs 0.8.1` pins `candle-core 0.10.2`
+> which requires `zip ^7.2.0`, vulnerable to zip advisories fixed in
+> `9.0.0`/`9.0.5`. `--provider local` still resolves but fails with a
+> disabled message; `yolop weights` listing/removal still work, pulls still
+> download via hf-hub (no zip). Re-enable on mistralrs with candle-core
+> 0.11.1+ / zip 9.0.5+.
 
 ## Why
 
