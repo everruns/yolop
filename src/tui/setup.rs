@@ -508,12 +508,52 @@ impl App {
                 },
             ],
             "codex" => vec![
-                ModelOption {
-                    spec: Some("gpt-6.1-sol".to_string()),
-                    label: "gpt-6.1-sol".to_string(),
-                    hint: "frontier Codex model".to_string(),
-                },
-            ],
+            ModelOption {
+                spec: Some("gpt-6.1-sol".to_string()),
+                label: "gpt-6.1-sol".to_string(),
+                hint: "frontier Codex model".to_string(),
+            },
+            ModelOption {
+                spec: Some("gpt-5.6-sol".to_string()),
+                label: "gpt-5.6-sol".to_string(),
+                hint: "previous frontier Codex model".to_string(),
+            },
+            ModelOption {
+                spec: Some("gpt-5.6-terra".to_string()),
+                label: "gpt-5.6-terra".to_string(),
+                hint: "Codex model".to_string(),
+            },
+            ModelOption {
+                spec: Some("gpt-5.6-luna".to_string()),
+                label: "gpt-5.6-luna".to_string(),
+                hint: "Codex model".to_string(),
+            },
+            ModelOption {
+                spec: Some("gpt-5.5".to_string()),
+                label: "gpt-5.5".to_string(),
+                hint: "Codex model".to_string(),
+            },
+            ModelOption {
+                spec: Some("gpt-5.4".to_string()),
+                label: "gpt-5.4".to_string(),
+                hint: "Codex model".to_string(),
+            },
+            ModelOption {
+                spec: Some("gpt-5.4-mini".to_string()),
+                label: "gpt-5.4-mini".to_string(),
+                hint: "small Codex model".to_string(),
+            },
+            ModelOption {
+                spec: Some("gpt-5.3-codex".to_string()),
+                label: "gpt-5.3-codex".to_string(),
+                hint: "Codex model".to_string(),
+            },
+            ModelOption {
+                spec: Some("gpt-5.3-codex-spark".to_string()),
+                label: "gpt-5.3-codex-spark".to_string(),
+                hint: "Codex model".to_string(),
+            },
+        ],
             "anthropic" => vec![
                 ModelOption {
                     spec: Some("claude-opus-5-5".to_string()),
@@ -621,7 +661,6 @@ impl App {
     pub(crate) fn request_model_discovery(&mut self, provider: &str) {
         if !self.model_discovery_enabled
             || provider == "llmsim"
-            || provider == "codex"
             || self.model_catalog.contains_key(provider)
             || self.model_fetches_in_flight.contains(provider)
         {

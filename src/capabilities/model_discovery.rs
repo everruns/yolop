@@ -39,10 +39,16 @@ pub(crate) async fn discover_provider_models(
     choice: &ProviderChoice,
     settings: &Settings,
 ) -> Result<Option<Vec<DiscoveredProviderModel>>> {
-    if matches!(choice, ProviderChoice::Sim | ProviderChoice::Codex { .. }) {
+    if matches!(choice, ProviderChoice::Sim) {
         return Ok(None);
     }
-    let target = choice.model_with_provider(settings)?;
+    let target = match choice.model_with_provider(settings) {
+        Ok(target) => target,
+        // No Codex login stored: fall back to the curated list instead of
+        // surfacing a login error from the picker.
+        Err(_) if matches!(choice, ProviderChoice::Codex { .. }) => return Ok(None),
+        Err(err) => return Err(err),
+    };
     // Yolop never registers Bedrock (no Bedrock driver below) or the llmsim
     // discovery driver; treat discovery as unsupported rather than erroring.
     // 0.17.26 turned `DriverId` into a string-backed id with associated
@@ -59,11 +65,15 @@ pub(crate) async fn discover_provider_models(
         config = config.with_base_url(base_url);
     }
 
+    if let Some(metadata) = target.provider_metadata {
+        config = config.with_metadata(metadata);
+    }
     let mut registry = DriverRegistry::new();
     everruns_drivers::anthropic::register_driver(&mut registry);
     everruns_drivers::meta::register_driver(&mut registry);
     everruns_drivers::openai::register_driver(&mut registry);
     everruns_drivers::openrouter::register_driver(&mut registry);
+    crate::drivers::codex::register_ephemeral(&mut registry);
     let driver = registry.create_chat_driver(&config)?;
 
     // 0.17.26 hands endpoint + auth policy to the driver per call. Drivers
@@ -807,5 +817,21 @@ mod tests {
             models.iter().all(|m| !m.model_id.is_empty()),
             "every discovered model needs an id"
         );
+    }
+
+    #[tokio::test]
+    async fn codex_without_login_returns_none() {
+        // Without a stored login there is nothing to list with: discovery
+        // must signal "no catalog" (not an error) so callers keep the
+        // curated Codex list. Skip when a personal token is configured so a
+        // real login never triggers network access in tests.
+        if std::env::var("CODEX_ACCESS_TOKEN").is_ok() {
+            return;
+        }
+        let choice = ProviderChoice::default_for_provider_name("codex").unwrap();
+        let discovered = discover_provider_models(&choice, &Settings::default())
+            .await
+            .expect("codex discovery without login should not error");
+        assert!(discovered.is_none());
     }
 }
