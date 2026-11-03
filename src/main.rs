@@ -3459,20 +3459,17 @@ mod tests {
         };
         let result = ensure_provider_is_built_in(&local);
 
-        if cfg!(feature = "local-inference") {
-            assert!(result.is_ok(), "an engine build must accept `local`");
-        } else {
-            // The point is the message: the registry's own failure names an
-            // internal driver id and offers the user no way forward.
-            let err = result.expect_err("a build without the engine must reject `local`");
-            let message = err.to_string();
-            // The default release binary and Homebrew both ship without the
-            // engine, so pointing there would send the user in a circle. The
-            // accelerated download is the only prebuilt answer.
-            assert!(message.contains("releases/latest"), "{message}");
-            assert!(message.contains("--features metal"), "{message}");
-            assert!(!message.contains("brew install"), "{message}");
-        }
+        // The engine is temporarily removed in all builds, so every build
+        // rejects `local` up front. The point is the message: the registry's
+        // own failure names an internal driver id and offers the user no way
+        // forward.
+        let err = result.expect_err("without the engine every build must reject `local`");
+        let message = err.to_string();
+        assert!(message.contains("temporarily disabled"), "{message}");
+        assert!(
+            !message.contains("releases/latest"),
+            "no download restores the engine while it is removed: {message}"
+        );
     }
 
     #[test]
@@ -3481,11 +3478,14 @@ mod tests {
 
         if cfg!(feature = "local-inference") {
             assert!(hint.contains("yolop weights pull"), "{hint}");
+            assert!(hint.contains("temporarily disabled"), "{hint}");
         } else {
             // `weights pull` is compiled out here, so suggesting it would send
-            // the reader to a command that only errors.
+            // the reader to a command that only errors. No download restores
+            // the engine while it is removed.
             assert!(!hint.contains("yolop weights pull"), "{hint}");
-            assert!(hint.contains("releases/latest"), "{hint}");
+            assert!(hint.contains("temporarily disabled"), "{hint}");
+            assert!(!hint.contains("releases/latest"), "{hint}");
         }
     }
 
