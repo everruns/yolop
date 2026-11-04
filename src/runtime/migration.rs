@@ -9,7 +9,7 @@ use everruns::hosting::{
     AgentBuild, ConversationLineage, CutoverOptions, CutoverReport, HistoryBranch, SequenceRange,
 };
 use everruns_contracts::typed_id::SessionId;
-use everruns_core::{CompactionCheckpoint, Event};
+use everruns_core::{CompactionCheckpoint, Event, EventData};
 use serde::de::DeserializeOwned;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
@@ -167,6 +167,9 @@ impl LegacySessionSource {
                 ranges,
             });
         }
+        for branch in &mut branches {
+            self.select_budget_diagnostics(&mut branch.ranges);
+        }
         let mut lineage = ConversationLineage::new(active, branches);
         for checkpoint in &self.checkpoints {
             // The producing turn is the unique owner of this journal position.
@@ -187,6 +190,58 @@ impl LegacySessionSource {
             lineage = lineage.with_checkpoint(branch, checkpoint.clone());
         }
         Ok(lineage)
+    }
+
+    fn select_budget_diagnostics(&self, ranges: &mut Vec<SequenceRange>) {
+        let is_budget = |event: &Event| {
+            matches!(
+                event.data,
+                EventData::BudgetWarning(_)
+                    | EventData::BudgetPaused(_)
+                    | EventData::BudgetExhausted(_)
+                    | EventData::BudgetResumed(_)
+            )
+        };
+        if !self.events.iter().any(is_budget) {
+            return;
+        }
+        let selected = |sequence| {
+            ranges
+                .get(ranges.partition_point(|range| range.last < sequence))
+                .is_some_and(|range| range.first <= sequence)
+        };
+        // Legacy budget diagnostics could follow checkpoint closure, or arrive
+        // inside a later sibling's range. Select them by their owning turn,
+        // without widening ranges over unselected conversation events.
+        let turns: HashSet<_> = self
+            .events
+            .iter()
+            .filter(|event| !is_budget(event) && event.sequence.is_some_and(selected))
+            .filter_map(|event| event.context.turn_id)
+            .collect();
+        let mut normalized: Vec<SequenceRange> = Vec::new();
+        let mut extending = false;
+        for event in &self.events {
+            let Some(sequence) = event.sequence else {
+                continue;
+            };
+            let included = if is_budget(event)
+                && let Some(turn) = event.context.turn_id
+            {
+                turns.contains(&turn)
+            } else {
+                selected(sequence)
+            };
+            if included {
+                if extending {
+                    normalized.last_mut().unwrap().last = sequence;
+                } else {
+                    normalized.push(SequenceRange::new(sequence, sequence));
+                }
+            }
+            extending = included;
+        }
+        *ranges = normalized;
     }
 
     /// Import a frozen source into registered hosting. The legacy Agent is a
@@ -792,6 +847,17 @@ mod tests {
         );
     }
 
+    fn budget_event(owner: &Event, sequence: i32, kind: &str) -> Event {
+        serde_json::from_value(json!({
+            "id": everruns_contracts::typed_id::EventId::new(),
+            "type": kind, "ts": owner.ts, "session_id": owner.session_id,
+            "context": owner.context, "sequence": sequence,
+            "data": {"budget_id":"continuation", "balance":0.0,
+                "limit":5.0, "currency":"turns"},
+        }))
+        .unwrap()
+    }
+
     fn timeline() -> Vec<Value> {
         let timestamp = "2026-10-19T00:00:00Z";
         let mut records = vec![json!({
@@ -950,6 +1016,87 @@ mod tests {
                 .unwrap()
                 .ranges,
             [SequenceRange::new(1, 2), SequenceRange::new(5, 6)]
+        );
+    }
+
+    #[test]
+    fn late_budget_events_follow_their_turn_without_selecting_sibling_history() {
+        use everruns_core::session_commands::history::{JournalEntry, canonical_selection};
+        let temp = tempfile::tempdir().unwrap();
+        let session = SessionId::new();
+        let mut events = Vec::new();
+        for (start, kind) in [
+            (1, "budget.warning"),
+            (4, "budget.paused"),
+            (7, "budget.exhausted"),
+        ] {
+            let turn = everruns_contracts::typed_id::TurnId::new();
+            for sequence in start..=start + 1 {
+                let mut item = event(session, Some(sequence), "saved message");
+                item.context.turn_id = Some(turn);
+                events.push(item);
+            }
+            events.push(budget_event(events.last().unwrap(), start + 2, kind));
+        }
+        events.push(budget_event(&events[0], 10, "budget.resumed"));
+        events.push(budget_event(&events[3], 11, "budget.paused"));
+        journal(&temp.path().join("events.jsonl"), &events);
+        let mut records = timeline();
+        records[3]["event_start"] = json!(4);
+        records[4]["event_end"] = json!(5);
+        records.extend([
+            json!({"type":"redo_cleared","cleared_at":"2026-10-19T00:00:00Z"}),
+            json!({"type":"checkpoint_created","id":"C","parent":"A","prompt":"replacement", "event_start":7,"snapshot":null,"snapshot_error":null,"created_at":"2026-10-19T00:00:00Z"}),
+            json!({"type":"turn_completed","checkpoint_id":"C","event_end":11,"success":true,"completed_at":"2026-10-19T00:00:00Z"}),
+        ]);
+        write_records(&temp.path().join("timeline.jsonl"), &records);
+        let mut source = LegacySessionSource::read(temp.path(), session).unwrap();
+        let lineage = source.lineage().unwrap();
+        for (branch, expected) in [
+            (
+                "turn:B",
+                vec![SequenceRange::new(1, 6), SequenceRange::new(10, 11)],
+            ),
+            (
+                "turn:C",
+                vec![SequenceRange::new(1, 3), SequenceRange::new(7, 10)],
+            ),
+        ] {
+            assert_eq!(
+                lineage
+                    .branches
+                    .iter()
+                    .find(|item| item.id == branch)
+                    .unwrap()
+                    .ranges,
+                expected
+            );
+        }
+        assert_eq!(json!(source.events), json!(events));
+
+        // A missing ordinary conversation event must still fail the Engine's
+        // whole-turn check, rather than being pulled into a branch as a repair.
+        let mut missing = event(session, Some(12), "outside checkpoint");
+        missing.context.turn_id = events[0].context.turn_id;
+        source.events.push(missing);
+        let lineage = source.lineage().unwrap();
+        let journal: Vec<_> = source
+            .events
+            .iter()
+            .map(|event| JournalEntry {
+                sequence: event.sequence.unwrap(),
+                turn: event.context.turn_id,
+                terminal: false,
+            })
+            .collect();
+        let active = lineage
+            .branches
+            .iter()
+            .find(|branch| branch.id == lineage.active)
+            .unwrap();
+        assert_eq!(
+            canonical_selection(&journal, &active.ranges, 12, false).unwrap_err(),
+            "history branch must select whole turns"
         );
     }
 
@@ -1130,18 +1277,36 @@ mod tests {
         assert!(session.run("beta").await.unwrap().success);
         let mut raw = Vec::new();
         fixture_profile.export_jsonl(id, &mut raw).unwrap();
-        let events: Vec<Event> = String::from_utf8(raw)
+        let mut events: Vec<Event> = String::from_utf8(raw)
             .unwrap()
             .lines()
             .map(|line| serde_json::from_str(line).unwrap())
             .collect();
+        // Legacy host diagnostics were appended after the checkpoint closed,
+        // but kept the completed turn's identity.
+        for event in &mut events[first_events.len()..] {
+            *event.sequence.as_mut().unwrap() += 1;
+        }
+        events.insert(
+            first_events.len(),
+            budget_event(
+                first_events.last().unwrap(),
+                first_end + 1,
+                "budget.warning",
+            ),
+        );
         let head = events.last().unwrap().sequence.unwrap();
+        events.push(budget_event(
+            events.last().unwrap(),
+            head + 1,
+            "budget.paused",
+        ));
         let source_dir = temp.path().join("saved");
         std::fs::create_dir(&source_dir).unwrap();
         journal(&source_dir.join("events.jsonl"), &events);
         let mut records = timeline();
         records[2]["event_end"] = json!(first_end);
-        records[3]["event_start"] = json!(first_end + 1);
+        records[3]["event_start"] = json!(first_end + 2);
         records[4]["event_end"] = json!(head);
         write_records(&source_dir.join("timeline.jsonl"), &records);
         write_records(

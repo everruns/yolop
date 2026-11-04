@@ -1,5 +1,12 @@
 # Knowledge Log
 
+## 2026-11-03, Retain late budget diagnostics during session import
+
+Saved-session import associates legacy budget diagnostics with their owning turn
+rather than checkpoint timing. Rewound and abandoned branches retain their own
+diagnostics, and incomplete conversation turns still refuse import. See
+[engine-owned execution](specs/engine-execution.md).
+
 ## 2026-10-31, Everruns family back on published pins
 
 The temporary Everruns git source from 2026-10-19 is gone: the whole family
