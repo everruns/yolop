@@ -33,6 +33,7 @@ yolop
 - [Extensions](#extensions)
 - [Skills, memory, and hooks](#skills-memory-and-hooks)
 - [Reference](#reference)
+- [How can I support this project?](#how-can-i-support-this-project)
 - [Contributing, evals, releases, license](#contributing-evals-releases-license)
 
 ## Why yolop
@@ -391,6 +392,18 @@ yolop --session fix-422
 # Share a run for a bug report
 yolop --trajectory-out /tmp/run.jsonl -p "reproduce the flake"
 ```
+
+## How can I support this project?
+
+Yolop is a free, open-source hobby project. There are many ways to help:
+
+- Use Yolop for real work and tell us what broke or surprised you on [Discord](https://everruns.com/discord/yolop) or by email ([mykhailo@everruns.com](mailto:mykhailo@everruns.com))
+- Report bugs in [GitHub Issues](https://github.com/everruns/yolop/issues); `yolop --version`, the provider you used, and a `--trajectory-out` file help a lot
+- Star the repository, it helps other people find it
+- Write a blog post, an extension, or an MCP setup guide and share it
+- Help with the docs by asking questions or sending PRs
+- Contribute code (see [CONTRIBUTING.md](CONTRIBUTING.md), and say hi on [Discord](https://everruns.com/discord/yolop))
+- Talk about Yolop around you
 
 ## Contributing, evals, releases, license
 
