@@ -10,6 +10,22 @@ mechanical `### What's Changed` list of merged PRs.
 Releases are cut via [`/release`](./.agents/skills/release/SKILL.md), which
 tags the version and publishes to crates.io and the Homebrew tap.
 
+## [0.23.1] - 2026-11-05
+
+### Highlights
+
+- Session migration retains newer events when an older budget event fails to parse, so loading an old session no longer drops recent history.
+- README gains a "How can I support this project?" section.
+- Dependency cleanup removes the vulnerable mistralrs chain and bumps zip to 9.3.0, with local inference still disabled.
+
+### What's Changed
+
+- Add "How can I support this project?" section to README by @chaliy in #912
+- Retain late budget events during migration by @chaliy in #911
+- Remove vulnerable mistralrs chain and bump zip to 9.3.0 by @chaliy in #910
+
+**Full Changelog**: https://github.com/everruns/yolop/compare/v0.23.0...v0.23.1
+
 ## [0.23.0] - 2026-11-03
 
 ### Highlights
