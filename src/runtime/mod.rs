@@ -12028,15 +12028,21 @@ mod tests {
             .len();
         // Capability sections are joined with a five-byte separator.
         let prompt_bytes = context.instructions.len() - ask_prompt_bytes - 5;
+        // File-tool schemas embed the temporary workspace path. Normalize it
+        // so a longer TMPDIR does not consume the tool-schema budget.
+        let root_json = serde_json::to_string(&workspace.path().to_string_lossy()).unwrap();
+        let root_json = &root_json[1..root_json.len() - 1];
+        let schema_len = |parameters: &serde_json::Value| {
+            serde_json::to_string(parameters)
+                .expect("serialize schema")
+                .replace(root_json, "/tmp/.tmpXXXXXX")
+                .len()
+        };
         let schema_bytes: usize = context
             .tools
             .iter()
             .filter(|tool| tool.name.as_str() != "ask_user")
-            .map(|tool| {
-                serde_json::to_vec(&tool.parameters)
-                    .expect("serialize schema")
-                    .len()
-            })
+            .map(|tool| schema_len(&tool.parameters))
             .sum();
         let tool_definition_bytes: usize = context
             .tools
@@ -12055,14 +12061,7 @@ mod tests {
         let mut schemas: Vec<_> = context
             .tools
             .iter()
-            .map(|tool| {
-                (
-                    tool.name.as_str().to_string(),
-                    serde_json::to_vec(&tool.parameters)
-                        .expect("serialize schema")
-                        .len(),
-                )
-            })
+            .map(|tool| (tool.name.as_str().to_string(), schema_len(&tool.parameters)))
             .collect();
         schemas.sort_by_key(|(_, bytes)| std::cmp::Reverse(*bytes));
 
