@@ -93,6 +93,11 @@ compaction replacements. Malformed, duplicate, out-of-order or unlinked foreign
 records refuse import. No tolerant replay or source repair can silently discard
 history during ownership transfer.
 
+Legacy budget diagnostics can appear after a checkpoint closes while retaining
+the completed turn identity. Import selects these diagnostics with their owning
+turn, including across rewind and redo branches. It never extends conversation
+ranges over unrelated events or repairs a partially retained conversation turn.
+
 Older subagent events can share the root JSONL and sequence allocator. Retained
 task links or successful subagent tool results establish their parentage. Import
 separates registered child histories. Every imported journal retains its exact
