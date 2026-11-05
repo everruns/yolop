@@ -592,6 +592,7 @@ mod tests {
                 TurnStartedData {
                     turn_id,
                     input_message_id: MessageId::from_seed(93),
+                    origin: None,
                     input_content: Some("test".to_string()),
                     agent_id: None,
                     agent_name: None,

@@ -20,6 +20,7 @@ const TOKEN_TYPE_FIELD: &str = "token_type";
 const EXPIRES_AT_FIELD: &str = "expires_at";
 const SCOPE_FIELD: &str = "scope";
 const TOKEN_ENDPOINT_FIELD: &str = "token_endpoint";
+const RESOURCE_FIELD: &str = "resource";
 const CLIENT_ID_FIELD: &str = "client_id";
 const CLIENT_SECRET_FIELD: &str = "client_secret";
 
@@ -57,6 +58,9 @@ fn encode_tokens(tokens: McpOAuthTokenSet) -> StoredConnection {
     }
     if let Some(value) = tokens.token_endpoint {
         fields.insert(TOKEN_ENDPOINT_FIELD.to_string(), value);
+    }
+    if let Some(value) = tokens.resource {
+        fields.insert(RESOURCE_FIELD.to_string(), value);
     }
     if let Some(value) = tokens.client_id {
         fields.insert(CLIENT_ID_FIELD.to_string(), value);
@@ -97,6 +101,7 @@ fn decode_tokens(connection: StoredConnection) -> Result<McpOAuthTokenSet, ()> {
         expires_at,
         scope: non_empty(SCOPE_FIELD),
         token_endpoint: non_empty(TOKEN_ENDPOINT_FIELD),
+        resource: non_empty(RESOURCE_FIELD),
         client_id: non_empty(CLIENT_ID_FIELD),
         client_secret: non_empty(CLIENT_SECRET_FIELD),
     })
@@ -181,6 +186,7 @@ mod tests {
             expires_at,
             scope: Some("search".to_string()),
             token_endpoint: Some("https://as.example/token".to_string()),
+            resource: Some("https://mcp.example/resource".to_string()),
             client_id: Some("client-123".to_string()),
             client_secret: None,
         }
@@ -193,11 +199,118 @@ mod tests {
         let expires_at = Utc.with_ymd_and_hms(2030, 1, 2, 3, 4, 5).unwrap();
         save_tokens(&store, "parallel", sample(Some(expires_at))).expect("save tokens");
 
+        drop(store);
+        let store = ConnectionStore::open(tmp.path().join("connections.toml"));
         let loaded = load_tokens(&store, "parallel").expect("loaded tokens");
+        assert_eq!(
+            loaded.resource.as_deref(),
+            Some("https://mcp.example/resource")
+        );
         assert_eq!(loaded.access_token, "access");
         assert_eq!(loaded.refresh_token.as_deref(), Some("refresh"));
         assert_eq!(loaded.expires_at, Some(expires_at));
         assert_eq!(loaded.authorization_value(), "Bearer access");
+    }
+
+    #[derive(Default)]
+    struct RefreshEgress(std::sync::Mutex<Vec<EgressRequest>>);
+
+    #[async_trait]
+    impl EgressService for RefreshEgress {
+        async fn send(&self, request: EgressRequest) -> EgressResult<EgressResponse> {
+            self.0.lock().unwrap().push(request);
+            Ok(EgressResponse {
+                status: 200,
+                headers: BTreeMap::new(),
+                body: br#"{"access_token":"renewed","refresh_token":"rotated","expires_in":0}"#
+                    .to_vec(),
+            })
+        }
+        async fn send_stream(&self, _: EgressRequest) -> EgressResult<EgressStreamResponse> {
+            panic!("OAuth refresh must not stream")
+        }
+    }
+
+    #[tokio::test]
+    async fn persisted_resource_survives_rotation_and_repeated_process_restart() {
+        use everruns_core::mcp::oauth::OAuthAuthProvider;
+        use everruns_core::mcp::{McpAuthProvider, McpAuthRequest};
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("connections.toml");
+        let original = sample(Some(Utc::now() - chrono::Duration::seconds(1)));
+        save_tokens(
+            &ConnectionStore::open(path.clone()),
+            "server",
+            original.clone(),
+        )
+        .unwrap();
+        let egress = Arc::new(RefreshEgress::default());
+        for _ in 0..2 {
+            let store = Arc::new(ConnectionStore::open(path.clone()));
+            let provider =
+                OAuthAuthProvider::new(ConnectionTokenStore::new(store.clone()), egress.clone());
+            provider
+                .authorization(&McpAuthRequest {
+                    server_name: "server",
+                    auth_mode: everruns_core::McpServerAuthMode::OAuth,
+                    oauth_provider_id: None,
+                })
+                .await
+                .unwrap()
+                .unwrap();
+            let stored = load_tokens(&store, "server").unwrap();
+            assert_eq!(stored.resource, original.resource);
+            assert_eq!(stored.refresh_token.as_deref(), Some("rotated"));
+        }
+        let requests = egress.0.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        for (i, request) in requests.iter().enumerate() {
+            assert_eq!(request.url, "https://as.example/token");
+            let body = String::from_utf8(request.body.clone()).unwrap();
+            assert!(body.contains("resource=https%3A%2F%2Fmcp.example%2Fresource"));
+            assert!(body.contains(if i == 0 {
+                "refresh_token=refresh"
+            } else {
+                "refresh_token=rotated"
+            }));
+        }
+    }
+
+    #[tokio::test]
+    async fn legacy_file_requires_login_before_any_refresh_request() {
+        use everruns_core::mcp::oauth::OAuthAuthProvider;
+        use everruns_core::mcp::{McpAuthProvider, McpAuthRequest};
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("connections.toml");
+        let mut legacy = encode_tokens(sample(Some(Utc::now() - chrono::Duration::seconds(1))));
+        legacy.fields.remove(RESOURCE_FIELD);
+        ConnectionStore::open(path.clone())
+            .save(&connection_id("server"), legacy)
+            .unwrap();
+        let egress = Arc::new(RefreshEgress::default());
+        let provider = OAuthAuthProvider::new(
+            ConnectionTokenStore::new(Arc::new(ConnectionStore::open(path))),
+            egress.clone(),
+        );
+        let error = provider
+            .authorization(&McpAuthRequest {
+                server_name: "server",
+                auth_mode: everruns_core::McpServerAuthMode::OAuth,
+                oauth_provider_id: None,
+            })
+            .await
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("sign in again"));
+        assert!(egress.0.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn legacy_records_keep_missing_resource_for_reauthorization() {
+        let mut connection = encode_tokens(sample(None));
+        connection.fields.remove(RESOURCE_FIELD);
+        let loaded = decode_tokens(connection).unwrap();
+        assert_eq!(loaded.resource, None);
+        assert_eq!(loaded.refresh_token.as_deref(), Some("refresh"));
     }
 
     #[test]

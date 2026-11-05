@@ -503,6 +503,7 @@ mod tests {
                 ),
                 scope: Some("read write".to_string()),
                 token_endpoint: None,
+                resource: Some("https://mcp.example.com/mcp".into()),
                 client_id: Some("client-1".to_string()),
                 client_secret: None,
             };

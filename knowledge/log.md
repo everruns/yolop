@@ -1,5 +1,10 @@
 # Knowledge Log
 
+## 2026-11-05, MCP OAuth resource continuity
+
+- [MCP](specs/mcp.md): persist the validated audience with OAuth credentials;
+  require reauthorization for legacy grants when refresh becomes necessary.
+
 ## 2026-11-03, Retain late budget diagnostics during session import
 
 Saved-session import associates legacy budget diagnostics with their owning turn

@@ -5114,7 +5114,7 @@ pub async fn build_with_options(
     capabilities.register(UserHooksCapability);
     capabilities.register(DuckDuckGoCapability);
     capabilities.register(WebSearchCapability::from_env());
-    capabilities.register(WebFetchCapability::from_env());
+    capabilities.register(WebFetchCapability::new());
     capabilities.register(MessageMetadataCapability);
     capabilities.register(ModelRuntimeContextCapability::new(provider_state.clone()));
     capabilities.register(CodingCliEnvironmentCapability::new(
@@ -5848,6 +5848,7 @@ mod tests {
             expires_at: Some(expires_at),
             scope: Some("read".to_string()),
             token_endpoint: Some(token_endpoint),
+            resource: Some("https://mcp.example/resource".to_string()),
             client_id: Some("dcr-client-1".to_string()),
             client_secret: None,
         }
