@@ -11902,13 +11902,19 @@ mod tests {
             SettingsStore::open_with_profile(sessions.path().join("settings.toml"), "triage")
                 .expect("open profile"),
         );
+        let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
         let built = build_with_options(
             workspace.path().to_path_buf(),
             ProviderChoice::Sim,
             None,
             sessions.path().to_path_buf(),
             settings,
-            BuildOptions::default(),
+            BuildOptions {
+                llmsim_override: Some(
+                    LlmSimConfig::fixed("done").with_message_capture(captured.clone()),
+                ),
+                ..BuildOptions::default()
+            },
         )
         .await
         .expect("build runtime");
@@ -11932,9 +11938,25 @@ mod tests {
                 .any(|tool| tool.name.as_str() == "search_skills"),
             "a profile `enabled = false` entry masks the capability's tools"
         );
+        built
+            .handles
+            .run_checkpointed_turn(
+                built
+                    .model
+                    .input_message("List the available profile skills."),
+            )
+            .await
+            .expect("run profile turn");
+        // Core keeps changing skill inventories in conversation context, so
+        // inspect what the model receives rather than the stable system prefix.
         assert!(
-            context.instructions.contains("intake"),
-            "the profile's skills directory is a discoverable scope"
+            captured.lock().unwrap().iter().flatten().any(|message| {
+                message
+                    .content_as_text()
+                    .contains("Classify incoming work.")
+                    && message.content_as_text().contains("intake")
+            }),
+            "the profile's skills directory is a model-visible scope"
         );
         assert!(
             built
@@ -11971,7 +11993,11 @@ mod tests {
         // Everruns 0.38 adds mandatory approval request/record schemas (710 bytes).
         // Keep their safety-critical arguments eager and retain the prior budget
         // for the rest of the surface rather than deferring approval controls.
-        const BASELINE_SCHEMA_BYTES: usize = 14_500 + 710;
+        // The core upgrade adds eager bounded-monitor arguments to
+        // spawn_background: ends_at, max_runs, stop_when, budget_usd and
+        // wake_when. Reserve 800 bytes for these controls; retain the existing
+        // budget for the rest of the surface (measured total: 15,938 bytes).
+        const BASELINE_SCHEMA_BYTES: usize = 14_500 + 710 + 800;
         let workspace = tempfile::tempdir().expect("workspace");
         let sessions = tempfile::tempdir().expect("sessions");
         let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
