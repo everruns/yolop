@@ -10,6 +10,19 @@ mechanical `### What's Changed` list of merged PRs.
 Releases are cut via [`/release`](./.agents/skills/release/SKILL.md), which
 tags the version and publishes to crates.io and the Homebrew tap.
 
+## [0.23.3] - 2026-11-06
+
+### Highlights
+
+- Restore the glibc 2.39 baseline for Linux downloads after the 0.23.2 binary accidentally required glibc 2.43. Linux release artifacts now check their actual ELF imports before publication. See the [compatibility hotfix](https://everruns.com/docs/changelog/2026-11-06-yolop-linux-downloads/).
+- Keep the MCP OAuth resource continuity fix from 0.23.2 and restore reasoning-effort options in the Terminal-Bench adapter with Harbor 0.25.
+
+### What's Changed
+
+- fix(release): preserve glibc 2.39 Linux downloads ([#918](https://github.com/everruns/yolop/pull/918)) by @chaliy
+
+**Full Changelog**: https://github.com/everruns/yolop/compare/v0.23.2...v0.23.3
+
 ## [0.23.2] - 2026-11-06
 
 ### Highlights
