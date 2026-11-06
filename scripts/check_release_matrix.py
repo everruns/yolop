@@ -103,10 +103,15 @@ def main() -> None:
 def check_linux_runners(jobs: Mapping[str, Any]) -> None:
     for name in ("build", "build-accelerated", "extensions"):
         for combination in expand(jobs[name]["strategy"]["matrix"]):
-            if combination["target"] == "x86_64-unknown-linux-gnu":
-                if combination["runner"] != "ubuntu-24.04":
+            target = combination.get("target")
+            if not target:
+                raise SystemExit(f"{name}: release matrix entry has no target")
+            if target == "x86_64-unknown-linux-gnu":
+                runner = combination.get("runner")
+                if runner != "ubuntu-24.04":
                     raise SystemExit(
                         f"{name}: Linux release runner must pin the glibc 2.39 baseline"
+                        f" (found {runner!r}; expected 'ubuntu-24.04')"
                     )
 
 
