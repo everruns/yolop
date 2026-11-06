@@ -4,6 +4,7 @@
 
 - [MCP](specs/mcp.md): persist the validated audience with OAuth credentials;
   require reauthorization for legacy grants when refresh becomes necessary.
+  Consume the aligned Everruns 0.51.0 registry family for the shared refresh contract.
 
 ## 2026-11-03, Retain late budget diagnostics during session import
 

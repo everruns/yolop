@@ -18,7 +18,7 @@ other MCP client understands, with no bespoke per-tool integration.
 
 The MCP **client** lives upstream in `everruns-core::mcp` (transport-agnostic) and is
 wired into the in-process `everruns-core` runtime; see the upstream
-`knowledge/specs/runtime-mcp.md` decision record. Yolop does not implement the protocol
+[runtime MCP decision record](https://github.com/everruns/everruns/blob/main/knowledge/integrations/runtime-mcp.md). Yolop does not implement the protocol
 itself, it configures servers and consumes the runtime's discovery + execution
 path, so MCP tools flow through the same agent loop as the built-in tools.
 
