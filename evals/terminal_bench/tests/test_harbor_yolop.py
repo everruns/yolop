@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shlex
 import sys
 import tempfile
 import unittest
@@ -27,6 +28,13 @@ class TestSessionId(unittest.TestCase):
 
 
 class TestCommand(unittest.TestCase):
+    def test_provider_and_model_are_individual_shell_arguments(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = make_agent(Path(tmp), model_name="provider; echo unsafe/model$(echo unsafe)")
+            arguments = shlex.split(agent._command("go"))
+            self.assertEqual(arguments[arguments.index("--provider") + 1], "provider; echo unsafe")
+            self.assertEqual(arguments[arguments.index("--model") + 1], "model$(echo unsafe)")
+
     def test_provider_and_model_are_split_on_the_slash(self):
         with tempfile.TemporaryDirectory() as tmp:
             agent = make_agent(Path(tmp))

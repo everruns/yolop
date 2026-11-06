@@ -287,9 +287,9 @@ class Yolop(BaseInstalledAgent):
         provider, model = self._provider_and_model()
         parts = [_BIN_PATH]
         if provider:
-            parts += ["--provider", provider]
+            parts += ["--provider", shlex.quote(provider)]
         if model:
-            parts += ["--model", model]
+            parts += ["--model", shlex.quote(model)]
         if self._sandbox:
             parts.append("--sandbox")
         flags = self.build_cli_flags()

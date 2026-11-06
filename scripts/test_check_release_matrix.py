@@ -77,6 +77,23 @@ class AcceleratedTests(unittest.TestCase):
 
 
 class LinuxRunnerTests(unittest.TestCase):
+    def test_missing_runner_is_an_explicit_configuration_failure(self) -> None:
+        current = yaml.safe_load(WORKFLOW.read_text())["jobs"]
+        for job in ("build", "build-accelerated", "extensions"):
+            with self.subTest(job=job):
+                changed = deepcopy(current)
+                for entry in changed[job]["strategy"]["matrix"]["include"]:
+                    if entry["target"] == "x86_64-unknown-linux-gnu":
+                        del entry["runner"]
+                with self.assertRaisesRegex(SystemExit, "found None.*ubuntu-24.04"):
+                    check_linux_runners(changed)
+
+    def test_missing_target_is_an_explicit_configuration_failure(self) -> None:
+        current = yaml.safe_load(WORKFLOW.read_text())["jobs"]
+        current["build"]["strategy"]["matrix"] = {"include": [{"runner": "ubuntu-24.04"}]}
+        with self.assertRaisesRegex(SystemExit, "no target"):
+            check_linux_runners(current)
+
     def test_every_published_linux_target_has_a_stable_runner(self) -> None:
         check_linux_runners(yaml.safe_load(WORKFLOW.read_text())["jobs"])
 

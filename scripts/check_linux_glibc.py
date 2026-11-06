@@ -31,6 +31,10 @@ def check(binary: Path) -> None:
         raise SystemExit(
             f"{binary}: cannot inspect ELF imports: {error.stderr.strip()}"
         ) from error
+    except OSError as error:
+        raise SystemExit(
+            f"{binary}: cannot run readelf; install/check GNU binutils: {error}"
+        ) from error
     versions = required_versions(symbols)
     if not versions:
         raise SystemExit(f"{binary}: no required GLIBC versions found")
