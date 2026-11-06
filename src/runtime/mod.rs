@@ -5114,7 +5114,7 @@ pub async fn build_with_options(
     capabilities.register(UserHooksCapability);
     capabilities.register(DuckDuckGoCapability);
     capabilities.register(WebSearchCapability::from_env());
-    capabilities.register(WebFetchCapability::from_env());
+    capabilities.register(WebFetchCapability::new());
     capabilities.register(MessageMetadataCapability);
     capabilities.register(ModelRuntimeContextCapability::new(provider_state.clone()));
     capabilities.register(CodingCliEnvironmentCapability::new(
@@ -5848,6 +5848,7 @@ mod tests {
             expires_at: Some(expires_at),
             scope: Some("read".to_string()),
             token_endpoint: Some(token_endpoint),
+            resource: Some("https://mcp.example/resource".to_string()),
             client_id: Some("dcr-client-1".to_string()),
             client_secret: None,
         }
@@ -11901,13 +11902,19 @@ mod tests {
             SettingsStore::open_with_profile(sessions.path().join("settings.toml"), "triage")
                 .expect("open profile"),
         );
+        let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
         let built = build_with_options(
             workspace.path().to_path_buf(),
             ProviderChoice::Sim,
             None,
             sessions.path().to_path_buf(),
             settings,
-            BuildOptions::default(),
+            BuildOptions {
+                llmsim_override: Some(
+                    LlmSimConfig::fixed("done").with_message_capture(captured.clone()),
+                ),
+                ..BuildOptions::default()
+            },
         )
         .await
         .expect("build runtime");
@@ -11931,9 +11938,25 @@ mod tests {
                 .any(|tool| tool.name.as_str() == "search_skills"),
             "a profile `enabled = false` entry masks the capability's tools"
         );
+        built
+            .handles
+            .run_checkpointed_turn(
+                built
+                    .model
+                    .input_message("List the available profile skills."),
+            )
+            .await
+            .expect("run profile turn");
+        // Core keeps changing skill inventories in conversation context, so
+        // inspect what the model receives rather than the stable system prefix.
         assert!(
-            context.instructions.contains("intake"),
-            "the profile's skills directory is a discoverable scope"
+            captured.lock().unwrap().iter().flatten().any(|message| {
+                message
+                    .content_as_text()
+                    .contains("Classify incoming work.")
+                    && message.content_as_text().contains("intake")
+            }),
+            "the profile's skills directory is a model-visible scope"
         );
         assert!(
             built
@@ -11970,7 +11993,11 @@ mod tests {
         // Everruns 0.38 adds mandatory approval request/record schemas (710 bytes).
         // Keep their safety-critical arguments eager and retain the prior budget
         // for the rest of the surface rather than deferring approval controls.
-        const BASELINE_SCHEMA_BYTES: usize = 14_500 + 710;
+        // The core upgrade adds eager bounded-monitor arguments to
+        // spawn_background: ends_at, max_runs, stop_when, budget_usd and
+        // wake_when. Reserve 800 bytes for these controls; retain the existing
+        // budget for the rest of the surface (measured total: 15,938 bytes).
+        const BASELINE_SCHEMA_BYTES: usize = 14_500 + 710 + 800;
         let workspace = tempfile::tempdir().expect("workspace");
         let sessions = tempfile::tempdir().expect("sessions");
         let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
@@ -12001,15 +12028,21 @@ mod tests {
             .len();
         // Capability sections are joined with a five-byte separator.
         let prompt_bytes = context.instructions.len() - ask_prompt_bytes - 5;
+        // File-tool schemas embed the temporary workspace path. Normalize it
+        // so a longer TMPDIR does not consume the tool-schema budget.
+        let root_json = serde_json::to_string(&workspace.path().to_string_lossy()).unwrap();
+        let root_json = &root_json[1..root_json.len() - 1];
+        let schema_len = |parameters: &serde_json::Value| {
+            serde_json::to_string(parameters)
+                .expect("serialize schema")
+                .replace(root_json, "/tmp/.tmpXXXXXX")
+                .len()
+        };
         let schema_bytes: usize = context
             .tools
             .iter()
             .filter(|tool| tool.name.as_str() != "ask_user")
-            .map(|tool| {
-                serde_json::to_vec(&tool.parameters)
-                    .expect("serialize schema")
-                    .len()
-            })
+            .map(|tool| schema_len(&tool.parameters))
             .sum();
         let tool_definition_bytes: usize = context
             .tools
@@ -12028,14 +12061,7 @@ mod tests {
         let mut schemas: Vec<_> = context
             .tools
             .iter()
-            .map(|tool| {
-                (
-                    tool.name.as_str().to_string(),
-                    serde_json::to_vec(&tool.parameters)
-                        .expect("serialize schema")
-                        .len(),
-                )
-            })
+            .map(|tool| (tool.name.as_str().to_string(), schema_len(&tool.parameters)))
             .collect();
         schemas.sort_by_key(|(_, bytes)| std::cmp::Reverse(*bytes));
 

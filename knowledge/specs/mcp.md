@@ -18,7 +18,7 @@ other MCP client understands, with no bespoke per-tool integration.
 
 The MCP **client** lives upstream in `everruns-core::mcp` (transport-agnostic) and is
 wired into the in-process `everruns-core` runtime; see the upstream
-`knowledge/specs/runtime-mcp.md` decision record. Yolop does not implement the protocol
+[runtime MCP decision record](https://github.com/everruns/everruns/blob/main/knowledge/integrations/runtime-mcp.md). Yolop does not implement the protocol
 itself, it configures servers and consumes the runtime's discovery + execution
 path, so MCP tools flow through the same agent loop as the built-in tools.
 
@@ -92,7 +92,11 @@ Credentials for a server are resolved per request by the runtime's
 
 1. **User-scoped OAuth token** minted by `/mcp login <name>` and stored in the
    connection store (`mcp-oauth:<provider>`). Tokens are refreshed
-   automatically when they near expiry.
+   automatically when they near expiry. The resource validated during login is
+   stored with the credentials and preserved through refresh, rotation, and
+   restart. Older records with no resource need `yolop mcp login <name>` again
+   when refresh becomes necessary; the client never guesses an audience from
+   the current configuration or token endpoint.
 2. Literal `headers` in the config (with `${VAR}` expansion), applied by the
    transport regardless of the provider.
 
