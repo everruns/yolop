@@ -65,7 +65,14 @@ Prebuilt CLI binaries are produced for:
 |-------|------------------------------|-----------------|-------------------|
 | macOS | `aarch64-apple-darwin`       | `macos-latest`  | `metal`           |
 | macOS | `x86_64-apple-darwin`        | `macos-latest`  | `metal`           |
-| Linux | `x86_64-unknown-linux-gnu`   | `ubuntu-latest` | `cuda`            |
+| Linux | `x86_64-unknown-linux-gnu`   | `ubuntu-24.04`  | `cuda`            |
+
+Linux CLI and extension artifacts target glibc 2.39. Pin their build runner to
+Ubuntu 24.04; a moving runner can silently raise the runtime ABI requirement.
+The release matrix check rejects a moving Linux runner, and an ELF import check
+rejects binaries requiring a newer glibc before packaging or uploading them.
+Linux cache keys carry the ABI baseline so incompatible build-host artifacts are
+not restored across a baseline change. Source installs use the host's libc.
 
 Every target ships twice: `yolop-<target>.tar.gz` built with default features,
 and `yolop-<target>-<backend>.tar.gz` carrying the local-inference engine and

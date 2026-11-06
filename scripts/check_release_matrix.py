@@ -88,6 +88,7 @@ def main() -> None:
     cli = targets(jobs, "build")
     extensions = targets(jobs, "extensions")
     check_accelerated(jobs, cli)
+    check_linux_runners(jobs)
     if cli != extensions:
         missing = ", ".join(sorted(cli - extensions)) or "none"
         extra = ", ".join(sorted(extensions - cli)) or "none"
@@ -97,6 +98,16 @@ def main() -> None:
             f"\n  built only for the extensions: {extra}"
         )
     print(f"cli-binaries.yml builds both for: {', '.join(sorted(cli))}")
+
+
+def check_linux_runners(jobs: Mapping[str, Any]) -> None:
+    for name in ("build", "build-accelerated", "extensions"):
+        for combination in expand(jobs[name]["strategy"]["matrix"]):
+            if combination["target"] == "x86_64-unknown-linux-gnu":
+                if combination["runner"] != "ubuntu-24.04":
+                    raise SystemExit(
+                        f"{name}: Linux release runner must pin the glibc 2.39 baseline"
+                    )
 
 
 if __name__ == "__main__":

@@ -1,5 +1,11 @@
 # Knowledge Log
 
+## 2026-11-06, Stable Linux release ABI
+
+- [Release](specs/release.md): pin Linux binary builders to Ubuntu 24.04 and
+  enforce glibc 2.39 imports before upload. Moving runners must not silently
+  raise the minimum libc version of CLI or extension downloads.
+
 ## 2026-11-05, MCP OAuth resource continuity
 
 - [MCP](specs/mcp.md): persist the validated audience with OAuth credentials;
