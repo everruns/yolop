@@ -56,6 +56,17 @@ class TestCommand(unittest.TestCase):
             agent = make_agent(Path(tmp), reasoning_effort="high")
             self.assertIn("--reasoning-effort high", agent._command("go"))
 
+    def test_reasoning_effort_env_fallback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.dict("os.environ", {"YOLOP_REASONING_EFFORT": "medium"}):
+                agent = make_agent(Path(tmp))
+                self.assertIn("--reasoning-effort medium", agent._command("go"))
+
+    def test_reasoning_effort_is_shell_quoted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = make_agent(Path(tmp), reasoning_effort="high; echo injected")
+            self.assertIn("--reasoning-effort 'high; echo injected'", agent._command("go"))
+
     def test_sandbox_is_off_unless_asked_for(self):
         with tempfile.TemporaryDirectory() as tmp:
             self.assertNotIn("--sandbox", make_agent(Path(tmp))._command("go"))

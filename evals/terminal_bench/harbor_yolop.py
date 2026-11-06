@@ -20,7 +20,7 @@ Two yolop features do the heavy lifting here:
 
 * `--trajectory-out` writes the run as an ATIF v1.7 document, the format Harbor
   itself consumes, so no bespoke event-log converter is needed — the adapter
-  points it at `/logs/agent/trajectory.json` and declares `SUPPORTS_ATIF`.
+  points it at `/logs/agent/trajectory.json` and declares the ATIF capability.
 * `--session-dir` writes an incrementally-flushed `events.jsonl`. `/logs/agent`
   is bind-mounted from the host trial dir, so the host can watch the run's cost
   as it accrues and stop it at `max_cost_usd` — yolop has no native dollar cap.
@@ -35,13 +35,14 @@ import re
 import shlex
 import uuid
 from pathlib import Path
-from typing import Any, override
+from typing import Annotated, Any, override
 
+from harbor.agents.capabilities import AgentCapabilities
 from harbor.agents.installed.base import (
     BaseInstalledAgent,
-    CliFlag,
     with_prompt_template,
 )
+from harbor.agents.options import Cli, InstalledAgentOptions
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
 from harbor.utils.env import parse_bool_env_value
@@ -156,19 +157,17 @@ def _kill_command(signal: str) -> str:
     )
 
 
+class YolopOptions(InstalledAgentOptions):
+    reasoning_effort: Annotated[
+        str | None, Cli("--reasoning-effort", fallback="YOLOP_REASONING_EFFORT")
+    ] = None
+
+
 class Yolop(BaseInstalledAgent):
     """yolop, run headlessly (`-p`) inside the task container."""
 
-    SUPPORTS_ATIF: bool = True
-
-    CLI_FLAGS = [
-        CliFlag(
-            "reasoning_effort",
-            cli="--reasoning-effort",
-            type="str",
-            env_fallback="YOLOP_REASONING_EFFORT",
-        ),
-    ]
+    capabilities = AgentCapabilities(atif=True, reasoning_effort=True)
+    options_model = YolopOptions
 
     def __init__(
         self,
@@ -195,6 +194,8 @@ class Yolop(BaseInstalledAgent):
         self._session_id = session_id()
         self._stop_reason = "completed"
         kwargs.setdefault("prompt_template_path", DEFAULT_PROMPT_TEMPLATE)
+        if isinstance(kwargs["prompt_template_path"], Path):
+            kwargs["prompt_template_path"] = str(kwargs["prompt_template_path"])
         super().__init__(logs_dir, *args, **kwargs)
 
     @staticmethod
