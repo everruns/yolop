@@ -64,6 +64,11 @@ cargo build --release
 
 Prefer a prebuilt binary, including accelerated local inference builds (`metal` on macOS, `cuda` on Linux)? Grab one from [releases](https://github.com/everruns/yolop/releases).
 
+Linux prebuilt binaries require glibc 2.39 or newer. Build from source on older
+systems to link against their installed libc.
+The 0.23.2 Linux download accidentally requires glibc 2.43; source installs of
+that version are unaffected.
+
 On macOS, sandboxed attached administration requires the Yolop executable to
 be outside the shell's writable directories. A source build inside the active
 workspace therefore cannot run shell commands in `workspace-write` mode.

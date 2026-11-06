@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 
 import unittest
+from copy import deepcopy
 
-from check_release_matrix import check_accelerated, expand
+import yaml
+
+from check_release_matrix import WORKFLOW, check_accelerated, check_linux_runners, expand
 
 CLI_STYLE = {
     "include": [
@@ -71,6 +74,22 @@ class AcceleratedTests(unittest.TestCase):
         clash = {**LINUX, "archive": MAC["archive"]}
         with self.assertRaises(SystemExit):
             check_accelerated(jobs(MAC, clash), CLI)
+
+
+class LinuxRunnerTests(unittest.TestCase):
+    def test_every_published_linux_target_has_a_stable_runner(self) -> None:
+        check_linux_runners(yaml.safe_load(WORKFLOW.read_text())["jobs"])
+
+    def test_moving_runner_is_rejected_in_each_matrix(self) -> None:
+        current = yaml.safe_load(WORKFLOW.read_text())["jobs"]
+        for job in ("build", "build-accelerated", "extensions"):
+            with self.subTest(job=job):
+                changed = deepcopy(current)
+                for entry in changed[job]["strategy"]["matrix"]["include"]:
+                    if entry["target"] == "x86_64-unknown-linux-gnu":
+                        entry["runner"] = "ubuntu-latest"
+                with self.assertRaisesRegex(SystemExit, "glibc 2.39"):
+                    check_linux_runners(changed)
 
 
 if __name__ == "__main__":
