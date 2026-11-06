@@ -10,6 +10,21 @@ mechanical `### What's Changed` list of merged PRs.
 Releases are cut via [`/release`](./.agents/skills/release/SKILL.md), which
 tags the version and publishes to crates.io and the Homebrew tap.
 
+## [0.23.2] - 2026-11-06
+
+### Highlights
+
+- MCP OAuth credentials retain the resource validated at sign-in through refresh-token rotation and restart. Older credentials need a new `yolop mcp login <name>` when their access token next needs refresh.
+- Upgrade the complete Everruns dependency family to 0.51.0, including the shared OAuth resource contract and local compaction source/uncertainty handling.
+
+### What's Changed
+
+- fix(mcp): retain OAuth resource in persisted credentials ([#916](https://github.com/everruns/yolop/pull/916)) by @chaliy
+- fix(evals): correct three unachievable baseline gates ([#915](https://github.com/everruns/yolop/pull/915)) by @chaliy
+- chore(deps): bump the cargo-minor-and-patch group with 2 updates ([#913](https://github.com/everruns/yolop/pull/913)) by @dependabot[bot]
+
+**Full Changelog**: https://github.com/everruns/yolop/compare/v0.23.1...v0.23.2
+
 ## [0.23.1] - 2026-11-05
 
 ### Highlights
