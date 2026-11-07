@@ -119,10 +119,26 @@ impl UntrustedWorkspaceHooks {
     /// One-line notice telling the user what was skipped and how to enable it.
     pub fn notice(&self) -> String {
         format!(
-            "Skipped {} workspace hook(s) in {}: this file is not trusted. Review it, then run `yolop config hooks trust` in this workspace to enable it.",
+            "Skipped {} workspace hook(s) and any disable settings in {}: this file is not trusted. Review it, then run `yolop config hooks trust` in this workspace to enable it.",
             self.hook_count,
             self.path.display()
         )
+    }
+}
+
+impl HooksStore {
+    /// Note for a session write to the workspace file: any change revokes the
+    /// content pin, so the caller learns that the hooks will not run until the
+    /// user trusts the file again from their terminal.
+    pub fn untrusted_after_write_note(&self, scope: HookScope) -> Option<String> {
+        (scope == HookScope::Workspace
+            && matches!(self.workspace_trust(), Ok(WorkspaceTrust::Untrusted)))
+        .then(|| {
+            format!(
+                "{} is not trusted, so its hooks do not run; review it and run `yolop config hooks trust` from your terminal",
+                self.path_for(HookScope::Workspace).display()
+            )
+        })
     }
 }
 

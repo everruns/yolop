@@ -1275,18 +1275,10 @@ fn with_trust_after_write(
     {
         store.retrust_after_terminal_write(before)?;
     }
-    if matches!(
-        store.workspace_trust(),
-        Ok(crate::config::hooks::WorkspaceTrust::Untrusted)
-    ) && let Value::Object(map) = &mut value
+    if let Some(note) = store.untrusted_after_write_note(scope)
+        && let Value::Object(map) = &mut value
     {
-        map.insert(
-            "note".to_string(),
-            Value::String(format!(
-                "{} is not trusted, so its hooks do not run; review it and run `yolop config hooks trust` from your terminal",
-                store.path_for(HookScope::Workspace).display()
-            )),
-        );
+        map.insert("note".to_string(), Value::String(note));
     }
     Ok(value)
 }
