@@ -73,11 +73,12 @@ impl McpReadiness {
             {
                 continue;
             }
+            let key = cache_key(session, &name, &server)?;
             let Some(mut connection) = super::mcp_connection_for(&name, &server) else {
+                self.cache.record_invalid_configuration(key);
                 continue;
             };
             connection.connect_in_chat = server.connect_in_chat;
-            let key = cache_key(session, &name, &server);
             let client = self.client.clone();
             let cache = self.cache.clone();
             discoveries.push(Box::pin(async move {
@@ -167,22 +168,34 @@ impl McpReadiness {
             .map(|(name, server)| {
                 (
                     name.clone(),
-                    self.cache.status(&cache_key(session, name, server)),
+                    cache_key(session, name, server)
+                        .map(|key| self.cache.status(&key))
+                        .unwrap_or(McpDiscoveryStatus::Failed),
                 )
             })
             .collect()
     }
 }
 
-fn cache_key(session: SessionId, name: &str, server: &ScopedMcpServer) -> CacheKey {
+fn cache_key(session: SessionId, name: &str, server: &ScopedMcpServer) -> anyhow::Result<CacheKey> {
+    Ok((
+        session.uuid(),
+        name.to_string(),
+        configuration_digest(server)?,
+    ))
+}
+
+fn configuration_digest(config: &impl serde::Serialize) -> anyhow::Result<[u8; 32]> {
     // Canonical object ordering makes credentials/config changes invalidate the
-    // catalog without retaining raw configuration or secrets in the key.
-    let mut config =
-        serde_json::to_value(server).expect("scoped MCP configuration is serializable");
+    // catalog without retaining raw configuration or secrets in the key. A
+    // serializer error can contain credentials, so do not preserve its detail
+    // or derive a fallback identity from an incomplete configuration.
+    let serialization_error =
+        |_| anyhow::anyhow!("MCP discovery configuration could not be serialized");
+    let mut config = serde_json::to_value(config).map_err(serialization_error)?;
     config.sort_all_objects();
-    let digest =
-        Sha256::digest(serde_json::to_vec(&config).expect("scoped MCP JSON is serializable"));
-    (session.uuid(), name.to_string(), digest.into())
+    let digest = Sha256::digest(serde_json::to_vec(&config).map_err(serialization_error)?);
+    Ok(digest.into())
 }
 
 struct ByteCounter {
@@ -333,6 +346,7 @@ mod tests {
         let servers = [(
             "docs".into(),
             ScopedMcpServer {
+                transport_type: everruns_core::McpServerTransportType::Stdio,
                 tool_discovery: false,
                 deferred: true,
                 ..Default::default()
@@ -351,17 +365,127 @@ mod tests {
         assert!(manager.statuses(session, &servers).is_empty());
     }
 
+    #[tokio::test]
+    async fn missing_stdio_command_fails_discovery_until_configuration_changes() {
+        let manager = Arc::new(McpReadiness::new(Duration::ZERO, Arc::new(NoAuthProvider)));
+        let session = SessionId::new();
+        let mut servers: ScopedMcpServers = [(
+            "local".into(),
+            ScopedMcpServer {
+                transport_type: everruns_core::McpServerTransportType::Stdio,
+                ..Default::default()
+            },
+        )]
+        .into_iter()
+        .collect();
+        let storage = everruns_core::host::HostBackends::in_memory().storage_store;
+        assert!(
+            manager
+                .discover(session, &servers, storage.as_ref())
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            manager.statuses(session, &servers),
+            vec![("local".into(), McpDiscoveryStatus::Failed)]
+        );
+
+        servers.get_mut("local").unwrap().command = Some("python3".into());
+        assert_eq!(
+            manager.statuses(session, &servers),
+            vec![("local".into(), McpDiscoveryStatus::Pending)]
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_deferred_server_stays_pending_until_revealed() {
+        let manager = Arc::new(McpReadiness::new(Duration::ZERO, Arc::new(NoAuthProvider)));
+        let session = SessionId::new();
+        let servers = [(
+            "local".into(),
+            ScopedMcpServer {
+                transport_type: everruns_core::McpServerTransportType::Stdio,
+                deferred: true,
+                ..Default::default()
+            },
+        )]
+        .into_iter()
+        .collect();
+        let storage = everruns_core::host::HostBackends::in_memory().storage_store;
+        let definitions = manager
+            .discover(session, &servers, storage.as_ref())
+            .await
+            .unwrap();
+        assert_eq!(definitions.len(), 1);
+        assert_eq!(
+            everruns_core::deferred_mcp_server_prefix(definitions[0].name()),
+            Some("local")
+        );
+        assert_eq!(
+            manager.statuses(session, &servers),
+            vec![("local".into(), McpDiscoveryStatus::Pending)]
+        );
+
+        everruns_core::reveal_deferred_mcp_server(storage.as_ref(), session, "local")
+            .await
+            .unwrap();
+        assert!(
+            manager
+                .discover(session, &servers, storage.as_ref())
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            manager.statuses(session, &servers),
+            vec![("local".into(), McpDiscoveryStatus::Failed)]
+        );
+    }
+
+    #[test]
+    fn configuration_serialization_error_is_fallible_and_redacted() {
+        struct InvalidConfiguration;
+        impl serde::Serialize for InvalidConfiguration {
+            fn serialize<S: serde::Serializer>(&self, _: S) -> Result<S::Ok, S::Error> {
+                Err(serde::ser::Error::custom("secret authorization value"))
+            }
+        }
+        let error = configuration_digest(&InvalidConfiguration).unwrap_err();
+        assert_eq!(
+            format!("{error:#}"),
+            "MCP discovery configuration could not be serialized"
+        );
+    }
+
+    #[test]
+    fn configuration_digest_preserves_canonical_json_identity() {
+        let first: serde_json::Value =
+            serde_json::from_str(r#"{"b":{"z":1,"a":2},"a":3}"#).unwrap();
+        let second: serde_json::Value =
+            serde_json::from_str(r#"{"a":3,"b":{"a":2,"z":1}}"#).unwrap();
+        assert_eq!(
+            configuration_digest(&first).unwrap(),
+            configuration_digest(&second).unwrap()
+        );
+        let expected: [u8; 32] = Sha256::digest(br#"{"a":3,"b":{"a":2,"z":1}}"#).into();
+        assert_eq!(configuration_digest(&first).unwrap(), expected);
+    }
+
     #[test]
     fn cache_identity_includes_session_name_and_full_configuration() {
         let session = SessionId::new();
         let mut server = ScopedMcpServer::default();
-        let original = cache_key(session, "docs", &server);
-        assert_ne!(original, cache_key(SessionId::new(), "docs", &server));
-        assert_ne!(original, cache_key(session, "other", &server));
+        let original = cache_key(session, "docs", &server).unwrap();
+        assert_ne!(
+            original,
+            cache_key(SessionId::new(), "docs", &server).unwrap()
+        );
+        assert_ne!(original, cache_key(session, "other", &server).unwrap());
         server
             .headers
             .insert("Authorization".into(), "changed".into());
-        assert_ne!(original, cache_key(session, "docs", &server));
+        assert_ne!(original, cache_key(session, "docs", &server).unwrap());
     }
 
     #[test]

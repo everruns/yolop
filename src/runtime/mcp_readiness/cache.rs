@@ -165,6 +165,17 @@ impl McpDiscoveryCache {
         }
     }
 
+    /// A local configuration failure has no transport work to await. Retain it
+    /// under the same entry/byte limits as remote discovery failures.
+    pub(super) fn record_invalid_configuration(&self, key: CacheKey) {
+        self.store_entry(
+            key,
+            Vec::new(),
+            Instant::now(),
+            Some(DiscoveryFailure::Transient),
+        );
+    }
+
     /// Drop every cached discovery for a session after its live capability set
     /// changes. Capability-contributed MCP servers may have been added,
     /// removed, or replaced under an existing logical server name.
@@ -488,6 +499,20 @@ mod tests {
 
     fn key() -> CacheKey {
         (Uuid::nil(), "docs".to_string(), [0; 32])
+    }
+
+    #[test]
+    fn local_configuration_failures_are_bounded_and_invalidated() {
+        let cache = McpDiscoveryCache::new();
+        for index in 0..=MAX_CACHE_ENTRIES {
+            let key = (Uuid::nil(), format!("invalid_{index}"), [0; 32]);
+            cache.record_invalid_configuration(key.clone());
+            assert_eq!(cache.status(&key), McpDiscoveryStatus::Failed);
+        }
+        assert_eq!(cache.entries().len(), MAX_CACHE_ENTRIES);
+        assert_eq!(cached_bytes(&cache.entries()), 0);
+        cache.invalidate_session(Uuid::nil());
+        assert!(cache.entries().is_empty());
     }
 
     async fn wait_for_status(
