@@ -70,7 +70,11 @@ path, so MCP tools flow through the same agent loop as the built-in tools.
   cold discovery. Background work remains bounded and supplies complete catalogs
   on later turns. `/mcp` shows pending, ready, authentication-required and failed
   states when enabled. Default discovery still blocks. ACP does not accept the
-  flag. The Framework host-services cache survives coherent runtime rebuilds.
+  flag. A local adapter over published host extension contracts retains discovery
+  across coherent runtime rebuilds until the shared Framework API is released.
+  Canonical server configuration and native tool execution stay unchanged.
+  Explicit context inspection and tool-list queries retain blocking discovery;
+  the readiness budget applies to turn preparation.
 - **Execution model**: MCP tool calls run autonomously, like every other yolop
   tool, there is no per-call approval gate.
 

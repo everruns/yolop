@@ -277,6 +277,8 @@ turns. `/mcp` distinguishes pending discovery, ready, authentication required,
 and failed discovery. The flag accepts 0 through 60000 milliseconds and is
 not available with `--acp`. After signing in through a separate terminal with
 `yolop mcp login`, run `/mcp reload` in the existing session.
+This budget applies to turn preparation; explicit context inspection and
+`/tools` retain their normal full-discovery behavior.
 
 The manual path for remote HTTP servers is `.mcp.json` at the repo root. Local
 stdio servers must be added to user-owned global configuration with

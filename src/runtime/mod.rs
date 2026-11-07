@@ -10,6 +10,8 @@ mod engine_hosting;
 mod engine_keys;
 mod engine_platform;
 mod engine_workspace;
+mod mcp_compat;
+pub(crate) mod mcp_readiness;
 pub mod migration;
 mod session_start;
 // Stopgap classifiers for OpenRouter account gates (403 attestation, 404
@@ -3407,7 +3409,6 @@ pub struct RuntimeHandles {
     /// flushed, so a second call is a no-op.
     trace_flush: Arc<tokio::sync::Mutex<Option<crate::extensions::trace::TraceFlush>>>,
     pub session: everruns::Session,
-    pub mcp_readiness_enabled: bool,
     pub host: Arc<engine::SessionHost>,
     settings: Arc<SettingsStore>,
     pending_model_choice: Arc<RwLock<Option<ProviderChoice>>>,
@@ -3630,6 +3631,9 @@ impl RuntimeHandles {
     /// model context. No mutable shadow session catalog is updated here.
     pub async fn reload_mcp_servers(&self) -> anyhow::Result<Vec<String>> {
         let names = self.mcp_config.reload().await?;
+        if let Some(readiness) = &self.host.profile.mcp_readiness {
+            readiness.invalidate_session(self.session_id);
+        }
         self.session.refresh_mcp().await?;
         Ok(names)
     }
@@ -3641,6 +3645,21 @@ impl RuntimeHandles {
     #[cfg(test)]
     pub(crate) fn configured_mcp_servers(&self) -> ScopedMcpServers {
         self.mcp_config.effective_servers()
+    }
+
+    pub(crate) async fn mcp_discovery_statuses(
+        &self,
+    ) -> anyhow::Result<Vec<(String, mcp_readiness::McpDiscoveryStatus)>> {
+        use everruns::hosting::SessionHosting;
+        let Some(readiness) = &self.host.profile.mcp_readiness else {
+            return Ok(Vec::new());
+        };
+        readiness
+            .statuses(
+                &self.host.profile.native.reader(self.session_id),
+                self.session_id,
+            )
+            .await
     }
 
     pub async fn list_mcp_tool_names(&self) -> Vec<String> {
@@ -5457,7 +5476,9 @@ pub async fn build_with_options(
             .with_model("llmsim-yolop")
     });
     driver_registry.register_provider(everruns_llmsim::llm_sim_provider(llmsim_config))?;
-    let mut services = everruns::hosting::services::HostServices::new()
+    let mcp_auth: Arc<dyn McpAuthProvider> =
+        Arc::new(StoredMcpAuthProvider::new(connections.clone()));
+    let services = everruns::hosting::services::HostServices::new()
         .providers(everruns::hosting::services::HostProviders::shared(
             provider_store.clone(),
             driver_registry,
@@ -5472,7 +5493,7 @@ pub async fn build_with_options(
                 .provider_retry_config
                 .unwrap_or_else(provider_recovery_config),
         )
-        .shared_mcp_auth(Arc::new(StoredMcpAuthProvider::new(connections.clone())))
+        .shared_mcp_auth(mcp_auth.clone())
         .request_metadata(
             everruns::hosting::services::RequestMetadata::new()
                 .entry("app", "yolop")
@@ -5480,10 +5501,15 @@ pub async fn build_with_options(
                 .entry("everruns_core_version", env!("YOLOP_EVERRUNS_CORE_VERSION"))
                 .openrouter_attribution("https://github.com/everruns/yolop", "Yolop"),
         );
-    if let Some(budget) = options.mcp_readiness_budget {
-        services = services.mcp_readiness_budget(budget);
-    }
+    let mcp_readiness = options.mcp_readiness_budget.map(|budget| {
+        Arc::new(mcp_compat::McpCompat::new(
+            budget,
+            mcp_auth,
+            capabilities.clone(),
+        ))
+    });
     let hosting = engine_hosting::YolopHosting {
+        mcp_readiness,
         native: native_hosting.clone(),
         build: engine_build.clone(),
         root: session_id,
@@ -5719,7 +5745,6 @@ pub async fn build_with_options(
     Ok(BuiltRuntime {
         handles: RuntimeHandles {
             trace_flush: Arc::new(tokio::sync::Mutex::new(Some(trace_flush))),
-            mcp_readiness_enabled: options.mcp_readiness_budget.is_some(),
             session,
             host: runtime,
             settings: settings.clone(),

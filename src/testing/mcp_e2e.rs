@@ -223,13 +223,14 @@ async fn installed_mcp_server_becomes_callable_in_the_same_turn() {
     let workspace = tempfile::tempdir().unwrap();
     let sessions = tempfile::tempdir().unwrap();
     let marker = tempfile::tempdir().unwrap();
-    let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
+    // Keep shell-edited fixtures within the workspace on contained hosts too.
+    let settings_path = workspace.path().join("settings.toml");
+    let settings = Arc::new(SettingsStore::open(settings_path.clone()));
     let ready_command = if cfg!(windows) {
         "Write-Output ready"
     } else {
         "true"
     };
-    let settings_path = sessions.path().join("settings.toml");
     let remove_command = if cfg!(windows) {
         format!(
             "Set-Content -LiteralPath '{}' -Value ''",
@@ -281,6 +282,25 @@ async fn installed_mcp_server_becomes_callable_in_the_same_turn() {
     seed_global_echo_server(&settings, &python, marker.path());
     let result = run_turn(&runtime, "finish installing and use the server").await;
     assert!(result.success, "{result:?}");
+    let events = runtime.handles.host.events().await.unwrap();
+    let shell_results = events
+        .iter()
+        .filter_map(|event| match &event.data {
+            everruns_core::EventData::ToolCompleted(data) if data.tool_name == "bash" => Some(data),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        shell_results.last().is_some_and(|data| data.success),
+        "settings removal command failed: {shell_results:?}"
+    );
+    assert!(
+        std::fs::read_to_string(&settings_path)
+            .unwrap()
+            .trim()
+            .is_empty(),
+        "settings removal command must clear the fixture before testing MCP removal"
+    );
     assert!(
         marker.path().join("echo.called").exists(),
         "the newly installed MCP tool must actually execute without a restart or manual reload"
@@ -491,44 +511,37 @@ async fn short_mcp_readiness_budget_preserves_later_turn_tools() {
         settings,
         BuildOptions {
             mcp_readiness_budget: Some(Duration::from_millis(10)),
-            llmsim_override: Some(LlmSimConfig::fixed("ready").with_model("llmsim-yolop")),
+            llmsim_override: Some(
+                LlmSimConfig::scripted(vec![
+                    SimTurn::Assistant("ready".into()),
+                    SimTurn::ToolCalls(vec![SimToolCall {
+                        name: mcp_tool("echo", "peek"),
+                        arguments: json!({"message": "later-turn"}),
+                        id: None,
+                    }]),
+                    SimTurn::Assistant("done".into()),
+                ])
+                .with_model("llmsim-yolop"),
+            ),
             ..Default::default()
         },
     )
     .await
     .unwrap();
-    tokio::time::timeout(Duration::from_secs(3), run_turn(&runtime, "say ready"))
+    tokio::time::timeout(Duration::from_secs(10), run_turn(&runtime, "say ready"))
         .await
         .expect("pending discovery must not hold the first turn");
-    let first = runtime.handles.session.inspect().await.unwrap();
-    let statuses = runtime
-        .handles
-        .session
-        .mcp_discovery_statuses()
-        .await
-        .unwrap();
-    assert!(
-        statuses.iter().any(
-            |(name, status)| name == "echo" && *status == everruns::McpDiscoveryStatus::Pending
-        )
-    );
-    assert!(
-        !first
-            .tools
-            .iter()
-            .any(|tool| tool.name == mcp_tool("echo", "peek"))
-    );
+    let statuses = runtime.handles.mcp_discovery_statuses().await.unwrap();
+    assert!(statuses.iter().any(|(name, status)| name == "echo"
+        && *status == crate::runtime::mcp_readiness::McpDiscoveryStatus::Pending));
+    assert!(!workspace.path().join("peek.called").exists());
     std::fs::write(workspace.path().join("release-discovery"), "ready").unwrap();
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
-            let statuses = runtime
-                .handles
-                .session
-                .mcp_discovery_statuses()
-                .await
-                .unwrap();
+            let statuses = runtime.handles.mcp_discovery_statuses().await.unwrap();
             if statuses.iter().any(|(name, status)| {
-                name == "echo" && *status == everruns::McpDiscoveryStatus::Ready
+                name == "echo"
+                    && *status == crate::runtime::mcp_readiness::McpDiscoveryStatus::Ready
             }) {
                 break;
             }
@@ -537,6 +550,12 @@ async fn short_mcp_readiness_budget_preserves_later_turn_tools() {
     })
     .await
     .expect("discovery must complete without another turn");
+    run_turn(&runtime, "call the echo peek tool").await;
+    assert!(
+        workspace.path().join("peek.called").exists(),
+        "completed discovery must become executable through the native Engine on a later turn"
+    );
+    // Explicit inspection retains the published native full-discovery path.
     let context = runtime.handles.session.inspect().await.unwrap();
     assert!(
         context

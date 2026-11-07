@@ -2,7 +2,8 @@
 
 ## 2026-11-07, MCP readiness
 
-- Define opt-in [MCP readiness](specs/mcp.md) and distinguish pending discovery from connection failures without changing deferred reveal or hard discovery bounds.
+- Add opt-in [MCP readiness](specs/mcp.md), distinguishing pending discovery from failures while retaining deferred reveal and bounded discovery.
+- Keep published Everruns pins unchanged. A local host adapter bridges the unreleased shared API; migrate when a compatible published version is available.
 
 ## 2026-11-07, Workspace hooks require trust
 

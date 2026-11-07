@@ -1,3 +1,4 @@
+mod mcp_status;
 // TUI app state and event loop.
 // Decision: keep the TUI surface tiny. Transcript output is published into the
 // native terminal scrollback; the renderer owns only a short footer at the
@@ -3545,15 +3546,7 @@ impl App {
             match self.session.mcp_readiness().await {
                 Ok(statuses) => {
                     for (name, status) in statuses {
-                        let status = match status {
-                            everruns::McpDiscoveryStatus::Pending => "pending discovery",
-                            everruns::McpDiscoveryStatus::Ready => "ready",
-                            everruns::McpDiscoveryStatus::AuthenticationRequired => {
-                                "authentication required"
-                            }
-                            everruns::McpDiscoveryStatus::Failed => "discovery failed",
-                        };
-                        self.push_system(format!("{name}: {status}"));
+                        self.push_system(mcp_status::line(&name, status));
                     }
                 }
                 Err(error) => self.push_system(format!("MCP readiness unavailable: {error}")),
