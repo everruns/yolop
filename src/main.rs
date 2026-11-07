@@ -2577,6 +2577,9 @@ async fn run_print_mode(
         ..
     } = runtime;
     let _ = (&startup.session_dir, &startup.session_log_path);
+    if let Some(notice) = &startup.untrusted_hooks_notice {
+        eprintln!("yolop: {notice}");
+    }
     let prompt = prompt.trim().to_string();
     let mut input = model.input_message_with_images(&prompt, images);
     let mut background_deadline = None;

@@ -100,7 +100,7 @@ Every global path derives from one of two roots, both owned by
 
 | Root   | Default                     | Holds                                                        |
 |--------|-----------------------------|--------------------------------------------------------------|
-| config | `<config_dir>/yolop/`       | `settings.toml`, `profiles/`, `hooks.json`, `extensions/`     |
+| config | `<config_dir>/yolop/`       | `settings.toml`, `profiles/`, `hooks.json`, `hook-trust.json`, `extensions/` |
 | data   | `<data_dir>/yolop/`         | `sessions/`, `logs/`, `models/`, `prompt_history.jsonl`, materialized system skills, `crashes/` |
 
 `<config_dir>` and `<data_dir>` are the platform directories (`~/.config` and
@@ -282,11 +282,11 @@ guided provider setup is **`/setup`**. Model selection and model-list edits go
 through the attached `config` command; other settings retain their dedicated
 setup and control surfaces.
 
-Hook configuration is managed under the configuration command: `yolop config hooks list|get|set|remove`. Skill packages use the separate top-level `yolop skills ...` management command.
+Hook configuration is managed under the configuration command: `yolop config hooks list|get|set|remove|trust`. Skill packages use the separate top-level `yolop skills ...` management command.
 
 ## Detached management commands
 
-`yolop config hooks` manages global and workspace hook files through the same `HooksStore` used at startup. Skill package administration is a separate top-level `yolop skills` command. Neither management surface is registered as model tools.
+`yolop config hooks` manages global and workspace hook files through the same `HooksStore` used at startup. `trust` is accepted only from the user's terminal, never through a session's control endpoint ([Hooks](hooks.md#trust-model)). Skill package administration is a separate top-level `yolop skills` command. Neither management surface is registered as model tools.
 
 ### Provider credit failures
 

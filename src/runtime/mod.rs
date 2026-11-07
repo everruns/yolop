@@ -3706,6 +3706,10 @@ pub struct StartupInfo {
     pub hook_scope_counts: std::collections::BTreeMap<String, usize>,
     pub disabled_hook_contribution_count: usize,
     pub hook_configured: bool,
+    /// Notice naming a workspace hooks file that was skipped because the user
+    /// has not trusted its current contents. Each surface shows it once at
+    /// startup: the TUI as a system line, print mode on stderr.
+    pub untrusted_hooks_notice: Option<String>,
 }
 
 impl StartupInfo {
@@ -4545,6 +4549,10 @@ pub async fn build_with_options(
     let hook_scope_counts = effective_hooks.scope_counts();
     let disabled_hook_contribution_count = effective_hooks.disabled_contributions.len();
     let hook_configured = !effective_hooks.is_empty();
+    let untrusted_hooks_notice = effective_hooks
+        .untrusted_workspace
+        .as_ref()
+        .map(crate::config::hooks::UntrustedWorkspaceHooks::notice);
     let hook_capability_config = hook_configured.then(|| effective_hooks.capability_config());
     let settings_snapshot = settings.snapshot();
     let mut harness_capabilities = coding_harness_capabilities(
@@ -5735,6 +5743,7 @@ pub async fn build_with_options(
             hook_scope_counts,
             disabled_hook_contribution_count,
             hook_configured,
+            untrusted_hooks_notice,
         },
         model: ModelState::new(
             provider_state,

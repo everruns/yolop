@@ -1754,6 +1754,9 @@ impl App {
         B::Error: std::error::Error + Send + Sync + 'static,
     {
         self.emit_replayed_transcript().await;
+        if let Some(notice) = self.startup.untrusted_hooks_notice.take() {
+            self.push_system(notice);
+        }
         // Terminal I/O fails transiently in the wild, so one failed loop
         // iteration must not end the session. The motivating case:
         // xterm.js-backed hosts (ttyd, vhs recordings) resize the PTY

@@ -73,7 +73,12 @@ impl ControlCapability for HooksCapability {
                     "paths": {
                         "global": effective.global_path,
                         "workspace": effective.workspace_path,
-                    }
+                    },
+                    "untrusted_workspace": effective.untrusted_workspace.as_ref().map(|skipped| json!({
+                        "path": skipped.path,
+                        "hook_count": skipped.hook_count,
+                        "notice": skipped.notice(),
+                    })),
                 }))
             }
             "validate" => {
@@ -97,10 +102,13 @@ impl ControlCapability for HooksCapability {
                     return ToolExecutionResult::tool_error("hook is required");
                 };
                 match self.hooks.upsert_hook(scope, hook.clone()) {
-                    Ok(saved) => ToolExecutionResult::success(json!({
-                        "ok": true,
-                        "hook": saved.to_summary_json(),
-                    })),
+                    Ok(saved) => ToolExecutionResult::success(self.with_trust_note(
+                        scope,
+                        json!({
+                            "ok": true,
+                            "hook": saved.to_summary_json(),
+                        }),
+                    )),
                     Err(error) => ToolExecutionResult::tool_error(error.to_string()),
                 }
             }
@@ -111,12 +119,15 @@ impl ControlCapability for HooksCapability {
                 };
                 let id = action.get("id").and_then(Value::as_str).unwrap_or_default();
                 match self.hooks.remove_hook(scope, id) {
-                    Ok(removed) => ToolExecutionResult::success(json!({
-                        "ok": true,
-                        "id": id,
-                        "scope": scope.as_str(),
-                        "removed": removed,
-                    })),
+                    Ok(removed) => ToolExecutionResult::success(self.with_trust_note(
+                        scope,
+                        json!({
+                            "ok": true,
+                            "id": id,
+                            "scope": scope.as_str(),
+                            "removed": removed,
+                        }),
+                    )),
                     Err(error) => ToolExecutionResult::tool_error(error.to_string()),
                 }
             }
@@ -128,6 +139,19 @@ impl ControlCapability for HooksCapability {
 
     fn render_control(&self, _action: &Value, response: &ControlResponse) -> String {
         response.render_default()
+    }
+}
+
+impl HooksCapability {
+    /// A session write to the workspace file revokes its trust pin; say so,
+    /// as the `config` route does.
+    fn with_trust_note(&self, scope: HookScope, mut value: Value) -> Value {
+        if let Some(note) = self.hooks.untrusted_after_write_note(scope)
+            && let Value::Object(map) = &mut value
+        {
+            map.insert("note".to_string(), Value::String(note));
+        }
+        value
     }
 }
 
@@ -153,5 +177,48 @@ mod tests {
         assert!(capability.tools().is_empty());
         assert_eq!(capability.control_route().resource, "hooks");
         assert_eq!(capability.control_route().cli_subcommand, "config hooks");
+    }
+
+    #[tokio::test]
+    async fn session_workspace_write_reports_that_hooks_are_untrusted() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = tmp.path().join("ws");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let capability =
+            HooksCapability::new(HooksStore::new(tmp.path().join("hooks.json"), workspace));
+        let hook = json!({
+            "id": "from-session",
+            "event": "pre_tool_use",
+            "matcher": { "tool_name": "bash" },
+            "executor": { "type": "bash", "command": "true" },
+            "timeout_ms": 1000,
+            "on_error": "block",
+        });
+
+        let ToolExecutionResult::Success(global) = capability
+            .execute_control(&json!({"operation": "upsert", "scope": "global", "hook": hook}))
+            .await
+        else {
+            panic!("global upsert failed");
+        };
+        assert!(global.get("note").is_none());
+
+        let ToolExecutionResult::Success(saved) = capability
+            .execute_control(&json!({"operation": "upsert", "scope": "workspace", "hook": hook}))
+            .await
+        else {
+            panic!("workspace upsert failed");
+        };
+        assert!(saved["note"].as_str().unwrap().contains("is not trusted"));
+
+        let ToolExecutionResult::Success(removed) = capability
+            .execute_control(
+                &json!({"operation": "remove", "scope": "workspace", "id": "from-session"}),
+            )
+            .await
+        else {
+            panic!("workspace remove failed");
+        };
+        assert!(removed["note"].as_str().unwrap().contains("is not trusted"));
     }
 }

@@ -34,6 +34,8 @@ Two user-authored scopes are supported:
    Personal automation shared across every workspace.
 2. **Workspace**: `<workspace>/.agents/hooks.json`.
    Project-owned automation that can be reviewed and committed with the repo.
+   It loads only while the user trusts its current contents; see
+   [Trust Model](#trust-model).
 
 The config format is JSON because the upstream `user_hooks` capability already
 owns a JSON schema for `UserHookSpec`. yolop reads the two files, merges them
@@ -167,9 +169,43 @@ Hook output is capped by the upstream executor.
 
 ## Trust Model
 
-Hooks are code execution. Workspace hooks are therefore a project trust signal,
-similar to a committed build script or MCP stdio server list. Global hooks are
-personal and live under the user's config dir.
+Hooks are code execution with no model involvement: `session_start` hooks run
+at process start in every mode, before any user interaction, through the host
+shell with the full environment (provider keys, tokens) and no sandbox. A
+workspace hooks file arrives with a clone, so loading it unasked would let a
+tracked repository file execute a command. Workspace stdio MCP servers are
+refused for the same reason ([MCP](mcp.md)).
+
+Workspace hooks therefore require explicit trust:
+
+- `yolop config hooks trust`, run in the workspace, records the canonical
+  workspace path and the SHA-256 of the file bytes in
+  `<config_dir>/yolop/hook-trust.json`, beside the global `hooks.json`.
+  `--revoke` drops the record.
+- Until the stored digest matches the file on disk, the whole workspace file
+  is ignored: its hooks for every event, its `disabled` markers and its
+  `disabled_contributions`. Any byte change, from a pull or from the agent,
+  revokes trust.
+- The digest is computed over the same bytes that are parsed, so the file
+  cannot change between the check and the load.
+- Trust is granted only from the user's own terminal. The session control
+  endpoint, reachable from the agent's shell, refuses `trust`, and a workspace
+  write made through it leaves the file untrusted. A write from the terminal
+  (`config hooks set|remove --scope workspace`) keeps the file trusted only if
+  it was trusted, or absent, before, so an edit cannot launder unreviewed
+  repository content.
+- When a file is skipped the user is told once: a system line in the TUI, a
+  stderr line in `--print`, a warning in the log for ACP and serve. The notice
+  names the file and the trust command. `config hooks list` reports the skip.
+- The record lives outside every workspace: no repository can ship one, and a
+  sandboxed session cannot write it.
+
+A CLI command was chosen over a startup prompt: trust must come from outside
+the session the hooks would run in, `-p` and ACP runs have no one to ask, and a
+prompt shown on every changed file trains users to accept it.
+
+Global hooks are personal, live under the user's config dir, and need no trust
+record.
 
 v1 behavior:
 
@@ -196,16 +232,23 @@ Implemented:
    management is not exposed as model tools.
 5. Tests cover merge behavior, hook CLI management, and a scripted llmsim
    `pre_tool_use` hook that blocks a matching `bash` tool call.
+6. `src/config/hook_trust.rs` stores workspace trust records; `HooksStore`
+   applies them. Tests cover an untrusted workspace hook not running (tool-use
+   and `session_start`), a trusted one running, an edit revoking trust, global
+   hooks being unaffected, and the session endpoint refusing `trust`.
 
 Follow-up:
 
 - Add more embedded hook recipes once the minimal tool
   surface has settled.
+- Run `session_start` hooks under the configured sandbox with a scrubbed
+  environment; trusted hooks still get the full host environment today.
 
 ## Non-goals
 
 - No new hook events beyond upstream's six-event contract.
-- No per-hook approval prompt. The act of writing the config is consent.
+- No per-hook approval prompt. Trusting a workspace file approves all of it;
+  writing the global file is consent.
 - No secret storage in hook config.
 - No TOML format until there is a concrete reason to diverge from upstream's
   JSON schema.
@@ -213,4 +256,4 @@ Follow-up:
 
 ## Management surface
 
-Hook management is explicit CLI configuration, not a model tool surface. Use `yolop config hooks list`, `get`, `set`, and `remove`. Runtime hook execution remains model-independent.
+Hook management is explicit CLI configuration, not a model tool surface. Use `yolop config hooks list`, `get`, `set`, `remove`, and `trust`. Runtime hook execution remains model-independent.

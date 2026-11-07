@@ -148,6 +148,29 @@ enum HooksCommand {
         #[arg(long, value_enum, default_value = "global")]
         scope: HookScopeArg,
     },
+    /// Trust this workspace's `.agents/hooks.json` exactly as it is now.
+    ///
+    /// Workspace hooks run shell commands with your environment, so yolop
+    /// ignores them until you trust the file. Any later change to the file
+    /// needs a new trust. Run it from your own terminal: a running session
+    /// refuses it.
+    #[command(
+        after_help = "Examples:\n  Review, then enable this workspace's hooks:\n    cat .agents/hooks.json\n    yolop config hooks trust\n\n  Stop running them again:\n    yolop config hooks trust --revoke"
+    )]
+    Trust {
+        /// Forget the trust record for this workspace.
+        #[arg(long)]
+        revoke: bool,
+    },
+}
+
+/// Who asked for a hooks command. Trust decisions are only taken from the
+/// user's own terminal: the session control endpoint is reachable from the
+/// agent's shell, so it must not be able to approve hooks the agent wrote.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HooksOrigin {
+    Terminal,
+    Session,
 }
 
 #[derive(Debug, Subcommand)]
@@ -260,11 +283,10 @@ impl ControlCapability for ConfigCapability {
     async fn execute_control(&self, action: &Value) -> ToolExecutionResult {
         if let Some(value) = action.get("hooks") {
             return match serde_json::from_value::<HooksCommand>(value.clone()) {
-                Ok(command) => {
-                    execute_hooks_cli(&self.hooks_store, command).unwrap_or_else(|error| {
+                Ok(command) => execute_hooks_cli(&self.hooks_store, command, HooksOrigin::Session)
+                    .unwrap_or_else(|error| {
                         ToolExecutionResult::tool_error(format!("manage hooks: {error:#}"))
-                    })
-                }
+                    }),
                 Err(error) => {
                     ToolExecutionResult::tool_error(format!("invalid hooks action: {error}"))
                 }
@@ -308,7 +330,7 @@ impl CliCapability for ConfigCapability {
     async fn execute_cli(&self, request: &ControlRequest) -> anyhow::Result<()> {
         if let Some(value) = request.action.get("hooks") {
             let command: HooksCommand = serde_json::from_value(value.clone())?;
-            let result = execute_hooks_cli(&self.hooks_store, command)?;
+            let result = execute_hooks_cli(&self.hooks_store, command, HooksOrigin::Terminal)?;
             println!("{}", tool_result_json(result));
             return Ok(());
         }
@@ -1159,9 +1181,46 @@ fn tool_result_json(result: ToolExecutionResult) -> String {
 fn execute_hooks_cli(
     store: &HooksStore,
     command: HooksCommand,
+    origin: HooksOrigin,
 ) -> anyhow::Result<ToolExecutionResult> {
+    let workspace_path = store.path_for(HookScope::Workspace).display().to_string();
     let value = match command {
-        HooksCommand::List => serde_json::json!({ "hooks": store.effective().summaries() }),
+        HooksCommand::List => {
+            let effective = store.effective();
+            let mut value = serde_json::json!({ "hooks": effective.summaries() });
+            if let Some(skipped) = &effective.untrusted_workspace {
+                value["untrusted_workspace"] = serde_json::json!({
+                    "path": skipped.path,
+                    "hook_count": skipped.hook_count,
+                    "notice": skipped.notice(),
+                });
+            }
+            value
+        }
+        HooksCommand::Trust { .. } if origin == HooksOrigin::Session => {
+            return Ok(ToolExecutionResult::tool_error(format!(
+                "hook trust can only be changed from your own terminal, outside a yolop session; review {workspace_path} and run `yolop config hooks trust` there"
+            )));
+        }
+        HooksCommand::Trust { revoke: true } => serde_json::json!({
+            "path": workspace_path,
+            "revoked": store.revoke_workspace_trust()?,
+        }),
+        HooksCommand::Trust { revoke: false } => {
+            let digest = store.trust_workspace()?;
+            let hooks: Vec<_> = store
+                .effective()
+                .summaries()
+                .into_iter()
+                .filter(|hook| hook["scope"] == "workspace")
+                .collect();
+            serde_json::json!({
+                "path": workspace_path,
+                "trusted": true,
+                "sha256": digest,
+                "hooks": hooks,
+            })
+        }
         HooksCommand::Get { id, scope } => {
             let scope = scope.map(HookScope::from);
             let hook = store.effective().hooks.into_iter().find(|hook| {
@@ -1183,13 +1242,45 @@ fn execute_hooks_cli(
                 "executor": { "type": "bash", "command": command },
                 "enabled": !disabled,
             });
-            serde_json::to_value(store.upsert_hook(scope.into(), hook)?)?
+            let scope = HookScope::from(scope);
+            let before = store.workspace_trust();
+            let saved = serde_json::to_value(store.upsert_hook(scope, hook)?)?;
+            with_trust_after_write(store, scope, origin, before, saved)?
         }
         HooksCommand::Remove { id, scope } => {
-            serde_json::json!({ "removed": store.remove_hook(scope.into(), &id)?, "id": id })
+            let scope = HookScope::from(scope);
+            let before = store.workspace_trust();
+            let removed =
+                serde_json::json!({ "removed": store.remove_hook(scope, &id)?, "id": id });
+            with_trust_after_write(store, scope, origin, before, removed)?
         }
     };
     Ok(ToolExecutionResult::success(value))
+}
+
+/// A workspace write from the user's terminal keeps an already trusted (or
+/// new) file enabled. Anything else leaves the file untrusted and says so.
+fn with_trust_after_write(
+    store: &HooksStore,
+    scope: HookScope,
+    origin: HooksOrigin,
+    before: anyhow::Result<crate::config::hooks::WorkspaceTrust>,
+    mut value: Value,
+) -> anyhow::Result<Value> {
+    if scope != HookScope::Workspace {
+        return Ok(value);
+    }
+    if origin == HooksOrigin::Terminal
+        && let Ok(before) = &before
+    {
+        store.retrust_after_terminal_write(before)?;
+    }
+    if let Some(note) = store.untrusted_after_write_note(scope)
+        && let Value::Object(map) = &mut value
+    {
+        map.insert("note".to_string(), Value::String(note));
+    }
+    Ok(value)
 }
 
 #[cfg(test)]
@@ -1307,6 +1398,7 @@ mod tests {
                 HooksCommand::Get { .. } => "get",
                 HooksCommand::Remove { .. } => "remove",
                 HooksCommand::Set { .. } => "set",
+                HooksCommand::Trust { .. } => "trust",
             };
             assert_eq!(actual, expected);
         }
@@ -1340,6 +1432,56 @@ mod tests {
 
         assert!(response.ok, "attached hooks action: {response:?}");
         assert!(workspace.join(".agents/hooks.json").is_file());
+    }
+
+    #[tokio::test]
+    async fn session_cannot_trust_workspace_hooks_but_terminal_can() {
+        let (tmp, settings) = store();
+        let workspace = tmp.path().join("active-workspace");
+        let model_list = Arc::new(ModelListCapability::new(settings.clone(), None));
+        let hooks_store = Arc::new(HooksStore::beside_settings(&settings, workspace.clone()));
+        let capability = ConfigCapability {
+            hooks_store: hooks_store.clone(),
+            settings,
+            catalog: catalog(),
+            model_list,
+        };
+        // A session-side write leaves the new file untrusted and says so.
+        let set = cli_request(&[
+            "config",
+            "hooks",
+            "set",
+            "sample",
+            "pre_tool_use",
+            "--command",
+            "true",
+            "--scope",
+            "workspace",
+        ]);
+        let response =
+            ControlResponse::from_tool_result(capability.execute_control(&set.action).await);
+        assert!(response.ok, "{response:?}");
+        assert!(response.render_default().contains("is not trusted"));
+        assert!(hooks_store.effective().untrusted_workspace.is_some());
+
+        let trust = cli_request(&["config", "hooks", "trust"]);
+        let response =
+            ControlResponse::from_tool_result(capability.execute_control(&trust.action).await);
+        assert!(!response.ok, "session must not grant trust");
+        assert!(hooks_store.effective().untrusted_workspace.is_some());
+
+        capability
+            .execute_cli(&trust)
+            .await
+            .expect("terminal trust");
+        assert!(hooks_store.effective().untrusted_workspace.is_none());
+        assert_eq!(hooks_store.effective().hooks.len(), 1);
+
+        capability
+            .execute_cli(&cli_request(&["config", "hooks", "trust", "--revoke"]))
+            .await
+            .expect("terminal revoke");
+        assert!(hooks_store.effective().untrusted_workspace.is_some());
     }
 
     #[test]

@@ -62,7 +62,25 @@ async fn build_scripted_runtime_with_workspace(
 async fn build_scripted_runtime_with_workspace_and_options(
     config: LlmSimConfig,
     setup_workspace: impl FnOnce(&std::path::Path),
+    options: BuildOptions,
+) -> (BuiltRuntime, std::path::PathBuf) {
+    build_scripted_runtime_inner(config, setup_workspace, options, false).await
+}
+
+/// Like [`build_scripted_runtime_with_workspace`], with the workspace
+/// `.agents/hooks.json` written by `setup_workspace` trusted by the user.
+async fn build_scripted_runtime_with_trusted_hooks(
+    config: LlmSimConfig,
+    setup_workspace: impl FnOnce(&std::path::Path),
+) -> (BuiltRuntime, std::path::PathBuf) {
+    build_scripted_runtime_inner(config, setup_workspace, BuildOptions::default(), true).await
+}
+
+async fn build_scripted_runtime_inner(
+    config: LlmSimConfig,
+    setup_workspace: impl FnOnce(&std::path::Path),
     mut options: BuildOptions,
+    trust_workspace_hooks: bool,
 ) -> (BuiltRuntime, std::path::PathBuf) {
     let workspace_root = tempfile::tempdir().expect("workspace tempdir").keep();
     let sessions_root = tempfile::tempdir().expect("sessions tempdir").keep();
@@ -71,6 +89,11 @@ async fn build_scripted_runtime_with_workspace_and_options(
     options.llmsim_override = Some(config.with_model("llmsim-yolop"));
     let settings_path = sessions_root.join("settings.toml");
     let settings = Arc::new(SettingsStore::open(settings_path));
+    if trust_workspace_hooks {
+        crate::config::hooks::HooksStore::beside_settings(&settings, workspace_root.clone())
+            .trust_workspace()
+            .expect("trust workspace hooks");
+    }
     let runtime = build_with_options(
         workspace_root.clone(),
         ProviderChoice::Sim,
@@ -398,21 +421,55 @@ async fn predictable_long_command_returns_immediately_and_terminal_result_is_dur
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn workspace_hook_blocks_matching_bash_call() {
+    let (runtime, workspace, marker) = run_git_against_workspace_hook(true).await;
+
+    assert!(
+        !workspace.join(marker).exists(),
+        "pre_tool_use hook must block bash before it creates {marker:?}"
+    );
+    assert_eq!(
+        runtime.startup.hook_count, 1,
+        "workspace hook should be loaded into startup info"
+    );
+    assert!(runtime.startup.untrusted_hooks_notice.is_none());
+}
+
+/// A repository's hooks file is ignored until the user trusts it, and the
+/// skip is reported once through startup info.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn untrusted_workspace_hook_does_not_run() {
+    let (runtime, workspace, marker) = run_git_against_workspace_hook(false).await;
+
+    assert!(
+        workspace.join(marker).exists(),
+        "untrusted pre_tool_use hook must not intercept bash"
+    );
+    assert_eq!(runtime.startup.hook_count, 0);
+    let notice = runtime
+        .startup
+        .untrusted_hooks_notice
+        .as_deref()
+        .expect("skip is reported");
+    assert!(notice.contains(".agents") && notice.contains("yolop config hooks trust"));
+}
+
+async fn run_git_against_workspace_hook(
+    trusted: bool,
+) -> (BuiltRuntime, std::path::PathBuf, &'static str) {
     let marker = "git_hook_should_block.marker";
     let cmd = format!("git status > {marker}");
-    let (runtime, workspace) = build_scripted_runtime_with_workspace(
-        LlmSimConfig::scripted(vec![
-            SimTurn::ToolCalls(vec![SimToolCall {
-                name: "bash".to_string(),
-                arguments: json!({ "command": cmd }),
-                id: None,
-            }]),
-            SimTurn::Assistant("git was blocked".to_string()),
-        ]),
-        |workspace| {
-            let hooks_dir = workspace.join(".agents");
-            std::fs::create_dir_all(&hooks_dir).expect("create hooks dir");
-            std::fs::write(
+    let config = LlmSimConfig::scripted(vec![
+        SimTurn::ToolCalls(vec![SimToolCall {
+            name: "bash".to_string(),
+            arguments: json!({ "command": cmd }),
+            id: None,
+        }]),
+        SimTurn::Assistant("git was blocked".to_string()),
+    ]);
+    let setup = |workspace: &std::path::Path| {
+        let hooks_dir = workspace.join(".agents");
+        std::fs::create_dir_all(&hooks_dir).expect("create hooks dir");
+        std::fs::write(
                 hooks_dir.join("hooks.json"),
                 r#"{
                   "hooks": [
@@ -436,21 +493,16 @@ async fn workspace_hook_blocks_matching_bash_call() {
                 }"#,
             )
             .expect("write hooks config");
-        },
-    )
-    .await;
+    };
+    let (runtime, workspace) = if trusted {
+        build_scripted_runtime_with_trusted_hooks(config, setup).await
+    } else {
+        build_scripted_runtime_with_workspace(config, setup).await
+    };
 
     let result = run_single_turn(&runtime, "try git").await;
-
-    assert!(result.success, "agent should continue after blocked tool");
-    assert!(
-        !workspace.join(marker).exists(),
-        "pre_tool_use hook must block bash before it creates {marker:?}"
-    );
-    assert_eq!(
-        runtime.startup.hook_count, 1,
-        "workspace hook should be loaded into startup info"
-    );
+    assert!(result.success, "agent should continue after the tool call");
+    (runtime, workspace, marker)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
