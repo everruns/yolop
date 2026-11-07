@@ -491,7 +491,7 @@ async fn short_mcp_readiness_budget_preserves_later_turn_tools() {
         settings,
         BuildOptions {
             mcp_readiness_budget: Some(Duration::from_millis(10)),
-            llmsim_override: Some(LlmSimConfig::fixed("ready")),
+            llmsim_override: Some(LlmSimConfig::fixed("ready").with_model("llmsim-yolop")),
             ..Default::default()
         },
     )
