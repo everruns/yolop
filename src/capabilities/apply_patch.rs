@@ -934,6 +934,12 @@ mod tests {
                 "A\r\nb\r\nc\nD\r\n",
             ),
             ("old\nlast\n", "-old\n+new", "new\nlast\n"),
+            (
+                "\u{feff}привіт\n\r\nold\r\n\n",
+                "-old\n+new",
+                "\u{feff}привіт\n\r\nnew\r\n\n",
+            ),
+            ("head\nold\r\n", "-old\n+new\n ", "head\nnew\r\n"),
             ("old\r\nlast\r\n", "-old\n+new", "new\r\nlast\r\n"),
             ("", "+new", "new\n"),
             ("old\n", "-old", ""),
