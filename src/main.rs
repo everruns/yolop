@@ -134,6 +134,11 @@ struct Cli {
     #[arg(long)]
     reasoning_effort: Option<String>,
 
+    /// Stop waiting for cold MCP discovery after this many milliseconds.
+    /// Pending servers keep connecting and expose tools on later turns.
+    #[arg(long, value_name = "MS", conflicts_with = "acp", value_parser = clap::value_parser!(u64).range(0..=60000))]
+    mcp_readiness_ms: Option<u64>,
+
     /// Run a single prompt non-interactively and print the result. Useful for CI smoke tests.
     #[arg(short = 'p', long)]
     print: Option<String>,
@@ -1250,6 +1255,7 @@ async fn async_main(crash_reporter: &crash_report::CrashReporter) -> Result<()> 
         settings,
         runtime::BuildOptions {
             client_commands: interactive,
+            mcp_readiness_budget: cli.mcp_readiness_ms.map(std::time::Duration::from_millis),
             client_ui: if interactive {
                 ClientUiContext::Tui
             } else {
@@ -3426,6 +3432,25 @@ mod tests {
         );
     }
 
+    #[test]
+    fn cli_mcp_readiness_budget_is_opt_in_and_bounded() {
+        assert_eq!(
+            Cli::try_parse_from(["yolop"]).unwrap().mcp_readiness_ms,
+            None
+        );
+        for value in ["0", "250", "60000"] {
+            assert_eq!(
+                Cli::try_parse_from(["yolop", "--mcp-readiness-ms", value])
+                    .unwrap()
+                    .mcp_readiness_ms,
+                Some(value.parse().unwrap())
+            );
+        }
+        assert!(Cli::try_parse_from(["yolop", "--mcp-readiness-ms", "60001"]).is_err());
+        assert!(Cli::try_parse_from(["yolop", "--mcp-readiness-ms", "-1"]).is_err());
+        assert!(Cli::try_parse_from(["yolop", "--acp", "--mcp-readiness-ms", "250"]).is_err());
+    }
+
     fn cli_with_reasoning_effort(reasoning_effort: Option<&str>) -> Cli {
         Cli {
             command: None,
@@ -3437,6 +3462,7 @@ mod tests {
             model: Some("nvidia/nemotron-3-super-120b-a12b".to_string()),
             reasoning_effort: reasoning_effort.map(str::to_string),
             print: None,
+            mcp_readiness_ms: None,
             images: vec![],
             acp: false,
             serve: false,
@@ -3554,6 +3580,7 @@ mod tests {
             model: None,
             reasoning_effort: None,
             print: None,
+            mcp_readiness_ms: None,
             images: vec![],
             acp: false,
             serve: false,

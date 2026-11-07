@@ -2082,7 +2082,7 @@ impl App {
         if self.apply_openrouter_login_events().await {
             return Ok(());
         }
-        if self.apply_mcp_login_events() {
+        if self.apply_mcp_login_events().await {
             return Ok(());
         }
 
@@ -3542,6 +3542,22 @@ impl App {
                     self.startup.mcp_server_names.join(", ")
                 ));
             }
+            match self.session.mcp_readiness().await {
+                Ok(statuses) => {
+                    for (name, status) in statuses {
+                        let status = match status {
+                            everruns::McpDiscoveryStatus::Pending => "pending discovery",
+                            everruns::McpDiscoveryStatus::Ready => "ready",
+                            everruns::McpDiscoveryStatus::AuthenticationRequired => {
+                                "authentication required"
+                            }
+                            everruns::McpDiscoveryStatus::Failed => "discovery failed",
+                        };
+                        self.push_system(format!("{name}: {status}"));
+                    }
+                }
+                Err(error) => self.push_system(format!("MCP readiness unavailable: {error}")),
+            }
             self.push_system(Self::MCP_USAGE.into());
             return;
         };
@@ -3858,7 +3874,7 @@ impl App {
         });
     }
 
-    fn apply_mcp_login_events(&mut self) -> bool {
+    async fn apply_mcp_login_events(&mut self) -> bool {
         let mut applied = false;
         while let Ok(event) = self.mcp_login_rx.try_recv() {
             let McpLoginEvent::Finished {
@@ -3880,9 +3896,14 @@ impl App {
                         &provider_key,
                         tokens,
                     ) {
-                        Ok(()) => self.push_system(format!(
-                            "signed in to `{name}` — the token is active on your next message"
-                        )),
+                        Ok(()) => match self.session.reload_mcp_servers().await {
+                            Ok(_) => self.push_system(format!(
+                                "signed in to `{name}`, the token is active on your next message"
+                            )),
+                            Err(error) => self.push_system(format!(
+                                "signed in to `{name}`, but refreshing MCP failed: {error}. Run `/mcp reload` before retrying."
+                            )),
+                        },
                         Err(error) => self.push_system(format!(
                             "saved login for `{name}` failed to persist: {error}"
                         )),

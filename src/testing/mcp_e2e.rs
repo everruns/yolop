@@ -460,3 +460,88 @@ async fn reload_removes_mcp_server_live() {
         "the removed MCP server must not execute after reload"
     );
 }
+
+/// A real slow stdio server must not hold the first turn, and the shared
+/// discovery must survive coherent runtime replacement for subsequent turns.
+#[tokio::test]
+async fn short_mcp_readiness_budget_preserves_later_turn_tools() {
+    let Some(python) = require_python3("short_mcp_readiness_budget_preserves_later_turn_tools")
+    else {
+        return;
+    };
+    let workspace = tempfile::tempdir().unwrap();
+    let sessions = tempfile::tempdir().unwrap();
+    let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
+    seed_global_echo_server(&settings, &python, workspace.path());
+    let mut config = settings.snapshot().mcp;
+    config.servers.get_mut("echo").unwrap().server.args.extend([
+        "0".into(),
+        workspace
+            .path()
+            .join("release-discovery")
+            .display()
+            .to_string(),
+    ]);
+    settings.replace_mcp(config).unwrap();
+    let runtime = build_with_options(
+        workspace.path().to_path_buf(),
+        ProviderChoice::Sim,
+        None,
+        sessions.path().to_path_buf(),
+        settings,
+        BuildOptions {
+            mcp_readiness_budget: Some(Duration::from_millis(10)),
+            llmsim_override: Some(LlmSimConfig::fixed("ready")),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    tokio::time::timeout(Duration::from_secs(3), run_turn(&runtime, "say ready"))
+        .await
+        .expect("pending discovery must not hold the first turn");
+    let first = runtime.handles.session.inspect().await.unwrap();
+    let statuses = runtime
+        .handles
+        .session
+        .mcp_discovery_statuses()
+        .await
+        .unwrap();
+    assert!(
+        statuses.iter().any(
+            |(name, status)| name == "echo" && *status == everruns::McpDiscoveryStatus::Pending
+        )
+    );
+    assert!(
+        !first
+            .tools
+            .iter()
+            .any(|tool| tool.name == mcp_tool("echo", "peek"))
+    );
+    std::fs::write(workspace.path().join("release-discovery"), "ready").unwrap();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let statuses = runtime
+                .handles
+                .session
+                .mcp_discovery_statuses()
+                .await
+                .unwrap();
+            if statuses.iter().any(|(name, status)| {
+                name == "echo" && *status == everruns::McpDiscoveryStatus::Ready
+            }) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("discovery must complete without another turn");
+    let context = runtime.handles.session.inspect().await.unwrap();
+    assert!(
+        context
+            .tools
+            .iter()
+            .any(|tool| tool.name == mcp_tool("echo", "peek"))
+    );
+}

@@ -1,5 +1,9 @@
 # Knowledge Log
 
+## 2026-11-07, MCP readiness
+
+- Define opt-in [MCP readiness](specs/mcp.md) and distinguish pending discovery from connection failures without changing deferred reveal or hard discovery bounds.
+
 ## 2026-11-07, Workspace hooks require trust
 
 - [Hooks](specs/hooks.md): a workspace `.agents/hooks.json` loads only after

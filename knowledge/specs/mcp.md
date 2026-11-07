@@ -62,13 +62,15 @@ path, so MCP tools flow through the same agent loop as the built-in tools.
   not rewrite the session. `/mcp enable|disable|remove` mutate config and immediately re-apply;
   `/mcp reload` re-reads config from disk (picking up `yolop mcp add`, hand
   edits, or the agent's own config tools). The runtime resolves a session's
-  scoped MCP servers per turn from `session.mcp_servers` and never negatively
-  caches a failed or empty discovery, so swapping that field
-  (`RuntimeHandles::reload_mcp_servers`) is enough: added servers are discovered
-  cold on the next turn and removed ones drop out of the tool set. A server
-  whose config changes but keeps the same name is served from the ≤1h discovery
-  cache until it revalidates (stale-while-revalidate), enable/disable/add/
-  remove are unaffected.
+  scoped MCP servers per turn. Discovery cache keys include session and full
+  attachment configuration, so same-name changes cannot reuse a previous
+  connection's catalog. Authentication failures hold until reload or changed
+  configuration; transient failures use a short retry cooldown.
+- **Interactive readiness**: `--mcp-readiness-ms` optionally limits waiting for
+  cold discovery. Background work remains bounded and supplies complete catalogs
+  on later turns. `/mcp` shows pending, ready, authentication-required and failed
+  states when enabled. Default discovery still blocks. ACP does not accept the
+  flag. The Framework host-services cache survives coherent runtime rebuilds.
 - **Execution model**: MCP tool calls run autonomously, like every other yolop
   tool, there is no per-call approval gate.
 

@@ -3407,6 +3407,7 @@ pub struct RuntimeHandles {
     /// flushed, so a second call is a no-op.
     trace_flush: Arc<tokio::sync::Mutex<Option<crate::extensions::trace::TraceFlush>>>,
     pub session: everruns::Session,
+    pub mcp_readiness_enabled: bool,
     pub host: Arc<engine::SessionHost>,
     settings: Arc<SettingsStore>,
     pending_model_choice: Arc<RwLock<Option<ProviderChoice>>>,
@@ -3628,7 +3629,9 @@ impl RuntimeHandles {
     /// Engine resolves this capability's current scoped servers when building
     /// model context. No mutable shadow session catalog is updated here.
     pub async fn reload_mcp_servers(&self) -> anyhow::Result<Vec<String>> {
-        self.mcp_config.reload().await
+        let names = self.mcp_config.reload().await?;
+        self.session.refresh_mcp().await?;
+        Ok(names)
     }
 
     /// Discover tool names currently offered by the session's scoped MCP
@@ -4093,6 +4096,8 @@ pub struct BuildOptions {
     /// Override the provider stream-stall liveness window. Tests inject a short
     /// bound; production leaves this `None` and uses [`PROVIDER_STALL_TIMEOUT`].
     pub provider_stall_timeout: Option<Duration>,
+    /// Optional interactive wait; background discovery retains its hard bounds.
+    pub mcp_readiness_budget: Option<Duration>,
     /// Override the bounded provider-recovery policy. Tests inject a short
     /// elapsed budget; production leaves this `None` and uses
     /// [`provider_recovery_config`].
@@ -4132,6 +4137,7 @@ impl Default for BuildOptions {
             tool_approver: None,
             ask_user_responder: None,
             provider_stall_timeout: None,
+            mcp_readiness_budget: None,
             provider_retry_config: None,
             extra_environment_context: Vec::new(),
             editor_context_value: None,
@@ -5451,7 +5457,7 @@ pub async fn build_with_options(
             .with_model("llmsim-yolop")
     });
     driver_registry.register_provider(everruns_llmsim::llm_sim_provider(llmsim_config))?;
-    let services = everruns::hosting::services::HostServices::new()
+    let mut services = everruns::hosting::services::HostServices::new()
         .providers(everruns::hosting::services::HostProviders::shared(
             provider_store.clone(),
             driver_registry,
@@ -5474,6 +5480,9 @@ pub async fn build_with_options(
                 .entry("everruns_core_version", env!("YOLOP_EVERRUNS_CORE_VERSION"))
                 .openrouter_attribution("https://github.com/everruns/yolop", "Yolop"),
         );
+    if let Some(budget) = options.mcp_readiness_budget {
+        services = services.mcp_readiness_budget(budget);
+    }
     let hosting = engine_hosting::YolopHosting {
         native: native_hosting.clone(),
         build: engine_build.clone(),
@@ -5710,6 +5719,7 @@ pub async fn build_with_options(
     Ok(BuiltRuntime {
         handles: RuntimeHandles {
             trace_flush: Arc::new(tokio::sync::Mutex::new(Some(trace_flush))),
+            mcp_readiness_enabled: options.mcp_readiness_budget.is_some(),
             session,
             host: runtime,
             settings: settings.clone(),
