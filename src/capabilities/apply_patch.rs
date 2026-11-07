@@ -362,23 +362,31 @@ fn chunk_is_empty(chunk: &UpdateChunk) -> bool {
     chunk.context.is_none() && chunk.old_lines.is_empty() && chunk.new_lines.is_empty()
 }
 
-/// Apply `chunks` to `content`, returning the new text. Line endings follow
-/// the original file: a CRLF file stays CRLF.
+/// Apply `chunks` without changing the bytes of untouched lines. Added lines
+/// use CRLF if the original file contains CRLF, otherwise LF.
 pub(crate) fn apply_chunks(
     content: &str,
     chunks: &[UpdateChunk],
     path: &str,
 ) -> Result<String, String> {
-    let crlf = content.contains("\r\n");
-    let normalized = if crlf {
-        content.replace("\r\n", "\n")
+    let newline = if content.contains("\r\n") {
+        "\r\n"
     } else {
-        content.to_string()
+        "\n"
     };
-    let mut lines: Vec<String> = normalized.split('\n').map(str::to_string).collect();
-    if lines.last().is_some_and(String::is_empty) {
-        lines.pop();
-    }
+    // Match text without terminators, but splice the original bytes so context
+    // and untouched lines keep their individual endings (including no ending).
+    let mut raw_lines: Vec<String> = content.split_inclusive('\n').map(str::to_string).collect();
+    let lines: Vec<String> = raw_lines
+        .iter()
+        .map(|line| {
+            line.strip_suffix('\n')
+                .map(|text| text.strip_suffix('\r').unwrap_or(text))
+                .unwrap_or(line)
+                .to_string()
+        })
+        .collect();
+    let added_line = |line: &String| format!("{line}{newline}");
 
     let mut replacements: Vec<(usize, usize, Vec<String>)> = Vec::new();
     let mut cursor = 0;
@@ -396,7 +404,7 @@ pub(crate) fn apply_chunks(
             } else {
                 lines.len()
             };
-            replacements.push((at, 0, chunk.new_lines.clone()));
+            replacements.push((at, 0, chunk.new_lines.iter().map(added_line).collect()));
             continue;
         }
         let mut old = chunk.old_lines.as_slice();
@@ -420,8 +428,8 @@ pub(crate) fn apply_chunks(
             .iter()
             .zip(&chunk.context_of)
             .map(|(line, context)| match context {
-                Some(at) if *at < old.len() => lines[start + at].clone(),
-                _ => line.clone(),
+                Some(at) if *at < old.len() => raw_lines[start + at].clone(),
+                _ => added_line(line),
             })
             .collect();
         replacements.push((start, old.len(), new));
@@ -430,12 +438,16 @@ pub(crate) fn apply_chunks(
 
     replacements.sort_by_key(|(start, _, _)| *start);
     for (start, len, new) in replacements.into_iter().rev() {
-        lines.splice(start..start + len, new);
+        raw_lines.splice(start..start + len, new);
     }
-    let mut out = lines.join("\n");
-    out.push('\n');
-    if crlf {
-        out = out.replace('\n', "\r\n");
+    let mut out = String::new();
+    for line in raw_lines {
+        // Appending after an unterminated final line needs a separator, but a
+        // final untouched line must not acquire a trailing newline.
+        if !out.is_empty() && !out.ends_with('\n') {
+            out.push_str(newline);
+        }
+        out.push_str(&line);
     }
     Ok(out)
 }
@@ -884,6 +896,119 @@ mod tests {
         assert_eq!(out, "a\nb\nfn two\na\nB\n");
         let out = apply_chunks("x\r\nfn two\r\na\r\nb\r\n", &chunks, "f").unwrap();
         assert_eq!(out, "x\r\nfn two\r\na\r\nB\r\n");
+    }
+
+    #[tokio::test]
+    async fn updates_preserve_untouched_line_bytes() {
+        for (before, hunk, after) in [
+            (
+                "head\n  keep  \r\nold\nlast\r\n",
+                " keep\n-old\n+new",
+                "head\n  keep  \r\nnew\r\nlast\r\n",
+            ),
+            (
+                "head\r\nold\r\nlast\n",
+                "-old\n+new",
+                "head\r\nnew\r\nlast\n",
+            ),
+            ("old\r\nlast", "-old\n+new", "new\r\nlast"),
+            ("old\r\nlast", "-old\n+new\n last", "new\r\nlast"),
+            ("head\r\nlast", "+insert", "head\r\nlast\r\ninsert\r\n"),
+            ("old", "-old", ""),
+            ("head\nold\r\nlast\n", "-old", "head\nlast\n"),
+            (
+                "head\nlast\r\n",
+                "@@ head\n+insert",
+                "head\ninsert\r\nlast\r\n",
+            ),
+            (
+                "head\r\nlast",
+                "@@ last\n+insert",
+                "head\r\nlast\r\ninsert\r\n",
+            ),
+            (
+                "head\r\nold\nlast\n",
+                "-old\n+new\n last\n*** End of File",
+                "head\r\nnew\r\nlast\n",
+            ),
+            (
+                "a\nb\r\nc\nd\r\n",
+                "-a\n+A\n@@\n-d\n+D",
+                "A\r\nb\r\nc\nD\r\n",
+            ),
+            ("old\nlast\n", "-old\n+new", "new\nlast\n"),
+            (
+                "\u{feff}привіт\n\r\nold\r\n\n",
+                "-old\n+new",
+                "\u{feff}привіт\n\r\nnew\r\n\n",
+            ),
+            ("head\nold\r\n", "-old\n+new\n ", "head\nnew\r\n"),
+            ("old\r\nlast\r\n", "-old\n+new", "new\r\nlast\r\n"),
+            ("", "+new", "new\n"),
+            ("old\n", "-old", ""),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let file = dir.path().join("f");
+            std::fs::write(&file, before).unwrap();
+            let result = apply(
+                dir.path(),
+                &format!("*** Begin Patch\n*** Update File: f\n{hunk}\n*** End Patch"),
+            )
+            .await;
+            assert!(
+                matches!(result, ToolExecutionResult::Success(_)),
+                "{result:?}"
+            );
+            assert_eq!(
+                std::fs::read(&file).unwrap(),
+                after.as_bytes(),
+                "{before:?}, {hunk:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn mixed_endings_update_respects_read_only_policy() {
+        use everruns_core::host::PolicyFileStore;
+        use everruns_core::workspace_policy::WorkspacePolicy;
+
+        let dir = tempfile::tempdir().unwrap();
+        let before = "head\nold\r\nlast";
+        let file = dir.path().join("f");
+        std::fs::write(&file, before).unwrap();
+        let store = Arc::new(PolicyFileStore::new(
+            Arc::new(RealDiskFileStore::new(dir.path()).unwrap()),
+            WorkspacePolicy::read_only(),
+        ));
+        let context = ToolContext::with_file_store(Default::default(), store);
+        let result = ApplyPatchTool.execute_with_context(
+            json!({ "input": "*** Begin Patch\n*** Update File: f\n-old\n+new\n*** End Patch" }),
+            &context,
+        ).await;
+        let error = error_text(result);
+        assert!(error.contains("apply_patch failed"), "{error}");
+        assert_eq!(std::fs::read(file).unwrap(), before.as_bytes());
+    }
+
+    #[tokio::test]
+    async fn move_without_hunks_preserves_all_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let before = "first\nsecond\r\nlast";
+        std::fs::write(dir.path().join("from"), before).unwrap();
+        let result = apply(
+            dir.path(),
+            "*** Begin Patch\n*** Update File: from\n*** Move to: to\n*** End Patch",
+        )
+        .await;
+        assert!(
+            matches!(result, ToolExecutionResult::Success(_)),
+            "{result:?}"
+        );
+        assert_eq!(
+            std::fs::read(dir.path().join("to")).unwrap(),
+            before.as_bytes()
+        );
+        assert!(!dir.path().join("from").exists());
     }
 
     #[test]

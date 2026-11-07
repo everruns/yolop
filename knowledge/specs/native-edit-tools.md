@@ -93,7 +93,10 @@ Behavior worth knowing:
   whitespace, then ignoring surrounding whitespace. Matched context lines keep
   the file's own text, so loose matching never rewrites lines the patch did
   not change.
-- **Line endings** follow the original file; a CRLF file stays CRLF.
+- **Line endings** of untouched lines and matched context are preserved byte for
+  byte, including mixed LF/CRLF and an unterminated final line. Added lines use
+  CRLF if the original contains CRLF, otherwise LF. Appending after an
+  unterminated line adds the separator needed for the new line.
 - **Shell form.** A patch wrapped in Codex's heredoc form
   (`apply_patch <<'EOF' ... EOF`) is accepted.
 
