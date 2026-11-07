@@ -912,6 +912,9 @@ mod tests {
                 "head\r\nnew\r\nlast\n",
             ),
             ("old\r\nlast", "-old\n+new", "new\r\nlast"),
+            ("old\r\nlast", "-old\n+new\n last", "new\r\nlast"),
+            ("head\r\nlast", "+insert", "head\r\nlast\r\ninsert\r\n"),
+            ("old", "-old", ""),
             ("head\nold\r\nlast\n", "-old", "head\nlast\n"),
             (
                 "head\nlast\r\n",
