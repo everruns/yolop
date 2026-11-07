@@ -18,6 +18,7 @@ use std::time::Duration;
 
 #[derive(Clone)]
 pub struct YolopHosting {
+    pub mcp_readiness: Option<Arc<super::mcp_compat::McpCompat>>,
     pub native: SqliteHosting,
     pub build: AgentBuild,
     pub root: SessionId,
@@ -153,11 +154,15 @@ impl SessionHosting for YolopHosting {
         environment: &everruns::Environment,
         backends: HostBackends,
     ) -> Result<HostBackends> {
-        Ok(self.enrich(
+        let backends = self.enrich(
             self.native
                 .prepare_activation(engine, session, environment, backends)
                 .await?,
-        ))
+        );
+        Ok(match &self.mcp_readiness {
+            Some(readiness) => readiness.decorate(backends),
+            None => backends,
+        })
     }
     async fn import_legacy(&self, session: SessionId, image: LegacySessionImage) -> Result<bool> {
         self.native.import_legacy(session, image).await

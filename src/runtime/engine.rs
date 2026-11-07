@@ -276,8 +276,11 @@ impl SessionHost {
     ) -> Result<()> {
         let id = capability.id().to_string();
         self.engine
-            .register_shared_capability(capability)
+            .register_shared_capability(capability.clone())
             .context("register Engine capability")?;
+        if let Some(readiness) = &self.profile.mcp_readiness {
+            readiness.register_capability(capability);
+        }
         self.registered
             .write()
             .expect("capability registry lock")

@@ -82,6 +82,13 @@ impl Session {
         self.handles.reload_mcp_servers().await
     }
 
+    /// Read discovery state without making a connection-check request.
+    pub async fn mcp_readiness(
+        &self,
+    ) -> Result<Vec<(String, super::mcp_readiness::McpDiscoveryStatus)>> {
+        self.handles.mcp_discovery_statuses().await
+    }
+
     /// Live MCP tool names (`mcp_<server>__<tool>`) for `/tools`.
     pub async fn list_mcp_tool_names(&self) -> Vec<String> {
         self.handles.list_mcp_tool_names().await

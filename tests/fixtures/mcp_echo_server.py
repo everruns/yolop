@@ -19,6 +19,7 @@ simple read/respond loop is sufficient.
 import json
 import os
 import sys
+import time
 
 
 def send(obj):
@@ -74,6 +75,12 @@ def main():
         elif method == "notifications/initialized":
             continue
         elif method == "tools/list":
+            if len(sys.argv) > 2:
+                time.sleep(float(sys.argv[2]))
+            if len(sys.argv) > 3:
+                deadline = time.monotonic() + 10
+                while not os.path.exists(sys.argv[3]) and time.monotonic() < deadline:
+                    time.sleep(0.01)
             send({"jsonrpc": "2.0", "id": mid, "result": {"tools": TOOLS}})
         elif method == "tools/call":
             params = msg.get("params") or {}

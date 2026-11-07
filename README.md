@@ -270,6 +270,16 @@ Yolop earns its keep on large repos (full inventory: [Tools and capabilities](do
 
 The fastest way is to ask: "install the GitHub MCP server" and yolop wires it up and shows the new tools. `/mcp` manages live connections in-session; `yolop mcp` does it from the terminal (`list`, `show`, `test`, `login`, `add`, `remove`, `enable`, `disable`, each per scope). Configuration refreshes after tool execution, so servers installed mid-session do not require a restart. For OAuth servers, `yolop mcp login <name>` opens browser sign-in; `yolop mcp test <name>` verifies the connection and lists its tools.
 
+Use `yolop --mcp-readiness-ms 250` to start a turn without waiting for every
+cold MCP server. The default remains blocking discovery. Pending servers
+continue bounded discovery in the background and contribute tools on later
+turns. `/mcp` distinguishes pending discovery, ready, authentication required,
+and failed discovery. The flag accepts 0 through 60000 milliseconds and is
+not available with `--acp`. After signing in through a separate terminal with
+`yolop mcp login`, run `/mcp reload` in the existing session.
+This budget applies to turn preparation; explicit context inspection and
+`/tools` retain their normal full-discovery behavior.
+
 The manual path for remote HTTP servers is `.mcp.json` at the repo root. Local
 stdio servers must be added to user-owned global configuration with
 `yolop mcp add <name> --scope global --type stdio ...`, because

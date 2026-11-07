@@ -10,6 +10,8 @@ mod engine_hosting;
 mod engine_keys;
 mod engine_platform;
 mod engine_workspace;
+mod mcp_compat;
+pub(crate) mod mcp_readiness;
 pub mod migration;
 mod session_start;
 // Stopgap classifiers for OpenRouter account gates (403 attestation, 404
@@ -3628,7 +3630,12 @@ impl RuntimeHandles {
     /// Engine resolves this capability's current scoped servers when building
     /// model context. No mutable shadow session catalog is updated here.
     pub async fn reload_mcp_servers(&self) -> anyhow::Result<Vec<String>> {
-        self.mcp_config.reload().await
+        let names = self.mcp_config.reload().await?;
+        if let Some(readiness) = &self.host.profile.mcp_readiness {
+            readiness.invalidate_session(self.session_id);
+        }
+        self.session.refresh_mcp().await?;
+        Ok(names)
     }
 
     /// Discover tool names currently offered by the session's scoped MCP
@@ -3638,6 +3645,21 @@ impl RuntimeHandles {
     #[cfg(test)]
     pub(crate) fn configured_mcp_servers(&self) -> ScopedMcpServers {
         self.mcp_config.effective_servers()
+    }
+
+    pub(crate) async fn mcp_discovery_statuses(
+        &self,
+    ) -> anyhow::Result<Vec<(String, mcp_readiness::McpDiscoveryStatus)>> {
+        use everruns::hosting::SessionHosting;
+        let Some(readiness) = &self.host.profile.mcp_readiness else {
+            return Ok(Vec::new());
+        };
+        readiness
+            .statuses(
+                &self.host.profile.native.reader(self.session_id),
+                self.session_id,
+            )
+            .await
     }
 
     pub async fn list_mcp_tool_names(&self) -> Vec<String> {
@@ -4093,6 +4115,8 @@ pub struct BuildOptions {
     /// Override the provider stream-stall liveness window. Tests inject a short
     /// bound; production leaves this `None` and uses [`PROVIDER_STALL_TIMEOUT`].
     pub provider_stall_timeout: Option<Duration>,
+    /// Optional interactive wait; background discovery retains its hard bounds.
+    pub mcp_readiness_budget: Option<Duration>,
     /// Override the bounded provider-recovery policy. Tests inject a short
     /// elapsed budget; production leaves this `None` and uses
     /// [`provider_recovery_config`].
@@ -4132,6 +4156,7 @@ impl Default for BuildOptions {
             tool_approver: None,
             ask_user_responder: None,
             provider_stall_timeout: None,
+            mcp_readiness_budget: None,
             provider_retry_config: None,
             extra_environment_context: Vec::new(),
             editor_context_value: None,
@@ -5451,6 +5476,8 @@ pub async fn build_with_options(
             .with_model("llmsim-yolop")
     });
     driver_registry.register_provider(everruns_llmsim::llm_sim_provider(llmsim_config))?;
+    let mcp_auth: Arc<dyn McpAuthProvider> =
+        Arc::new(StoredMcpAuthProvider::new(connections.clone()));
     let services = everruns::hosting::services::HostServices::new()
         .providers(everruns::hosting::services::HostProviders::shared(
             provider_store.clone(),
@@ -5466,7 +5493,7 @@ pub async fn build_with_options(
                 .provider_retry_config
                 .unwrap_or_else(provider_recovery_config),
         )
-        .shared_mcp_auth(Arc::new(StoredMcpAuthProvider::new(connections.clone())))
+        .shared_mcp_auth(mcp_auth.clone())
         .request_metadata(
             everruns::hosting::services::RequestMetadata::new()
                 .entry("app", "yolop")
@@ -5474,7 +5501,15 @@ pub async fn build_with_options(
                 .entry("everruns_core_version", env!("YOLOP_EVERRUNS_CORE_VERSION"))
                 .openrouter_attribution("https://github.com/everruns/yolop", "Yolop"),
         );
+    let mcp_readiness = options.mcp_readiness_budget.map(|budget| {
+        Arc::new(mcp_compat::McpCompat::new(
+            budget,
+            mcp_auth,
+            capabilities.clone(),
+        ))
+    });
     let hosting = engine_hosting::YolopHosting {
+        mcp_readiness,
         native: native_hosting.clone(),
         build: engine_build.clone(),
         root: session_id,
