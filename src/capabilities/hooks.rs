@@ -73,7 +73,12 @@ impl ControlCapability for HooksCapability {
                     "paths": {
                         "global": effective.global_path,
                         "workspace": effective.workspace_path,
-                    }
+                    },
+                    "untrusted_workspace": effective.untrusted_workspace.as_ref().map(|skipped| json!({
+                        "path": skipped.path,
+                        "hook_count": skipped.hook_count,
+                        "notice": skipped.notice(),
+                    })),
                 }))
             }
             "validate" => {

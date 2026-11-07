@@ -1,5 +1,14 @@
 # Knowledge Log
 
+## 2026-11-07, Workspace hooks require trust
+
+- [Hooks](specs/hooks.md): a workspace `.agents/hooks.json` loads only after
+  `yolop config hooks trust`, pinned to the workspace path and file digest.
+  The old "project trust signal" analogy with workspace MCP stdio servers no
+  longer held once those were refused.
+- [Configuration](specs/configuration.md): `hook-trust.json` joins the config
+  root; `trust` is terminal-only.
+
 ## 2026-11-06, Stable Linux release ABI
 
 - [Release](specs/release.md): pin Linux binary builders to Ubuntu 24.04 and

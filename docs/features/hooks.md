@@ -33,7 +33,7 @@ management is not exposed as model tools.
 | Scope | Path | Use for |
 |---|---|---|
 | Global | `<config_dir>/yolop/hooks.json` | Personal Yolop behavior across all workspaces |
-| Workspace | `<workspace>/.agents/hooks.json` | Project-owned policy that can be reviewed with the repo |
+| Workspace | `<workspace>/.agents/hooks.json` | Project-owned policy that can be reviewed with the repo, enabled once you trust it |
 
 Workspace hooks override global hooks with the same `id`. A workspace file can
 also disable a lower-precedence global hook by listing the id in `disabled`.
@@ -47,6 +47,23 @@ yolop config hooks set hook.json --scope workspace
 
 Use `get` to inspect one effective hook and `remove` to delete or disable a hook
 in a selected scope.
+
+## Trust workspace hooks
+
+Yolop ignores a workspace `.agents/hooks.json` until you trust it, because a
+cloned repository should not be able to run commands on your machine just by
+being opened. When it skips one it tells you once at startup, naming the file.
+Review the file, then run this from your own terminal in the workspace:
+
+```bash
+yolop config hooks trust
+```
+
+Trust covers the file exactly as it is. Any change to it, from a `git pull` or
+from the agent, turns its hooks off again until you run `trust` again. Edits you
+make with `yolop config hooks set --scope workspace` from your terminal keep an
+already trusted file trusted. `yolop config hooks trust --revoke` turns them off.
+A running session cannot grant trust. Global hooks never need it.
 
 ## Configure by file
 
@@ -124,9 +141,11 @@ stderr as the reason. Non-JSON stdout is treated as a hook error.
 
 ## Trust model
 
-Hooks are code execution. Global hooks are personal config. Workspace hooks are
-project policy, similar to checked-in build scripts or `.mcp.json` stdio
-servers. Review them before using an unfamiliar repository.
+Hooks are code execution: `session_start` hooks run as soon as Yolop starts,
+with your environment and outside the shell sandbox. Global hooks are personal
+config. Workspace hooks are project policy, so they run only after you trust
+the file (see [Trust workspace hooks](#trust-workspace-hooks)). Review them
+before trusting an unfamiliar repository.
 
 The hook executor is bounded by the upstream `user_hooks` implementation:
 validated specs, timeout limits, output caps, and structured decisions. Yolop

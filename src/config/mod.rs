@@ -13,6 +13,7 @@
 // per-run override is always possible.
 
 pub mod capability_settings;
+pub mod hook_trust;
 pub mod hooks;
 pub mod mcp;
 pub mod model_list;

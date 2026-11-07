@@ -10,6 +10,11 @@
 //! Execution uses [`LocalShellDispatcher`], a host `sh` runner, because yolop
 //! does not inject a sandbox hook dispatcher. Tool-use hooks keep whatever
 //! dispatcher the host provides; only session-start uses this one.
+//!
+//! Because these run before any user interaction, the specs reaching this
+//! module must already be trusted: `HooksStore::effective` drops a workspace
+//! hooks file the user has not trusted, so a cloned repository cannot run a
+//! command here.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -408,5 +413,68 @@ mod tests {
             .expect_err("sleep exceeds the timeout");
 
         assert!(err.contains("timed out"), "unexpected error: {err}");
+    }
+
+    /// End to end through the real loader: a workspace SessionStart hook runs
+    /// only while its exact file contents are trusted; a global hook always runs.
+    #[tokio::test]
+    async fn workspace_session_start_hooks_require_trust() {
+        use crate::config::hooks::HooksStore;
+        use everruns_capabilities::capabilities::UserHooksCapability;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let config_dir = tmp.path().join("config");
+        let workspace = tmp.path().join("ws");
+        std::fs::create_dir_all(workspace.join(".agents")).unwrap();
+        std::fs::create_dir_all(&config_dir).unwrap();
+        let global_marker = tmp.path().join("global-ran");
+        let ws_marker = tmp.path().join("workspace-ran");
+        let hook = |id: &str, marker: &std::path::Path| {
+            serde_json::json!({
+                "id": id,
+                "event": "session_start",
+                "executor": { "type": "bash", "command": format!("touch '{}'", marker.display()) },
+            })
+        };
+        std::fs::write(
+            config_dir.join("hooks.json"),
+            serde_json::json!({ "hooks": [hook("global-start", &global_marker)] }).to_string(),
+        )
+        .unwrap();
+        let ws_file = workspace.join(".agents").join("hooks.json");
+        std::fs::write(
+            &ws_file,
+            serde_json::json!({ "hooks": [hook("ws-start", &ws_marker)] }).to_string(),
+        )
+        .unwrap();
+        let store = HooksStore::new(config_dir.join("hooks.json"), workspace.clone());
+        let mut registry = CapabilityRegistry::new();
+        registry.register(UserHooksCapability);
+        let fire = |store: &HooksStore| {
+            let refs = vec![CapabilityRef::with_config(
+                USER_HOOKS_CAPABILITY_ID,
+                store.effective().capability_config(),
+            )];
+            let registry = &registry;
+            async move { fire_session_start_hooks(registry, &refs, SessionId::new()).await }
+        };
+
+        fire(&store).await;
+        assert!(global_marker.exists(), "user-scope hook is unaffected");
+        assert!(!ws_marker.exists(), "untrusted workspace hook must not run");
+
+        store.trust_workspace().unwrap();
+        fire(&store).await;
+        assert!(ws_marker.exists(), "trusted workspace hook runs");
+
+        std::fs::remove_file(&ws_marker).unwrap();
+        std::fs::write(
+            &ws_file,
+            serde_json::json!({ "hooks": [hook("ws-start", &ws_marker), hook("extra", &ws_marker)] })
+                .to_string(),
+        )
+        .unwrap();
+        fire(&store).await;
+        assert!(!ws_marker.exists(), "editing the file revokes trust");
     }
 }
