@@ -127,6 +127,7 @@ impl CoordinatedOAuthProvider {
     }
 
     async fn refresh_lease(&self, provider_id: &str) -> anyhow::Result<std::fs::File> {
+        // This public identifier selects a filesystem-safe lock name, not a credential hash.
         let digest = Sha256::digest(provider_id.as_bytes())
             .iter()
             .map(|byte| format!("{byte:02x}"))
@@ -637,6 +638,35 @@ mod tests {
         .unwrap()
         .unwrap();
         assert!(credential.is_some());
+    }
+
+    #[tokio::test]
+    async fn cancelling_persistence_wait_never_writes_later() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(seed(dir.path()));
+        let before = std::fs::read(store.path()).unwrap();
+        let egress = Arc::new(RefreshEgress::default());
+        let provider = CoordinatedOAuthProvider::new(store.clone(), egress.clone());
+        let write_lease = crate::connectors::private_lock_file(
+            &store.path().with_extension("connections-write.lock"),
+        )
+        .unwrap();
+        write_lease.lock().unwrap();
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            provider.authorization(&McpAuthRequest {
+                server_name: "server",
+                auth_mode: everruns_core::McpServerAuthMode::OAuth,
+                oauth_provider_id: None,
+            }),
+        )
+        .await;
+        assert!(result.is_err());
+        assert_eq!(egress.0.lock().unwrap().len(), 1);
+        assert_eq!(std::fs::read(store.path()).unwrap(), before);
+        drop(write_lease);
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(std::fs::read(store.path()).unwrap(), before);
     }
 
     #[tokio::test]
