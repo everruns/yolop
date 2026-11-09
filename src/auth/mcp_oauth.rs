@@ -9,7 +9,6 @@ use everruns_core::mcp::{McpAuthProvider, McpAuthRequest, McpCredential};
 use everruns_core::{
     EgressRequest, EgressResponse, EgressResult, EgressService, EgressStreamResponse,
 };
-use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -126,16 +125,11 @@ impl CoordinatedOAuthProvider {
         Self { store, egress }
     }
 
-    async fn refresh_lease(&self, provider_id: &str) -> anyhow::Result<std::fs::File> {
-        // This public identifier selects a filesystem-safe lock name, not a credential hash.
-        let digest = Sha256::digest(provider_id.as_bytes())
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>();
-        let path = self
-            .store
-            .path()
-            .with_extension(format!("mcp-{digest}.lock"));
+    async fn refresh_lease(&self) -> anyhow::Result<std::fs::File> {
+        // Match the shared provider's store-wide serialization without deriving
+        // filesystem names from configuration. Fresh credentials never wait here;
+        // concurrently expired providers queue within the caller's deadline.
+        let path = self.store.path().with_extension("mcp-refresh.lock");
         let file = crate::connectors::private_lock_file(&path)?;
         crate::connectors::cancellable_lock(file).await
     }
@@ -163,7 +157,7 @@ impl McpAuthProvider for CoordinatedOAuthProvider {
                 tokens.authorization_value(),
             )));
         }
-        let _lease = self.refresh_lease(provider_id).await?;
+        let _lease = self.refresh_lease().await?;
         let Some(expected) = self.store.get_checked(&id)? else {
             return Ok(None);
         };
@@ -400,6 +394,8 @@ mod tests {
             return;
         };
         let dir = std::path::PathBuf::from(dir);
+        let provider_name =
+            std::env::var("YOLOP_TEST_REFRESH_PROVIDER").unwrap_or_else(|_| "server".into());
         let provider = CoordinatedOAuthProvider::new(
             Arc::new(ConnectionStore::open(dir.join("connections.toml"))),
             Arc::new(ProcessEgress(dir)),
@@ -409,7 +405,7 @@ mod tests {
                 tokio::time::timeout(
                     std::time::Duration::from_millis(50),
                     provider.authorization(&McpAuthRequest {
-                        server_name: "server",
+                        server_name: &provider_name,
                         auth_mode: everruns_core::McpServerAuthMode::OAuth,
                         oauth_provider_id: None,
                     })
@@ -421,7 +417,7 @@ mod tests {
         }
         let result = provider
             .authorization(&everruns_core::mcp::McpAuthRequest {
-                server_name: "server",
+                server_name: &provider_name,
                 auth_mode: everruns_core::McpServerAuthMode::OAuth,
                 oauth_provider_id: None,
             })
@@ -470,6 +466,15 @@ mod tests {
     }
 
     fn spawn_child(dir: &std::path::Path, error: bool, contend: bool) -> TestChild {
+        spawn_provider_child(dir, error, contend, "server")
+    }
+
+    fn spawn_provider_child(
+        dir: &std::path::Path,
+        error: bool,
+        contend: bool,
+        provider: &str,
+    ) -> TestChild {
         let mut command = std::process::Command::new(std::env::current_exe().unwrap());
         command
             .args([
@@ -477,7 +482,8 @@ mod tests {
                 "auth::mcp_oauth::tests::refresh_process_child",
                 "--nocapture",
             ])
-            .env("YOLOP_TEST_REFRESH_DIR", dir);
+            .env("YOLOP_TEST_REFRESH_DIR", dir)
+            .env("YOLOP_TEST_REFRESH_PROVIDER", provider);
         if error {
             command.env("YOLOP_TEST_REFRESH_ERROR", "1");
         }
@@ -538,6 +544,45 @@ mod tests {
                 .as_deref(),
             Some("rotated")
         );
+    }
+
+    #[test]
+    fn unrelated_provider_processes_serialize_without_losing_either_rotation() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = seed(dir.path());
+        save_tokens(
+            &store,
+            "other",
+            sample(Some(Utc::now() - chrono::Duration::seconds(1))),
+        )
+        .unwrap();
+        let mut first = child(dir.path(), false);
+        wait_for_request(dir.path());
+        let mut second = spawn_provider_child(dir.path(), false, true, "other");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !dir.path().join("contended").exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "other provider did not contend"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        std::fs::write(dir.path().join("release"), "").unwrap();
+        assert!(first.wait().unwrap().success());
+        assert!(second.wait().unwrap().success());
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("requests")).unwrap(),
+            "request\nrequest\n"
+        );
+        for provider in ["server", "other"] {
+            assert_eq!(
+                load_tokens(&store, provider)
+                    .unwrap()
+                    .refresh_token
+                    .as_deref(),
+                Some("rotated")
+            );
+        }
     }
 
     #[test]
@@ -614,30 +659,32 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn replacement_login_is_readable_while_old_refresh_holds_lease() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(seed(dir.path()));
-        let provider =
-            CoordinatedOAuthProvider::new(store.clone(), Arc::new(RefreshEgress::default()));
-        let _lease = provider.refresh_lease("server").await.unwrap();
-        save_tokens(
-            &store,
-            "server",
-            sample(Some(Utc::now() + chrono::Duration::hours(1))),
-        )
-        .unwrap();
-        let credential = tokio::time::timeout(
-            std::time::Duration::from_millis(100),
-            provider.authorization(&McpAuthRequest {
-                server_name: "server",
-                auth_mode: everruns_core::McpServerAuthMode::OAuth,
-                oauth_provider_id: None,
-            }),
-        )
-        .await
-        .unwrap()
-        .unwrap();
-        assert!(credential.is_some());
+    async fn fresh_credentials_are_readable_while_refresh_holds_store_lease() {
+        for provider_name in ["server", "other"] {
+            let dir = tempfile::tempdir().unwrap();
+            let store = Arc::new(seed(dir.path()));
+            let provider =
+                CoordinatedOAuthProvider::new(store.clone(), Arc::new(RefreshEgress::default()));
+            let _lease = provider.refresh_lease().await.unwrap();
+            save_tokens(
+                &store,
+                provider_name,
+                sample(Some(Utc::now() + chrono::Duration::hours(1))),
+            )
+            .unwrap();
+            let credential = tokio::time::timeout(
+                std::time::Duration::from_millis(100),
+                provider.authorization(&McpAuthRequest {
+                    server_name: provider_name,
+                    auth_mode: everruns_core::McpServerAuthMode::OAuth,
+                    oauth_provider_id: None,
+                }),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert!(credential.is_some());
+        }
     }
 
     #[tokio::test]
@@ -675,17 +722,17 @@ mod tests {
         let store = Arc::new(seed(dir.path()));
         let provider =
             CoordinatedOAuthProvider::new(store.clone(), Arc::new(RefreshEgress::default()));
-        let lease = provider.refresh_lease("server").await.unwrap();
+        let lease = provider.refresh_lease().await.unwrap();
         assert!(
             tokio::time::timeout(
                 std::time::Duration::from_millis(50),
-                provider.refresh_lease("server")
+                provider.refresh_lease()
             )
             .await
             .is_err()
         );
         drop(lease);
-        let _lease = provider.refresh_lease("server").await.unwrap();
+        let _lease = provider.refresh_lease().await.unwrap();
         std::fs::write(store.path(), "invalid = = toml").unwrap();
         assert!(store.get_checked(&connection_id("server")).is_err());
     }

@@ -130,8 +130,11 @@ browser is invisible), and the wait runs in the background so the event loop is
 not blocked. The token is bound to the MCP server through the OAuth `resource`
 indicator, and callback issuer validation prevents mix-up attacks. The token
 endpoint and client id are persisted alongside the tokens so refresh is
-self-contained. Refreshes use a cancellable, bounded cross-process lease keyed
-by provider and credential store. The credential file is read after acquiring
+self-contained. Refreshes use a cancellable, bounded cross-process lease per
+credential store. Fresh credentials do not acquire it. Simultaneously expired
+providers serialize behind the same lease, matching the shared provider's
+previous in-process model while bounding waits to 30 seconds or an earlier
+caller deadline. The credential file is read after acquiring
 the lease, so rotated refresh tokens cannot be spent concurrently. Persistence
 compares the exact saved revision under a separate cross-process write lock;
 logout and replacement login win over an in-flight refresh. Malformed or
