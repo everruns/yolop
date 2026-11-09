@@ -126,8 +126,8 @@ impl CoordinatedOAuthProvider {
         Self { store, egress }
     }
 
-    async fn refresh_lease(&self, key: &str) -> anyhow::Result<std::fs::File> {
-        let digest = Sha256::digest(key.as_bytes())
+    async fn refresh_lease(&self, provider_id: &str) -> anyhow::Result<std::fs::File> {
+        let digest = Sha256::digest(provider_id.as_bytes())
             .iter()
             .map(|byte| format!("{byte:02x}"))
             .collect::<String>();
@@ -146,9 +146,9 @@ impl McpAuthProvider for CoordinatedOAuthProvider {
         &self,
         request: &McpAuthRequest<'_>,
     ) -> anyhow::Result<Option<McpCredential>> {
-        let key = request.oauth_provider_id.unwrap_or(request.server_name);
-        let id = connection_id(key);
-        let _lease = self.refresh_lease(key).await?;
+        let provider_id = request.oauth_provider_id.unwrap_or(request.server_name);
+        let id = connection_id(provider_id);
+        let _lease = self.refresh_lease(provider_id).await?;
         let Some(expected) = self.store.get_checked(&id)? else {
             return Ok(None);
         };
