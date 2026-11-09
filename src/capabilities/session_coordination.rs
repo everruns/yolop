@@ -1,9 +1,9 @@
 //! Messaging between independently hosted Yolop sessions, and the
 //! out-of-process thread host for the everruns `coordination` capability.
 //!
-//! Every session holds a presence lease and drains a durable inbox kept in the
-//! local profile's SQLite database, so any session (or a shell outside one) can
-//! write to any other: `yolop sessions send` is the generic form. The
+//! Every session holds a presence lease file and drains a durable inbox
+//! directory under its own session folder, so any session (or a shell outside
+//! one) can write to any other: `yolop sessions send` is the generic form. The
 //! coordination model itself is everruns': a coordinator starts threads, each
 //! assignment is a session task it owns, and threads report through the
 //! worker tools. What Yolop adds is where a thread runs. Upstream runs threads
@@ -13,8 +13,11 @@
 //!
 //! Decision: the inbox is the only cross-process channel. A brief or relay for
 //!   a thread, a thread's update for its coordinator, and a plain message all
-//!   travel as inbox rows, acknowledged only when the turn they woke finishes.
-//!   A host that dies first leaves them pending for its next incarnation.
+//!   travel as inbox files in the target's folder, acknowledged only when the
+//!   turn they woke finishes. A host that dies first leaves them pending for
+//!   its next incarnation. Threads are per-coordinator files no other process
+//!   writes; senders only ever create files, so coordinators never contend on
+//!   a shared database lock.
 //! Decision: a thread is recognized the first time its coordinator messages it
 //!   (it has an `assignment` task linking it) and recorded in `yolop_threads`,
 //!   so the routing survives the coordinator's in-memory session catalog.
@@ -46,7 +49,6 @@ use crate::runtime::background_wake::{WakeMessage, WakeSender};
 use crate::sandbox_approval::{
     ApprovalDecision, ApprovalGate, ApprovalReceiver, ApprovalRequest, ApprovalScope,
 };
-use everruns::local::SqliteDb;
 use everruns_capabilities::capabilities::coordination::{
     THREAD_RESOLVED_DETAIL, ThreadTurn, settle_thread_turn,
 };
@@ -55,7 +57,6 @@ use everruns_core::session_task::{SessionTaskFilter, TASK_KIND_ASSIGNMENT};
 use everruns_core::{
     SessionTask, SessionTaskRegistry, TaskTransition, TaskTransitionObserver, wake_text_for,
 };
-use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -88,7 +89,7 @@ const APPROVAL_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 /// A thread's sandbox escalation waiting on its coordinator.
 #[derive(Debug)]
 struct ThreadApproval {
-    approval_id: i64,
+    approval_id: String,
     thread_id: SessionId,
     request: ApprovalRequest,
 }
@@ -104,7 +105,7 @@ pub(crate) struct HostApprovals {
 
 /// An escalation this thread host relayed and is waiting on.
 struct RelayedApproval {
-    approval_id: i64,
+    approval_id: String,
     request_digest: [u8; 32],
     reply: tokio::sync::oneshot::Sender<ApprovalDecision>,
     deadline: tokio::time::Instant,
@@ -182,123 +183,347 @@ pub(crate) struct LiveSession {
     pub(crate) thread_of: Option<String>,
 }
 
+/// Where coordination state lives now that the shared SQLite database is
+/// gone. Every record is a file with a single owning writer:
+///
+/// - `<sessions_dir>/<session>/presence.json`: written only by that
+///   session's host (its heartbeat lease). Replaces the old
+///   `yolop_session_presence` table and its every-2-seconds cross-process
+///   writes, which were the main source of `database is locked` contention.
+/// - `<sessions_dir>/<session>/inbox/<message>.json`: the fanout. A sender
+///   drops a uniquely-named file into the target's inbox and never touches
+///   anyone else's state. Claiming is an atomic rename to
+///   `<message>.claimed-<host>.json`, so exactly one host delivers each
+///   message even when two processes poll the same inbox.
+/// - `<sessions_dir>/coordination/threads/<thread>.json`: owned by the
+///   thread's coordinator; only that coordinator records or respawns it.
+/// - `<sessions_dir>/coordination/approvals/<id>.json`: filed by a thread
+///   host, decided by its coordinator.
+///
+/// Readers scan directories; writers touch only their own paths (plus atomic
+/// file creation into a target's inbox). No shared database, so no
+/// single-writer lock for coordinators to collide on.
 #[derive(Clone)]
 pub(crate) struct CoordinationStore {
-    db: SqliteDb,
-    /// Where dead thread hosts' command ledgers live; `None` for in-memory
-    /// stores, which supervise nothing on disk.
-    sessions_dir: Option<PathBuf>,
+    sessions_dir: PathBuf,
+    /// Holds the backing directory for ephemeral stores (tests, fallbacks
+    /// with no sessions dir), the file equivalent of the old in-memory
+    /// SQLite database.
+    _temp: Option<std::sync::Arc<tempfile::TempDir>>,
+}
+
+/// A session host's heartbeat lease. Owned by the named session's host.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct PresenceFile {
+    host_id: String,
+    project_id: String,
+    workspace_root: String,
+    heartbeat_at_ms: i64,
+    headless: bool,
+    #[serde(default)]
+    release_requested_at_ms: i64,
+}
+
+/// One inbox message: a pending fanout delivery or an in-flight claim.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct InboxFile {
+    message_id: String,
+    source_session_id: Option<String>,
+    payload: InboxPayload,
+    created_at_ms: i64,
+    #[serde(default)]
+    attempts: u32,
+    #[serde(default)]
+    available_at_ms: i64,
+    #[serde(default)]
+    delivered_host_id: Option<String>,
+}
+
+/// A coordinator's thread record. Only the owning coordinator writes it.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct ThreadFile {
+    thread_id: String,
+    coordinator: String,
+    workspace_root: String,
+    launch: Vec<String>,
+    created_at_ms: i64,
+    #[serde(default)]
+    spawned_at_ms: i64,
+}
+
+/// A thread host's escalation waiting on (or decided by) its coordinator.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct ApprovalFile {
+    approval_id: String,
+    thread_id: String,
+    coordinator: String,
+    host_id: String,
+    command: String,
+    reason: String,
+    scope: String,
+    #[serde(default)]
+    decision: Option<String>,
+    #[serde(default)]
+    request_digest: Option<Vec<u8>>,
+    created_at_ms: i64,
+}
+
+/// Process-wide counter so generated file names are unique without a
+/// database sequence.
+static FILE_ID_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn unique_suffix() -> String {
+    let n = FILE_ID_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!("{}-{}-{n}", now_ms(), std::process::id())
+}
+
+/// Write `bytes` to `path` atomically: readers never see a half-written
+/// record, and concurrent writers to different paths never block.
+fn write_atomic(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let tmp = path.with_extension(format!("tmp-{}", unique_suffix()));
+    let wrote = (|| -> anyhow::Result<()> {
+        std::fs::write(&tmp, bytes)?;
+        std::fs::rename(&tmp, path)?;
+        Ok(())
+    })();
+    if wrote.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    wrote
+}
+
+fn write_json<T: serde::Serialize>(path: &Path, value: &T) -> anyhow::Result<()> {
+    let bytes = serde_json::to_vec_pretty(value)?;
+    write_atomic(path, &bytes)
+}
+
+fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> anyhow::Result<Option<T>> {
+    match std::fs::read(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+        Ok(bytes) => Ok(Some(serde_json::from_slice(&bytes)?)),
+    }
+}
+
+/// Create `path` with `bytes`, failing when it already exists. The
+/// create-new open is atomic, so this is the mutual-exclusion primitive for
+/// spawn claims; inbox claims use atomic rename instead.
+fn create_new(path: &Path, bytes: &[u8]) -> anyhow::Result<bool> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+    {
+        Ok(mut file) => {
+            use std::io::Write;
+            let wrote = file.write_all(bytes).and_then(|()| file.sync_all());
+            if wrote.is_err() {
+                let _ = std::fs::remove_file(path);
+            }
+            wrote?;
+            Ok(true)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+        Err(error) => Err(error.into()),
+    }
 }
 
 impl CoordinationStore {
-    pub(crate) fn new(db: SqliteDb) -> anyhow::Result<Self> {
-        let store = Self {
-            db,
-            sessions_dir: None,
-        };
-        store.ensure_schema()?;
-        Ok(store)
-    }
-
-    /// Supervise dead thread hosts' command ledgers under `sessions_dir`.
-    pub(crate) fn with_sessions_dir(mut self, sessions_dir: &Path) -> Self {
-        self.sessions_dir = Some(sessions_dir.to_path_buf());
-        self
-    }
-
+    /// Open the file-backed store at `sessions_dir`, importing the legacy
+    /// shared database on first open when one is present.
     pub(crate) fn open(sessions_dir: &Path) -> anyhow::Result<Self> {
-        let profile = everruns::local::LocalProfile::new(sessions_dir.join("everruns-local"));
-        profile.ensure_dirs()?;
-        Ok(Self::new(SqliteDb::open(profile.db_path())?)?.with_sessions_dir(sessions_dir))
+        migrate_legacy_db(sessions_dir);
+        Ok(Self {
+            sessions_dir: sessions_dir.to_path_buf(),
+            _temp: None,
+        })
     }
 
-    fn ensure_schema(&self) -> anyhow::Result<()> {
-        self.db.with_conn(|conn| {
-            conn.execute_batch(
-                // The worker-pool tables of the earlier yolop-only protocol;
-                // everruns coordination threads replaced it before 1.0.
-                "DROP TABLE IF EXISTS yolop_coordination_workers;
-                 DROP TABLE IF EXISTS yolop_coordination_assignments;
-                 DROP TABLE IF EXISTS yolop_coordination_inbox;
-                 CREATE TABLE IF NOT EXISTS yolop_session_presence (
-                    session_id TEXT PRIMARY KEY,
-                    host_id TEXT NOT NULL,
-                    project_id TEXT NOT NULL,
-                    workspace_root TEXT NOT NULL,
-                    heartbeat_at_ms INTEGER NOT NULL,
-                    headless INTEGER NOT NULL DEFAULT 0,
-                    release_requested_at_ms INTEGER NOT NULL DEFAULT 0
-                 );
-                 CREATE TABLE IF NOT EXISTS yolop_session_inbox (
-                    message_id TEXT PRIMARY KEY,
-                    target_session_id TEXT NOT NULL,
-                    source_session_id TEXT,
-                    payload_json TEXT NOT NULL,
-                    delivered_host_id TEXT,
-                    created_at_ms INTEGER NOT NULL,
-                    acked_at_ms INTEGER,
-                    attempts INTEGER NOT NULL DEFAULT 0,
-                    available_at_ms INTEGER NOT NULL DEFAULT 0
-                 );
-                 CREATE INDEX IF NOT EXISTS yolop_session_inbox_target
-                    ON yolop_session_inbox(target_session_id, acked_at_ms, created_at_ms);
-                 CREATE TABLE IF NOT EXISTS yolop_threads (
-                    thread_id TEXT PRIMARY KEY,
-                    coordinator_session_id TEXT NOT NULL,
-                    workspace_root TEXT NOT NULL,
-                    launch_json TEXT NOT NULL,
-                    created_at_ms INTEGER NOT NULL,
-                    spawned_at_ms INTEGER NOT NULL DEFAULT 0
-                 );
-                 CREATE INDEX IF NOT EXISTS yolop_threads_coordinator
-                    ON yolop_threads(coordinator_session_id);
-                 CREATE TABLE IF NOT EXISTS yolop_thread_approvals (
-                    approval_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    thread_id TEXT NOT NULL,
-                    coordinator_session_id TEXT NOT NULL,
-                    host_id TEXT NOT NULL,
-                    command TEXT NOT NULL,
-                    reason TEXT NOT NULL,
-                    scope TEXT NOT NULL,
-                    decision TEXT,
-                    request_digest BLOB,
-                    created_at_ms INTEGER NOT NULL
-                 );
-                 CREATE INDEX IF NOT EXISTS yolop_thread_approvals_coordinator
-                    ON yolop_thread_approvals(coordinator_session_id, decision);",
-            )?;
-            // Older hosts shortened approval text and omit the digest. Keep
-            // their records readable so both relay consumers can deny them.
-            if conn
-                .prepare("SELECT request_digest FROM yolop_thread_approvals LIMIT 0")
-                .is_err()
-            {
-                conn.execute_batch(
-                    "ALTER TABLE yolop_thread_approvals ADD COLUMN request_digest BLOB",
-                )?;
+    /// An ephemeral store backed by a fresh temporary directory: the file
+    /// equivalent of the old in-memory SQLite database, for tests and for
+    /// processes with no sessions dir.
+    pub(crate) fn ephemeral() -> anyhow::Result<Self> {
+        let temp = tempfile::TempDir::new()?;
+        Ok(Self {
+            sessions_dir: temp.path().to_path_buf(),
+            _temp: Some(std::sync::Arc::new(temp)),
+        })
+    }
+
+    fn coordination_dir(&self) -> PathBuf {
+        self.sessions_dir.join("coordination")
+    }
+
+    fn threads_dir(&self) -> PathBuf {
+        self.coordination_dir().join("threads")
+    }
+
+    fn approvals_dir(&self) -> PathBuf {
+        self.coordination_dir().join("approvals")
+    }
+
+    fn presence_dir(&self) -> PathBuf {
+        self.coordination_dir().join("presence")
+    }
+
+    fn presence_path(&self, session_id: &str) -> PathBuf {
+        self.presence_dir().join(format!("{session_id}.json"))
+    }
+
+    fn inbox_dir(&self, session_id: &str) -> PathBuf {
+        self.coordination_dir().join("inbox").join(session_id)
+    }
+
+    fn thread_path(&self, thread_id: &str) -> PathBuf {
+        self.threads_dir().join(format!("{thread_id}.json"))
+    }
+
+    fn approval_path(&self, approval_id: &str) -> PathBuf {
+        self.approvals_dir().join(format!("{approval_id}.json"))
+    }
+
+    fn read_presence(&self, session_id: &str) -> anyhow::Result<Option<PresenceFile>> {
+        read_json(&self.presence_path(session_id))
+    }
+
+    fn presence_is_live(presence: Option<&PresenceFile>) -> bool {
+        match presence {
+            Some(seen) => {
+                seen.heartbeat_at_ms > 0 && seen.heartbeat_at_ms > now_ms() - PRESENCE_LEASE_MS
             }
-            // Presence rows are leases that expire within seconds, so a table
-            // from a build without the hand-over columns is rebuilt, not migrated.
-            let has_release = conn
-                .prepare("SELECT release_requested_at_ms FROM yolop_session_presence LIMIT 0")
-                .is_ok();
-            if !has_release {
-                conn.execute_batch(
-                    "DROP TABLE yolop_session_presence;
-                     CREATE TABLE yolop_session_presence (
-                        session_id TEXT PRIMARY KEY,
-                        host_id TEXT NOT NULL,
-                        project_id TEXT NOT NULL,
-                        workspace_root TEXT NOT NULL,
-                        heartbeat_at_ms INTEGER NOT NULL,
-                        headless INTEGER NOT NULL DEFAULT 0,
-                        release_requested_at_ms INTEGER NOT NULL DEFAULT 0
-                     );",
-                )?;
+            None => false,
+        }
+    }
+    /// Every presence lease, newest first.
+    fn all_presence(&self) -> anyhow::Result<Vec<(String, PresenceFile)>> {
+        let mut out = Vec::new();
+        let entries = match std::fs::read_dir(self.presence_dir()) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(out),
+            Err(error) => return Err(error.into()),
+            Ok(entries) => entries,
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Some(name) = path.file_stem().and_then(|stem| stem.to_str()) else {
+                continue;
+            };
+            if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+                continue;
             }
-            Ok(())
-        })?;
-        Ok(())
+            if let Some(presence) = read_json::<PresenceFile>(&path)? {
+                out.push((name.to_string(), presence));
+            }
+        }
+        out.sort_by_key(|(_, presence)| std::cmp::Reverse(presence.heartbeat_at_ms));
+        Ok(out)
+    }
+
+    /// All thread records. Threads are owned by their coordinator (only it
+    /// writes them) but kept in one directory so any process can resolve a
+    /// thread to its coordinator without a shared database.
+    fn all_threads(&self) -> anyhow::Result<Vec<ThreadFile>> {
+        let mut threads = Vec::new();
+        let entries = match std::fs::read_dir(self.threads_dir()) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(threads),
+            Err(error) => return Err(error.into()),
+            Ok(entries) => entries,
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+                continue;
+            }
+            if let Some(thread) = read_json::<ThreadFile>(&path)? {
+                threads.push(thread);
+            }
+        }
+        Ok(threads)
+    }
+
+    /// Pending (unclaimed, due) inbox messages for one session, oldest first.
+    /// This is the read side of the fanout; senders only ever create files.
+    fn pending_inbox(&self, session_id: &str) -> anyhow::Result<Vec<(PathBuf, InboxFile)>> {
+        let mut out = Vec::new();
+        let entries = match std::fs::read_dir(self.inbox_dir(session_id)) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(out),
+            Err(error) => return Err(error.into()),
+            Ok(entries) => entries,
+        };
+        let now = now_ms();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            if !name.ends_with(".json") || name.contains(".claimed-") {
+                continue;
+            }
+            let Some(message) = read_json::<InboxFile>(&path)? else {
+                continue;
+            };
+            if message.available_at_ms <= now {
+                out.push((path, message));
+            }
+        }
+        out.sort_by_key(|(_, message)| message.created_at_ms);
+        Ok(out)
+    }
+
+    /// Whether `host_id` currently holds a fresh lease anywhere. Tells a
+    /// live claim holder apart from a dead one when reoffering deliveries.
+    fn host_is_live(&self, host_id: &str) -> anyhow::Result<bool> {
+        for (_, presence) in self.all_presence()? {
+            if presence.host_id == host_id && Self::presence_is_live(Some(&presence)) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// Whether `session_id` has any unacked inbox file, pending or claimed.
+    /// Crash restarts ignore backoff: a claimed message still needs a host.
+    fn has_unacked_inbox(&self, session_id: &str) -> bool {
+        let Ok(entries) = std::fs::read_dir(self.inbox_dir(session_id)) else {
+            return false;
+        };
+        entries
+            .flatten()
+            .any(|entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("json"))
+    }
+
+    /// The claim file for `message_id` in any inbox, if one exists.
+    fn find_claim(&self, message_id: &str) -> anyhow::Result<Option<PathBuf>> {
+        let inboxes = self.coordination_dir().join("inbox");
+        let entries = match std::fs::read_dir(&inboxes) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+            Ok(entries) => entries,
+        };
+        for entry in entries.flatten() {
+            let inbox = entry.path();
+            if !inbox.is_dir() {
+                continue;
+            }
+            let Ok(claims) = std::fs::read_dir(&inbox) else {
+                continue;
+            };
+            for claim in claims.flatten() {
+                let path = claim.path();
+                let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+                    continue;
+                };
+                if name.starts_with(message_id) && name.contains(".claimed-") {
+                    return Ok(Some(path));
+                }
+            }
+        }
+        Ok(None)
     }
 
     fn register_host(
@@ -309,90 +534,63 @@ impl CoordinationStore {
         workspace_root: &Path,
         headless: bool,
     ) -> anyhow::Result<()> {
-        self.db.with_conn(|conn| {
-            conn.execute(
-                "INSERT INTO yolop_session_presence
-                    (session_id, host_id, project_id, workspace_root, heartbeat_at_ms,
-                     headless, release_requested_at_ms)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0)
-                 ON CONFLICT(session_id) DO UPDATE SET
-                    host_id = excluded.host_id,
-                    project_id = excluded.project_id,
-                    workspace_root = excluded.workspace_root,
-                    heartbeat_at_ms = excluded.heartbeat_at_ms,
-                    headless = excluded.headless,
-                    release_requested_at_ms = 0",
-                params![
-                    session_id.to_string(),
-                    host_id,
-                    project_id,
-                    workspace_root.display().to_string(),
-                    now_ms(),
-                    headless,
-                ],
-            )?;
-            Ok(())
-        })?;
-        Ok(())
+        let presence = PresenceFile {
+            host_id: host_id.to_string(),
+            project_id: project_id.to_string(),
+            workspace_root: workspace_root.to_string_lossy().into_owned(),
+            heartbeat_at_ms: now_ms(),
+            headless,
+            release_requested_at_ms: 0,
+        };
+        write_json(&self.presence_path(&session_id.to_string()), &presence)
     }
 
     fn heartbeat(&self, session_id: SessionId, host_id: &str) -> anyhow::Result<()> {
-        self.db.with_conn(|conn| {
-            conn.execute(
-                "UPDATE yolop_session_presence SET heartbeat_at_ms = ?3
-                 WHERE session_id = ?1 AND host_id = ?2",
-                params![session_id.to_string(), host_id, now_ms()],
-            )?;
-            Ok(())
-        })?;
-        Ok(())
+        let path = self.presence_path(&session_id.to_string());
+        let Some(mut presence) = read_json::<PresenceFile>(&path)? else {
+            return Ok(());
+        };
+        if presence.host_id != host_id {
+            return Ok(());
+        }
+        presence.heartbeat_at_ms = now_ms();
+        write_json(&path, &presence)
     }
 
     fn mark_offline(&self, session_id: SessionId, host_id: &str) {
-        let _ = self.db.with_conn(|conn| {
-            conn.execute(
-                "UPDATE yolop_session_presence SET heartbeat_at_ms = 0
-                 WHERE session_id = ?1 AND host_id = ?2",
-                params![session_id.to_string(), host_id],
-            )?;
-            Ok(())
-        });
+        let path = self.presence_path(&session_id.to_string());
+        let Ok(Some(mut presence)) = read_json::<PresenceFile>(&path) else {
+            return;
+        };
+        if presence.host_id != host_id {
+            return;
+        }
+        presence.heartbeat_at_ms = 0;
+        let _ = write_json(&path, &presence);
     }
 
-    /// Whether some process currently hosts `session_id`.
     pub(crate) fn is_live(&self, session_id: SessionId) -> anyhow::Result<bool> {
-        let live = self.db.with_conn(|conn| {
-            conn.query_row(
-                "SELECT EXISTS(SELECT 1 FROM yolop_session_presence
-                 WHERE session_id = ?1 AND heartbeat_at_ms >= ?2)",
-                params![session_id.to_string(), now_ms() - PRESENCE_LEASE_MS],
-                |row| row.get::<_, bool>(0),
-            )
-        })?;
-        Ok(live)
+        Ok(Self::presence_is_live(
+            self.read_presence(&session_id.to_string())?.as_ref(),
+        ))
     }
 
-    /// Ask the headless host of `session_id` to hand the session over. False
-    /// when no live headless host holds it (an interactive one never yields).
     pub(crate) fn request_release(&self, session_id: SessionId) -> anyhow::Result<bool> {
-        let changed = self.db.with_conn(|conn| {
-            conn.execute(
-                "UPDATE yolop_session_presence SET release_requested_at_ms = ?2
-                 WHERE session_id = ?1 AND headless = 1 AND heartbeat_at_ms >= ?3",
-                params![
-                    session_id.to_string(),
-                    now_ms(),
-                    now_ms() - PRESENCE_LEASE_MS
-                ],
-            )
-        })?;
-        Ok(changed == 1)
+        let path = self.presence_path(&session_id.to_string());
+        let Some(mut presence) = read_json::<PresenceFile>(&path)? else {
+            return Ok(false);
+        };
+        if !presence.headless || !Self::presence_is_live(Some(&presence)) {
+            return Ok(false);
+        }
+        presence.release_requested_at_ms = now_ms();
+        write_json(&path, &presence)?;
+        Ok(true)
     }
 
-    /// Take a headless host's session over for a person opening it: ask the
-    /// host to yield, wait (up to `timeout`) for its lease to end, and hold
-    /// off the coordinator's restart of the thread meanwhile. False when the
-    /// host was still live at the deadline.
+    /// Ask a live headless host to release the session, waiting until it
+    /// goes offline. Keeps deferring the supervisor's spawn backoff while
+    /// waiting, so the handover is not raced by a fresh host.
     pub(crate) async fn take_over(
         &self,
         session_id: SessionId,
@@ -417,28 +615,21 @@ impl CoordinationStore {
     /// Restart the backoff on a thread's host spawn, so the coordinator does
     /// not start a headless host for a session a person is opening.
     fn defer_spawn(&self, thread_id: SessionId) -> anyhow::Result<()> {
-        self.db.with_conn(|conn| {
-            conn.execute(
-                "UPDATE yolop_threads SET spawned_at_ms = ?2 WHERE thread_id = ?1",
-                params![thread_id.to_string(), now_ms()],
-            )
-        })?;
-        Ok(())
+        let path = self.thread_path(&thread_id.to_string());
+        let Some(mut thread) = read_json::<ThreadFile>(&path)? else {
+            return Ok(());
+        };
+        thread.spawned_at_ms = now_ms();
+        write_json(&path, &thread)
     }
 
     fn release_requested(&self, session_id: SessionId, host_id: &str) -> anyhow::Result<bool> {
-        let requested = self.db.with_conn(|conn| {
-            conn.query_row(
-                "SELECT EXISTS(SELECT 1 FROM yolop_session_presence
-                 WHERE session_id = ?1 AND host_id = ?2 AND release_requested_at_ms > 0)",
-                params![session_id.to_string(), host_id],
-                |row| row.get::<_, bool>(0),
-            )
-        })?;
-        Ok(requested)
+        let presence = self.read_presence(&session_id.to_string())?;
+        Ok(
+            matches!(presence, Some(seen) if seen.host_id == host_id && seen.release_requested_at_ms > 0),
+        )
     }
-
-    /// Put a headless thread host's sandbox escalation to its coordinator.
+    /// Put a thread host's sandbox escalation to its coordinator.
     /// Requests an earlier host of the thread left behind are dropped.
     fn request_approval(
         &self,
@@ -446,450 +637,653 @@ impl CoordinationStore {
         coordinator: SessionId,
         host_id: &str,
         request: &ApprovalRequest,
-    ) -> anyhow::Result<i64> {
+    ) -> anyhow::Result<String> {
         request.validate()?;
         let digest = request.digest();
-        let id = self.db.with_conn(|conn| {
-            conn.execute(
-                "DELETE FROM yolop_thread_approvals WHERE thread_id = ?1 AND host_id != ?2",
-                params![thread_id.to_string(), host_id],
-            )?;
-            conn.execute(
-                "INSERT INTO yolop_thread_approvals
-                    (thread_id, coordinator_session_id, host_id, command, reason, scope,
-                     created_at_ms, request_digest)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                params![
-                    thread_id.to_string(),
-                    coordinator.to_string(),
-                    host_id,
-                    &request.command,
-                    &request.reason,
-                    request.scope.as_str(),
-                    now_ms(),
-                    digest.as_slice(),
-                ],
-            )?;
-            Ok(conn.last_insert_rowid())
-        })?;
-        Ok(id)
+        if let Ok(entries) = std::fs::read_dir(self.approvals_dir()) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let Ok(Some(approval)) = read_json::<ApprovalFile>(&path) else {
+                    continue;
+                };
+                if approval.thread_id == thread_id.to_string() && approval.host_id != host_id {
+                    let _ = std::fs::remove_file(&path);
+                }
+            }
+        }
+        let approval_id = format!("appr-{}", unique_suffix());
+        let approval = ApprovalFile {
+            approval_id: approval_id.clone(),
+            thread_id: thread_id.to_string(),
+            coordinator: coordinator.to_string(),
+            host_id: host_id.to_string(),
+            command: request.command.clone(),
+            reason: request.reason.clone(),
+            scope: request.scope.as_str().to_string(),
+            decision: None,
+            request_digest: Some(digest.to_vec()),
+            created_at_ms: now_ms(),
+        };
+        write_json(&self.approval_path(&approval_id), &approval)?;
+        Ok(approval_id)
     }
 
-    /// The answer to an approval request, once its coordinator gave one.
+    /// Read a relayed decision. `None` means no answer yet; an unknown scope
+    /// or a digest mismatch fails closed to deny, as before.
     fn approval_answer(
         &self,
-        approval_id: i64,
-        expected_digest: &[u8; 32],
+        approval_id: &str,
+        digest: &[u8; 32],
     ) -> anyhow::Result<Option<ApprovalDecision>> {
-        let stored = self.db.with_conn(|conn| {
-            conn.query_row(
-                "SELECT decision, request_digest, command, reason, scope
-                 FROM yolop_thread_approvals WHERE approval_id = ?1",
-                params![approval_id],
-                |row| {
-                    Ok((
-                        row.get::<_, Option<String>>(0)?,
-                        row.get::<_, Option<Vec<u8>>>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, String>(3)?,
-                        row.get::<_, String>(4)?,
-                    ))
-                },
-            )
-            .optional()
-        })?;
-        let Some((decision, digest, command, reason, scope)) = stored else {
+        let Some(approval) = read_json::<ApprovalFile>(&self.approval_path(approval_id))? else {
             return Ok(None);
         };
-        let Some(scope) = ApprovalScope::parse(&scope) else {
+        let Some(scope) = ApprovalScope::parse(&approval.scope) else {
             return Ok(Some(ApprovalDecision::Deny));
         };
         let request = ApprovalRequest {
-            command,
-            reason,
+            command: approval.command.clone(),
+            reason: approval.reason.clone(),
             scope,
         };
-        // THREAT[TM-BASH]: a decision authorizes this host's original request,
-        // never an incomplete legacy record or a different stored request.
-        if !request.matches_digest(digest.as_deref())
-            || digest.as_deref() != Some(expected_digest.as_slice())
+        if !request.matches_digest(approval.request_digest.as_deref())
+            || approval.request_digest.as_deref() != Some(digest.as_slice())
         {
             return Ok(Some(ApprovalDecision::Deny));
         }
-        Ok(decision.and_then(|decision| ApprovalDecision::parse(&decision)))
+        Ok(approval
+            .decision
+            .as_deref()
+            .and_then(ApprovalDecision::parse))
     }
 
-    fn drop_approval(&self, approval_id: i64) {
-        let _ = self.db.with_conn(|conn| {
-            conn.execute(
-                "DELETE FROM yolop_thread_approvals WHERE approval_id = ?1",
-                params![approval_id],
-            )?;
-            Ok(())
-        });
+    fn drop_approval(&self, approval_id: &str) {
+        let _ = std::fs::remove_file(self.approval_path(approval_id));
     }
 
-    /// Unanswered approval requests from live hosts of `coordinator`'s threads.
+    /// Pending escalations for `coordinator`, oldest first. Stale ones
+    /// (unknown scope, invalid request, dead thread host) are denied or
+    /// dropped instead of presented, as before.
     fn pending_approvals(&self, coordinator: SessionId) -> anyhow::Result<Vec<ThreadApproval>> {
-        let approvals = self.db.with_conn(|conn| {
-            let mut statement = conn.prepare(
-                "SELECT a.approval_id, a.thread_id, a.command, a.reason, a.scope, a.request_digest
-                 FROM yolop_thread_approvals a
-                 JOIN yolop_session_presence p
-                    ON p.session_id = a.thread_id AND p.host_id = a.host_id
-                 WHERE a.coordinator_session_id = ?1 AND a.decision IS NULL
-                    AND p.heartbeat_at_ms >= ?2
-                 ORDER BY a.approval_id",
-            )?;
-            let rows = statement.query_map(
-                params![coordinator.to_string(), now_ms() - PRESENCE_LEASE_MS],
-                |row| {
-                    Ok((
-                        row.get::<_, i64>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, String>(3)?,
-                        row.get::<_, String>(4)?,
-                        row.get::<_, Option<Vec<u8>>>(5)?,
-                    ))
-                },
-            )?;
-            rows.collect::<Result<Vec<_>, _>>()
-        })?;
-        Ok(approvals
-            .into_iter()
-            .filter_map(|(approval_id, thread_id, command, reason, scope, digest)| {
-                let Some(scope) = ApprovalScope::parse(&scope) else {
-                    let _ = self.answer_approval(approval_id, ApprovalDecision::Deny);
-                    return None;
-                };
-                let request = ApprovalRequest {
-                    command,
-                    reason,
-                    scope,
-                };
-                if !request.matches_digest(digest.as_deref()) {
-                    let _ = self.answer_approval(approval_id, ApprovalDecision::Deny);
-                    return None;
-                }
-                Some(ThreadApproval {
-                    approval_id,
-                    thread_id: thread_id.parse().ok()?,
-                    request,
-                })
-            })
-            .collect())
+        let mut approvals = Vec::new();
+        let entries = match std::fs::read_dir(self.approvals_dir()) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(approvals);
+            }
+            Err(error) => return Err(error.into()),
+            Ok(entries) => entries,
+        };
+        let mut files: Vec<PathBuf> = entries.flatten().map(|entry| entry.path()).collect();
+        files.sort();
+        for path in files {
+            if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+                continue;
+            }
+            let Some(approval) = read_json::<ApprovalFile>(&path)? else {
+                continue;
+            };
+            if approval.coordinator != coordinator.to_string() || approval.decision.is_some() {
+                continue;
+            }
+            let Some(scope) = ApprovalScope::parse(&approval.scope) else {
+                let _ = self.answer_approval(&approval.approval_id, ApprovalDecision::Deny);
+                continue;
+            };
+            let request = ApprovalRequest {
+                command: approval.command.clone(),
+                reason: approval.reason.clone(),
+                scope,
+            };
+            if !request.matches_digest(approval.request_digest.as_deref()) {
+                let _ = self.answer_approval(&approval.approval_id, ApprovalDecision::Deny);
+                continue;
+            }
+            let live = self
+                .read_presence(&approval.thread_id)?
+                .map(|seen| seen.host_id == approval.host_id && Self::presence_is_live(Some(&seen)))
+                .unwrap_or(false);
+            if !live {
+                continue;
+            }
+            let thread_id: SessionId = approval.thread_id.parse()?;
+            approvals.push(ThreadApproval {
+                approval_id: approval.approval_id,
+                thread_id,
+                request,
+            });
+        }
+        Ok(approvals)
     }
 
-    fn answer_approval(&self, approval_id: i64, decision: ApprovalDecision) -> anyhow::Result<()> {
-        self.db.with_conn(|conn| {
-            conn.execute(
-                "UPDATE yolop_thread_approvals SET decision = ?2
-                 WHERE approval_id = ?1 AND decision IS NULL",
-                params![approval_id, decision.as_str()],
-            )?;
-            Ok(())
-        })?;
+    fn answer_approval(&self, approval_id: &str, decision: ApprovalDecision) -> anyhow::Result<()> {
+        let path = self.approval_path(approval_id);
+        let Some(mut approval) = read_json::<ApprovalFile>(&path)? else {
+            return Ok(());
+        };
+        if approval.decision.is_none() {
+            approval.decision = Some(decision.as_str().to_string());
+            write_json(&path, &approval)?;
+        }
         Ok(())
     }
 
-    /// Every live session, newest heartbeat first.
+    /// Live sessions, newest heartbeat first, with the coordinator that owns
+    /// each thread. Presence comes from per-session leases, thread ownership
+    /// from the coordinator-owned thread files.
     pub(crate) fn live_sessions(&self) -> anyhow::Result<Vec<LiveSession>> {
-        let sessions = self.db.with_conn(|conn| {
-            let mut statement = conn.prepare(
-                "SELECT p.session_id, p.workspace_root, t.coordinator_session_id
-                 FROM yolop_session_presence p
-                 LEFT JOIN yolop_threads t ON t.thread_id = p.session_id
-                 WHERE p.heartbeat_at_ms >= ?1
-                 ORDER BY p.heartbeat_at_ms DESC",
-            )?;
-            let rows = statement.query_map(params![now_ms() - PRESENCE_LEASE_MS], |row| {
-                Ok(LiveSession {
-                    session_id: row.get(0)?,
-                    workspace_root: row.get(1)?,
-                    thread_of: row.get(2)?,
-                })
-            })?;
-            rows.collect::<Result<Vec<_>, _>>()
-        })?;
+        let threads: std::collections::HashMap<String, String> = self
+            .all_threads()?
+            .into_iter()
+            .map(|thread| (thread.thread_id, thread.coordinator))
+            .collect();
+        let mut sessions = Vec::new();
+        for (session_id, presence) in self.all_presence()? {
+            if !Self::presence_is_live(Some(&presence)) {
+                continue;
+            }
+            sessions.push(LiveSession {
+                thread_of: threads.get(&session_id).cloned(),
+                workspace_root: presence.workspace_root,
+                session_id,
+            });
+        }
         Ok(sessions)
     }
 
-    #[cfg(test)]
-    pub(crate) fn live_session_ids(&self) -> anyhow::Result<Vec<String>> {
-        Ok(self
-            .live_sessions()?
-            .into_iter()
-            .map(|session| session.session_id)
-            .collect())
-    }
-
-    /// Queue `payload` for `target`. It waits until a host of that session
-    /// delivers it and the turn it wakes finishes.
+    /// Fan out one message into the target's inbox. The sender only creates
+    /// a uniquely-named file, so senders never contend with each other or
+    /// with the target's host.
     pub(crate) fn enqueue(
         &self,
         target: SessionId,
         source: Option<SessionId>,
         payload: &InboxPayload,
     ) -> anyhow::Result<String> {
-        let message_id = new_message_id();
-        let payload = serde_json::to_string(payload)?;
-        self.db.with_conn(|conn| {
-            conn.execute(
-                "INSERT INTO yolop_session_inbox
-                    (message_id, target_session_id, source_session_id, payload_json, created_at_ms)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![
-                    message_id,
-                    target.to_string(),
-                    source.map(|source| source.to_string()),
-                    payload,
-                    now_ms(),
-                ],
-            )?;
-            Ok(())
-        })?;
-        Ok(message_id)
+        let rendered = serde_json::to_string(payload)?;
+        anyhow::ensure!(
+            rendered.len() <= MAX_MESSAGE_BYTES,
+            "coordination message is {} bytes, over the {MAX_MESSAGE_BYTES} byte limit",
+            rendered.len()
+        );
+        let dir = self.inbox_dir(&target.to_string());
+        std::fs::create_dir_all(&dir)?;
+        for _ in 0..3 {
+            let message_id = new_message_id();
+            let message = InboxFile {
+                message_id: message_id.clone(),
+                source_session_id: source.map(|session| session.to_string()),
+                payload: payload.clone(),
+                created_at_ms: now_ms(),
+                attempts: 0,
+                available_at_ms: 0,
+                delivered_host_id: None,
+            };
+            let bytes = serde_json::to_vec_pretty(&message)?;
+            if create_new(&dir.join(format!("{message_id}.json")), &bytes)? {
+                return Ok(message_id);
+            }
+        }
+        anyhow::bail!("could not place a message in the session inbox")
     }
 
-    /// Claim the oldest unacknowledged message for this host incarnation.
-    ///
-    /// A message stays pending until the turn it woke finishes ([`Self::ack`]).
-    /// A host that dies first leaves it claimed by a dead incarnation, so the
-    /// next incarnation (a resumed session) receives it again.
+    /// Claim the oldest pending message for `session_id`, or reoffer one
+    /// whose claiming host died. The claim is an atomic rename, so two hosts
+    /// polling the same inbox cannot deliver the same message twice.
     fn next_delivery(
         &self,
         session_id: SessionId,
         host_id: &str,
     ) -> anyhow::Result<Option<Delivery>> {
-        let row = self.db.with_conn(|conn| {
-            conn.query_row(
-                "SELECT message_id, payload_json FROM yolop_session_inbox
-                 WHERE target_session_id = ?1 AND acked_at_ms IS NULL
-                   AND available_at_ms <= ?3
-                   AND (delivered_host_id IS NULL OR delivered_host_id <> ?2)
-                 ORDER BY created_at_ms ASC LIMIT 1",
-                params![session_id.to_string(), host_id, now_ms()],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-            )
-            .optional()
-        })?;
-        let Some((message_id, payload)) = row else {
-            return Ok(None);
+        let session = session_id.to_string();
+        let dir = self.inbox_dir(&session);
+        let now = now_ms();
+        let mut stale: Vec<(PathBuf, String, InboxFile)> = Vec::new();
+        let mut pending: Vec<(PathBuf, String, InboxFile)> = Vec::new();
+        let entries = match std::fs::read_dir(&dir) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+            Ok(entries) => entries,
         };
-        let claimed = self.db.with_conn(|conn| {
-            conn.execute(
-                "UPDATE yolop_session_inbox
-                 SET delivered_host_id = ?2, attempts = attempts + 1
-                 WHERE message_id = ?1 AND acked_at_ms IS NULL
-                   AND (delivered_host_id IS NULL OR delivered_host_id <> ?2)",
-                params![message_id, host_id],
-            )
-        })?;
-        if claimed != 1 {
-            return Ok(None);
-        }
-        let payload = match serde_json::from_str(&payload) {
-            Ok(payload) => payload,
-            Err(error) => {
-                // Unreadable rows (another build's format) are dropped rather
-                // than offered forever.
-                tracing::warn!(%error, %message_id, "dropping unreadable inbox message");
-                self.ack(&message_id)?;
-                return Ok(None);
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Some(name) = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(str::to_owned)
+            else {
+                continue;
+            };
+            let Some(stem) = name.strip_suffix(".json").map(str::to_owned) else {
+                continue;
+            };
+            if let Some((base, claim_host)) = stem.split_once(".claimed-") {
+                if claim_host == host_id {
+                    continue;
+                }
+                if self.host_is_live(claim_host)? {
+                    continue;
+                }
+                if let Some(message) = read_json::<InboxFile>(&path)? {
+                    stale.push((path, base.to_string(), message));
+                }
+                continue;
             }
-        };
-        Ok(Some(Delivery {
-            message_id,
-            payload,
-        }))
+            if let Some(message) = read_json::<InboxFile>(&path)? {
+                if message.available_at_ms > now {
+                    continue;
+                }
+                if message.attempts >= MAX_DELIVERY_ATTEMPTS as u32 {
+                    let _ = std::fs::remove_file(&path);
+                    continue;
+                }
+                pending.push((path, stem.to_string(), message));
+            }
+        }
+        pending.sort_by_key(|(_, _, message)| message.created_at_ms);
+        stale.sort_by_key(|(_, _, message)| message.created_at_ms);
+        for (path, base, mut message) in pending.into_iter().chain(stale) {
+            let claimed = dir.join(format!("{base}.claimed-{host_id}.json"));
+            match std::fs::rename(&path, &claimed) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error.into()),
+                Ok(()) => {
+                    message.attempts += 1;
+                    message.delivered_host_id = Some(host_id.to_string());
+                    write_json(&claimed, &message)?;
+                    return Ok(Some(Delivery {
+                        message_id: message.message_id,
+                        payload: message.payload,
+                    }));
+                }
+            }
+        }
+        Ok(None)
     }
 
-    /// The turn a delivery woke finished; never offer it again.
     fn ack(&self, message_id: &str) -> anyhow::Result<()> {
-        self.db.with_conn(|conn| {
-            conn.execute(
-                "UPDATE yolop_session_inbox SET acked_at_ms = ?2
-                 WHERE message_id = ?1 AND acked_at_ms IS NULL",
-                params![message_id, now_ms()],
-            )?;
+        if let Some(path) = self.find_claim(message_id)? {
+            match std::fs::remove_file(&path) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(error.into()),
+                Ok(()) => Ok(()),
+            }
+        } else {
             Ok(())
-        })?;
-        Ok(())
+        }
     }
 
-    /// The turn a delivery woke failed. Offer it again after a backoff until
-    /// its attempts are spent, then give up on it.
+    /// Return a message to its inbox with backoff. Thread briefs are not
+    /// retried: a failed thread turn fails the assignment instead. An
+    /// exhausted message is dropped, as before.
     fn nack(&self, message_id: &str) -> anyhow::Result<()> {
-        let attempts = self.db.with_conn(|conn| {
-            conn.query_row(
-                "SELECT attempts FROM yolop_session_inbox
-                 WHERE message_id = ?1 AND acked_at_ms IS NULL",
-                params![message_id],
-                |row| row.get::<_, i64>(0),
-            )
-            .optional()
-        })?;
-        let Some(attempts) = attempts else {
+        let Some(path) = self.find_claim(message_id)? else {
             return Ok(());
         };
-        if attempts >= MAX_DELIVERY_ATTEMPTS {
+        let Some(mut message) = read_json::<InboxFile>(&path)? else {
+            return Ok(());
+        };
+        if message.payload.is_thread() {
             return self.ack(message_id);
         }
-        self.db.with_conn(|conn| {
-            conn.execute(
-                "UPDATE yolop_session_inbox
-                 SET delivered_host_id = NULL, available_at_ms = ?2
-                 WHERE message_id = ?1 AND acked_at_ms IS NULL",
-                params![
-                    message_id,
-                    now_ms() + DELIVERY_RETRY_BACKOFF_MS * attempts.max(1)
-                ],
-            )?;
-            Ok(())
-        })?;
-        Ok(())
+        if message.attempts >= MAX_DELIVERY_ATTEMPTS as u32 {
+            return self.ack(message_id);
+        }
+        message.available_at_ms = now_ms() + DELIVERY_RETRY_BACKOFF_MS;
+        message.delivered_host_id = None;
+        write_json(&path, &message)?;
+        let pending = path.with_file_name(format!("{message_id}.json"));
+        match std::fs::rename(&path, &pending) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error.into()),
+            Ok(()) => Ok(()),
+        }
     }
-
-    /// Remember `thread` as a thread of its coordinator. Idempotent.
+    /// Record a thread under its coordinator. Only the owning coordinator
+    /// writes its threads; everyone else resolves them read-only.
     pub(crate) fn record_thread(&self, thread: &ThreadRecord) -> anyhow::Result<()> {
-        let launch = serde_json::to_string(&thread.launch)?;
-        self.db.with_conn(|conn| {
-            conn.execute(
-                "INSERT INTO yolop_threads
-                    (thread_id, coordinator_session_id, workspace_root, launch_json, created_at_ms)
-                 VALUES (?1, ?2, ?3, ?4, ?5)
-                 ON CONFLICT(thread_id) DO NOTHING",
-                params![
-                    thread.thread_id.to_string(),
-                    thread.coordinator.to_string(),
-                    thread.workspace_root.display().to_string(),
-                    launch,
-                    now_ms(),
-                ],
-            )?;
-            Ok(())
-        })?;
+        let record = ThreadFile {
+            thread_id: thread.thread_id.to_string(),
+            coordinator: thread.coordinator.to_string(),
+            workspace_root: thread.workspace_root.to_string_lossy().into_owned(),
+            launch: thread.launch.clone(),
+            created_at_ms: now_ms(),
+            spawned_at_ms: 0,
+        };
+        let bytes = serde_json::to_vec_pretty(&record)?;
+        create_new(&self.thread_path(&record.thread_id), &bytes)?;
         Ok(())
     }
 
     pub(crate) fn thread(&self, thread_id: SessionId) -> anyhow::Result<Option<ThreadRecord>> {
-        let row = self.db.with_conn(|conn| {
-            conn.query_row(
-                "SELECT thread_id, coordinator_session_id, workspace_root, launch_json
-                 FROM yolop_threads WHERE thread_id = ?1",
-                params![thread_id.to_string()],
-                thread_row,
-            )
-            .optional()
-        })?;
-        row.map(parse_thread_row).transpose()
+        let Some(record) = read_json::<ThreadFile>(&self.thread_path(&thread_id.to_string()))?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(ThreadRecord {
+            thread_id: record.thread_id.parse()?,
+            coordinator: record.coordinator.parse()?,
+            workspace_root: PathBuf::from(record.workspace_root),
+            launch: record.launch,
+        }))
     }
 
-    /// Threads of `coordinator` with messages waiting and no live host.
-    /// Whether `coordinator` has started any threads.
     pub(crate) fn has_threads(&self, coordinator: SessionId) -> anyhow::Result<bool> {
-        let any = self.db.with_conn(|conn| {
-            conn.query_row(
-                "SELECT EXISTS(SELECT 1 FROM yolop_threads WHERE coordinator_session_id = ?1)",
-                params![coordinator.to_string()],
-                |row| row.get::<_, bool>(0),
-            )
-        })?;
-        Ok(any)
+        let coordinator = coordinator.to_string();
+        Ok(self
+            .all_threads()?
+            .iter()
+            .any(|thread| thread.coordinator == coordinator))
     }
 
+    /// Threads with pending messages, no live host, and a past spawn
+    /// backoff: the coordinator's supervisor starts a host for these.
     fn threads_needing_host(&self, coordinator: SessionId) -> anyhow::Result<Vec<ThreadRecord>> {
+        let coordinator = coordinator.to_string();
         let now = now_ms();
-        let rows = self.db.with_conn(|conn| {
-            let mut statement = conn.prepare(
-                "SELECT t.thread_id, t.coordinator_session_id, t.workspace_root, t.launch_json
-                 FROM yolop_threads t
-                 WHERE t.coordinator_session_id = ?1
-                   AND t.spawned_at_ms < ?2
-                   AND EXISTS (SELECT 1 FROM yolop_session_inbox i
-                               WHERE i.target_session_id = t.thread_id
-                                 AND i.acked_at_ms IS NULL AND i.available_at_ms <= ?3)
-                   AND NOT EXISTS (SELECT 1 FROM yolop_session_presence p
-                                   WHERE p.session_id = t.thread_id
-                                     AND p.heartbeat_at_ms >= ?4)",
-            )?;
-            let rows = statement.query_map(
-                params![
-                    coordinator.to_string(),
-                    now - THREAD_SPAWN_BACKOFF_MS,
-                    now,
-                    now - PRESENCE_LEASE_MS,
-                ],
-                thread_row,
-            )?;
-            rows.collect::<Result<Vec<_>, _>>()
-        })?;
-        rows.into_iter().map(parse_thread_row).collect()
+        let mut threads = Vec::new();
+        for thread in self.all_threads()? {
+            if thread.coordinator != coordinator {
+                continue;
+            }
+            if !self
+                .pending_inbox(&thread.thread_id)?
+                .iter()
+                .any(|(_, message)| message.attempts < MAX_DELIVERY_ATTEMPTS as u32)
+            {
+                continue;
+            }
+            if Self::presence_is_live(self.read_presence(&thread.thread_id)?.as_ref()) {
+                continue;
+            }
+            if thread.spawned_at_ms > 0 && thread.spawned_at_ms > now - THREAD_SPAWN_BACKOFF_MS {
+                continue;
+            }
+            threads.push(ThreadRecord {
+                thread_id: thread.thread_id.parse()?,
+                coordinator: thread.coordinator.parse()?,
+                workspace_root: PathBuf::from(thread.workspace_root),
+                launch: thread.launch,
+            });
+        }
+        threads.sort_by_key(|thread| thread.thread_id.to_string());
+        Ok(threads)
     }
 
-    /// Threads of `coordinator` with no live host and nothing waiting, past
-    /// their spawn backoff: candidates for a crash restart.
+    /// Threads with no live host and no pending messages that once spawned:
+    /// their host vanished mid-assignment, so the coordinator restarts them
+    /// with a note to check what survived.
     fn hostless_threads(&self, coordinator: SessionId) -> anyhow::Result<Vec<ThreadRecord>> {
+        let coordinator = coordinator.to_string();
         let now = now_ms();
-        let rows = self.db.with_conn(|conn| {
-            let mut statement = conn.prepare(
-                "SELECT t.thread_id, t.coordinator_session_id, t.workspace_root, t.launch_json
-                 FROM yolop_threads t
-                 WHERE t.coordinator_session_id = ?1
-                   AND t.spawned_at_ms < ?2
-                   AND NOT EXISTS (SELECT 1 FROM yolop_session_inbox i
-                                   WHERE i.target_session_id = t.thread_id
-                                     AND i.acked_at_ms IS NULL)
-                   AND NOT EXISTS (SELECT 1 FROM yolop_session_presence p
-                                   WHERE p.session_id = t.thread_id
-                                     AND p.heartbeat_at_ms >= ?3)",
-            )?;
-            let rows = statement.query_map(
-                params![
-                    coordinator.to_string(),
-                    now - THREAD_SPAWN_BACKOFF_MS,
-                    now - PRESENCE_LEASE_MS,
-                ],
-                thread_row,
-            )?;
-            rows.collect::<Result<Vec<_>, _>>()
-        })?;
-        rows.into_iter().map(parse_thread_row).collect()
+        let mut threads = Vec::new();
+        for thread in self.all_threads()? {
+            if thread.coordinator != coordinator {
+                continue;
+            }
+            if Self::presence_is_live(self.read_presence(&thread.thread_id)?.as_ref()) {
+                continue;
+            }
+            if self.has_unacked_inbox(&thread.thread_id) {
+                continue;
+            }
+            if thread.spawned_at_ms > now - THREAD_SPAWN_BACKOFF_MS {
+                continue;
+            }
+            threads.push(ThreadRecord {
+                thread_id: thread.thread_id.parse()?,
+                coordinator: thread.coordinator.parse()?,
+                workspace_root: PathBuf::from(thread.workspace_root),
+                launch: thread.launch,
+            });
+        }
+        Ok(threads)
     }
 
-    /// Claim the right to start `thread`'s host now. False while another start
-    /// is still inside its backoff window.
+    /// Atomically claim the right to spawn a host for `thread_id`. The
+    /// create-new sentinel is the mutual exclusion: two supervisors racing
+    /// for the same thread cannot both win, even across processes.
     fn claim_spawn(&self, thread_id: SessionId) -> anyhow::Result<bool> {
+        let path = self.thread_path(&thread_id.to_string());
+        let Some(thread) = read_json::<ThreadFile>(&path)? else {
+            return Ok(false);
+        };
+        if thread.spawned_at_ms > 0 && thread.spawned_at_ms > now_ms() - THREAD_SPAWN_BACKOFF_MS {
+            return Ok(false);
+        }
+        let lock = self.threads_dir().join(format!(".spawn-{thread_id}.lock"));
         let now = now_ms();
-        let changed = self.db.with_conn(|conn| {
-            conn.execute(
-                "UPDATE yolop_threads SET spawned_at_ms = ?2
-                 WHERE thread_id = ?1 AND spawned_at_ms < ?3",
-                params![thread_id.to_string(), now, now - THREAD_SPAWN_BACKOFF_MS],
-            )
-        })?;
-        Ok(changed == 1)
+        if !create_new(&lock, format!("{}\n{now}", std::process::id()).as_bytes())? {
+            let stale = std::fs::read_to_string(&lock)
+                .ok()
+                .and_then(|content| content.lines().nth(1)?.parse::<i64>().ok())
+                .map(|claimed_at| now - claimed_at > THREAD_SPAWN_BACKOFF_MS)
+                .unwrap_or(true);
+            if !stale {
+                return Ok(false);
+            }
+            let _ = std::fs::remove_file(&lock);
+            if !create_new(&lock, format!("{}\n{now}", std::process::id()).as_bytes())? {
+                return Ok(false);
+            }
+        }
+        let claimed = (|| -> anyhow::Result<()> {
+            let Some(mut thread) = read_json::<ThreadFile>(&path)? else {
+                return Ok(());
+            };
+            thread.spawned_at_ms = now;
+            write_json(&path, &thread)
+        })();
+        let _ = std::fs::remove_file(&lock);
+        claimed?;
+        Ok(true)
+    }
+}
+/// Import the legacy shared coordination database
+/// (`everruns-local/local.db`) into per-owner files. Runs once: after a
+/// successful import the database is renamed to a `.migrated-<millis>`
+/// backup and a marker records the migration, so a later open never
+/// reimports. A failed import leaves the database in place and retries on
+/// the next open; nothing is deleted until every row has a file.
+fn migrate_legacy_db(sessions_dir: &Path) {
+    let legacy = sessions_dir.join("everruns-local/local.db");
+    let marker = sessions_dir.join("coordination/migrated-v1");
+    if marker.exists() || !legacy.exists() {
+        return;
+    }
+    match import_legacy_db(sessions_dir, &legacy) {
+        Ok(()) => {
+            let backup =
+                sessions_dir.join(format!("everruns-local/local.db.migrated-{}", now_ms()));
+            let _ = std::fs::rename(&legacy, &backup);
+            let _ = write_atomic(&marker, b"migrated from everruns-local/local.db");
+        }
+        Err(error) => {
+            eprintln!("yolop: coordination migration deferred, will retry: {error:#}");
+        }
     }
 }
 
-type ThreadRow = (String, String, String, String);
-
-fn thread_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ThreadRow> {
-    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+fn legacy_rows(
+    conn: &rusqlite::Connection,
+    table: &str,
+) -> anyhow::Result<Vec<std::collections::HashMap<String, rusqlite::types::Value>>> {
+    let mut stmt = conn.prepare(&format!("SELECT * FROM {table}"))?;
+    let names: Vec<String> = stmt
+        .column_names()
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    let rows = stmt
+        .query_map([], |row| {
+            let mut map = std::collections::HashMap::new();
+            for (index, name) in names.iter().enumerate() {
+                map.insert(name.clone(), row.get::<_, rusqlite::types::Value>(index)?);
+            }
+            Ok(map)
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
 }
 
-fn parse_thread_row(
-    (thread_id, coordinator, workspace_root, launch): ThreadRow,
-) -> anyhow::Result<ThreadRecord> {
-    Ok(ThreadRecord {
-        thread_id: thread_id.parse()?,
-        coordinator: coordinator.parse()?,
-        workspace_root: PathBuf::from(workspace_root),
-        launch: serde_json::from_str(&launch)?,
-    })
+fn legacy_text(
+    row: &std::collections::HashMap<String, rusqlite::types::Value>,
+    key: &str,
+) -> Option<String> {
+    match row.get(key)? {
+        rusqlite::types::Value::Text(text) => Some(text.clone()),
+        _ => None,
+    }
 }
 
+fn legacy_int(
+    row: &std::collections::HashMap<String, rusqlite::types::Value>,
+    key: &str,
+    default: i64,
+) -> i64 {
+    match row.get(key) {
+        Some(rusqlite::types::Value::Integer(n)) => *n,
+        _ => default,
+    }
+}
+
+fn legacy_blob(
+    row: &std::collections::HashMap<String, rusqlite::types::Value>,
+    key: &str,
+) -> Option<Vec<u8>> {
+    match row.get(key)? {
+        rusqlite::types::Value::Blob(bytes) => Some(bytes.clone()),
+        _ => None,
+    }
+}
+
+fn import_legacy_db(sessions_dir: &Path, legacy: &Path) -> anyhow::Result<()> {
+    let conn =
+        rusqlite::Connection::open_with_flags(legacy, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    conn.busy_timeout(std::time::Duration::from_secs(5))?;
+    let tables: std::collections::HashSet<String> = conn
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")?
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<Result<_, _>>()?;
+    let store = CoordinationStore {
+        sessions_dir: sessions_dir.to_path_buf(),
+        _temp: None,
+    };
+
+    // Older databases predate newer columns (release flags, delivery
+    // bookkeeping, verification digests); missing values fall back to
+    // fail-closed defaults instead of aborting the import.
+    if tables.contains("yolop_session_presence") {
+        for row in legacy_rows(&conn, "yolop_session_presence")? {
+            let (Some(session_id), Some(host_id)) = (
+                legacy_text(&row, "session_id"),
+                legacy_text(&row, "host_id"),
+            ) else {
+                continue;
+            };
+            let presence = PresenceFile {
+                host_id,
+                project_id: legacy_text(&row, "project_id").unwrap_or_default(),
+                workspace_root: legacy_text(&row, "workspace_root").unwrap_or_default(),
+                heartbeat_at_ms: legacy_int(&row, "heartbeat_at_ms", 0),
+                headless: legacy_int(&row, "headless", 0) != 0,
+                release_requested_at_ms: legacy_int(&row, "release_requested_at_ms", 0),
+            };
+            write_json(&store.presence_path(&session_id), &presence)?;
+        }
+    }
+
+    if tables.contains("yolop_session_inbox") {
+        for row in legacy_rows(&conn, "yolop_session_inbox")? {
+            if legacy_int(&row, "acked_at_ms", 0) != 0 {
+                continue;
+            }
+            let (Some(message_id), Some(target), Some(payload_json)) = (
+                legacy_text(&row, "message_id"),
+                legacy_text(&row, "target_session_id"),
+                legacy_text(&row, "payload_json"),
+            ) else {
+                continue;
+            };
+            let Ok(payload) = serde_json::from_str::<InboxPayload>(&payload_json) else {
+                continue;
+            };
+            let delivered = legacy_text(&row, "delivered_host_id");
+            let message = InboxFile {
+                message_id: message_id.clone(),
+                source_session_id: legacy_text(&row, "source_session_id"),
+                payload,
+                created_at_ms: legacy_int(&row, "created_at_ms", now_ms()),
+                attempts: legacy_int(&row, "attempts", 0).max(0) as u32,
+                available_at_ms: legacy_int(&row, "available_at_ms", 0),
+                delivered_host_id: delivered.clone(),
+            };
+            let bytes = serde_json::to_vec_pretty(&message)?;
+            let dir = store.inbox_dir(&target);
+            std::fs::create_dir_all(&dir)?;
+            let name = match delivered {
+                Some(host) => format!("{message_id}.claimed-{host}.json"),
+                None => format!("{message_id}.json"),
+            };
+            create_new(&dir.join(name), &bytes)?;
+        }
+    }
+
+    if tables.contains("yolop_threads") {
+        for row in legacy_rows(&conn, "yolop_threads")? {
+            let (Some(thread_id), Some(coordinator)) = (
+                legacy_text(&row, "thread_id"),
+                legacy_text(&row, "coordinator_session_id"),
+            ) else {
+                continue;
+            };
+            let launch_json = legacy_text(&row, "launch_json").unwrap_or_default();
+            let Ok(launch) = serde_json::from_str::<Vec<String>>(&launch_json) else {
+                continue;
+            };
+            let record = ThreadFile {
+                thread_id: thread_id.clone(),
+                coordinator,
+                workspace_root: legacy_text(&row, "workspace_root").unwrap_or_default(),
+                launch,
+                created_at_ms: legacy_int(&row, "created_at_ms", now_ms()),
+                spawned_at_ms: legacy_int(&row, "spawned_at_ms", 0).max(0),
+            };
+            let bytes = serde_json::to_vec_pretty(&record)?;
+            create_new(&store.thread_path(&thread_id), &bytes)?;
+        }
+    }
+
+    if tables.contains("yolop_thread_approvals") {
+        for row in legacy_rows(&conn, "yolop_thread_approvals")? {
+            let (Some(thread_id), Some(coordinator), Some(host_id)) = (
+                legacy_text(&row, "thread_id"),
+                legacy_text(&row, "coordinator_session_id"),
+                legacy_text(&row, "host_id"),
+            ) else {
+                continue;
+            };
+            let approval_id = match row.get("approval_id") {
+                Some(rusqlite::types::Value::Integer(id)) => format!("legacy-{id}"),
+                _ => format!("legacy-{}", unique_suffix()),
+            };
+            let approval = ApprovalFile {
+                approval_id: approval_id.clone(),
+                thread_id,
+                coordinator,
+                host_id,
+                command: legacy_text(&row, "command").unwrap_or_default(),
+                reason: legacy_text(&row, "reason").unwrap_or_default(),
+                scope: legacy_text(&row, "scope").unwrap_or_default(),
+                decision: legacy_text(&row, "decision"),
+                request_digest: legacy_blob(&row, "request_digest"),
+                created_at_ms: legacy_int(&row, "created_at_ms", now_ms()),
+            };
+            write_json(&store.approval_path(&approval_id), &approval)?;
+        }
+    }
+
+    Ok(())
+}
 /// One claimed inbox message, identified so its outcome can be settled.
 #[derive(Clone, Debug)]
 struct Delivery {
@@ -1319,7 +1713,7 @@ fn settle_relayed_approvals(
     let now = tokio::time::Instant::now();
     let mut waiting = Vec::with_capacity(relayed.len());
     for approval in relayed.drain(..) {
-        let answer = match store.approval_answer(approval.approval_id, &approval.request_digest) {
+        let answer = match store.approval_answer(&approval.approval_id, &approval.request_digest) {
             Ok(Some(decision)) => Some(decision),
             Ok(None) if yielding || now >= approval.deadline => Some(ApprovalDecision::Deny),
             Ok(None) => None,
@@ -1330,7 +1724,7 @@ fn settle_relayed_approvals(
         };
         match answer {
             Some(decision) => {
-                store.drop_approval(approval.approval_id);
+                store.drop_approval(&approval.approval_id);
                 let _ = approval.reply.send(decision);
             }
             None => waiting.push(approval),
@@ -1344,7 +1738,7 @@ fn settle_relayed_approvals(
 fn ask_for_threads(
     store: &CoordinationStore,
     gate: &Arc<ApprovalGate>,
-    asking: &Arc<std::sync::Mutex<std::collections::HashSet<i64>>>,
+    asking: &Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
     coordinator: SessionId,
 ) {
     let pending = match store.pending_approvals(coordinator) {
@@ -1358,7 +1752,7 @@ fn ask_for_threads(
         if !asking
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .insert(approval.approval_id)
+            .insert(approval.approval_id.clone())
         {
             continue;
         }
@@ -1377,7 +1771,7 @@ fn ask_for_threads(
             };
             // A host with no prompt surface denies, as for its own commands.
             let decision = gate.ask(request).await.unwrap_or(ApprovalDecision::Deny);
-            if let Err(error) = store.answer_approval(approval.approval_id, decision) {
+            if let Err(error) = store.answer_approval(&approval.approval_id, decision) {
                 tracing::warn!(%error, "could not answer a thread approval");
             }
             asking
@@ -1399,11 +1793,9 @@ async fn supervise_threads(
 ) {
     // A thread host that died outright left its commands running; stop them
     // before a successor starts on the same workspace.
-    if let Some(dir) = store.sessions_dir.as_deref() {
-        let stopped = crate::exec::group_ledger::reap_dead_hosts(dir);
-        if stopped > 0 {
-            tracing::info!(stopped, "stopped commands left by a dead thread host");
-        }
+    let stopped = crate::exec::group_ledger::reap_dead_hosts(&store.sessions_dir);
+    if stopped > 0 {
+        tracing::info!(stopped, "stopped commands left by a dead thread host");
     }
     let waiting = store.threads_needing_host(session_id);
     let hostless = store.hostless_threads(session_id);
@@ -1592,15 +1984,15 @@ async fn waiting_on_own_work(tasks: &dyn SessionTaskRegistry, session_id: Sessio
 #[cfg(test)]
 mod tests {
     use super::*;
-    use everruns::local::LocalSessionTaskRegistry;
+    use everruns::local::{LocalSessionTaskRegistry, SqliteDb};
     use everruns_core::session_task::{CreateSessionTask, TaskLinks, TaskWakePolicy};
     use everruns_core::{SessionTaskState, SessionTaskUpdate};
     use std::sync::Mutex;
 
     fn test_store() -> (CoordinationStore, Arc<LocalSessionTaskRegistry>) {
-        let db = SqliteDb::open_in_memory().unwrap();
-        let store = CoordinationStore::new(db.clone()).unwrap();
-        let tasks = Arc::new(LocalSessionTaskRegistry::new(db).unwrap());
+        let store = CoordinationStore::ephemeral().unwrap();
+        let tasks =
+            Arc::new(LocalSessionTaskRegistry::new(SqliteDb::open_in_memory().unwrap()).unwrap());
         (store, tasks)
     }
 
@@ -1648,13 +2040,22 @@ mod tests {
     }
 
     fn make_available_now(store: &CoordinationStore) {
-        store
-            .db
-            .with_conn(|conn| {
-                conn.execute("UPDATE yolop_session_inbox SET available_at_ms = 0", [])?;
-                Ok(())
-            })
-            .unwrap();
+        let inboxes = store.coordination_dir().join("inbox");
+        let Ok(entries) = std::fs::read_dir(&inboxes) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let Ok(files) = std::fs::read_dir(entry.path()) else {
+                continue;
+            };
+            for file in files.flatten() {
+                let path = file.path();
+                if let Ok(Some(mut message)) = read_json::<InboxFile>(&path) {
+                    message.available_at_ms = 0;
+                    write_json(&path, &message).unwrap();
+                }
+            }
+        }
     }
 
     #[test]
@@ -1811,13 +2212,10 @@ mod tests {
         store
             .register_host(thread, "host_t", "p", &record.workspace_root, true)
             .unwrap();
-        store
-            .db
-            .with_conn(|conn| {
-                conn.execute("UPDATE yolop_threads SET spawned_at_ms = 0", [])?;
-                Ok(())
-            })
-            .unwrap();
+        let thread_file = store.thread_path(&thread.to_string());
+        let mut record = read_json::<ThreadFile>(&thread_file).unwrap().unwrap();
+        record.spawned_at_ms = 0;
+        write_json(&thread_file, &record).unwrap();
         supervise_threads(&store, tasks.as_ref(), &launcher, coordinator).await;
         assert_eq!(started.lock().unwrap().len(), 1);
 
@@ -2016,7 +2414,7 @@ mod tests {
 
     async fn answer_for(
         store: &CoordinationStore,
-        approval_id: i64,
+        approval_id: &str,
         request: &ApprovalRequest,
     ) -> ApprovalDecision {
         for _ in 0..200 {
@@ -2062,9 +2460,9 @@ mod tests {
             assert!(displayed.reason.ends_with(&request.reason));
             assert_eq!(displayed.scope, request.scope);
             answer.send(decision).unwrap();
-            assert_eq!(answer_for(&store, approval_id, &request).await, decision);
+            assert_eq!(answer_for(&store, &approval_id, &request).await, decision);
             let mut relayed = vec![RelayedApproval {
-                approval_id,
+                approval_id: approval_id.clone(),
                 request_digest: expected_digest,
                 reply,
                 deadline: tokio::time::Instant::now() + APPROVAL_TIMEOUT,
@@ -2100,56 +2498,131 @@ mod tests {
             Some(ApprovalDecision::ApproveOnce),
             Some(ApprovalDecision::ApproveForSession),
         ] {
-            let id = store.db.with_conn(|conn| {
-                conn.execute(
-                    "INSERT INTO yolop_thread_approvals
-                     (thread_id, coordinator_session_id, host_id, command, reason, scope, decision, created_at_ms)
-                     VALUES (?1, ?2, 'host_t', ?3, ?4, ?5, ?6, ?7)",
-                    params![thread.to_string(), coordinator.to_string(), request.command, request.reason,
-                        request.scope.as_str(), decision.map(ApprovalDecision::as_str), now_ms()],
-                )?;
-                Ok(conn.last_insert_rowid())
-            }).unwrap();
+            let approval_id = format!("legacy-{}", unique_suffix());
+            let approval = ApprovalFile {
+                approval_id: approval_id.clone(),
+                thread_id: thread.to_string(),
+                coordinator: coordinator.to_string(),
+                host_id: "host_t".to_string(),
+                command: request.command.clone(),
+                reason: request.reason.clone(),
+                scope: request.scope.as_str().to_string(),
+                decision: decision.map(|choice| choice.as_str().to_string()),
+                request_digest: None,
+                created_at_ms: now_ms(),
+            };
+            write_json(&store.approval_path(&approval_id), &approval).unwrap();
             assert!(store.pending_approvals(coordinator).unwrap().is_empty());
             assert_eq!(
-                store.approval_answer(id, &request.digest()).unwrap(),
+                store
+                    .approval_answer(&approval_id, &request.digest())
+                    .unwrap(),
                 Some(ApprovalDecision::Deny)
             );
         }
     }
 
     #[test]
-    fn legacy_approval_schema_keeps_records_unverified() {
-        let db = SqliteDb::open_in_memory().unwrap();
-        db.with_conn(|conn| {
+    fn legacy_database_is_imported_once_then_retired() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let legacy_dir = dir.path().join("everruns-local");
+        std::fs::create_dir_all(&legacy_dir).unwrap();
+        let coordinator = SessionId::new();
+        let thread = SessionId::new();
+        let now = now_ms();
+        {
+            let conn = rusqlite::Connection::open(legacy_dir.join("local.db")).unwrap();
             conn.execute_batch(
-                "CREATE TABLE yolop_thread_approvals (
+                "CREATE TABLE yolop_session_presence (
+                    session_id TEXT PRIMARY KEY,
+                    host_id TEXT NOT NULL,
+                    project_id TEXT NOT NULL DEFAULT '',
+                    workspace_root TEXT NOT NULL,
+                    heartbeat_at_ms INTEGER NOT NULL,
+                    headless INTEGER NOT NULL DEFAULT 0,
+                    release_requested_at_ms INTEGER NOT NULL DEFAULT 0
+                );
+                CREATE TABLE yolop_session_inbox (
+                    message_id TEXT PRIMARY KEY,
+                    target_session_id TEXT NOT NULL,
+                    source_session_id TEXT,
+                    payload_json TEXT NOT NULL,
+                    delivered_host_id TEXT,
+                    created_at_ms INTEGER NOT NULL,
+                    acked_at_ms INTEGER,
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    available_at_ms INTEGER NOT NULL DEFAULT 0
+                );
+                CREATE TABLE yolop_threads (
+                    thread_id TEXT PRIMARY KEY,
+                    coordinator_session_id TEXT NOT NULL,
+                    workspace_root TEXT NOT NULL,
+                    launch_json TEXT NOT NULL DEFAULT '[]',
+                    created_at_ms INTEGER NOT NULL,
+                    spawned_at_ms INTEGER NOT NULL DEFAULT 0
+                );
+                CREATE TABLE yolop_thread_approvals (
                     approval_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    thread_id TEXT NOT NULL, coordinator_session_id TEXT NOT NULL,
-                    host_id TEXT NOT NULL, command TEXT NOT NULL, reason TEXT NOT NULL,
-                    scope TEXT NOT NULL, decision TEXT, created_at_ms INTEGER NOT NULL
-                 );
-                 INSERT INTO yolop_thread_approvals
+                    thread_id TEXT NOT NULL,
+                    coordinator_session_id TEXT NOT NULL,
+                    host_id TEXT NOT NULL,
+                    command TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    scope TEXT NOT NULL,
+                    decision TEXT,
+                    created_at_ms INTEGER NOT NULL
+                );",
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO yolop_session_presence
+                 VALUES (?1, 'host_m', 'p', '/repo', ?2, 1, 0)",
+                rusqlite::params![coordinator.to_string(), now],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO yolop_threads VALUES (?1, ?2, '/repo', '[]', ?3, 0)",
+                rusqlite::params![thread.to_string(), coordinator.to_string(), now],
+            )
+            .unwrap();
+            let payload = serde_json::to_string(&InboxPayload::Message {
+                from: None,
+                text: "hi".into(),
+            })
+            .unwrap();
+            conn.execute(
+                "INSERT INTO yolop_session_inbox
+                 VALUES ('cmsg_migrated', ?1, NULL, ?2, NULL, ?3, NULL, 0, 0)",
+                rusqlite::params![thread.to_string(), payload, now],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO yolop_thread_approvals
                  (thread_id, coordinator_session_id, host_id, command, reason, scope, decision, created_at_ms)
-                 VALUES ('legacy', 'legacy', 'host', 'dummy', 'review', 'full_access', 'approve_once', 0);",
-            )?;
-            Ok(())
-        }).unwrap();
-        let store = CoordinationStore::new(db.clone()).unwrap();
+                 VALUES (?1, ?2, 'host_m', 'legacy', 'legacy dummy message', 'read', NULL, ?3)",
+                rusqlite::params![thread.to_string(), coordinator.to_string(), now],
+            )
+            .unwrap();
+        }
+        let store = CoordinationStore::open(dir.path()).unwrap();
+        assert!(store.is_live(coordinator).unwrap());
         assert_eq!(
-            store
-                .approval_answer(1, &escalation("dummy").digest())
-                .unwrap(),
-            Some(ApprovalDecision::Deny)
+            store.thread(thread).unwrap().unwrap().coordinator,
+            coordinator
         );
-        // Opening an upgraded store a second time preserves the same denial.
-        CoordinationStore::new(db).unwrap();
-        assert_eq!(
-            store
-                .approval_answer(1, &escalation("dummy").digest())
-                .unwrap(),
-            Some(ApprovalDecision::Deny)
-        );
+        let delivery = store.next_delivery(thread, "host_new").unwrap().unwrap();
+        assert_eq!(delivery.message_id, "cmsg_migrated");
+        assert!(store.pending_approvals(coordinator).unwrap().is_empty());
+        assert!(!legacy_dir.join("local.db").exists());
+        let mut migrated = false;
+        for entry in std::fs::read_dir(&legacy_dir).unwrap().flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            migrated |= name.starts_with("local.db.migrated-");
+        }
+        assert!(migrated, "legacy database is kept as a backup");
+        assert!(dir.path().join("coordination/migrated-v1").exists());
+        let reopened = CoordinationStore::open(dir.path()).unwrap();
+        assert_eq!(reopened.all_threads().unwrap().len(), 1);
     }
 
     #[test]
@@ -2160,29 +2633,25 @@ mod tests {
         store
             .register_host(thread, "host_t", "p", Path::new("/repo"), true)
             .unwrap();
-        let id = store
-            .db
-            .with_conn(|conn| {
-                conn.execute(
-                    "INSERT INTO yolop_thread_approvals
-                 (thread_id, coordinator_session_id, host_id, command, reason, scope, created_at_ms)
-                 VALUES (?1, ?2, 'host_t', 'dummy', 'review', 'unknown_scope', ?3)",
-                    params![thread.to_string(), coordinator.to_string(), now_ms()],
-                )?;
-                Ok(conn.last_insert_rowid())
-            })
-            .unwrap();
+        let approval_id = format!("unscoped-{}", unique_suffix());
+        let approval = ApprovalFile {
+            approval_id: approval_id.clone(),
+            thread_id: thread.to_string(),
+            coordinator: coordinator.to_string(),
+            host_id: "host_t".to_string(),
+            command: "dummy".to_string(),
+            reason: "review".to_string(),
+            scope: "unknown_scope".to_string(),
+            decision: None,
+            request_digest: None,
+            created_at_ms: now_ms(),
+        };
+        write_json(&store.approval_path(&approval_id), &approval).unwrap();
         assert!(store.pending_approvals(coordinator).unwrap().is_empty());
-        let decision = store
-            .db
-            .with_conn(|conn| {
-                conn.query_row(
-                    "SELECT decision FROM yolop_thread_approvals WHERE approval_id = ?1",
-                    params![id],
-                    |row| row.get::<_, Option<String>>(0),
-                )
-            })
-            .unwrap();
+        let decision = read_json::<ApprovalFile>(&store.approval_path(&approval_id))
+            .unwrap()
+            .unwrap()
+            .decision;
         assert_eq!(decision.as_deref(), Some("deny"));
         assert!(store.pending_approvals(coordinator).unwrap().is_empty());
     }
@@ -2217,13 +2686,13 @@ mod tests {
         assert!(prompt.reason.starts_with("thread "), "{}", prompt.reason);
         reply.send(ApprovalDecision::ApproveForSession).unwrap();
         assert_eq!(
-            answer_for(&store, approval_id, &escalation("cargo fetch")).await,
+            answer_for(&store, &approval_id, &escalation("cargo fetch")).await,
             ApprovalDecision::ApproveForSession
         );
         assert!(prompts.try_recv().is_err());
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
         let mut relayed = vec![RelayedApproval {
-            approval_id,
+            approval_id: approval_id.clone(),
             request_digest: escalation("cargo fetch").digest(),
             reply: reply_tx,
             deadline: tokio::time::Instant::now() + APPROVAL_TIMEOUT,
@@ -2233,7 +2702,7 @@ mod tests {
         assert_eq!(reply_rx.await.unwrap(), ApprovalDecision::ApproveForSession);
         assert_eq!(
             store
-                .approval_answer(approval_id, &escalation("cargo fetch").digest())
+                .approval_answer(&approval_id, &escalation("cargo fetch").digest())
                 .unwrap(),
             None
         );
@@ -2244,7 +2713,7 @@ mod tests {
             .unwrap();
         ask_for_threads(&store, &ApprovalGate::deny(), &asking, coordinator);
         assert_eq!(
-            answer_for(&store, denied, &escalation("curl")).await,
+            answer_for(&store, &denied, &escalation("curl")).await,
             ApprovalDecision::Deny
         );
     }
@@ -2262,7 +2731,7 @@ mod tests {
             .unwrap();
         let (reply_tx, mut reply_rx) = tokio::sync::oneshot::channel();
         let mut relayed = vec![RelayedApproval {
-            approval_id,
+            approval_id: approval_id.clone(),
             request_digest: escalation("make").digest(),
             reply: reply_tx,
             deadline: tokio::time::Instant::now() + APPROVAL_TIMEOUT,

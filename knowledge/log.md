@@ -1,5 +1,16 @@
 # Knowledge Log
 
+## 2026-11-08, File-backed session coordination
+
+- [Session coordination](specs/session-coordination.md): coordinator state no
+  longer shares one SQLite database across processes. Presence leases,
+  per-session inboxes, coordinator-owned threads, and approvals live as files
+  under `<sessions>/coordination/`; senders only create files and claims are
+  atomic renames, so concurrent coordinators cannot hit `database is locked`.
+- A legacy `everruns-local/local.db` is imported once on open, with
+  fail-closed defaults for columns and tables older schemas lack, then retired
+  to a timestamped backup.
+
 ## 2026-11-07, MCP readiness
 
 - Add opt-in [MCP readiness](specs/mcp.md), distinguishing pending discovery from failures while retaining deferred reveal and bounded discovery.

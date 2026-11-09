@@ -50,6 +50,7 @@ metal = ["local-inference"]
 cuda = ["local-inference"]
 
 [dependencies]
+tempfile = "3"
 agent-client-protocol = "3.3.0"
 anyhow = "1.0"
 ast-grep-core = "0.45"
@@ -184,7 +185,6 @@ rustix = { version = "1", features = ["fs"] }
 inventory = "0.3"
 portable-pty = "0.9.0"
 proptest = "1"
-tempfile = "3"
 tiny_http = "0.12"
 vt100 = "0.18"
 
