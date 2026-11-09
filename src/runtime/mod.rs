@@ -4932,6 +4932,7 @@ pub async fn build_with_options(
                         placeholder: params.placeholder,
                         secret: params.secret,
                         options: params.options,
+                        allow_other: false,
                         reply,
                     });
                     match answer.await {

@@ -32,6 +32,10 @@ pub struct AskRequest {
     pub secret: bool,
     /// When non-empty, present a selector over these options.
     pub options: Vec<String>,
+    /// Selector only: typing switches to a custom-answer field instead of
+    /// being ignored, so a single-choice question stays navigable without
+    /// losing the free-text escape hatch.
+    pub allow_other: bool,
     pub reply: oneshot::Sender<AskAnswer>,
 }
 
