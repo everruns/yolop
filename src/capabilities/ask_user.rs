@@ -121,6 +121,11 @@ fn parse_answer(q: &AskUserQuestion, selector: bool, input: &str) -> Option<AskU
             .and_then(|i| q.options.get(i));
         match by_label.or(by_index) {
             Some(option) => selected.push(option.label.clone()),
+            // A custom answer typed in the picker has no label or index: it
+            // is the Other text, mirroring the text-entry branch below.
+            None if q.allow_other => {
+                other_text = Some(input.to_string());
+            }
             None => return None,
         }
     } else {
@@ -238,6 +243,30 @@ mod basic_tests {
                 .unwrap();
         });
         assert_eq!(result.answers[0].selected, vec!["Beta"]);
+    }
+
+    #[tokio::test]
+    async fn selector_custom_text_becomes_other() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let host = HostResponder(Some(tx));
+        let mut q = question(AskUserQuestionKind::Choice);
+        q.allow_other = true;
+        let questions = [q];
+        let (result, ()) = tokio::join!(host.ask(&questions), async {
+            let request = rx.recv().await.unwrap();
+            request
+                .reply
+                .send(crate::tui::host_ui::AskAnswer {
+                    answer: "something entirely new".into(),
+                    cancelled: false,
+                })
+                .unwrap();
+        });
+        assert!(result.answers[0].selected.is_empty());
+        assert_eq!(
+            result.answers[0].other_text.as_deref(),
+            Some("something entirely new")
+        );
     }
 
     #[tokio::test]
