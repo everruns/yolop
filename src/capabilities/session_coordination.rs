@@ -1103,6 +1103,24 @@ fn migrate_legacy_db(sessions_dir: &Path) {
     }
 }
 
+/// Filename components coming out of a legacy database are validated
+/// before they touch the filesystem: generated IDs are safe by construction
+/// (`session_`/`cmsg_`/`host_` plus lowercase hex), but a stale or foreign
+/// database file is not trusted to uphold that.
+fn legacy_component(value: &str) -> Option<String> {
+    if value.is_empty()
+        || value.contains("..")
+        || value.contains('/')
+        || value.contains('\x00')
+        || !value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return None;
+    }
+    Some(value.to_string())
+}
+
 fn legacy_rows(
     conn: &rusqlite::Connection,
     table: &str,
@@ -1175,8 +1193,8 @@ fn import_legacy_db(sessions_dir: &Path, legacy: &Path) -> anyhow::Result<()> {
     if tables.contains("yolop_session_presence") {
         for row in legacy_rows(&conn, "yolop_session_presence")? {
             let (Some(session_id), Some(host_id)) = (
-                legacy_text(&row, "session_id"),
-                legacy_text(&row, "host_id"),
+                legacy_text(&row, "session_id").filter(|id| id.parse::<SessionId>().is_ok()),
+                legacy_text(&row, "host_id").and_then(|id| legacy_component(&id)),
             ) else {
                 continue;
             };
@@ -1198,8 +1216,8 @@ fn import_legacy_db(sessions_dir: &Path, legacy: &Path) -> anyhow::Result<()> {
                 continue;
             }
             let (Some(message_id), Some(target), Some(payload_json)) = (
-                legacy_text(&row, "message_id"),
-                legacy_text(&row, "target_session_id"),
+                legacy_text(&row, "message_id").and_then(|id| legacy_component(&id)),
+                legacy_text(&row, "target_session_id").filter(|id| id.parse::<SessionId>().is_ok()),
                 legacy_text(&row, "payload_json"),
             ) else {
                 continue;
@@ -1207,7 +1225,8 @@ fn import_legacy_db(sessions_dir: &Path, legacy: &Path) -> anyhow::Result<()> {
             let Ok(payload) = serde_json::from_str::<InboxPayload>(&payload_json) else {
                 continue;
             };
-            let delivered = legacy_text(&row, "delivered_host_id");
+            let delivered =
+                legacy_text(&row, "delivered_host_id").and_then(|id| legacy_component(&id));
             let message = InboxFile {
                 message_id: message_id.clone(),
                 source_session_id: legacy_text(&row, "source_session_id"),
@@ -1231,8 +1250,9 @@ fn import_legacy_db(sessions_dir: &Path, legacy: &Path) -> anyhow::Result<()> {
     if tables.contains("yolop_threads") {
         for row in legacy_rows(&conn, "yolop_threads")? {
             let (Some(thread_id), Some(coordinator)) = (
-                legacy_text(&row, "thread_id"),
-                legacy_text(&row, "coordinator_session_id"),
+                legacy_text(&row, "thread_id").filter(|id| id.parse::<SessionId>().is_ok()),
+                legacy_text(&row, "coordinator_session_id")
+                    .filter(|id| id.parse::<SessionId>().is_ok()),
             ) else {
                 continue;
             };
@@ -1256,9 +1276,10 @@ fn import_legacy_db(sessions_dir: &Path, legacy: &Path) -> anyhow::Result<()> {
     if tables.contains("yolop_thread_approvals") {
         for row in legacy_rows(&conn, "yolop_thread_approvals")? {
             let (Some(thread_id), Some(coordinator), Some(host_id)) = (
-                legacy_text(&row, "thread_id"),
-                legacy_text(&row, "coordinator_session_id"),
-                legacy_text(&row, "host_id"),
+                legacy_text(&row, "thread_id").filter(|id| id.parse::<SessionId>().is_ok()),
+                legacy_text(&row, "coordinator_session_id")
+                    .filter(|id| id.parse::<SessionId>().is_ok()),
+                legacy_text(&row, "host_id").and_then(|id| legacy_component(&id)),
             ) else {
                 continue;
             };
