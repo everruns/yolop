@@ -937,6 +937,12 @@ impl JsonlEventEmitter {
             );
         }
 
+        // Mirror effective titles into Rex tab chrome when running inside it.
+        // Best effort: never fails the event commit.
+        if let EventData::SessionTitleUpdated(data) = &event.data {
+            crate::capabilities::sync_rex_title(&data.title);
+        }
+
         Ok(event)
     }
 

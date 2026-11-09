@@ -33,3 +33,24 @@ metadata updates preserve the projected title and other session metadata.
 The runtime session store is the live source of truth. `workspace.json` is a
 Yolop-owned projection; replaying the event log repairs that projection after
 an interrupted write.
+
+## Rex projection
+
+When yolop runs inside Rex (`REX_BLOCK` set), every effective title mutation
+is also mirrored into the Rex UI, and the restored title is mirrored on
+resume. Main means solo and focused: the window holds exactly this block,
+has no split layout, and this block is the focused one.
+
+- Main instance renames its window, which is the visible tab title
+  (`rex window rename`).
+- Any secondary instance renames only its own block, which is the pane label
+  (`rex block rename`), so helpers never steal the tab title.
+
+Rex exposes no icon API: window and block records carry a label only, and
+the terminal block API offers a title getter but no setter. The title text
+is projected verbatim with no icon.
+
+Projection is best effort and never feeds back into the title pipeline. No
+`rex` binary, no live block, or a failing daemon only logs and never breaks
+the session. Titles travel as direct argv, never through a shell.
+
