@@ -1,11 +1,13 @@
 //! Settings and registry adapters. Everruns owns the protocols and token lifecycle.
 use crate::config::{CodexAuth, SettingsStore};
 use async_trait::async_trait;
+use everruns_contracts::driver_registry::{BoxedChatDriver, DriverConfig};
 use everruns_contracts::{DriverRegistry, ModelProfile, ProviderMetadata};
-use everruns_drivers::chatgpt::auth::{RotatingAuth, TokenRoute, TokenStore};
+use everruns_drivers::chatgpt::auth::{MemoryTokenStore, RotatingAuth, TokenRoute, TokenStore};
 pub use everruns_drivers::codex::CODEX_DRIVER_ID;
+use everruns_drivers::codex::driver as codex_driver;
+use everruns_drivers::{chatgpt, codex};
 use std::{path::Path, sync::Arc};
-use tokio::sync::Mutex;
 
 pub(crate) fn model_profile(model: &str) -> Option<ModelProfile> {
     everruns_drivers::codex::model_profile(model)
@@ -38,23 +40,7 @@ impl TokenStore for SettingsTokens {
         self.0.compare_and_set_codex_auth(previous, auth)
     }
 }
-struct EphemeralTokens {
-    gate: Arc<Mutex<()>>,
-    auth: Mutex<CodexAuth>,
-}
-#[async_trait]
-impl TokenStore for EphemeralTokens {
-    async fn lock(&self) -> anyhow::Result<Box<dyn Send>> {
-        Ok(Box::new(self.gate.clone().lock_owned().await))
-    }
-    async fn load(&self) -> anyhow::Result<Option<CodexAuth>> {
-        Ok(Some(self.auth.lock().await.clone()))
-    }
-    async fn save(&self, auth: CodexAuth) -> anyhow::Result<()> {
-        *self.auth.lock().await = auth;
-        Ok(())
-    }
-}
+
 fn extra(metadata: &ProviderMetadata, name: &str) -> Option<String> {
     metadata
         .extra
@@ -65,54 +51,113 @@ fn extra(metadata: &ProviderMetadata, name: &str) -> Option<String> {
         .map(str::to_owned)
 }
 pub fn register_driver(registry: &mut DriverRegistry, settings: Arc<SettingsStore>) {
-    let tokens: Arc<dyn TokenStore> = Arc::new(SettingsTokens(settings));
     registry.register_external(CODEX_DRIVER_ID, move |config| {
-        let plan = extra(&config.metadata, "flow").as_deref() == Some("open-source");
-        let store: Arc<dyn TokenStore> =
-            if extra(&config.metadata, "auth_source").as_deref() == Some("settings") {
-                tokens.clone()
-            } else {
-                Arc::new(EphemeralTokens {
-                    gate: Arc::new(Mutex::new(())),
-                    auth: Mutex::new(CodexAuth {
-                        access_token: config
-                            .api_key
-                            .clone()
-                            .or_else(|| extra(&config.metadata, "access_token"))
-                            .unwrap_or_default(),
-                        refresh_token: config.metadata.refresh_token.clone(),
-                        expires_at: config
-                            .metadata
-                            .extra
-                            .as_ref()
-                            .and_then(|e| e.get("expires_at").or_else(|| e.get("expires_at_ms")))
-                            .and_then(serde_json::Value::as_i64),
-                        account_id: config.metadata.account_id.clone(),
-                        email: None,
-                        client_id: extra(&config.metadata, "client_id"),
-                        open_source: None,
-                    }),
-                })
-            };
-        let auth = RotatingAuth::new(
-            store,
-            if plan {
-                TokenRoute::ChatGptPlan
-            } else {
-                TokenRoute::Codex
-            },
-        )
-        .with_originator("yolop");
-        let mut provider = if plan {
-            everruns_drivers::chatgpt::provider(config.provider.clone(), auth)
-        } else {
-            everruns_drivers::codex::provider(config.provider.clone(), auth)
-        };
-        if let Some(base_url) = &config.base_url {
-            provider = provider.base_url(base_url);
-        }
-        provider.into_boxed_driver()
+        build_driver(config, Some(settings.clone()))
     });
+}
+
+/// Register Codex for one-shot use from already-resolved config (ephemeral
+/// grant, no settings store). Model discovery resolves tokens through
+/// `model_with_provider`, so it never needs live settings access.
+pub fn register_ephemeral(registry: &mut DriverRegistry) {
+    registry.register_external(CODEX_DRIVER_ID, move |config| build_driver(config, None));
+}
+
+fn build_driver(config: &DriverConfig, tokens: Option<Arc<SettingsStore>>) -> BoxedChatDriver {
+    let plan = extra(&config.metadata, "flow").as_deref() == Some("open-source");
+    let route = if plan {
+        TokenRoute::ChatGptPlan
+    } else {
+        TokenRoute::Codex
+    };
+    let stored =
+        tokens.filter(|_| extra(&config.metadata, "auth_source").as_deref() == Some("settings"));
+    // Only the base_url override is user input, so only it can fail the
+    // build. Defaults always build (both routes are covered by upstream
+    // tests), which the expect below relies on.
+    let grant = || CodexAuth {
+        access_token: config
+            .api_key
+            .clone()
+            .or_else(|| extra(&config.metadata, "access_token"))
+            .unwrap_or_default(),
+        refresh_token: config.metadata.refresh_token.clone(),
+        expires_at: config
+            .metadata
+            .extra
+            .as_ref()
+            .and_then(|e| e.get("expires_at").or_else(|| e.get("expires_at_ms")))
+            .and_then(serde_json::Value::as_i64),
+        account_id: config.metadata.account_id.clone(),
+        email: None,
+        client_id: extra(&config.metadata, "client_id"),
+        open_source: None,
+    };
+    let build = |base_url: Option<&str>| {
+        let builder = if let Some(tokens) = stored.clone() {
+            codex_driver::driver(Arc::new(SettingsTokens(tokens))).route(route)
+        } else {
+            codex_driver::ephemeral(grant()).route(route)
+        };
+        let builder = match base_url {
+            Some(url) => builder.base_url(url),
+            None => builder,
+        };
+        // The ChatGptPlan route rejects the originator option; only the
+        // Codex route tags refreshes.
+        let builder = if plan {
+            builder
+        } else {
+            builder.originator("yolop")
+        };
+        builder.id(config.provider.clone()).build()
+    };
+    match build(config.base_url.as_deref()) {
+        Ok(provider) => provider.into_boxed_driver(),
+        Err(first) => match build(None) {
+            Ok(provider) => {
+                tracing::warn!(
+                    provider = ?config.provider,
+                    error = %first,
+                    "codex driver build failed, retrying without base_url override"
+                );
+                provider.into_boxed_driver()
+            }
+            Err(err) => {
+                tracing::warn!(
+                    provider = ?config.provider,
+                    error = %err,
+                    "codex driver build failed, deferring auth to request time"
+                );
+                legacy_driver(config, stored, grant(), route)
+            }
+        },
+    }
+}
+
+/// Legacy non-validating constructor. Driver construction must stay
+/// infallible so states like "no login stored yet" keep flowing to the
+/// setup UI instead of panicking; auth errors then surface at request time.
+fn legacy_driver(
+    config: &DriverConfig,
+    stored: Option<Arc<SettingsStore>>,
+    grant: CodexAuth,
+    route: TokenRoute,
+) -> BoxedChatDriver {
+    let store: Arc<dyn TokenStore> = match stored {
+        Some(tokens) => Arc::new(SettingsTokens(tokens)),
+        None => Arc::new(MemoryTokenStore::new(grant)),
+    };
+    let auth = RotatingAuth::new(store, route).with_originator("yolop");
+    let mut provider = if matches!(route, TokenRoute::ChatGptPlan) {
+        chatgpt::provider(config.provider.clone(), auth)
+    } else {
+        codex::provider(config.provider.clone(), auth)
+    };
+    if let Some(base_url) = &config.base_url {
+        provider = provider.base_url(base_url);
+    }
+    provider.into_boxed_driver()
 }
 
 #[cfg(test)]
@@ -333,5 +378,52 @@ mod tests {
                 .contains("ChatGPT Plan use was not granted"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn ephemeral_builder_builds_without_network() {
+        let grant = CodexAuth {
+            access_token: "test-token".to_string(),
+            refresh_token: None,
+            expires_at: None,
+            account_id: None,
+            email: None,
+            client_id: None,
+            open_source: None,
+        };
+        // The ChatGptPlan route rejects the originator option, so only
+        // the Codex route tags its refreshes.
+        // The ChatGptPlan route requires the grant to carry its issuing
+        // client, mirroring what `model_with_provider` always sets for an
+        // open-source login.
+        let grant = CodexAuth {
+            client_id: Some("test-client".to_string()),
+            open_source: Some(crate::config::OpenSourceGrant {
+                id_token: None,
+                scopes: vec!["chatgpt.tokens.use.direct".to_string()],
+                subject: Some("test-subject".to_string()),
+            }),
+            ..grant
+        };
+        let chatgpt = codex_driver::ephemeral(grant)
+            .route(TokenRoute::ChatGptPlan)
+            .build()
+            .expect("ephemeral builder builds for ChatGptPlan");
+        let _driver = chatgpt.into_boxed_driver();
+        let grant = CodexAuth {
+            access_token: "test-token".to_string(),
+            refresh_token: None,
+            expires_at: None,
+            account_id: None,
+            email: None,
+            client_id: None,
+            open_source: None,
+        };
+        let codex = codex_driver::ephemeral(grant)
+            .route(TokenRoute::Codex)
+            .originator("yolop-test")
+            .build()
+            .expect("ephemeral builder builds for Codex");
+        let _driver = codex.into_boxed_driver();
     }
 }
