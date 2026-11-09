@@ -148,6 +148,20 @@ impl McpAuthProvider for CoordinatedOAuthProvider {
     ) -> anyhow::Result<Option<McpCredential>> {
         let provider_id = request.oauth_provider_id.unwrap_or(request.server_name);
         let id = connection_id(provider_id);
+        // Readers with a usable credential do not queue behind network I/O.
+        // Refreshers still re-read after acquiring the cross-process lease.
+        let Some(snapshot) = self.store.get_checked(&id)? else {
+            return Ok(None);
+        };
+        let tokens = decode_tokens(snapshot)
+            .map_err(|_| anyhow::anyhow!("Invalid MCP OAuth credentials; sign in again"))?;
+        if !tokens.needs_refresh(chrono::Utc::now(), DEFAULT_REFRESH_SKEW_SECONDS)
+            || tokens.refresh_token.is_none()
+        {
+            return Ok(Some(McpCredential::authorization(
+                tokens.authorization_value(),
+            )));
+        }
         let _lease = self.refresh_lease(provider_id).await?;
         let Some(expected) = self.store.get_checked(&id)? else {
             return Ok(None);
@@ -393,7 +407,11 @@ mod tests {
             assert!(
                 tokio::time::timeout(
                     std::time::Duration::from_millis(50),
-                    provider.refresh_lease("server")
+                    provider.authorization(&McpAuthRequest {
+                        server_name: "server",
+                        auth_mode: everruns_core::McpServerAuthMode::OAuth,
+                        oauth_provider_id: None,
+                    })
                 )
                 .await
                 .is_err()
@@ -592,6 +610,33 @@ mod tests {
             load_tokens(&store, "server").unwrap().access_token,
             "renewed"
         );
+    }
+
+    #[tokio::test]
+    async fn replacement_login_is_readable_while_old_refresh_holds_lease() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(seed(dir.path()));
+        let provider =
+            CoordinatedOAuthProvider::new(store.clone(), Arc::new(RefreshEgress::default()));
+        let _lease = provider.refresh_lease("server").await.unwrap();
+        save_tokens(
+            &store,
+            "server",
+            sample(Some(Utc::now() + chrono::Duration::hours(1))),
+        )
+        .unwrap();
+        let credential = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            provider.authorization(&McpAuthRequest {
+                server_name: "server",
+                auth_mode: everruns_core::McpServerAuthMode::OAuth,
+                oauth_provider_id: None,
+            }),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(credential.is_some());
     }
 
     #[tokio::test]
