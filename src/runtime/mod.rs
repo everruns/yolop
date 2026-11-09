@@ -185,15 +185,14 @@ pub(crate) fn provider_recovery_config() -> everruns_contracts::llm_retry::LlmRe
 /// refreshing them when they near expiry. The stored connection is keyed by
 /// the server's `oauth_provider_id` when set, otherwise its name.
 pub(crate) struct StoredMcpAuthProvider {
-    oauth:
-        everruns_core::mcp::oauth::OAuthAuthProvider<crate::auth::mcp_oauth::ConnectionTokenStore>,
+    oauth: crate::auth::mcp_oauth::CoordinatedOAuthProvider,
 }
 
 impl StoredMcpAuthProvider {
     pub(crate) fn new(connections: Arc<ConnectionStore>) -> Self {
         Self {
-            oauth: everruns_core::mcp::oauth::OAuthAuthProvider::new(
-                crate::auth::mcp_oauth::ConnectionTokenStore::new(connections),
+            oauth: crate::auth::mcp_oauth::CoordinatedOAuthProvider::new(
+                connections,
                 crate::auth::mcp_oauth::oauth_egress(),
             ),
         }

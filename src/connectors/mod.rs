@@ -13,4 +13,7 @@ mod store;
 pub(crate) use capability::{CONNECTORS_CAPABILITY_ID, ConnectorsCapability};
 pub(crate) use catalog::ConnectionCatalog;
 pub(crate) use resolver::YolopConnectionResolver;
-pub(crate) use store::{ConnectionStore, StoredConnection, default_connections_path};
+pub(crate) use store::{
+    ConnectionStore, StoredConnection, cancellable_lock, default_connections_path,
+    private_lock_file,
+};

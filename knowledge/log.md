@@ -1,5 +1,9 @@
 # Knowledge Log
 
+## 2026-11-09, Cross-process MCP OAuth refresh
+
+- [MCP](specs/mcp.md): coordinate rotations across processes, condition writes on saved credential revisions, and preserve logout and replacement login during refresh.
+
 ## 2026-11-07, MCP readiness
 
 - Add opt-in [MCP readiness](specs/mcp.md), distinguishing pending discovery from failures while retaining deferred reveal and bounded discovery.

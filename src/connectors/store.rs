@@ -178,6 +178,42 @@ fn save_to(path: &Path, file: &ConnectionsFile) -> Result<()> {
     Ok(())
 }
 
+/// Stable sidecar inode: never unlink a lock file, including after a crash.
+pub(crate) fn private_lock_file(path: &Path) -> Result<std::fs::File> {
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+    }
+    Ok(options.open(path)?)
+}
+
+/// Nonblocking attempts preserve caller cancellation and deadlines without a
+/// detached blocking task that could acquire a lease after its caller aborts.
+pub(crate) async fn cancellable_lock(file: std::fs::File) -> Result<std::fs::File> {
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        loop {
+            match file.try_lock() {
+                Ok(()) => return Ok::<_, anyhow::Error>(()),
+                Err(std::fs::TryLockError::WouldBlock) => {
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("MCP OAuth credential lock timed out"))??;
+    Ok(file)
+}
+
 /// Thread-safe handle to persisted connector credentials.
 pub struct ConnectionStore {
     path: PathBuf,
@@ -206,12 +242,6 @@ impl ConnectionStore {
         let mut guard = self.inner.lock().expect("connections lock poisoned");
         let _ = self.refresh_locked(&mut guard);
         guard
-    }
-
-    fn lock_fresh_for_update(&self) -> Result<MutexGuard<'_, ConnectionsFile>> {
-        let mut guard = self.inner.lock().expect("connections lock poisoned");
-        self.refresh_locked(&mut guard)?;
-        Ok(guard)
     }
 
     /// Persist the map and record the new fingerprint so our own write does
@@ -244,14 +274,51 @@ impl ConnectionStore {
             .unwrap_or(false)
     }
 
+    /// OAuth reads must fail closed rather than reuse cached credentials after
+    /// a malformed or unreadable file replaces the last known-good snapshot.
+    pub(crate) fn get_checked(&self, provider: &str) -> Result<Option<StoredConnection>> {
+        Ok(try_load_from(&self.path)?
+            .connections
+            .get(provider)
+            .cloned())
+    }
+
+    pub(crate) async fn compare_and_save(
+        &self,
+        provider: &str,
+        expected: &StoredConnection,
+        connection: StoredConnection,
+    ) -> Result<bool> {
+        let file = private_lock_file(&self.path.with_extension("connections-write.lock"))?;
+        let _lease = cancellable_lock(file).await?;
+        let mut guard = self.inner.lock().expect("connections lock poisoned");
+        *guard = try_load_from(&self.path)?;
+        if guard.connections.get(provider) != Some(expected) {
+            return Ok(false);
+        }
+        guard.connections.insert(provider.to_string(), connection);
+        self.persist_locked(&mut guard)?;
+        Ok(true)
+    }
+
+    fn write_lock(&self) -> Result<std::fs::File> {
+        let file = private_lock_file(&self.path.with_extension("connections-write.lock"))?;
+        file.lock()?;
+        Ok(file)
+    }
+
     pub fn save(&self, provider: &str, connection: StoredConnection) -> Result<()> {
-        let mut guard = self.lock_fresh_for_update()?;
+        let _lease = self.write_lock()?;
+        let mut guard = self.inner.lock().expect("connections lock poisoned");
+        *guard = try_load_from(&self.path)?;
         guard.connections.insert(provider.to_string(), connection);
         self.persist_locked(&mut guard)
     }
 
     pub fn clear(&self, provider: &str) -> Result<bool> {
-        let mut guard = self.lock_fresh_for_update()?;
+        let _lease = self.write_lock()?;
+        let mut guard = self.inner.lock().expect("connections lock poisoned");
+        *guard = try_load_from(&self.path)?;
         let existed = guard.connections.remove(provider).is_some();
         self.persist_locked(&mut guard)?;
         Ok(existed)
