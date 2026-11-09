@@ -123,7 +123,7 @@ fn parse_answer(q: &AskUserQuestion, selector: bool, input: &str) -> Option<AskU
             Some(option) => selected.push(option.label.clone()),
             // A custom answer typed in the picker has no label or index: it
             // is the Other text, mirroring the text-entry branch below.
-            None if q.allow_other => {
+            None if q.allow_other && !input.trim().is_empty() => {
                 other_text = Some(input.to_string());
             }
             None => return None,
