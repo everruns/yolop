@@ -315,22 +315,62 @@ fn create_new(path: &Path, bytes: &[u8]) -> anyhow::Result<bool> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    match std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)
+    // Write to a unique temp file first and hard-link it into place: the
+    // link is atomic and fails when the destination exists, so concurrent
+    // creators never interleave and a crash never leaves a truncated
+    // destination behind (only an orphaned temp file).
+    let tmp = path.with_extension(format!("tmp-{}.new", unique_suffix()));
     {
-        Ok(mut file) => {
-            use std::io::Write;
-            let wrote = file.write_all(bytes).and_then(|()| file.sync_all());
-            if wrote.is_err() {
-                let _ = std::fs::remove_file(path);
-            }
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)?;
+        let wrote = file.write_all(bytes).and_then(|()| file.sync_all());
+        if wrote.is_err() {
+            let _ = std::fs::remove_file(&tmp);
             wrote?;
+        }
+    }
+    match std::fs::hard_link(&tmp, path) {
+        Ok(()) => {
+            let _ = std::fs::remove_file(&tmp);
             Ok(true)
         }
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
-        Err(error) => Err(error.into()),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            let _ = std::fs::remove_file(&tmp);
+            Ok(false)
+        }
+        Err(error) => {
+            let _ = std::fs::remove_file(&tmp);
+            Err(error.into())
+        }
+    }
+}
+
+/// Parse a coordination file, quarantining it on corruption so one bad file
+/// cannot wedge a whole directory scan. Returns Ok(None) for missing or
+/// quarantined files; other I/O errors still propagate.
+fn read_best_effort<T: serde::de::DeserializeOwned>(path: &Path) -> anyhow::Result<Option<T>> {
+    let bytes = match std::fs::read(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+        Ok(bytes) => bytes,
+    };
+    match serde_json::from_slice(&bytes) {
+        Ok(value) => Ok(Some(value)),
+        Err(error) => {
+            tracing::warn!(
+                path = %path.display(),
+                %error,
+                "quarantining corrupt coordination file"
+            );
+            let aside = path.with_extension("json.corrupt");
+            if std::fs::rename(path, &aside).is_err() {
+                let _ = std::fs::remove_file(path);
+            }
+            Ok(None)
+        }
     }
 }
 
@@ -389,7 +429,7 @@ impl CoordinationStore {
     }
 
     fn read_presence(&self, session_id: &str) -> anyhow::Result<Option<PresenceFile>> {
-        read_json(&self.presence_path(session_id))
+        read_best_effort(&self.presence_path(session_id))
     }
 
     fn presence_is_live(presence: Option<&PresenceFile>) -> bool {
@@ -416,7 +456,7 @@ impl CoordinationStore {
             if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
                 continue;
             }
-            if let Some(presence) = read_json::<PresenceFile>(&path)? {
+            if let Some(presence) = read_best_effort::<PresenceFile>(&path)? {
                 out.push((name.to_string(), presence));
             }
         }
@@ -439,7 +479,7 @@ impl CoordinationStore {
             if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
                 continue;
             }
-            if let Some(thread) = read_json::<ThreadFile>(&path)? {
+            if let Some(thread) = read_best_effort::<ThreadFile>(&path)? {
                 threads.push(thread);
             }
         }
@@ -464,7 +504,7 @@ impl CoordinationStore {
             if !name.ends_with(".json") || name.contains(".claimed-") {
                 continue;
             }
-            let Some(message) = read_json::<InboxFile>(&path)? else {
+            let Some(message) = read_best_effort::<InboxFile>(&path)? else {
                 continue;
             };
             if message.available_at_ms <= now {
@@ -497,8 +537,10 @@ impl CoordinationStore {
             .any(|entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("json"))
     }
 
-    /// The claim file for `message_id` in any inbox, if one exists.
-    fn find_claim(&self, message_id: &str) -> anyhow::Result<Option<PathBuf>> {
+    /// The claim file for `message_id` in any inbox, if one exists. The
+    /// filename base must equal the message id exactly: a prefix match could
+    /// hand back another message's claim.
+    fn find_claim(&self, message_id: &str) -> anyhow::Result<Option<(PathBuf, String)>> {
         let inboxes = self.coordination_dir().join("inbox");
         let entries = match std::fs::read_dir(&inboxes) {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -515,11 +557,21 @@ impl CoordinationStore {
             };
             for claim in claims.flatten() {
                 let path = claim.path();
-                let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+                let Some(name) = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .map(str::to_owned)
+                else {
                     continue;
                 };
-                if name.starts_with(message_id) && name.contains(".claimed-") {
-                    return Ok(Some(path));
+                let Some(stem) = name.strip_suffix(".json").map(str::to_owned) else {
+                    continue;
+                };
+                let Some((base, _holder)) = stem.split_once(".claimed-") else {
+                    continue;
+                };
+                if base == message_id {
+                    return Ok(Some((path, base.to_string())));
                 }
             }
         }
@@ -547,7 +599,7 @@ impl CoordinationStore {
 
     fn heartbeat(&self, session_id: SessionId, host_id: &str) -> anyhow::Result<()> {
         let path = self.presence_path(&session_id.to_string());
-        let Some(mut presence) = read_json::<PresenceFile>(&path)? else {
+        let Some(mut presence) = read_best_effort::<PresenceFile>(&path)? else {
             return Ok(());
         };
         if presence.host_id != host_id {
@@ -577,7 +629,7 @@ impl CoordinationStore {
 
     pub(crate) fn request_release(&self, session_id: SessionId) -> anyhow::Result<bool> {
         let path = self.presence_path(&session_id.to_string());
-        let Some(mut presence) = read_json::<PresenceFile>(&path)? else {
+        let Some(mut presence) = read_best_effort::<PresenceFile>(&path)? else {
             return Ok(false);
         };
         if !presence.headless || !Self::presence_is_live(Some(&presence)) {
@@ -616,7 +668,7 @@ impl CoordinationStore {
     /// not start a headless host for a session a person is opening.
     fn defer_spawn(&self, thread_id: SessionId) -> anyhow::Result<()> {
         let path = self.thread_path(&thread_id.to_string());
-        let Some(mut thread) = read_json::<ThreadFile>(&path)? else {
+        let Some(mut thread) = read_best_effort::<ThreadFile>(&path)? else {
             return Ok(());
         };
         thread.spawned_at_ms = now_ms();
@@ -675,8 +727,25 @@ impl CoordinationStore {
         approval_id: &str,
         digest: &[u8; 32],
     ) -> anyhow::Result<Option<ApprovalDecision>> {
-        let Some(approval) = read_json::<ApprovalFile>(&self.approval_path(approval_id))? else {
-            return Ok(None);
+        // A corrupt approval file fails closed to deny (and is quarantined);
+        // a missing one means no answer yet.
+        let path = self.approval_path(approval_id);
+        let bytes = match std::fs::read(&path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+            Ok(bytes) => bytes,
+        };
+        let approval: ApprovalFile = match serde_json::from_slice(&bytes) {
+            Ok(approval) => approval,
+            Err(error) => {
+                tracing::warn!(
+                    approval = %approval_id,
+                    %error,
+                    "denying and quarantining corrupt approval file"
+                );
+                let _ = std::fs::rename(&path, path.with_extension("json.corrupt"));
+                return Ok(Some(ApprovalDecision::Deny));
+            }
         };
         let Some(scope) = ApprovalScope::parse(&approval.scope) else {
             return Ok(Some(ApprovalDecision::Deny));
@@ -719,7 +788,7 @@ impl CoordinationStore {
             if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
                 continue;
             }
-            let Some(approval) = read_json::<ApprovalFile>(&path)? else {
+            let Some(approval) = read_best_effort::<ApprovalFile>(&path)? else {
                 continue;
             };
             if approval.coordinator != coordinator.to_string() || approval.decision.is_some() {
@@ -745,7 +814,14 @@ impl CoordinationStore {
             if !live {
                 continue;
             }
-            let thread_id: SessionId = approval.thread_id.parse()?;
+            let Ok(thread_id) = approval.thread_id.parse::<SessionId>() else {
+                tracing::warn!(
+                    approval = %approval.approval_id,
+                    "denying approval with an unparseable thread"
+                );
+                let _ = self.answer_approval(&approval.approval_id, ApprovalDecision::Deny);
+                continue;
+            };
             approvals.push(ThreadApproval {
                 approval_id: approval.approval_id,
                 thread_id,
@@ -757,7 +833,7 @@ impl CoordinationStore {
 
     fn answer_approval(&self, approval_id: &str, decision: ApprovalDecision) -> anyhow::Result<()> {
         let path = self.approval_path(approval_id);
-        let Some(mut approval) = read_json::<ApprovalFile>(&path)? else {
+        let Some(mut approval) = read_best_effort::<ApprovalFile>(&path)? else {
             return Ok(());
         };
         if approval.decision.is_none() {
@@ -863,12 +939,12 @@ impl CoordinationStore {
                 if self.host_is_live(claim_host)? {
                     continue;
                 }
-                if let Some(message) = read_json::<InboxFile>(&path)? {
+                if let Some(message) = read_best_effort::<InboxFile>(&path)? {
                     stale.push((path, base.to_string(), message));
                 }
                 continue;
             }
-            if let Some(message) = read_json::<InboxFile>(&path)? {
+            if let Some(message) = read_best_effort::<InboxFile>(&path)? {
                 if message.available_at_ms > now {
                     continue;
                 }
@@ -901,7 +977,7 @@ impl CoordinationStore {
     }
 
     fn ack(&self, message_id: &str) -> anyhow::Result<()> {
-        if let Some(path) = self.find_claim(message_id)? {
+        if let Some((path, _)) = self.find_claim(message_id)? {
             match std::fs::remove_file(&path) {
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
                 Err(error) => Err(error.into()),
@@ -916,10 +992,10 @@ impl CoordinationStore {
     /// retried: a failed thread turn fails the assignment instead. An
     /// exhausted message is dropped, as before.
     fn nack(&self, message_id: &str) -> anyhow::Result<()> {
-        let Some(path) = self.find_claim(message_id)? else {
+        let Some((path, base)) = self.find_claim(message_id)? else {
             return Ok(());
         };
-        let Some(mut message) = read_json::<InboxFile>(&path)? else {
+        let Some(mut message) = read_best_effort::<InboxFile>(&path)? else {
             return Ok(());
         };
         if message.payload.is_thread() {
@@ -928,10 +1004,11 @@ impl CoordinationStore {
         if message.attempts >= MAX_DELIVERY_ATTEMPTS as u32 {
             return self.ack(message_id);
         }
-        message.available_at_ms = now_ms() + DELIVERY_RETRY_BACKOFF_MS;
+        message.available_at_ms =
+            now_ms() + DELIVERY_RETRY_BACKOFF_MS * (message.attempts.max(1) as i64);
         message.delivered_host_id = None;
         write_json(&path, &message)?;
-        let pending = path.with_file_name(format!("{message_id}.json"));
+        let pending = path.with_file_name(format!("{base}.json"));
         match std::fs::rename(&path, &pending) {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(error) => Err(error.into()),
@@ -998,9 +1075,19 @@ impl CoordinationStore {
             if thread.spawned_at_ms > 0 && thread.spawned_at_ms > now - THREAD_SPAWN_BACKOFF_MS {
                 continue;
             }
+            let (Ok(thread_id), Ok(coordinator)) = (
+                thread.thread_id.parse::<SessionId>(),
+                thread.coordinator.parse::<SessionId>(),
+            ) else {
+                tracing::warn!(
+                    thread = %thread.thread_id,
+                    "skipping thread record with an unparseable id"
+                );
+                continue;
+            };
             threads.push(ThreadRecord {
-                thread_id: thread.thread_id.parse()?,
-                coordinator: thread.coordinator.parse()?,
+                thread_id,
+                coordinator,
                 workspace_root: PathBuf::from(thread.workspace_root),
                 launch: thread.launch,
             });
@@ -1029,9 +1116,19 @@ impl CoordinationStore {
             if thread.spawned_at_ms > now - THREAD_SPAWN_BACKOFF_MS {
                 continue;
             }
+            let (Ok(thread_id), Ok(coordinator)) = (
+                thread.thread_id.parse::<SessionId>(),
+                thread.coordinator.parse::<SessionId>(),
+            ) else {
+                tracing::warn!(
+                    thread = %thread.thread_id,
+                    "skipping thread record with an unparseable id"
+                );
+                continue;
+            };
             threads.push(ThreadRecord {
-                thread_id: thread.thread_id.parse()?,
-                coordinator: thread.coordinator.parse()?,
+                thread_id,
+                coordinator,
                 workspace_root: PathBuf::from(thread.workspace_root),
                 launch: thread.launch,
             });
@@ -1044,7 +1141,7 @@ impl CoordinationStore {
     /// for the same thread cannot both win, even across processes.
     fn claim_spawn(&self, thread_id: SessionId) -> anyhow::Result<bool> {
         let path = self.thread_path(&thread_id.to_string());
-        let Some(thread) = read_json::<ThreadFile>(&path)? else {
+        let Some(thread) = read_best_effort::<ThreadFile>(&path)? else {
             return Ok(false);
         };
         if thread.spawned_at_ms > 0 && thread.spawned_at_ms > now_ms() - THREAD_SPAWN_BACKOFF_MS {
@@ -1053,12 +1150,15 @@ impl CoordinationStore {
         let lock = self.threads_dir().join(format!(".spawn-{thread_id}.lock"));
         let now = now_ms();
         if !create_new(&lock, format!("{}\n{now}", std::process::id()).as_bytes())? {
-            let stale = std::fs::read_to_string(&lock)
+            // A complete lock file decides: a fresh one means another
+            // supervisor is spawning right now. Anything else (stale,
+            // foreign, or vanished under us) falls through to a second atomic
+            // attempt, whose link decides the winner.
+            let fresh = std::fs::read_to_string(&lock)
                 .ok()
                 .and_then(|content| content.lines().nth(1)?.parse::<i64>().ok())
-                .map(|claimed_at| now - claimed_at > THREAD_SPAWN_BACKOFF_MS)
-                .unwrap_or(true);
-            if !stale {
+                .is_some_and(|claimed_at| now - claimed_at <= THREAD_SPAWN_BACKOFF_MS);
+            if fresh {
                 return Ok(false);
             }
             let _ = std::fs::remove_file(&lock);
@@ -1066,16 +1166,16 @@ impl CoordinationStore {
                 return Ok(false);
             }
         }
-        let claimed = (|| -> anyhow::Result<()> {
-            let Some(mut thread) = read_json::<ThreadFile>(&path)? else {
-                return Ok(());
+        let spawned = (|| -> anyhow::Result<bool> {
+            let Some(mut thread) = read_best_effort::<ThreadFile>(&path)? else {
+                return Ok(false);
             };
             thread.spawned_at_ms = now;
-            write_json(&path, &thread)
+            write_json(&path, &thread)?;
+            Ok(true)
         })();
         let _ = std::fs::remove_file(&lock);
-        claimed?;
-        Ok(true)
+        spawned
     }
 }
 /// Import the legacy shared coordination database
@@ -1107,6 +1207,29 @@ fn migrate_legacy_db(sessions_dir: &Path) {
 /// before they touch the filesystem: generated IDs are safe by construction
 /// (`session_`/`cmsg_`/`host_` plus lowercase hex), but a stale or foreign
 /// database file is not trusted to uphold that.
+/// Stable content hash for legacy approvals that predate id tracking, so a
+/// retried import converges on the same filename instead of duplicating.
+fn legacy_approval_id(
+    thread: &str,
+    command: &str,
+    reason: &str,
+    scope: &str,
+    created: i64,
+) -> String {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for byte in thread
+        .bytes()
+        .chain(command.bytes())
+        .chain(reason.bytes())
+        .chain(scope.bytes())
+        .chain(created.to_le_bytes())
+    {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("legacy-{hash:016x}")
+}
+
 fn legacy_component(value: &str) -> Option<String> {
     if value.is_empty()
         || value.contains("..")
@@ -1283,21 +1406,25 @@ fn import_legacy_db(sessions_dir: &Path, legacy: &Path) -> anyhow::Result<()> {
             ) else {
                 continue;
             };
+            let command = legacy_text(&row, "command").unwrap_or_default();
+            let reason = legacy_text(&row, "reason").unwrap_or_default();
+            let scope = legacy_text(&row, "scope").unwrap_or_default();
+            let created_at_ms = legacy_int(&row, "created_at_ms", now_ms());
             let approval_id = match row.get("approval_id") {
                 Some(rusqlite::types::Value::Integer(id)) => format!("legacy-{id}"),
-                _ => format!("legacy-{}", unique_suffix()),
+                _ => legacy_approval_id(&thread_id, &command, &reason, &scope, created_at_ms),
             };
             let approval = ApprovalFile {
                 approval_id: approval_id.clone(),
                 thread_id,
                 coordinator,
                 host_id,
-                command: legacy_text(&row, "command").unwrap_or_default(),
-                reason: legacy_text(&row, "reason").unwrap_or_default(),
-                scope: legacy_text(&row, "scope").unwrap_or_default(),
+                command,
+                reason,
+                scope,
                 decision: legacy_text(&row, "decision"),
                 request_digest: legacy_blob(&row, "request_digest"),
-                created_at_ms: legacy_int(&row, "created_at_ms", now_ms()),
+                created_at_ms,
             };
             write_json(&store.approval_path(&approval_id), &approval)?;
         }
@@ -3091,6 +3218,156 @@ mod tests {
                 .next_delivery(coordinator, "host_c")
                 .unwrap()
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn delivery_claims_match_exact_message_ids() {
+        let (store, _tasks) = test_store();
+        let target = SessionId::new();
+        let dir = store.inbox_dir(&target.to_string());
+        std::fs::create_dir_all(&dir).unwrap();
+        // A claim whose name merely starts with the queried id must not match.
+        let other = InboxFile {
+            message_id: "m1x".to_string(),
+            source_session_id: None,
+            payload: InboxPayload::Message {
+                from: None,
+                text: "other".into(),
+            },
+            created_at_ms: now_ms(),
+            attempts: 1,
+            available_at_ms: 0,
+            delivered_host_id: Some("host_h".to_string()),
+        };
+        write_json(&dir.join("m1x.claimed-host_h.json"), &other).unwrap();
+        assert!(store.find_claim("m1").unwrap().is_none());
+        let (path, base) = store.find_claim("m1x").unwrap().unwrap();
+        assert_eq!(base, "m1x");
+        assert!(path.ends_with("m1x.claimed-host_h.json"));
+    }
+
+    #[test]
+    fn corrupt_inbox_files_are_quarantined_not_fatal() {
+        let (store, _tasks) = test_store();
+        let target = SessionId::new();
+        let dir = store.inbox_dir(&target.to_string());
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("cmsg_broken.json"), b"{not json").unwrap();
+        let message_id = store
+            .enqueue(
+                target,
+                None,
+                &InboxPayload::Message {
+                    from: None,
+                    text: "ok".into(),
+                },
+            )
+            .unwrap();
+        let delivery = store.next_delivery(target, "host_q").unwrap().unwrap();
+        assert_eq!(delivery.message_id, message_id);
+        assert!(!dir.join("cmsg_broken.json").exists());
+        assert!(dir.join("cmsg_broken.json.corrupt").exists());
+    }
+
+    #[test]
+    fn approval_with_unparseable_thread_is_denied() {
+        let (store, _tasks) = test_store();
+        let coordinator = SessionId::new();
+        let request = escalation("unparseable thread");
+        let host = "host_u";
+        let presence = PresenceFile {
+            host_id: host.to_string(),
+            project_id: "p".to_string(),
+            workspace_root: "/repo".to_string(),
+            heartbeat_at_ms: now_ms(),
+            headless: true,
+            release_requested_at_ms: 0,
+        };
+        write_json(&store.presence_path("!!!"), &presence).unwrap();
+        let approval_id = "appr-unparseable".to_string();
+        let approval = ApprovalFile {
+            approval_id: approval_id.clone(),
+            thread_id: "!!!".to_string(),
+            coordinator: coordinator.to_string(),
+            host_id: host.to_string(),
+            command: request.command.clone(),
+            reason: request.reason.clone(),
+            scope: request.scope.as_str().to_string(),
+            decision: None,
+            request_digest: Some(request.digest().to_vec()),
+            created_at_ms: now_ms(),
+        };
+        write_json(&store.approval_path(&approval_id), &approval).unwrap();
+        assert!(store.pending_approvals(coordinator).unwrap().is_empty());
+        let stored: ApprovalFile = read_json(&store.approval_path(&approval_id))
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.decision.as_deref(), Some("deny"));
+        assert_eq!(
+            store
+                .approval_answer(&approval_id, &request.digest())
+                .unwrap(),
+            Some(ApprovalDecision::Deny)
+        );
+    }
+
+    #[test]
+    fn nack_backoff_grows_with_attempts() {
+        let (store, _tasks) = test_store();
+        let session = SessionId::new();
+        let message_id = store
+            .enqueue(
+                session,
+                None,
+                &InboxPayload::Message {
+                    from: None,
+                    text: "x".into(),
+                },
+            )
+            .unwrap();
+        // Read the requeued file directly: it carries a future backoff, so
+        // the due-only listing correctly hides it.
+        fn requeued(store: &CoordinationStore, session: &SessionId) -> InboxFile {
+            let dir = store.inbox_dir(&session.to_string());
+            let entry = std::fs::read_dir(&dir)
+                .unwrap()
+                .flatten()
+                .find(|entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("json"))
+                .unwrap();
+            read_json(&entry.path()).unwrap().unwrap()
+        }
+        store.next_delivery(session, "host_0").unwrap().unwrap();
+        let before = now_ms();
+        store.nack(&message_id).unwrap();
+        let file = requeued(&store, &session);
+        let wait = file.available_at_ms - before;
+        assert!(
+            (DELIVERY_RETRY_BACKOFF_MS..DELIVERY_RETRY_BACKOFF_MS * 2).contains(&wait),
+            "first backoff scales by one attempt: {wait}"
+        );
+        make_available_now(&store);
+        store.next_delivery(session, "host_1").unwrap().unwrap();
+        let before = now_ms();
+        store.nack(&message_id).unwrap();
+        let file = requeued(&store, &session);
+        let wait = file.available_at_ms - before;
+        assert!(
+            (DELIVERY_RETRY_BACKOFF_MS * 2..DELIVERY_RETRY_BACKOFF_MS * 3).contains(&wait),
+            "second backoff scales by two attempts: {wait}"
+        );
+    }
+
+    #[test]
+    fn legacy_approval_ids_are_deterministic() {
+        let first = legacy_approval_id("session_t", "do", "why", "read", 42);
+        assert_eq!(
+            first,
+            legacy_approval_id("session_t", "do", "why", "read", 42)
+        );
+        assert_ne!(
+            first,
+            legacy_approval_id("session_t", "do!", "why", "read", 42)
         );
     }
 }
