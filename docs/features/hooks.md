@@ -154,4 +154,4 @@ does not add a second hook engine.
 ## Related
 
 - [Approvals](./approvals.md)
-- [Shell sandboxing](./sandboxing.md)
+- [Shell sandboxing](./sandboxing/sandboxing.md)

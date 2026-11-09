@@ -106,4 +106,4 @@ Soft approval is not a hard gate. It asks the model to pause at the right time,
 but it does not mechanically block a tool call. For deterministic enforcement,
 use the shell approval policy or hooks. Soft approval is for judgement and
 workflow; hard approvals, hooks, and sandboxing provide enforcement. See
-[Shell sandboxing](./sandboxing.md) for the kernel-enforced boundary.
+[Shell sandboxing](./sandboxing/sandboxing.md) for the kernel-enforced boundary.
