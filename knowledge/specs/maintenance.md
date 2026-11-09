@@ -193,9 +193,9 @@ marked with a ticket when that ticket ships.
 Already delegated, thin host adapters by design (nothing to drop):
 `capabilities/approval.rs`, `capabilities/tool_approval.rs`,
 `capabilities/ask_user.rs`, `capabilities/background.rs`,
-`capabilities/skills.rs`, `capabilities/skill_registry.rs`,
-`connectors/*`, `drivers/*`, `models/catalog` wiring. Each file says so in
-its own docs and delegates to the upstream capability or registry.
+`capabilities/skills.rs`, `connectors/*`, `drivers/*`, `models/mod.rs`
+catalog wiring. Each file says so in its own docs and delegates to the
+upstream capability or registry.
 
 Host owned, keep in yolop: `capabilities/apply_patch.rs` (edit experiment
 with its own evals), `models/download.rs` plus the weights store (visible
@@ -206,8 +206,10 @@ capability), `capabilities/hooks.rs` plus `config/hooks.rs` (own settings
 store under a different capability ID), `exec/tools.rs` plus
 `exec/sandbox.rs` (bounded local execution: approval gates, timeouts,
 output caps, process groups; upstream containment shares the wire names by
-design but owns only config, not spawn), `control.rs`, `narration.rs`,
-`client_commands.rs`, `worktree_cmd.rs`, auth stores and login TUI, the YEP
+design but owns only config, not spawn), `control.rs`,
+`capabilities/narration.rs`, `capabilities/client_commands.rs`,
+`capabilities/worktree_cmd.rs`, `capabilities/skill_registry.rs` (skills.sh
+discovery and install loop over the host skill lifecycle tools), auth stores and login TUI, the YEP
 extension protocol, the ACP editor server, herdr, rex.
 
 Awaiting upstream work, delete or thin the yolop side when it ships:
@@ -223,8 +225,9 @@ pre-wind-down snapshot, the same contract the override documents against
 
 Not yet audited, analyze before any deletion: `exec/worktree.rs` include
 policy, `runtime/mod.rs` agent loop layering, `config/*` versus facade
-config, `mcp.rs` versus `user_hooks` and `user_mcp`, `tool_reveal.rs` and
-`tool_argument_validation.rs` versus upstream tool search and guardrails.
+config, `capabilities/mcp.rs` versus `user_hooks` and `user_mcp`,
+`capabilities/tool_reveal.rs` and `capabilities/tool_argument_validation.rs`
+versus upstream tool search and guardrails.
 
 ## Tuika Boundary
 
