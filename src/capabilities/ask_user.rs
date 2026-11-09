@@ -26,22 +26,30 @@ impl AskUser for HostResponder {
         }
         let mut answers = Vec::new();
         for q in questions {
+            // Single-choice questions stay navigable pickers even when they
+            // allow Other: the overlay switches to a custom-answer field on
+            // typing. Only multi-select (which needs several rows) falls back
+            // to numbered text entry.
             let selector =
-                q.kind == AskUserQuestionKind::Choice && !q.multi_select && !q.allow_other;
+                q.kind == AskUserQuestionKind::Choice && !q.multi_select && !q.options.is_empty();
             let options = if selector {
                 q.options.iter().map(|o| o.label.clone()).collect()
             } else {
                 vec![]
             };
             let mut prompt = format!("{}: {}", q.header, q.question);
-            for (i, option) in q.options.iter().enumerate() {
-                prompt.push_str(&format!(
-                    "\n{}: {} ({}){}",
-                    i + 1,
-                    option.label,
-                    option.description,
-                    if option.is_default { " [default]" } else { "" }
-                ));
+            // The picker rows already show the options, so only text-entry
+            // prompts repeat them as numbered lines.
+            if !selector {
+                for (i, option) in q.options.iter().enumerate() {
+                    prompt.push_str(&format!(
+                        "\n{}: {} ({}){}",
+                        i + 1,
+                        option.label,
+                        option.description,
+                        if option.is_default { " [default]" } else { "" }
+                    ));
+                }
             }
             if !selector && q.kind == AskUserQuestionKind::Choice {
                 prompt.push_str("\nEnter choice numbers separated by commas.");
@@ -57,6 +65,7 @@ impl AskUser for HostResponder {
                         placeholder: None,
                         secret: false,
                         options: options.clone(),
+                        allow_other: q.allow_other,
                         reply,
                     })
                     .is_err()
@@ -102,7 +111,23 @@ fn parse_answer(q: &AskUserQuestion, selector: bool, input: &str) -> Option<AskU
         }
         other_text = Some(text.to_owned());
     } else if selector {
-        selected.push(q.options.iter().find(|o| o.label == input)?.label.clone());
+        // Labels match exactly; a 1-based index also resolves, so a number
+        // typed as a custom answer means the same as picking the row.
+        let by_label = q.options.iter().find(|o| o.label == input);
+        let by_index = input
+            .parse::<usize>()
+            .ok()
+            .and_then(|n| n.checked_sub(1))
+            .and_then(|i| q.options.get(i));
+        match by_label.or(by_index) {
+            Some(option) => selected.push(option.label.clone()),
+            // A custom answer typed in the picker has no label or index: it
+            // is the Other text, mirroring the text-entry branch below.
+            None if q.allow_other && !input.trim().is_empty() => {
+                other_text = Some(input.to_string());
+            }
+            None => return None,
+        }
     } else {
         for index in input.split(',').map(str::trim) {
             let index = index.parse::<usize>().ok()?.checked_sub(1)?;
@@ -194,6 +219,56 @@ mod basic_tests {
         });
         assert_eq!(result.status, AskUserStatus::Cancelled);
     }
+    #[tokio::test]
+    async fn single_choice_with_other_stays_a_selector() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let host = HostResponder(Some(tx));
+        // `allow_other` defaults to true: the question still renders as a
+        // navigable picker (not a type-the-number field), and a typed row
+        // number resolves like picking the row.
+        let mut q = question(AskUserQuestionKind::Choice);
+        q.allow_other = true;
+        let questions = [q];
+        let (result, ()) = tokio::join!(host.ask(&questions), async {
+            let request = rx.recv().await.unwrap();
+            assert!(request.allow_other);
+            assert_eq!(request.options, vec!["Alpha", "Beta"]);
+            assert!(!request.prompt.contains("1: Alpha"));
+            request
+                .reply
+                .send(crate::tui::host_ui::AskAnswer {
+                    answer: "2".into(),
+                    cancelled: false,
+                })
+                .unwrap();
+        });
+        assert_eq!(result.answers[0].selected, vec!["Beta"]);
+    }
+
+    #[tokio::test]
+    async fn selector_custom_text_becomes_other() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let host = HostResponder(Some(tx));
+        let mut q = question(AskUserQuestionKind::Choice);
+        q.allow_other = true;
+        let questions = [q];
+        let (result, ()) = tokio::join!(host.ask(&questions), async {
+            let request = rx.recv().await.unwrap();
+            request
+                .reply
+                .send(crate::tui::host_ui::AskAnswer {
+                    answer: "something entirely new".into(),
+                    cancelled: false,
+                })
+                .unwrap();
+        });
+        assert!(result.answers[0].selected.is_empty());
+        assert_eq!(
+            result.answers[0].other_text.as_deref(),
+            Some("something entirely new")
+        );
+    }
+
     #[tokio::test]
     async fn secret_never_reaches_composer_and_closed_channel_cancels() {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -287,7 +362,9 @@ mod edge_tests {
             tokio::spawn(async move { HostResponder(Some(tx)).ask(&[choice(), text]).await });
         let first = rx.recv().await.unwrap();
         assert_eq!(first.options, ["A", "B"]);
-        assert!(first.prompt.contains("second) [default]"));
+        // A single-choice question renders as a picker: the options travel in
+        //  instead of being duplicated as numbered prompt rows.
+        assert_eq!(first.prompt, "Plan: Which plan?");
         first
             .reply
             .send(AskAnswer {

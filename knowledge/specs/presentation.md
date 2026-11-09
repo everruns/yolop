@@ -210,7 +210,9 @@ Required coverage examples:
 
 The runtime enables the core `ask_user` capability. The TUI presents each
 question through the host prompt dialog, including option descriptions and
-default markers. Closed single-choice questions use a selector. Multiple
+default markers. Single-choice questions use a selector; when the question
+allows Other, typing switches the picker to a custom-answer field and Escape
+returns to the options. Multiple
 choices use comma-separated option numbers, and open choices accept
 `other:` followed by text. Text questions accept a free-form answer. Escape
 cancels the batch. Secret questions are declined before any input is collected,

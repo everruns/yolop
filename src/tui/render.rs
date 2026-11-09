@@ -597,11 +597,23 @@ pub(crate) fn ask_overlay_content(ask: &PendingAsk) -> (Vec<Line<'static>>, (usi
                 .add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
-        Line::from(ask.prompt.clone()),
-        Line::from(""),
     ];
-    // Selector mode: a highlighted list of options.
-    if !ask.options.is_empty() {
+    // One row per prompt line: the prompt carries embedded newlines
+    // (enumerated options, validation notes) that a single `Line` would not
+    // render, which left multi-line questions showing only their first row.
+    let mut prompt_rows = 0;
+    for row in ask.prompt.lines() {
+        lines.push(Line::from(row.to_owned()));
+        prompt_rows += 1;
+    }
+    if prompt_rows == 0 {
+        lines.push(Line::from(""));
+    }
+    lines.push(Line::from(""));
+    let body_row = lines.len();
+    // Selector mode: a highlighted list of options. A selector the user
+    // switched to a custom answer renders as a field instead.
+    if !ask.options.is_empty() && !ask.custom {
         for (i, option) in ask.options.iter().enumerate() {
             let selected = i == ask.selected;
             let marker = if selected { "▶ " } else { "  " };
@@ -616,11 +628,15 @@ pub(crate) fn ask_overlay_content(ask: &PendingAsk) -> (Vec<Line<'static>>, (usi
         }
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
-            "↑/↓ to choose · Enter to select · Esc to cancel",
+            if ask.allow_other {
+                "↑/↓ to choose · Enter to select · type for Other · Esc to cancel"
+            } else {
+                "↑/↓ to choose · Enter to select · Esc to cancel"
+            },
             Style::default().add_modifier(Modifier::DIM),
         )));
         // No text cursor in selector mode; park it on the selected row.
-        return (lines, (4 + ask.selected, 0));
+        return (lines, (body_row + ask.selected, 0));
     }
     // Text / secret input. Secret input is masked; the placeholder (shown when
     // empty) is never masked.
@@ -638,12 +654,17 @@ pub(crate) fn ask_overlay_content(ask: &PendingAsk) -> (Vec<Line<'static>>, (usi
     lines.push(Line::from(format!("> {field}")));
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        "Enter to answer · Esc to cancel",
+        if ask.custom {
+            "Type a custom answer · Enter to answer · Esc for options"
+        } else {
+            "Enter to answer · Esc to cancel"
+        },
         Style::default().add_modifier(Modifier::DIM),
     )));
-    // The typed answer is on row 4, after the "> " prompt. The column follows
-    // the input state's cursor, so arrow keys move the caret the user sees.
-    let cursor = (4, "> ".len() + ask.value.cursor());
+    // The typed answer sits on the field row, after the `"> "` prompt. The
+    // column follows the input state's cursor, so arrow keys move the caret
+    // the user sees.
+    let cursor = (body_row, "> ".len() + ask.value.cursor());
     (lines, cursor)
 }
 

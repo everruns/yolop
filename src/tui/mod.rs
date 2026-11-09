@@ -529,6 +529,11 @@ pub(crate) struct PendingAsk {
     options: Vec<String>,
     /// Highlighted option index (selector mode only).
     selected: usize,
+    /// Selector only: typing a custom answer is allowed (`allow_other`).
+    allow_other: bool,
+    /// Selector with `allow_other` where the user started typing: the overlay
+    /// shows a text field, and Enter submits the typed custom answer.
+    custom: bool,
     reply: Option<oneshot::Sender<crate::tui::host_ui::AskAnswer>>,
 }
 
@@ -2020,6 +2025,8 @@ impl App {
                 secret: request.secret,
                 options: request.options,
                 selected: 0,
+                allow_other: request.allow_other,
+                custom: false,
                 reply: Some(request.reply),
             });
             applied_ui_command = true;
@@ -2935,7 +2942,9 @@ impl App {
         let Some(ask) = self.pending_ask.as_mut() else {
             return;
         };
-        if !ask.options.is_empty() {
+        // A selector has no field to fill, unless the user already switched
+        // it to a custom answer.
+        if !ask.options.is_empty() && !ask.custom {
             return;
         }
         let _ = ask.value.handle(&tuika::Event::Paste(pasted.to_string()));
@@ -2958,7 +2967,10 @@ impl App {
             return;
         };
         // Selector mode: arrow keys move, Enter picks the highlighted option.
-        if !ask.options.is_empty() {
+        // A selector that allows Other stays a picker: typing a character
+        // switches to a custom-answer field instead of being dropped, so a
+        // single-choice question is navigable without losing free text.
+        if !ask.options.is_empty() && !ask.custom {
             match key.code {
                 KeyCode::Up => {
                     ask.selected = ask.selected.saturating_sub(1);
@@ -2979,6 +2991,16 @@ impl App {
                         cancelled: true,
                     });
                 }
+                KeyCode::Char(_)
+                    if ask.allow_other
+                        && matches!(key.modifiers, KeyModifiers::NONE | KeyModifiers::SHIFT) =>
+                {
+                    ask.custom = true;
+                    ask.value = SingleLineInputState::new();
+                    if let Some(event) = tuika::translate_event(CrosstermEvent::Key(key)) {
+                        let _ = ask.value.handle(&event);
+                    }
+                }
                 _ => {}
             }
             return;
@@ -2995,6 +3017,13 @@ impl App {
                 });
             }
             KeyCode::Esc => {
+                // Esc from a custom answer returns to the options instead of
+                // cancelling the whole question.
+                if ask.custom {
+                    ask.custom = false;
+                    ask.value = SingleLineInputState::new();
+                    return;
+                }
                 self.resolve_ask(crate::tui::host_ui::AskAnswer {
                     answer: String::new(),
                     cancelled: true,
@@ -8911,6 +8940,7 @@ flowchart TD
             placeholder: None,
             secret: false,
             options: vec!["Alpha".into(), "Beta".into()],
+            allow_other: false,
             reply,
         })
         .unwrap();
@@ -8941,6 +8971,8 @@ flowchart TD
             secret: true,
             options: Vec::new(),
             selected: 0,
+            allow_other: false,
+            custom: false,
             reply: Some(reply),
         });
 
@@ -8976,6 +9008,8 @@ flowchart TD
             secret: true,
             options: Vec::new(),
             selected: 0,
+            allow_other: false,
+            custom: false,
             reply: Some(reply),
         });
 
@@ -9011,6 +9045,8 @@ flowchart TD
             secret: true,
             options: Vec::new(),
             selected: 0,
+            allow_other: false,
+            custom: false,
             reply: Some(reply),
         };
         let _ = ask
@@ -9054,6 +9090,8 @@ flowchart TD
             secret: true,
             options: Vec::new(),
             selected: 0,
+            allow_other: false,
+            custom: false,
             reply: Some(reply),
         });
 
@@ -9111,6 +9149,8 @@ flowchart TD
             secret: false,
             options: vec!["a".to_string(), "b".to_string()],
             selected: 0,
+            allow_other: false,
+            custom: false,
             reply: Some(reply),
         });
 
@@ -9124,6 +9164,123 @@ flowchart TD
                 .is_empty()
         );
         assert!(app.input_text().is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn single_choice_with_other_stays_a_navigable_selector() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+        let (reply, mut answer_rx) = oneshot::channel();
+        app.pending_ask = Some(PendingAsk {
+            prompt: "Plan: Which plan?".to_string(),
+            placeholder: None,
+            value: SingleLineInputState::new(),
+            secret: false,
+            options: vec!["Alpha".into(), "Beta".into()],
+            selected: 0,
+            allow_other: true,
+            custom: false,
+            reply: Some(reply),
+        });
+
+        // Arrow keys still move between the options, even with Other allowed.
+        app.handle_ask_key(KeyEvent::new(KeyCode::Down, KeyModifiers::empty()));
+        app.handle_ask_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()));
+        let answer = answer_rx.try_recv().expect("answer delivered");
+        assert!(!answer.cancelled);
+        assert_eq!(answer.answer, "Beta");
+        assert!(app.pending_ask.is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn typing_in_a_selector_with_other_switches_to_a_custom_answer() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        app.setup = None;
+        let (reply, mut answer_rx) = oneshot::channel();
+        app.pending_ask = Some(PendingAsk {
+            prompt: "Plan: Which plan?".to_string(),
+            placeholder: None,
+            value: SingleLineInputState::new(),
+            secret: false,
+            options: vec!["Alpha".into(), "Beta".into()],
+            selected: 0,
+            allow_other: true,
+            custom: false,
+            reply: Some(reply),
+        });
+
+        // Typing switches the picker to a custom-answer field, keeping the key.
+        app.handle_ask_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::empty()));
+        let ask = app.pending_ask.as_ref().expect("prompt open");
+        assert!(ask.custom);
+        assert_eq!(ask.value.text(), "x");
+
+        // Esc returns to the options instead of cancelling the question.
+        app.handle_ask_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()));
+        let ask = app.pending_ask.as_ref().expect("prompt open");
+        assert!(!ask.custom);
+        assert!(ask.value.is_empty());
+
+        // The custom text answers the question.
+        app.handle_ask_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::empty()));
+        app.handle_ask_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()));
+        let answer = answer_rx.try_recv().expect("answer delivered");
+        assert!(!answer.cancelled);
+        assert_eq!(answer.answer, "y");
+        assert!(app.pending_ask.is_none());
+    }
+
+    #[test]
+    fn ask_overlay_renders_every_prompt_row() {
+        let (reply, _answer_rx) = oneshot::channel();
+        let ask = PendingAsk {
+            prompt: "Plan: Which plan?\n1: Alpha (first)\n2: Beta (second)".to_string(),
+            placeholder: None,
+            value: SingleLineInputState::new(),
+            secret: false,
+            options: Vec::new(),
+            selected: 0,
+            allow_other: true,
+            custom: false,
+            reply: Some(reply),
+        };
+        let (lines, cursor) = crate::tui::render::ask_overlay_content(&ask);
+        let text: Vec<String> = lines.iter().map(line_text).collect();
+        assert_eq!(
+            &text[2..5],
+            &[
+                "Plan: Which plan?".to_string(),
+                "1: Alpha (first)".to_string(),
+                "2: Beta (second)".to_string(),
+            ]
+        );
+        // Header, blank, three prompt rows, blank, then the `> ` field.
+        assert_eq!(cursor, (6, 2));
+    }
+
+    #[test]
+    fn ask_overlay_selector_parks_on_each_prompt_length() {
+        let (reply, _answer_rx) = oneshot::channel();
+        let ask = PendingAsk {
+            prompt: "Plan: Which plan?\nPick one.".to_string(),
+            placeholder: None,
+            value: SingleLineInputState::new(),
+            secret: false,
+            options: vec!["Only".to_string()],
+            selected: 0,
+            allow_other: true,
+            custom: false,
+            reply: Some(reply),
+        };
+        let (lines, cursor) = crate::tui::render::ask_overlay_content(&ask);
+        let text: Vec<String> = lines.iter().map(line_text).collect();
+        assert!(text.iter().any(|row| row == "Plan: Which plan?"));
+        assert!(text.iter().any(|row| row == "Pick one."));
+        assert!(text.iter().any(|row| row.contains("Only")));
+        // Header, blank, two prompt rows, blank, then the option row.
+        assert_eq!(cursor, (5, 0));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
