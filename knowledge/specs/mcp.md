@@ -130,8 +130,13 @@ browser is invisible), and the wait runs in the background so the event loop is
 not blocked. The token is bound to the MCP server through the OAuth `resource`
 indicator, and callback issuer validation prevents mix-up attacks. The token
 endpoint and client id are persisted alongside the tokens so refresh is
-self-contained; refreshes are serialized and re-read under the lock so rotated
-refresh tokens cannot be spent concurrently. Because credentials are resolved
+self-contained. Refreshes use a cancellable, bounded cross-process lease keyed
+by provider and credential store. The credential file is read after acquiring
+the lease, so rotated refresh tokens cannot be spent concurrently. Persistence
+compares the exact saved revision under a separate cross-process write lock;
+logout and replacement login win over an in-flight refresh. Malformed or
+unreadable credential storage fails closed. Process exit releases leases
+automatically; sidecar lock files remain in place to preserve inode identity. Because credentials are resolved
 per turn, a fresh login takes effect on the next message, no restart (composes
 with live reload above). Agent-driven `/mcp` and `/tools` via `run_command` return the
 host's response text in the tool result; `/tools` includes live discovered
