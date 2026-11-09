@@ -4695,6 +4695,8 @@ pub async fn build_with_options(
         .count();
     if let Some(title) = latest_session_title(&active_events) {
         update_session_workspace_title(&session_dir, &title)?;
+        // Resume restores the projected title; keep the Rex tab in sync too.
+        crate::capabilities::sync_rex_title(&title);
     }
 
     // Bootstrap presentation only. Native synchronization replaces this view.

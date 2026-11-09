@@ -32,6 +32,7 @@ pub(crate) mod profiles;
 pub(crate) mod progress_guard;
 pub(crate) mod repo_map;
 pub(crate) mod rex;
+pub(crate) mod rex_titles;
 pub(crate) mod rg;
 pub(crate) mod session_coordination;
 pub(crate) mod session_tasks_override;
@@ -78,6 +79,7 @@ pub(crate) use profiles::ProfilesCapability;
 pub(crate) use progress_guard::{PROGRESS_GUARD_CAPABILITY_ID, ProgressGuardCapability};
 pub(crate) use repo_map::{REPO_MAP_CAPABILITY_ID, RepoMapCapability};
 pub(crate) use rex::{REX_CAPABILITY_ID, RexCapability};
+pub(crate) use rex_titles::sync_rex_title;
 pub(crate) use rg::RgCapability;
 pub(crate) use session_coordination::{
     CoordinationHost, CoordinationStore, CoordinatorInboxWaker, ThreadRouting,
