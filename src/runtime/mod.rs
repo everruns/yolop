@@ -4708,15 +4708,11 @@ pub async fn build_with_options(
             provider: provider_state.clone(),
             settings: settings.clone(),
         });
-    // Keep coordination's existing database; native execution uses engine.sqlite.
-    let coordination_profile =
-        everruns::local::LocalProfile::new(sessions_dir.join("everruns-local"))
-            .with_workspace_root(effective_root.clone());
-    coordination_profile.ensure_dirs()?;
-    let coordination_db = everruns::local::SqliteDb::open(coordination_profile.db_path())?;
-    let coordination_store = CoordinationStore::new(coordination_db)
-        .context("initialize session coordination store")?
-        .with_sessions_dir(&sessions_dir);
+    // Coordination is file backed under the sessions dir (per-owner leases,
+    // inboxes, threads, and approvals); native execution uses engine.sqlite.
+    // Opening imports the legacy shared database once when one is present.
+    let coordination_store =
+        CoordinationStore::open(&sessions_dir).context("initialize session coordination store")?;
     // Assignment changes this process makes for a coordinator hosted elsewhere
     // (this session is its thread) reach that coordinator through its inbox.
     let task_registry: Arc<dyn SessionTaskRegistry> = Arc::new(
@@ -6273,9 +6269,10 @@ mod tests {
         let store = CoordinationStore::open(sessions.path()).expect("store");
         let present = |store: &CoordinationStore| {
             store
-                .live_session_ids()
+                .live_sessions()
                 .expect("presence")
-                .contains(&session_id)
+                .iter()
+                .any(|session| session.session_id == session_id)
         };
         assert!(present(&store), "a live session must hold its lease");
         drop(handles);
@@ -7640,7 +7637,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn build_uses_everruns_local_backend_stores() {
+    async fn build_uses_file_backed_coordination() {
         let workspace = tempfile::tempdir().expect("workspace");
         let sessions = tempfile::tempdir().expect("sessions");
         let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
@@ -7657,8 +7654,8 @@ mod tests {
         .expect("build runtime");
 
         assert!(
-            sessions.path().join("everruns-local/local.db").exists(),
-            "local backend database should be created under the Yolop sessions dir"
+            !sessions.path().join("everruns-local/local.db").exists(),
+            "coordination no longer uses a shared database under the Yolop sessions dir"
         );
         assert!(
             built

@@ -1105,7 +1105,7 @@ mod tests {
     }
 
     fn memory_store() -> CoordinationStore {
-        CoordinationStore::new(everruns::local::SqliteDb::open_in_memory().unwrap()).unwrap()
+        CoordinationStore::ephemeral().unwrap()
     }
 
     #[tokio::test]

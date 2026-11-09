@@ -2007,7 +2007,7 @@ fn detached_cli_registry() -> Result<control::CliRegistry> {
         .and_then(|dir| capabilities::CoordinationStore::open(&dir).ok())
     {
         Some(store) => store,
-        None => capabilities::CoordinationStore::new(everruns::local::SqliteDb::open_in_memory()?)?,
+        None => capabilities::CoordinationStore::ephemeral()?,
     };
     registry.register(Arc::new(capabilities::SkillManagementCapability::new(
         capabilities::SkillDirs::resolve(&workspace, None),
