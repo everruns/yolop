@@ -182,6 +182,50 @@ behavioral changes, new capabilities, and requirement changes pass through a
 clean build and surface as agent regressions, provider failures, or release
 surprises. The changelog is the only cheap detector.
 
+### Dedup Ledger
+
+Yolop is the framework demo host, so every module answers one question: does
+an upstream type already own this, is this the thin host adapter over that
+type, or is this genuinely host owned. The November 2026 audit verified each
+claim below against the upstream tree at Everruns 0.51.0. Re-check entries
+marked with a ticket when that ticket ships.
+
+Already delegated, thin host adapters by design (nothing to drop):
+`capabilities/approval.rs`, `capabilities/tool_approval.rs`,
+`capabilities/ask_user.rs`, `capabilities/background.rs`,
+`capabilities/skills.rs`, `capabilities/skill_registry.rs`,
+`connectors/*`, `drivers/*`, `models/catalog` wiring. Each file says so in
+its own docs and delegates to the upstream capability or registry.
+
+Host owned, keep in yolop: `capabilities/apply_patch.rs` (edit experiment
+with its own evals), `models/download.rs` plus the weights store (visible
+weights directory is a host UX decision), `capabilities/progress_guard.rs`
+(4212 lines of custom heuristics versus 804 upstream),
+`capabilities/memory*` (host memory store versus the 229 line upstream
+capability), `capabilities/hooks.rs` plus `config/hooks.rs` (own settings
+store under a different capability ID), `exec/tools.rs` plus
+`exec/sandbox.rs` (bounded local execution: approval gates, timeouts,
+output caps, process groups; upstream containment shares the wire names by
+design but owns only config, not spawn), `control.rs`, `narration.rs`,
+`client_commands.rs`, `worktree_cmd.rs`, auth stores and login TUI, the YEP
+extension protocol, the ACP editor server, herdr, rex.
+
+Awaiting upstream work, delete or thin the yolop side when it ships:
+EVE-1339 native checkpoint and branch aware rewind API (replaces
+`session_state/checkpoint.rs` and thins `capabilities/checkpoint.rs`),
+EVE-1340 control attach pattern (thins `control.rs` to a consumer),
+EVE-1341 tool narration default on `core::Tool` (deletes
+`capabilities/narration.rs`). `capabilities/session_tasks_override.rs`
+(535 lines) stays until the runtime result contract exposes the
+post-cancellation state; upstream 0.51.0 `cancel_task` still returns the
+pre-wind-down snapshot, the same contract the override documents against
+0.17.8. Needs a fourth ticket before it can move.
+
+Not yet audited, analyze before any deletion: `exec/worktree.rs` include
+policy, `runtime/mod.rs` agent loop layering, `config/*` versus facade
+config, `mcp.rs` versus `user_hooks` and `user_mcp`, `tool_reveal.rs` and
+`tool_argument_validation.rs` versus upstream tool search and guardrails.
+
 ## Tuika Boundary
 
 Toolkit-shaped work, including layout, components, overlays, focus, keymap,
