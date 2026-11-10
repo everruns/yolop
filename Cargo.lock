@@ -1873,8 +1873,6 @@ dependencies = [
 [[package]]
 name = "everruns"
 version = "0.51.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e3c3f5189b2d2d907cdea3b62f21507716a4d426897c7d94502d5c8229bfc204"
 dependencies = [
  "aes-gcm",
  "anyhow",

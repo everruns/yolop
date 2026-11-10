@@ -2,7 +2,7 @@
 //!
 //! All consistency and execution ports remain those of SqliteHosting. A Yolop
 //! process claims only the build whose workspace and UI services it opened;
-//! another process may serve a different build in the same authority database.
+//! each session, including a linked child, has its own authority database.
 use async_trait::async_trait;
 use everruns::hosting::spi::{HostBackends, session_commands::SessionCommand};
 use everruns::hosting::*;
@@ -26,16 +26,11 @@ pub struct YolopHosting {
     pub coordination: crate::capabilities::CoordinationStore,
     pub connections: Arc<dyn UserConnectionResolver>,
     pub observer: Arc<dyn TaskTransitionObserver>,
-    pub schedules: Arc<dyn everruns_core::session_services::SessionScheduleStore>,
     pub platform: Arc<super::engine_platform::PlatformServices>,
 }
 impl YolopHosting {
     fn enrich(&self, mut backends: HostBackends) -> HostBackends {
         backends = backends.with_connection_resolver(self.connections.clone());
-        if backends.schedule_store_factory.is_none() {
-            let schedules = self.schedules.clone();
-            backends = backends.with_schedule_store_factory(Arc::new(move |_| schedules.clone()));
-        }
         if let Some(registry) = backends.session_task_registry.take() {
             backends = backends.with_session_task_registry(Arc::new(
                 ObservingTaskRegistry::new(registry).with_observer(self.observer.clone()),

@@ -552,6 +552,54 @@ mod tests {
     use crate::config::SettingsStore;
     use crate::session_state::checkpoint::RestoreMode;
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn an_unrelated_session_can_run_while_another_database_is_write_locked() {
+        let workspace = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let settings = Arc::new(SettingsStore::open(data.path().join("settings.toml")));
+        let build = || {
+            build_with_options(
+                workspace.path().into(),
+                ProviderChoice::Sim,
+                None,
+                data.path().into(),
+                settings.clone(),
+                BuildOptions::default(),
+            )
+        };
+        let a = build().await.unwrap();
+        let b = build().await.unwrap();
+        let a_path =
+            SqliteHosting::session_db_path(data.path().join(".engine"), a.handles.session_id);
+        let b_path =
+            SqliteHosting::session_db_path(data.path().join(".engine"), b.handles.session_id);
+        assert_ne!(a_path, b_path);
+        assert!(!data.path().join("engine.sqlite").exists());
+        let blocker = rusqlite::Connection::open(&a_path).unwrap();
+        blocker.execute_batch("BEGIN IMMEDIATE").unwrap();
+        let result = b
+            .handles
+            .run_checkpointed_turn(b.model.input_message("hello from session B"))
+            .await;
+        blocker.execute_batch("ROLLBACK").unwrap();
+        let turn = result.unwrap();
+        assert!(turn.success, "{turn:?}");
+        for (path, owner) in [
+            (a_path, a.handles.session_id),
+            (b_path, b.handles.session_id),
+        ] {
+            let db = rusqlite::Connection::open(path).unwrap();
+            let foreign: i64 = db
+                .query_row(
+                    "SELECT count(*) FROM framework_authority WHERE session<>?",
+                    [owner.to_string()],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(foreign, 0);
+        }
+    }
+
     #[tokio::test]
     async fn native_resume_bootstraps_transcript_when_jsonl_export_is_stale() {
         let workspace = tempfile::tempdir().unwrap();

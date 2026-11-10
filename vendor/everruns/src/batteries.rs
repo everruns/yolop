@@ -1,0 +1,195 @@
+//! Framework batteries: default capability and outbound-transport wiring.
+//!
+//! Default `everruns-core` owns neutral execution contracts and registry
+//! algorithms. Its optional modules provide portable built-ins and injected
+//! host orchestration. This facade module selects concrete integrations and
+//! wires the feature-selected capability and outbound-transport presets.
+//!
+//! A capability lands here when it is an *embedder* capability: something a CLI
+//! host, a CI runner, or an operator's own box opts into, rather than something
+//! the hosted product offers every tenant. Those go in an integration crate and
+//! are named by `everruns-capabilities::integrations_catalog`.
+//!
+//! One pair lives elsewhere by design. `session` and `session_storage` are the
+//! capability face of the session-service seam and sit under
+//! [`session_services`](everruns_core::host::session_services) next to `session_mutator`,
+//! which `session` depends on. A capability that fronts another seam belongs
+//! with that seam; everything else belongs here.
+
+use std::sync::Arc;
+
+use everruns_core::{CapabilityRegistry, EgressService};
+
+/// Return the runtime-safe portable bundle and integrations enabled as host Cargo features.
+pub fn runtime_capability_registry() -> CapabilityRegistry {
+    let registry = CapabilityRegistry::new();
+    #[cfg(feature = "builtins")]
+    let registry = {
+        let mut registry = registry;
+        everruns_core::builtins::register_runtime_capabilities(&mut registry)
+            .expect("portable runtime catalog must have unique capability IDs");
+        registry
+    };
+    compose_runtime_capability_registry(registry)
+}
+
+/// Add host integrations selected by Cargo features to an existing registry.
+///
+/// This lets embedders preserve a caller-owned registry while applying the same feature-driven
+/// environment composition as [`runtime_capability_registry`]. Existing
+/// registrations retain the registry's normal duplicate handling.
+pub fn compose_runtime_capability_registry(mut registry: CapabilityRegistry) -> CapabilityRegistry {
+    register_session_service_capabilities(&mut registry);
+    // `AgentBuilder::member` attaches the Agents capability; it is inert on an
+    // agent without members.
+    #[cfg(feature = "local")]
+    if registry
+        .get(everruns_capabilities::capabilities::AGENT_HANDOFF_CAPABILITY_ID)
+        .is_none()
+    {
+        registry.register(everruns_capabilities::capabilities::AgentHandoffCapability);
+    }
+    register_selected_integrations(&mut registry);
+    registry
+}
+
+/// Register the session-service capabilities an in-process host can serve.
+///
+/// `session` and `session_storage` belong to core’s host session-service seam.
+/// The default in-process runtime supplies both services, so the Framework
+/// keeps advertising them. The SQL and
+/// sandbox capabilities need backends this host does not provide and stay with
+/// product composition.
+fn register_session_service_capabilities(registry: &mut CapabilityRegistry) {
+    if registry
+        .get(everruns_core::host::SESSION_CAPABILITY_ID)
+        .is_none()
+    {
+        registry.register(everruns_core::host::SessionCapability);
+    }
+    if registry
+        .get(everruns_core::host::SESSION_STORAGE_CAPABILITY_ID)
+        .is_none()
+    {
+        registry.register(everruns_core::host::SessionStorageCapability);
+    }
+}
+
+/// Return the egress service matching the selected host integrations.
+///
+/// Network-capable opt-in features retain the Framework's direct, policy-aware
+/// transport. A host with no network-capable feature remains offline and does
+/// not link the concrete HTTP crate.
+pub fn runtime_egress_service() -> Arc<dyn EgressService> {
+    #[cfg(any(
+        feature = "bashkit",
+        feature = "web-fetch",
+        feature = "duckduckgo",
+        feature = "web-search",
+        feature = "images",
+        feature = "lua",
+        feature = "mcp"
+    ))]
+    {
+        Arc::new(everruns_core::host::DirectEgressService::for_runtime_traffic_from_env())
+    }
+    #[cfg(not(any(
+        feature = "bashkit",
+        feature = "web-fetch",
+        feature = "duckduckgo",
+        feature = "web-search",
+        feature = "images",
+        feature = "lua",
+        feature = "mcp"
+    )))]
+    {
+        Arc::new(everruns_core::DisabledEgressService)
+    }
+}
+
+fn register_selected_integrations(_registry: &mut CapabilityRegistry) {
+    #[cfg(feature = "filesystem")]
+    _registry.register(everruns_integrations::filesystem::FileSystemCapability);
+    #[cfg(feature = "bashkit")]
+    _registry.register(everruns_integrations::bashkit::BashkitShellCapability);
+    #[cfg(feature = "bashkit")]
+    _registry.register(everruns_integrations::bashkit::tools_in_shell::ToolsInShellCapability);
+    // Both contribute a tool named `bash`, so an embedder selects one. Nothing
+    // stops both features being on at once; the capability an agent enables is
+    // what decides which shell it gets.
+    #[cfg(feature = "host-shell")]
+    _registry.register(everruns_core::host::capabilities::shell::HostShellCapability);
+    #[cfg(feature = "web-fetch")]
+    _registry.register(everruns_integrations::web_fetch::WebFetchCapability::new());
+    #[cfg(feature = "duckduckgo")]
+    _registry.register(everruns_integrations::duckduckgo::DuckDuckGoCapability);
+    #[cfg(feature = "web-search")]
+    _registry.register(everruns_integrations::web_search::WebSearchCapability::from_env());
+    #[cfg(feature = "images")]
+    _registry.register(crate::images::ImageGeneration::with_credentials(
+        std::sync::Arc::new(crate::images::EnvImageCredentials),
+    ));
+    #[cfg(feature = "lua")]
+    if everruns_core::InternalFeatureFlags::from_env().lua {
+        _registry.register(everruns_integrations::lua::LuaCapability);
+        _registry.register(everruns_integrations::lua::LuaCodeModeCapability);
+    }
+}
+
+/// Apply facade-selected services to an explicit embedded backend bundle.
+/// Caller-supplied hook dispatchers retain priority over the default battery.
+pub fn runtime_backends(
+    backends: everruns_core::host::HostBackends,
+) -> everruns_core::host::HostBackends {
+    #[cfg(feature = "bashkit")]
+    {
+        if backends.bash_hook_dispatcher_factory.is_none() {
+            return backends.with_bash_hook_dispatcher_factory(std::sync::Arc::new(|files| {
+                std::sync::Arc::new(
+                    everruns_integrations::bashkit::BashkitShellHookDispatcher::new(files),
+                )
+            }));
+        }
+    }
+    backends
+}
+
+/// Build the facade-selected runtime over explicit registries and host services.
+pub fn runtime_builder() -> everruns_core::host::InProcessRuntimeBuilder {
+    everruns_core::host::InProcessRuntimeBuilder::new()
+        .host_composition(
+            everruns_core::host::HostComposition::builder()
+                .capability_registry(runtime_capability_registry())
+                .egress_service(runtime_egress_service())
+                .session_file_system_factory(std::sync::Arc::new(
+                    everruns_core::host::InMemorySessionFileSystemFactory,
+                ))
+                .build(),
+        )
+        .backends(runtime_backends(
+            everruns_core::host::HostBackends::in_memory(),
+        ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn composition_preserves_caller_selected_core_capabilities() {
+        let selected = CapabilityRegistry::new();
+        #[cfg(feature = "builtins")]
+        let selected = {
+            let mut selected = selected;
+            everruns_core::builtins::register_runtime_capabilities(&mut selected).unwrap();
+            selected
+        };
+        let registry = compose_runtime_capability_registry(selected);
+        // A caller-selected capability survives environment composition.
+        assert!(registry.has("session_storage"));
+        assert_eq!(
+            registry.has("session_file_system"),
+            cfg!(feature = "filesystem")
+        );
+    }
+}

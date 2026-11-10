@@ -4604,10 +4604,27 @@ pub async fn build_with_options(
     use everruns::hosting::SessionHosting;
     let connection_resolver = Arc::new(YolopConnectionResolver::new(connections.clone()));
     std::fs::create_dir_all(&sessions_dir)?;
-    let authority_path = sessions_dir.join("engine.sqlite");
+    let mut startup_lease = Some(session_log::lock_session(&session_dir)?);
+    let authority_directory = sessions_dir.join(".engine");
     let authority_key = engine_keys::open_or_create(&sessions_dir)?;
-    let native_hosting = everruns::hosting::SqliteHosting::open(&authority_path)?
-        .with_secret_keys(&authority_key, &[])?;
+    // TODO(everruns#5323): remove vendor/everruns and use the upstream API directly
+    // after the next aligned Everruns release includes session-owned SQLite.
+    let source_sessions = sessions_dir.clone();
+    let native_hosting = everruns::hosting::SqliteHosting::open_session_from(
+        &authority_directory,
+        session_id,
+        Some(sessions_dir.join("engine.sqlite")),
+        move |source| {
+            if source == session_id {
+                return Ok(Box::new(()));
+            }
+            Ok(Box::new(session_log::lock_session(&session_dir_path(
+                &source_sessions,
+                source,
+            ))?))
+        },
+    )?
+    .with_secret_keys(&authority_key, &[])?;
     let retained_binding = match native_hosting.status(session_id).await {
         Ok(status) => Some(status.binding),
         Err(AgentLoopError::SessionNotFound(_)) => None,
@@ -4637,6 +4654,7 @@ pub async fn build_with_options(
                 &session_dir,
                 session_id,
                 &sessions_dir,
+                startup_lease.take().expect("startup session lease"),
             )
             .await?,
         )
@@ -4645,7 +4663,7 @@ pub async fn build_with_options(
     };
     let session_lease = match migration_source.as_mut() {
         Some(source) => source.take_lease(),
-        None => session_log::lock_session(&session_dir)?,
+        None => startup_lease.take().expect("startup session lease"),
     };
 
     // Native history is authoritative even if a crash left JSONL stale.
@@ -4707,15 +4725,11 @@ pub async fn build_with_options(
             provider: provider_state.clone(),
             settings: settings.clone(),
         });
-    // Keep coordination's existing database; native execution uses engine.sqlite.
-    let coordination_profile =
-        everruns::local::LocalProfile::new(sessions_dir.join("everruns-local"))
-            .with_workspace_root(effective_root.clone());
-    coordination_profile.ensure_dirs()?;
-    let coordination_db = everruns::local::SqliteDb::open(coordination_profile.db_path())?;
-    let coordination_store = CoordinationStore::new(coordination_db)
-        .context("initialize session coordination store")?
-        .with_sessions_dir(&sessions_dir);
+    // Coordination is file backed under the sessions dir (per-owner leases,
+    // inboxes, threads, and approvals); native execution uses per-session authorities.
+    // Opening imports the legacy shared database once when one is present.
+    let coordination_store =
+        CoordinationStore::open(&sessions_dir).context("initialize session coordination store")?;
     // Assignment changes this process makes for a coordinator hosted elsewhere
     // (this session is its thread) reach that coordinator through its inbox.
     let task_registry: Arc<dyn SessionTaskRegistry> = Arc::new(
@@ -4736,12 +4750,10 @@ pub async fn build_with_options(
         .thread_launcher
         .clone()
         .unwrap_or_else(process_thread_launcher);
-    let task_schedule_store: Arc<dyn everruns_core::session_services::SessionScheduleStore> =
-        Arc::new(everruns::local::LocalScheduleStore::new(
-            everruns::local::SqliteDb::open(&authority_path)?,
-            everruns_contracts::runtime::organization::DEFAULT_ORG_ID,
-            everruns_contracts::typed_id::PrincipalId::from_seed(1),
-        )?);
+    let task_schedule_store = native_hosting.schedule_store(
+        session_id,
+        everruns_contracts::runtime::organization::DEFAULT_ORG_ID,
+    );
     checkpoints.attach_task_registry(task_registry.clone());
     // Retain product thread routing and authenticated task handoff enrichment.
     // Native platform services own child creation and execution.
@@ -5518,7 +5530,6 @@ pub async fn build_with_options(
         restore_gate: Arc::new(tokio::sync::RwLock::new(())),
         coordination: coordination_store.clone(),
         connections: connection_resolver.clone(),
-        schedules: task_schedule_store.clone(),
         platform: Arc::new(engine_platform::PlatformServices {
             instance: everruns_contracts::typed_id::MessageId::new(),
             session_dir: session_dir.clone(),
@@ -6258,10 +6269,14 @@ mod tests {
         let workspace = tempfile::tempdir().expect("workspace");
         let sessions = tempfile::tempdir().expect("sessions");
         let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
+        // A host only leases a session folder that already exists, so the
+        // session under test starts out onboarded like any real session.
+        let session_id = SessionId::new();
+        std::fs::create_dir_all(sessions.path().join(session_id.to_string())).expect("session dir");
         let built = build_with_options(
             workspace.path().to_path_buf(),
             ProviderChoice::Sim,
-            None,
+            Some(session_id),
             sessions.path().to_path_buf(),
             settings,
             BuildOptions::default(),
@@ -6273,9 +6288,10 @@ mod tests {
         let store = CoordinationStore::open(sessions.path()).expect("store");
         let present = |store: &CoordinationStore| {
             store
-                .live_session_ids()
+                .live_sessions()
                 .expect("presence")
-                .contains(&session_id)
+                .iter()
+                .any(|session| session.session_id == session_id)
         };
         assert!(present(&store), "a live session must hold its lease");
         drop(handles);
@@ -6375,6 +6391,18 @@ mod tests {
         let sessions = tempfile::tempdir().expect("sessions");
         let thread = SessionId::new();
         let coordinator = SessionId::new();
+        // Thread registration names a real coordinator authority, as it does
+        // when the coordination capability creates a child in production.
+        let _coordinator_runtime = build_with_options(
+            repo.path().to_path_buf(),
+            ProviderChoice::Sim,
+            Some(coordinator),
+            sessions.path().to_path_buf(),
+            Arc::new(SettingsStore::open(sessions.path().join("settings.toml"))),
+            BuildOptions::default(),
+        )
+        .await
+        .expect("build coordinator");
         CoordinationStore::open(sessions.path())
             .expect("store")
             .record_thread(&crate::capabilities::session_coordination::ThreadRecord {
@@ -7640,7 +7668,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn build_uses_everruns_local_backend_stores() {
+    async fn build_uses_file_backed_coordination() {
         let workspace = tempfile::tempdir().expect("workspace");
         let sessions = tempfile::tempdir().expect("sessions");
         let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
@@ -7657,8 +7685,8 @@ mod tests {
         .expect("build runtime");
 
         assert!(
-            sessions.path().join("everruns-local/local.db").exists(),
-            "local backend database should be created under the Yolop sessions dir"
+            !sessions.path().join("everruns-local/local.db").exists(),
+            "coordination no longer uses a shared database under the Yolop sessions dir"
         );
         assert!(
             built
