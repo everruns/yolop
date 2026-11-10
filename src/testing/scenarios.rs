@@ -845,6 +845,68 @@ async fn completion_review_failure_is_durable() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn productive_turns_restart_repair_clock() {
+    let review = || {
+        SimTurn::Assistant(json!({"state": "in_progress", "reason": "more work remains"}).to_string())
+    };
+    let work = || {
+        SimTurn::ToolCalls(vec![SimToolCall {
+            name: "get_config".to_string(),
+            arguments: json!({ "key": "capabilities" }),
+            id: None,
+        }])
+    };
+    let (runtime, _) = build_scripted_runtime(
+        LlmSimConfig::scripted(vec![
+            work(),
+            SimTurn::Assistant("First batch done.".to_string()),
+            review(),
+            work(),
+            SimTurn::Assistant("Second batch done.".to_string()),
+            review(),
+            SimTurn::Assistant("Still thinking.".to_string()),
+            review(),
+        ])
+        .with_on_exhausted(OnExhausted::Error),
+    )
+    .await;
+    runtime
+        .settings
+        .set_continuation_max_seconds(Some(1))
+        .unwrap();
+    let mut controller = crate::session_state::task_completion::CompletionController::default();
+
+    let first = run_single_turn(&runtime, "Do work").await;
+    assert!(first.success && first.tool_calls > 0);
+    let continued = controller
+        .after_turn(&runtime.handles, &first, false, runtime.settings.as_ref())
+        .await
+        .unwrap();
+    assert!(continued.followup.is_some());
+
+    // Sleeping past the one-second window must not block: the second
+    // productive turn restarts the clock through the real entry point.
+    tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+    let second = run_single_turn(&runtime, "Keep working").await;
+    assert!(second.success && second.tool_calls > 0);
+    let continued = controller
+        .after_turn(&runtime.handles, &second, false, runtime.settings.as_ref())
+        .await
+        .unwrap();
+    assert!(continued.followup.is_some());
+
+    // An idle turn past the window stays blocked: no work, no fresh clock.
+    tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+    let third = run_single_turn(&runtime, "Keep thinking").await;
+    assert_eq!(third.tool_calls, 0);
+    let stopped = controller
+        .after_turn(&runtime.handles, &third, false, runtime.settings.as_ref())
+        .await
+        .unwrap();
+    assert!(stopped.followup.is_none());
+    assert!(stopped.notice.unwrap().contains("time limit: 1s"));
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn print_reviews_monitors_and_input_requests_without_waiting_for_execution() {
     use everruns_core::session_task::{CreateSessionTask, TASK_KIND_MONITOR, TaskWakePolicy};
     for (kind, state, review, success) in [

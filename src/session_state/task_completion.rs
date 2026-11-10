@@ -71,6 +71,10 @@ pub(crate) fn continuation_prompt(reason: &str) -> String {
 }
 #[derive(Default)]
 pub(crate) struct CompletionController {
+    /// Start of the current repair window. Refreshed by each productive
+    /// continuation turn (tools ran without an unrecoverable failure), so the
+    /// time budget bounds stalled loops rather than long tasks that keep
+    /// doing work. Turn and token counters stay cumulative.
     repair_started: Option<Instant>,
     repairs: u64,
     tokens: u64,
@@ -170,10 +174,19 @@ impl CompletionController {
                 return Err(error);
             }
         };
+        self.note_turn_progress(state, result.success, result.tool_calls);
         let decision = self.decide(state, &reason, tokens, &settings);
         self.record_decision(handles, result, &settings, used_turns, &reason, &decision)
             .await?;
         Ok(decision)
+    }
+    /// Sliding window for the time budget: a continuation turn that ran tools
+    /// without an unrecoverable failure resets the repair clock. Turns without
+    /// tool work (chatty loops, stalls) leave the clock running.
+    fn note_turn_progress(&mut self, state: CompletionState, success: bool, tool_calls: usize) {
+        if state == CompletionState::InProgress && success && tool_calls > 0 {
+            self.repair_started = Some(Instant::now());
+        }
     }
     fn decide(
         &mut self,
@@ -420,6 +433,38 @@ mod tests {
                 .notice
                 .is_none()
         );
+    }
+    #[test]
+    fn productive_turn_refreshes_repair_clock() {
+        let settings = Settings {
+            continuation_max_seconds: 1,
+            ..Default::default()
+        };
+        let mut controller = CompletionController {
+            repair_started: Some(Instant::now() - Duration::from_secs(2)),
+            ..Default::default()
+        };
+        controller.note_turn_progress(CompletionState::InProgress, true, 3);
+        let continued = controller.decide(CompletionState::InProgress, "retry", 0, &settings);
+        assert!(continued.followup.is_some());
+        assert!(continued.notice.is_none());
+    }
+    #[test]
+    fn idle_or_failed_turn_leaves_repair_clock_running() {
+        let settings = Settings {
+            continuation_max_seconds: 1,
+            ..Default::default()
+        };
+        for (success, tool_calls) in [(true, 0), (false, 3)] {
+            let mut controller = CompletionController {
+                repair_started: Some(Instant::now() - Duration::from_secs(2)),
+                ..Default::default()
+            };
+            controller.note_turn_progress(CompletionState::InProgress, success, tool_calls);
+            let stopped = controller.decide(CompletionState::InProgress, "retry", 0, &settings);
+            assert!(stopped.followup.is_none());
+            assert!(stopped.notice.unwrap().contains("time limit: 1s"));
+        }
     }
     #[test]
     fn review_preserves_original_request_and_late_steering() {
