@@ -420,6 +420,13 @@ Yolop is a free, open-source hobby project. There are many ways to help:
 - Contribute code (see [CONTRIBUTING.md](CONTRIBUTING.md), and say hi on [Discord](https://everruns.com/discord/yolop))
 - Talk about Yolop around you
 
+## Ecosystem
+
+Yolop is part of [Everruns](https://everruns.com/projects/), a free, non-commercial
+community ecosystem of open-source AI projects by
+[Mykhailo Chalyi](https://chaliy.name) and contributors. Questions, ideas and
+research discussion are welcome on [Discord](https://everruns.com/discord).
+
 ## Contributing, evals, releases, license
 
 - Contributing guide: [CONTRIBUTING.md](CONTRIBUTING.md). Coding agent notes: [AGENTS.md](AGENTS.md). Security policy: [SECURITY.md](SECURITY.md). Code of conduct: [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
