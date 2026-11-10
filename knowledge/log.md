@@ -1,5 +1,12 @@
 # Knowledge Log
 
+## 2026-11-09, Sliding repair-clock window
+
+Continuation time budget is now sliding: each productive continuation turn
+restarts the `continuation_max_seconds` window instead of measuring from the
+first repair, so long progressing tasks stop tripping the 600s cut. Turn and
+token counters stay cumulative; see [Configuration](specs/configuration.md).
+
 ## 2026-11-09, Cross-process MCP OAuth refresh
 
 - [MCP](specs/mcp.md): coordinate rotations across processes, condition writes on saved credential revisions, and preserve logout and replacement login during refresh.
