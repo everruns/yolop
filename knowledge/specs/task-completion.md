@@ -32,7 +32,10 @@ it must not invent implementation or shipping requirements. Review errors or
 invalid responses stop recovery with a visible notice rather than retry blindly.
 
 Recovery defaults to five automatic turns, 256,000 budget-weighted tokens,
-and ten minutes from the first repair. Cache reads repeat the same prefix
+and ten minutes without a productive turn. Each continuation turn that ran
+tools without an unrecoverable failure restarts the time window, so long
+tasks that keep doing work are not cut while idle loops stay on the
+original clock. Cache reads repeat the same prefix
 every turn and bill far below fresh input, so they count tenfold discounted
 toward the token budget. The schema-backed settings
 `continuation_max_turns`, `continuation_max_tokens`, and
