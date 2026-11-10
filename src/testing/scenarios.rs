@@ -847,7 +847,9 @@ async fn completion_review_failure_is_durable() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn productive_turns_restart_repair_clock() {
     let review = || {
-        SimTurn::Assistant(json!({"state": "in_progress", "reason": "more work remains"}).to_string())
+        SimTurn::Assistant(
+            json!({"state": "in_progress", "reason": "more work remains"}).to_string(),
+        )
     };
     let work = || {
         SimTurn::ToolCalls(vec![SimToolCall {
