@@ -1,0 +1,1163 @@
+//! Application-owned execution engine.
+
+use std::collections::HashMap;
+use std::fmt;
+use std::future::Future;
+use std::sync::{Arc, Mutex, Weak};
+use std::time::Duration;
+
+#[cfg(feature = "local")]
+use std::sync::OnceLock;
+
+use async_trait::async_trait;
+use everruns_core::host::{
+    Environment, EnvironmentBindingStore, HostBackends, InMemoryEnvironmentBindingStore,
+};
+use tokio::sync::OnceCell;
+
+use crate::agent::BackendInitError;
+use crate::observers::{
+    ClosureEventListener, EventListener, ListenerRegistration, OBSERVER_QUEUE_CAPACITY,
+    ObserverDispatcher,
+};
+use crate::{
+    Agent, Harness, ObserverReport, ObserverStats, ResumeError, Session, SessionEnvironmentError,
+    SessionEvent, SessionId,
+};
+
+mod cutover;
+mod hosting;
+mod legacy_metadata;
+mod session_overlay;
+
+pub(crate) use cutover::{ensure_legacy_owner, fence_legacy_leases};
+#[cfg(feature = "local")]
+pub(crate) use legacy_metadata::LegacyCutoverMarker;
+pub(crate) use legacy_metadata::LegacyCutoverStore;
+
+pub(crate) use session_overlay::reconcile_session_record;
+
+/// The runtime resources owned by an [`Engine`].
+pub(crate) struct EngineBackends {
+    pub(crate) host: HostBackends,
+    binding_store: Arc<dyn EnvironmentBindingStore>,
+    harness_binding_store: Arc<dyn HarnessBindingStore>,
+    /// Legacy-lane ownership marker (EVE-1298).
+    pub(crate) cutover: Arc<dyn LegacyCutoverStore>,
+    /// Engines sharing these local backends, for coordination threads.
+    #[cfg(feature = "local")]
+    hub: Option<Arc<crate::coordination::EngineHub>>,
+}
+
+#[async_trait]
+pub(crate) trait HarnessBindingStore: Send + Sync {
+    async fn is_required(&self, session_id: SessionId) -> Result<bool, ResumeError>;
+    async fn require(&self, session_id: SessionId) -> Result<(), crate::HistoryError>;
+}
+
+#[derive(Default)]
+struct InMemoryHarnessBindingStore(Mutex<std::collections::HashSet<SessionId>>);
+
+#[async_trait]
+impl HarnessBindingStore for InMemoryHarnessBindingStore {
+    async fn is_required(&self, session_id: SessionId) -> Result<bool, ResumeError> {
+        Ok(self
+            .0
+            .lock()
+            .map_err(|_| ResumeError::Unavailable)?
+            .contains(&session_id))
+    }
+
+    async fn require(&self, session_id: SessionId) -> Result<(), crate::HistoryError> {
+        self.0
+            .lock()
+            .map_err(|_| crate::HistoryError::Unavailable)?
+            .insert(session_id);
+        Ok(())
+    }
+}
+
+/// Private binding between a [`Session`] and its owning engine.
+#[async_trait]
+pub(crate) trait SessionExecution: Send + Sync + fmt::Debug {
+    fn hosting(&self) -> Option<Arc<dyn crate::hosting::SessionHosting>> {
+        None
+    }
+    fn activate(&self) {}
+    fn provisional(&self) -> bool {
+        false
+    }
+    fn frontend_environment(&self) -> bool {
+        false
+    }
+    async fn inspect_context(&self) -> everruns_contracts::error::Result<crate::SessionContext> {
+        Err(everruns_contracts::error::AgentLoopError::config(
+            "query port unavailable",
+        ))
+    }
+    async fn interrupted_turn(
+        &self,
+    ) -> everruns_contracts::error::Result<
+        Option<(
+            crate::InterruptedTurn,
+            everruns_contracts::typed_id::MessageId,
+        )>,
+    > {
+        Err(everruns_contracts::error::AgentLoopError::config(
+            "query port unavailable",
+        ))
+    }
+    fn turn_backend(
+        &self,
+        runtime: everruns_core::host::InProcessRuntime,
+        leases: Arc<dyn everruns_core::host::SessionLeases>,
+    ) -> everruns_contracts::error::Result<Arc<dyn everruns_core::host::TurnBackend>>;
+    fn session_id(&self) -> SessionId;
+    fn agent_snapshot(&self) -> Agent;
+    fn harness_snapshot(&self) -> Option<Harness>;
+    fn bind_harness(&self, harness: Harness) -> Result<(), SessionEnvironmentError>;
+    async fn backends(&self) -> Result<Arc<EngineBackends>, BackendInitError>;
+    async fn ensure_cataloged(&self) -> Result<(), crate::HistoryError>;
+    async fn ensure_harness_requirement(&self) -> Result<(), crate::HistoryError>;
+    async fn bind_environment(
+        &self,
+        environment: &Environment,
+    ) -> Result<(), SessionEnvironmentError>;
+    async fn default_environment(&self) -> Result<Environment, SessionEnvironmentError>;
+    async fn reopen_environment(&self) -> Result<Option<Environment>, ResumeError>;
+    /// Live, process-local session controls (EVE-1297). They outlive Session
+    /// handles and runtime rebuilds within the owning Engine.
+    fn live_controls(&self) -> Arc<crate::session::LiveControls>;
+    /// Trusted capabilities registered on the owning Engine.
+    fn registered_capabilities(&self) -> Vec<Arc<dyn everruns_core::capabilities::Capability>>;
+    /// A read-only query runtime for a coherently hosted session.
+    async fn query_runtime(
+        &self,
+    ) -> everruns_contracts::error::Result<crate::session::HostedQuery> {
+        Err(everruns_contracts::error::AgentLoopError::config(
+            "query port unavailable",
+        ))
+    }
+}
+
+/// Application-owned session execution engine.
+///
+/// Clones share a session catalog and backend bundle. Local profiles also share
+/// one backend bundle across engines in the same process, preventing divergent
+/// JSONL indexes and SQLite handles when an application constructs more than
+/// one engine for the same profile.
+#[derive(Clone)]
+pub struct Engine {
+    inner: Arc<EngineInner>,
+}
+
+struct EngineInner {
+    volatile_default: bool,
+    hosting: Option<Arc<dyn crate::hosting::SessionHosting>>,
+    registry: Mutex<HashMap<crate::hosting::AgentBuild, hosting::Registration>>,
+    sessions: Mutex<HashMap<SessionId, EngineSessionEntry>>,
+    memory_backends: Arc<OnceCell<Arc<EngineBackends>>>,
+    observers: Arc<ObserverDispatcher>,
+    #[cfg(feature = "local")]
+    local_backends: Mutex<HashMap<std::path::PathBuf, Arc<OnceCell<Arc<EngineBackends>>>>>,
+    /// See [`Engine::register_capability`].
+    capabilities: Mutex<Vec<Arc<dyn everruns_core::capabilities::Capability>>>,
+    /// See [`SessionExecution::live_controls`].
+    live_controls: Mutex<HashMap<SessionId, Arc<crate::session::LiveControls>>>,
+}
+
+/// Configures an application-owned [`Engine`].
+///
+/// Stability: alpha.
+pub struct EngineBuilder {
+    volatile_default: bool,
+    hosting: Option<Arc<dyn crate::hosting::SessionHosting>>,
+    registry: HashMap<crate::hosting::AgentBuild, hosting::Registration>,
+    listeners: Vec<ListenerRegistration>,
+    observer_queue_capacity: usize,
+}
+
+impl Default for EngineBuilder {
+    fn default() -> Self {
+        Self {
+            volatile_default: true,
+            hosting: Some(Arc::new(crate::hosting::MemoryHosting::default())),
+            registry: HashMap::new(),
+            listeners: Vec::new(),
+            observer_queue_capacity: OBSERVER_QUEUE_CAPACITY,
+        }
+    }
+}
+
+impl EngineBuilder {
+    /// Register an event listener for every session this Engine runs.
+    pub fn listener(mut self, listener: impl EventListener) -> Self {
+        self.listeners
+            .push(ListenerRegistration::App(Arc::new(listener)));
+        self
+    }
+
+    /// Register a host observer for every Engine session.
+    ///
+    /// It receives the same committed canonical envelopes as
+    /// [`listener`](Self::listener), as Core
+    /// [`HostEvent`](crate::hosting::services::HostEvent) values, on its own
+    /// bounded queue. A
+    /// slow, full, failing or dropped host observer cannot fail a turn, delay
+    /// another observer or add to canonical history; drops are counted in
+    /// [`Engine::observer_stats`]. Stability: experimental.
+    pub fn host_listener(
+        mut self,
+        listener: impl crate::hosting::services::HostEventListener + 'static,
+    ) -> Self {
+        self.listeners
+            .push(ListenerRegistration::Host(Arc::new(listener)));
+        self
+    }
+
+    /// Register a built-in observability integration for every Engine session.
+    #[cfg(any(feature = "otel", feature = "braintrust"))]
+    pub fn observe(mut self, observer: impl crate::observability::Observation) -> Self {
+        self.listeners.push(ListenerRegistration::Host(
+            crate::observability::into_listener(observer),
+        ));
+        self
+    }
+
+    /// Register an async closure that receives owned session events.
+    pub fn on_event<F, Fut>(self, handler: F) -> Self
+    where
+        F: Fn(SessionEvent) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = ()> + Send + 'static,
+    {
+        self.listener(ClosureEventListener::new(handler))
+    }
+
+    /// Build the Engine and its observer registry.
+    pub fn build(self) -> Engine {
+        Engine {
+            inner: Arc::new(EngineInner {
+                volatile_default: self.volatile_default,
+                hosting: self.hosting,
+                registry: Mutex::new(self.registry),
+                sessions: Mutex::new(HashMap::new()),
+                memory_backends: Arc::new(OnceCell::new()),
+                observers: ObserverDispatcher::new(self.listeners, self.observer_queue_capacity),
+                #[cfg(feature = "local")]
+                local_backends: Mutex::new(HashMap::new()),
+                capabilities: Mutex::new(Vec::new()),
+                live_controls: Mutex::new(HashMap::new()),
+            }),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn observer_queue_capacity(mut self, capacity: usize) -> Self {
+        self.observer_queue_capacity = capacity;
+        self
+    }
+}
+
+impl Default for Engine {
+    fn default() -> Self {
+        Self::builder().build()
+    }
+}
+
+struct EngineSessionEntry {
+    agent: Option<Agent>,
+    harness: Option<Harness>,
+    state: Option<Weak<crate::session::SessionInner>>,
+    /// Selected only after successful negotiation on a volatile convenience handle.
+    selected_environment: Option<Environment>,
+    durable_binding: Option<crate::hosting::SessionBinding>,
+    /// Only synchronous volatile convenience handles may configure before their
+    /// first authority I/O. A started creation freezes even after reply loss.
+    provisional: bool,
+    creation: Option<Arc<OnceCell<()>>>,
+}
+
+#[cfg(feature = "local")]
+struct LocalBackendCell {
+    workspace_root: std::path::PathBuf,
+    cell: Weak<OnceCell<Arc<EngineBackends>>>,
+}
+
+#[cfg(feature = "local")]
+fn local_backend_cells() -> &'static Mutex<HashMap<std::path::PathBuf, LocalBackendCell>> {
+    static CELLS: OnceLock<Mutex<HashMap<std::path::PathBuf, LocalBackendCell>>> = OnceLock::new();
+    CELLS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+impl fmt::Debug for Engine {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let sessions = self
+            .inner
+            .sessions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .len();
+        formatter
+            .debug_struct("Engine")
+            .field("sessions", &sessions)
+            .finish()
+    }
+}
+
+impl Engine {
+    /// Begin configuring an application-owned engine.
+    pub fn builder() -> EngineBuilder {
+        EngineBuilder::default()
+    }
+    /// Construct an empty process-local engine.
+    pub fn new() -> Self {
+        Self::builder().build()
+    }
+
+    /// Create a new engine-owned session from an immutable Agent snapshot.
+    pub fn create(&self, agent: Agent) -> Session {
+        if self.inner.hosting.is_some() {
+            assert!(
+                self.inner.volatile_default,
+                "configured hosting requires asynchronous create_registered"
+            );
+            let legacy = agent.custom_backends().is_some();
+            #[cfg(feature = "local")]
+            let legacy = legacy || agent.local_config().is_some();
+            if !legacy {
+                return self.create_volatile(agent);
+            }
+        }
+        let session_id = SessionId::new();
+        self.attach_unchecked(session_id, agent);
+        let session = Session::new(self.binding(session_id), None, self.inner.observers.clone());
+        self.remember_state(session_id, &session);
+        session
+    }
+
+    /// Reopen a session already owned by this engine.
+    pub async fn resume(&self, session_id: SessionId) -> Result<Session, ResumeError> {
+        if self.inner.hosting.is_some() && self.is_hosted(session_id) {
+            self.ensure_hosted_created(session_id)
+                .await
+                .map_err(|error| match error {
+                    everruns_contracts::error::AgentLoopError::SessionNotFound(_) => {
+                        ResumeError::SessionNotFound { session_id }
+                    }
+                    _ => ResumeError::Unavailable,
+                })?;
+            return self
+                .resume_hosted(session_id)
+                .await
+                .map_err(|error| match error {
+                    everruns_contracts::error::AgentLoopError::SessionNotFound(_) => {
+                        ResumeError::SessionNotFound { session_id }
+                    }
+                    _ => ResumeError::Unavailable,
+                });
+        }
+        if let Some(state) = self.state(session_id) {
+            return Ok(Session::from_inner(state));
+        }
+        if self.agent(session_id).is_none() {
+            return Err(ResumeError::SessionNotFound { session_id });
+        }
+        let binding = self.binding(session_id);
+        let environment = binding.reopen_environment().await?;
+        if let (Some(harness), Some(environment)) =
+            (binding.harness_snapshot(), environment.as_ref())
+        {
+            harness
+                .negotiate(environment)
+                .map_err(ResumeError::Environment)?;
+        }
+        let session = Session::new(binding, environment, self.inner.observers.clone());
+        self.remember_state(session_id, &session);
+        Ok(session)
+    }
+
+    /// Register trusted capability code on this Engine without activating it.
+    ///
+    /// Registration makes an implementation discovered after startup (for
+    /// example a newly installed extension) resolvable by every session this
+    /// Engine runs, including runtimes it already built. It changes no model
+    /// surface: a session uses the capability only after
+    /// [`Session::activate_capability`](crate::Session::activate_capability),
+    /// and stops after
+    /// [`Session::deactivate_capability`](crate::Session::deactivate_capability).
+    /// The activation is the session's persisted overlay; the code is not
+    /// persisted, so after a restart the host registers it again before it
+    /// resumes sessions that use it, exactly as it re-attaches the Agent.
+    ///
+    /// Registering the same value again is a no-op. A different value under a
+    /// registered id, or an id or alias the Framework catalog already serves,
+    /// is rejected rather than overriding the existing registration.
+    /// Stability: experimental.
+    pub fn register_capability(
+        &self,
+        capability: impl everruns_core::capabilities::Capability + 'static,
+    ) -> Result<(), crate::session::CapabilityRegistrationError> {
+        self.register_shared_capability(Arc::new(capability))
+    }
+
+    /// [`register_capability`](Self::register_capability) for a capability
+    /// value the host shares with other Engines or Agents.
+    pub fn register_shared_capability(
+        &self,
+        capability: Arc<dyn everruns_core::capabilities::Capability>,
+    ) -> Result<(), crate::session::CapabilityRegistrationError> {
+        use crate::session::CapabilityRegistrationError;
+        // THREAT[TM-TOOL-065]: only in-process trusted code registers, and a
+        // registration never overrides one the Framework or host already made.
+        let id = capability.id().trim().to_string();
+        if id.is_empty() {
+            return Err(CapabilityRegistrationError::InvalidId);
+        }
+        let mut names = vec![id.clone()];
+        names.extend(capability.aliases().iter().map(|alias| alias.to_string()));
+        let catalog = crate::capability_config::framework_capability_registry(false);
+        if let Some(name) = names.iter().find(|name| catalog.has(name)) {
+            return Err(CapabilityRegistrationError::Conflict { id: name.clone() });
+        }
+        let mut registered = self
+            .inner
+            .capabilities
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        for existing in registered.iter() {
+            if same_capability(existing, &capability) {
+                return Ok(());
+            }
+            let existing_names: Vec<&str> = std::iter::once(existing.id())
+                .chain(existing.aliases().iter().copied())
+                .collect();
+            if let Some(name) = names
+                .iter()
+                .find(|name| existing_names.contains(&name.as_str()))
+            {
+                return Err(CapabilityRegistrationError::Conflict { id: name.clone() });
+            }
+        }
+        registered.push(capability);
+        Ok(())
+    }
+
+    pub(crate) fn live_controls(&self, session_id: SessionId) -> Arc<crate::session::LiveControls> {
+        self.inner
+            .live_controls
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .entry(session_id)
+            .or_default()
+            .clone()
+    }
+
+    pub(crate) fn registered_capabilities(
+        &self,
+    ) -> Vec<Arc<dyn everruns_core::capabilities::Capability>> {
+        self.inner
+            .capabilities
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    /// Return a snapshot of listener delivery counters.
+    pub fn observer_stats(&self) -> ObserverStats {
+        self.inner.observers.stats()
+    }
+
+    /// Stop listener intake, drain queued events, and flush each listener.
+    ///
+    /// Listener tasks that do not finish within `deadline` are cancelled and
+    /// reported through [`ObserverReport::timed_out`]. Concurrent calls wait
+    /// for the same shutdown result; the first call supplies the shared deadline.
+    pub async fn shutdown(&self, deadline: Duration) -> ObserverReport {
+        self.inner.observers.shutdown(deadline).await
+    }
+
+    /// Attach a persisted local session without an explicit Harness.
+    ///
+    /// Rebuild the Agent from trusted application configuration after a process
+    /// restart, attach it to the persisted id, then call [`resume`](Self::resume).
+    /// Use [`attach_with_harness`](Self::attach_with_harness) when the session
+    /// was created with an explicit [`Harness`].
+    pub async fn attach(&self, session_id: SessionId, agent: Agent) -> Result<(), ResumeError> {
+        self.attach_reconstructed(session_id, agent, None).await
+    }
+
+    /// Attach a persisted local session with its reconstructed Harness.
+    ///
+    /// After a process restart, rebuild the Agent from trusted application
+    /// configuration and deserialize the session's portable Harness definition.
+    /// Attach both values before calling [`resume`](Self::resume).
+    ///
+    /// Required rather than optional once the session has run with a Harness:
+    /// plain [`attach`](Self::attach) then fails with
+    /// [`ResumeError::HarnessRequired`] instead of silently resuming on the
+    /// Agent's own, wider capability set.
+    pub async fn attach_with_harness(
+        &self,
+        session_id: SessionId,
+        agent: Agent,
+        harness: Harness,
+    ) -> Result<(), ResumeError> {
+        self.attach_reconstructed(session_id, agent, Some(harness))
+            .await
+    }
+
+    async fn attach_reconstructed(
+        &self,
+        session_id: SessionId,
+        agent: Agent,
+        harness: Option<Harness>,
+    ) -> Result<(), ResumeError> {
+        if self.agent(session_id).is_some() {
+            return Ok(());
+        }
+        let backends = self
+            .backends_for(&agent)
+            .await
+            .map_err(|error| error.resume_error())?;
+        let exists = backends
+            .host
+            .session_store
+            .get_session(session_id)
+            .await
+            .map_err(|_| ResumeError::Unavailable)?
+            .is_some();
+        if !exists {
+            return Err(ResumeError::SessionNotFound { session_id });
+        }
+        // A cut-over session belongs to its authority; never hand it back to
+        // the legacy executor (EVE-1298).
+        if backends
+            .cutover
+            .load_cutover(session_id)
+            .await
+            .map_err(|_| ResumeError::Unavailable)?
+            .is_some()
+        {
+            return Err(ResumeError::CutOver);
+        }
+        // Refuse before any environment work: a session that has run with a
+        // Harness may not come back without one, or the restart quietly widens
+        // it to whatever the Agent alone allows.
+        if harness.is_none()
+            && backends
+                .harness_binding_store
+                .is_required(session_id)
+                .await?
+        {
+            return Err(ResumeError::HarnessRequired);
+        }
+        if let Some(harness) = &harness
+            && let Some(environment) = agent
+                .reopen_session_environment(backends.binding_store.as_ref(), session_id)
+                .await?
+        {
+            harness
+                .negotiate(&environment)
+                .map_err(ResumeError::Environment)?;
+        }
+        self.inner
+            .sessions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .entry(session_id)
+            .or_insert(EngineSessionEntry {
+                agent: Some(agent),
+                harness,
+                state: None,
+                selected_environment: None,
+                durable_binding: None,
+                provisional: false,
+                creation: None,
+            });
+        Ok(())
+    }
+
+    pub(crate) fn agent(&self, session_id: SessionId) -> Option<Agent> {
+        self.inner
+            .sessions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&session_id)
+            .and_then(|entry| entry.agent.clone())
+    }
+
+    fn harness(&self, session_id: SessionId) -> Option<Harness> {
+        self.inner
+            .sessions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&session_id)
+            .and_then(|entry| entry.harness.clone())
+    }
+
+    fn bind_harness(
+        &self,
+        session_id: SessionId,
+        harness: Harness,
+    ) -> Result<(), SessionEnvironmentError> {
+        let mut sessions = self
+            .inner
+            .sessions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let entry = sessions
+            .get_mut(&session_id)
+            .expect("engine binding references a cataloged session");
+        if entry.provisional {
+            let binding = entry
+                .durable_binding
+                .as_mut()
+                .expect("provisional handle has binding");
+            binding.harness = Some(
+                serde_json::to_value(&harness).map_err(|_| SessionEnvironmentError::Unavailable)?,
+            );
+            self.inner
+                .registry
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .get_mut(&binding.behavior)
+                .expect("provisional build retained")
+                .harness = Some(harness.clone());
+            entry.harness = Some(harness);
+            return Ok(());
+        }
+        if entry.durable_binding.is_some() {
+            return match &entry.harness {
+                Some(bound)
+                    if serde_json::to_value(bound).ok() == serde_json::to_value(&harness).ok() =>
+                {
+                    Ok(())
+                }
+                _ => Err(SessionEnvironmentError::HarnessAlreadyBound),
+            };
+        }
+        match &entry.harness {
+            Some(bound) if !bound.is_same_binding(&harness) => {
+                Err(SessionEnvironmentError::HarnessAlreadyBound)
+            }
+            Some(_) => Ok(()),
+            None => {
+                entry.harness = Some(harness);
+                Ok(())
+            }
+        }
+    }
+
+    pub(crate) async fn backends_for(
+        &self,
+        agent: &Agent,
+    ) -> Result<Arc<EngineBackends>, BackendInitError> {
+        let cell = self.backend_cell(agent)?;
+        let backends = cell
+            .get_or_try_init(|| initialize_backends(agent))
+            .await
+            .cloned()?;
+        #[cfg(feature = "local")]
+        if let Some(hub) = &backends.hub {
+            hub.register(self);
+        }
+        Ok(backends)
+    }
+
+    /// Attach a thread a coordinator started; it runs the coordinator's agent.
+    #[cfg(feature = "local")]
+    pub(crate) fn attach_child(&self, session_id: SessionId, agent: Agent) {
+        self.attach_unchecked(session_id, agent);
+    }
+
+    #[cfg(feature = "local")]
+    pub(crate) fn downgrade(&self) -> WeakEngine {
+        WeakEngine(Arc::downgrade(&self.inner))
+    }
+
+    fn backend_cell(
+        &self,
+        agent: &Agent,
+    ) -> Result<Arc<OnceCell<Arc<EngineBackends>>>, BackendInitError> {
+        if agent.custom_backends().is_some() {
+            return Ok(agent.custom_backend_cell());
+        }
+        #[cfg(feature = "local")]
+        if let Some(config) = agent.local_config() {
+            let key = absolute_path(config.data_dir());
+            let workspace_root = absolute_path(config.workspace_root());
+            let mut cells = local_backend_cells()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(existing) = cells.get(&key)
+                && let Some(cell) = existing.cell.upgrade()
+            {
+                if existing.workspace_root != workspace_root {
+                    return Err(BackendInitError::Host(
+                        everruns_contracts::error::AgentLoopError::config(format!(
+                            "local profile {} is already open with workspace {}; requested {}",
+                            key.display(),
+                            existing.workspace_root.display(),
+                            workspace_root.display()
+                        )),
+                    ));
+                }
+                self.inner
+                    .local_backends
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .insert(key, cell.clone());
+                return Ok(cell);
+            }
+            let cell = Arc::new(OnceCell::new());
+            cells.insert(
+                key.clone(),
+                LocalBackendCell {
+                    workspace_root,
+                    cell: Arc::downgrade(&cell),
+                },
+            );
+            self.inner
+                .local_backends
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .insert(key, cell.clone());
+            return Ok(cell);
+        }
+        #[cfg(not(feature = "local"))]
+        let _ = agent;
+        Ok(self.inner.memory_backends.clone())
+    }
+
+    fn attach_unchecked(&self, session_id: SessionId, agent: Agent) {
+        self.inner
+            .sessions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(
+                session_id,
+                EngineSessionEntry {
+                    agent: Some(agent),
+                    harness: None,
+                    state: None,
+                    selected_environment: None,
+                    durable_binding: None,
+                    provisional: false,
+                    creation: None,
+                },
+            );
+    }
+
+    fn state(&self, session_id: SessionId) -> Option<Arc<crate::session::SessionInner>> {
+        self.inner
+            .sessions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&session_id)
+            .and_then(|entry| entry.state.as_ref()?.upgrade())
+    }
+
+    fn remember_state(&self, session_id: SessionId, session: &Session) {
+        if let Some(entry) = self
+            .inner
+            .sessions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get_mut(&session_id)
+        {
+            entry.state = Some(Arc::downgrade(&session.inner()));
+        }
+    }
+
+    fn binding(&self, session_id: SessionId) -> Arc<dyn SessionExecution> {
+        Arc::new(EngineSessionExecution {
+            engine: self.clone(),
+            session_id,
+        })
+    }
+}
+
+/// Whether two capability handles share one implementation value.
+pub(crate) fn same_capability(
+    left: &Arc<dyn everruns_core::capabilities::Capability>,
+    right: &Arc<dyn everruns_core::capabilities::Capability>,
+) -> bool {
+    std::ptr::eq(
+        Arc::as_ptr(left).cast::<()>(),
+        Arc::as_ptr(right).cast::<()>(),
+    )
+}
+
+/// Non-owning engine handle held by shared local backends.
+#[cfg(feature = "local")]
+#[derive(Clone)]
+pub(crate) struct WeakEngine(Weak<EngineInner>);
+
+#[cfg(feature = "local")]
+impl WeakEngine {
+    pub(crate) fn upgrade(&self) -> Option<Engine> {
+        self.0.upgrade().map(|inner| Engine { inner })
+    }
+
+    pub(crate) fn is(&self, engine: &Engine) -> bool {
+        std::ptr::eq(self.0.as_ptr(), Arc::as_ptr(&engine.inner))
+    }
+}
+
+/// Compatibility name for the application-owned process-local engine.
+pub type InMemoryEngine = Engine;
+
+#[cfg(feature = "local")]
+fn absolute_path(path: &std::path::Path) -> std::path::PathBuf {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| std::path::PathBuf::from("."))
+            .join(path)
+    };
+    let mut normalized = std::path::PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    // Canonicalize the longest existing prefix so a profile path keeps the
+    // same identity before and after its workspace directory is created. This
+    // also normalizes platform aliases such as macOS `/var` and `/private/var`.
+    let mut existing = normalized.as_path();
+    let mut missing = Vec::new();
+    loop {
+        if let Ok(mut canonical) = std::fs::canonicalize(existing) {
+            for component in missing.iter().rev() {
+                canonical.push(component);
+            }
+            return canonical;
+        }
+        let Some(name) = existing.file_name() else {
+            return normalized;
+        };
+        missing.push(name.to_os_string());
+        let Some(parent) = existing.parent() else {
+            return normalized;
+        };
+        existing = parent;
+    }
+}
+
+async fn initialize_backends(agent: &Agent) -> Result<Arc<EngineBackends>, BackendInitError> {
+    let backends = agent
+        .custom_backends()
+        .cloned()
+        .unwrap_or_else(HostBackends::in_memory);
+    #[cfg(feature = "local")]
+    if let Some(config) = agent.local_config() {
+        let profile = config.profile();
+        profile.ensure_dirs().map_err(|error| {
+            BackendInitError::Host(everruns_contracts::error::AgentLoopError::config(
+                error.to_string(),
+            ))
+        })?;
+        let event_log = Arc::new(
+            everruns_core::host::JsonlEventLog::open(config.data_dir().join("events.jsonl"))
+                .await
+                .map_err(BackendInitError::Event)?,
+        );
+        let local = crate::local::LocalBackends::new(profile, backends.with_event_log(event_log))
+            .map_err(BackendInitError::Host)?;
+        let session_store = Arc::new(
+            crate::local::LocalSessionStore::new(local.db.clone())
+                .map_err(BackendInitError::Host)?,
+        );
+        // Coordination: assignment updates wake the coordinator, and threads
+        // run as sessions of the engine that owns it.
+        let hub = Arc::new(crate::coordination::EngineHub::default());
+        let registry =
+            crate::coordination::observed_registry(local.task_registry.clone(), hub.clone());
+        let runner: Arc<dyn crate::local::LocalSessionRunner> =
+            Arc::new(crate::coordination::EngineSessionRunner::new(
+                hub.clone(),
+                session_store.clone(),
+                registry.clone(),
+                session_store.clone(),
+            ));
+        use everruns_capabilities::PlatformHostBackendsExt;
+        let host = local
+            .runtime_backends
+            .with_session_store(session_store.clone())
+            .with_session_task_registry(registry)
+            .with_platform_store_factory(Arc::new(move |_org_id, _session_id| {
+                Arc::new(crate::local::LocalPlatformStore::new(runner.clone()))
+                    as Arc<dyn everruns_capabilities::PlatformStore>
+            }));
+        return Ok(Arc::new(EngineBackends {
+            host,
+            binding_store: session_store.clone(),
+            harness_binding_store: session_store.clone(),
+            cutover: session_store,
+            hub: Some(hub),
+        }));
+    }
+    // Caller-owned backends keep the session's metadata themselves, so a new
+    // Agent value over the same backends reopens the same workspace head.
+    let metadata = Arc::new(legacy_metadata::HostSessionMetadata::new(
+        backends.storage_store.clone(),
+    ));
+    Ok(Arc::new(EngineBackends {
+        host: backends,
+        binding_store: metadata.clone(),
+        harness_binding_store: metadata.clone(),
+        cutover: metadata,
+        #[cfg(feature = "local")]
+        hub: None,
+    }))
+}
+
+struct EngineSessionExecution {
+    engine: Engine,
+    session_id: SessionId,
+}
+
+impl fmt::Debug for EngineSessionExecution {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SessionExecution")
+            .field("session_id", &self.session_id)
+            .finish_non_exhaustive()
+    }
+}
+
+#[async_trait]
+impl SessionExecution for EngineSessionExecution {
+    async fn inspect_context(&self) -> everruns_contracts::error::Result<crate::SessionContext> {
+        self.engine.inspect_hosted(self.session_id).await
+    }
+    async fn interrupted_turn(
+        &self,
+    ) -> everruns_contracts::error::Result<
+        Option<(
+            crate::InterruptedTurn,
+            everruns_contracts::typed_id::MessageId,
+        )>,
+    > {
+        self.engine.interrupted_hosted(self.session_id).await
+    }
+    fn hosting(&self) -> Option<Arc<dyn crate::hosting::SessionHosting>> {
+        self.engine
+            .is_hosted(self.session_id)
+            .then(|| self.engine.inner.hosting.clone())
+            .flatten()
+    }
+
+    fn provisional(&self) -> bool {
+        self.engine
+            .inner
+            .sessions
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&self.session_id)
+            .is_some_and(|entry| entry.provisional)
+    }
+    fn frontend_environment(&self) -> bool {
+        self.engine
+            .inner
+            .sessions
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&self.session_id)
+            .is_some_and(|entry| entry.creation.is_some())
+    }
+
+    fn activate(&self) {
+        if self
+            .engine
+            .inner
+            .hosting
+            .as_ref()
+            .is_some_and(|profile| profile.process_scheduler())
+        {
+            let engine = self.engine.clone();
+            let session = self.session_id;
+            everruns_contracts::rt::spawn(async move {
+                if let Err(error) = engine.activate(session).await {
+                    tracing::warn!(%session, %error, "Engine activation failed");
+                }
+            });
+        }
+    }
+    fn turn_backend(
+        &self,
+        runtime: everruns_core::host::InProcessRuntime,
+        leases: Arc<dyn everruns_core::host::SessionLeases>,
+    ) -> everruns_contracts::error::Result<Arc<dyn everruns_core::host::TurnBackend>> {
+        Ok(Arc::new(everruns_core::host::ActorRunner::new(
+            runtime, leases,
+        )))
+    }
+
+    fn session_id(&self) -> SessionId {
+        self.session_id
+    }
+
+    fn live_controls(&self) -> Arc<crate::session::LiveControls> {
+        self.engine.live_controls(self.session_id)
+    }
+
+    fn registered_capabilities(&self) -> Vec<Arc<dyn everruns_core::capabilities::Capability>> {
+        self.engine.registered_capabilities()
+    }
+
+    async fn query_runtime(
+        &self,
+    ) -> everruns_contracts::error::Result<crate::session::HostedQuery> {
+        self.engine.query_runtime_hosted(self.session_id).await
+    }
+
+    fn agent_snapshot(&self) -> Agent {
+        self.engine
+            .agent(self.session_id)
+            .expect("engine binding references a cataloged session")
+    }
+
+    fn harness_snapshot(&self) -> Option<Harness> {
+        self.engine.harness(self.session_id)
+    }
+
+    fn bind_harness(&self, harness: Harness) -> Result<(), SessionEnvironmentError> {
+        self.engine.bind_harness(self.session_id, harness)
+    }
+
+    async fn backends(&self) -> Result<Arc<EngineBackends>, BackendInitError> {
+        if let Some(profile) = self.hosting() {
+            return Ok(Arc::new(EngineBackends {
+                host: profile.reader(self.session_id),
+                binding_store: Arc::new(InMemoryEnvironmentBindingStore::default()),
+                harness_binding_store: Arc::new(InMemoryHarnessBindingStore::default()),
+                cutover: Arc::new(legacy_metadata::AuthorityOwned),
+                #[cfg(feature = "local")]
+                hub: None,
+            }));
+        }
+        self.engine.backends_for(&self.agent_snapshot()).await
+    }
+
+    async fn ensure_cataloged(&self) -> Result<(), crate::HistoryError> {
+        if self.hosting().is_some() {
+            self.engine
+                .ensure_hosted_created(self.session_id)
+                .await
+                .map_err(|_| crate::HistoryError::Unavailable)?;
+            return Ok(());
+        }
+        let agent =
+            self.engine
+                .agent(self.session_id)
+                .ok_or(crate::HistoryError::SessionNotFound {
+                    session_id: self.session_id,
+                })?;
+        let backends = self
+            .engine
+            .backends_for(&agent)
+            .await
+            .map_err(|error| error.history_error())?;
+        agent
+            .catalog_session(&backends.host, self.session_id)
+            .await?;
+        if self.engine.harness(self.session_id).is_some() {
+            backends
+                .harness_binding_store
+                .require(self.session_id)
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn ensure_harness_requirement(&self) -> Result<(), crate::HistoryError> {
+        if self.engine.harness(self.session_id).is_none() {
+            return Ok(());
+        }
+        self.backends()
+            .await
+            .map_err(|error| error.history_error())?
+            .harness_binding_store
+            .require(self.session_id)
+            .await
+    }
+
+    async fn bind_environment(
+        &self,
+        environment: &Environment,
+    ) -> Result<(), SessionEnvironmentError> {
+        if self.hosting().is_some() {
+            if self
+                .engine
+                .bind_volatile_environment(self.session_id, environment.clone())?
+            {
+                return Ok(());
+            }
+            let retained = self
+                .engine
+                .hosted_environment(self.session_id)
+                .await
+                .map_err(|_| SessionEnvironmentError::Unavailable)?;
+            if retained.workspace_head().binding() != environment.workspace_head().binding() {
+                return Err(SessionEnvironmentError::AlreadyBound);
+            }
+            let mut sessions = self
+                .engine
+                .inner
+                .sessions
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            let entry = sessions
+                .get_mut(&self.session_id)
+                .ok_or(SessionEnvironmentError::Unavailable)?;
+            if entry.creation.is_some() {
+                entry.selected_environment = Some(environment.clone());
+            }
+            return Ok(());
+        }
+        let agent = self.agent_snapshot();
+        let backends = self
+            .backends()
+            .await
+            .map_err(|_| SessionEnvironmentError::Unavailable)?;
+        agent
+            .bind_session_environment(
+                backends.binding_store.as_ref(),
+                self.session_id,
+                environment,
+            )
+            .await
+    }
+
+    async fn default_environment(&self) -> Result<Environment, SessionEnvironmentError> {
+        if self.hosting().is_some() {
+            return self
+                .engine
+                .hosted_environment(self.session_id)
+                .await
+                .map_err(|_| SessionEnvironmentError::Unavailable);
+        }
+        let agent = self.agent_snapshot();
+        agent.default_session_environment(self.session_id).await
+    }
+
+    async fn reopen_environment(&self) -> Result<Option<Environment>, ResumeError> {
+        if self.hosting().is_some() {
+            return Ok(None);
+        }
+        let agent = self.agent_snapshot();
+        let backends = self
+            .backends()
+            .await
+            .map_err(|error| error.resume_error())?;
+        agent
+            .reopen_session_environment(backends.binding_store.as_ref(), self.session_id)
+            .await
+    }
+}

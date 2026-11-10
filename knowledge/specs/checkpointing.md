@@ -100,7 +100,8 @@ The native authority and per-session product metadata are separate:
   workspace.json               # existing session/worktree metadata
 ```
 
-`engine.sqlite` and its private `engine.key` live at the sessions root. Native
+Each `engine.sqlite` lives under `sessions/.engine/<session-id>/`; the private
+`engine.key` stays at the sessions root. Native
 conversation branches and compaction replacements belong to that authority.
 Workspace snapshots use Git objects in the session worktree's repository,
 anchored by private refs:

@@ -323,6 +323,7 @@ impl LegacySessionSource {
         session_dir: &Path,
         session_id: SessionId,
         sessions_dir: &Path,
+        lease: SessionFileLease,
     ) -> Result<Self> {
         use everruns_core::SessionTaskRegistry;
         let db_path =
@@ -356,18 +357,30 @@ impl LegacySessionSource {
                 }
             }
         }
-        Self::read_with_links(session_dir, session_id, parents)
+        Self::read_with_lease(session_dir, session_id, parents, Some(lease))
     }
 
     fn read_with_links(
         session_dir: &Path,
         session_id: SessionId,
+        parents: HashMap<SessionId, SessionId>,
+    ) -> Result<Self> {
+        Self::read_with_lease(session_dir, session_id, parents, None)
+    }
+
+    fn read_with_lease(
+        session_dir: &Path,
+        session_id: SessionId,
         mut parents: HashMap<SessionId, SessionId>,
+        lease: Option<SessionFileLease>,
     ) -> Result<Self> {
         if !session_dir.is_dir() {
             bail!("migration source session does not exist");
         }
-        let lease = lock_session(session_dir)?;
+        let lease = match lease {
+            Some(lease) => lease,
+            None => lock_session(session_dir)?,
+        };
         let mut digest = Sha256::new();
         let mut events: Vec<Event> = read_records(&session_log_path(session_dir), &mut digest)?;
         let journal_digest = digest.clone().finalize().into();
@@ -1131,7 +1144,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(source.summary()["event_count"], 4);
-        let profile = SqliteHosting::open(temp.path().join("authority.sqlite")).unwrap();
+        let profile = SqliteHosting::open_session(temp.path().join(".engine"), root).unwrap();
         let build = AgentBuild::new("yolop", "family-test");
         let agent = everruns::Agent::builder()
             .model(everruns::Model::simulated("reply"))
@@ -1190,6 +1203,36 @@ mod tests {
             profile.status(nested).await.unwrap().binding.metadata["parent_session_id"],
             json!(child)
         );
+        for (owner, registered) in [(root, Some(child)), (child, Some(nested)), (nested, None)] {
+            let db = rusqlite::Connection::open(SqliteHosting::session_db_path(
+                temp.path().join(".engine"),
+                owner,
+            ))
+            .unwrap();
+            let children = db
+                .prepare("SELECT session FROM framework_session_children")
+                .unwrap()
+                .query_map([], |row| row.get::<_, String>(0))
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap();
+            assert_eq!(
+                children,
+                registered
+                    .into_iter()
+                    .map(|id| id.to_string())
+                    .collect::<Vec<_>>()
+            );
+            let foreign: i64 = db
+                .query_row(
+                    "SELECT count(*) FROM framework_authority WHERE session<>?",
+                    [owner.to_string()],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(foreign, 0);
+        }
+
         profile
             .rebuild_jsonl_export(root, temp.path().join("events.jsonl"))
             .unwrap();

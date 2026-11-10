@@ -15,10 +15,11 @@ Foreground TUI, inline, print, ACP, automatic inputs and linked subagents use
 this authority. Runtime construction supplies Agent, Harness, HostServices and
 a reopenable Environment. It does not construct or drive a Core runtime.
 
-The Everruns family consumes git `main`, locked together at
-[`2206d44e16c2eb5f4de8792c8b4c63dee00246cd`](https://github.com/everruns/everruns/tree/2206d44e16c2eb5f4de8792c8b4c63dee00246cd).
-This source exception is authorized for Engine adoption. A crates.io release
-must return all family dependencies to aligned published versions first.
+The Everruns family uses aligned published 0.51.0 crates. The facade has an
+exact upstream session-database backport in `vendor/everruns`, so Yolop and
+Everruns share the same routing and transfer implementation. Remove that
+backport and its Cargo patch once an aligned release includes the new API,
+before publishing Yolop to crates.io.
 
 ## Ownership
 
@@ -57,10 +58,25 @@ display paths remain separate filesystem contracts.
 
 ## Local authority and process lifetime
 
-`sessions/engine.sqlite` is the shared native authority. `engine.key` is its
-stable private encryption key; losing it refuses startup rather than replacing
-keys for an existing database. Concurrent first opens serialize key creation.
-Back up both files together. Credentials stay in the existing host stores.
+Every session owns `sessions/.engine/<session-id>/engine.sqlite`, including
+linked subagents and separately hosted coordination threads. Commands, events,
+receipts, epochs, tasks, schedules and sealed secrets route by session identity.
+Each parent's database retains only its child registry, never child journals.
+There is no global execution database or global SQLite recovery scan.
+
+`engine.key` remains the stable private encryption key at the sessions root.
+Losing it refuses startup rather than replacing keys for existing authorities.
+Concurrent first opens serialize key creation. Back up the key, `.engine/`
+and the product session directories together. Credentials stay in host stores.
+
+A former shared `engine.sqlite` is a read-only transfer source. Opening a
+session first acquires the complete source family's exclusive leases, including
+ancestors and siblings when a worker opens first. It then copies each member's
+complete canonical state into a private temporary database and publishes it
+atomically. This preserves late child reports written before handoff. Live execution epochs
+refuse transfer. Failed transfers never replace a destination and retry from
+the original source. Completed transfers do not reopen the source. Do not
+resume a transferred session with an older Yolop binary.
 
 A retained native supervisor discovers runnable work independently of frontend
 requests. The hosting adapter delegates consistency ports to SqliteHosting and

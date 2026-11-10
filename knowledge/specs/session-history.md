@@ -13,7 +13,7 @@ inconsistent lineage. Output contains counts and a source fingerprint, not
 message bodies or provider-opaque context. A valid source check does not claim
 that import or execution cutover has happened.
 
-Yolop persists canonical sessions in the shared native Engine SQLite authority
+Yolop persists each canonical session in its own native Engine SQLite authority
 and rebuilds readable `events.jsonl` exports locally, but agents previously had no direct,
 bounded way to locate a prior run. Requests such as “inspect the recent session
 that mentioned this reference” therefore tended to trigger repository searches
@@ -51,5 +51,5 @@ under the non-discoverable `.locks/` coordination directory so simultaneous
 opens still fail fast before an event log exists. Once materialized, replay,
 and discovery continue through the raw export. Resuming reads Engine authority;
 an older saved session imports under the same lease first. Back up the sessions
-root `engine.sqlite` and `engine.key` together with the per-session directories.
+root `.engine/` authorities and `engine.key` together with the per-session directories.
 A missing key for an existing authority refuses startup.
