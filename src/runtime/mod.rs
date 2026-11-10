@@ -6254,10 +6254,14 @@ mod tests {
         let workspace = tempfile::tempdir().expect("workspace");
         let sessions = tempfile::tempdir().expect("sessions");
         let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
+        // A host only leases a session folder that already exists, so the
+        // session under test starts out onboarded like any real session.
+        let session_id = SessionId::new();
+        std::fs::create_dir_all(sessions.path().join(session_id.to_string())).expect("session dir");
         let built = build_with_options(
             workspace.path().to_path_buf(),
             ProviderChoice::Sim,
-            None,
+            Some(session_id),
             sessions.path().to_path_buf(),
             settings,
             BuildOptions::default(),

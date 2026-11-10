@@ -1154,6 +1154,29 @@ mod tests {
         let capability = SessionsCapability::new(dir.path().to_path_buf(), current, store.clone());
         let target = SessionId::new();
 
+        // Sending to a session that was never onboarded is rejected instead
+        // of conjuring a session shell.
+        let refused = ControlResponse::from_tool_result(
+            capability
+                .execute_control(&json!({
+                    "operation": "send",
+                    "session": target.to_string(),
+                    "message": "Rebase on main",
+                }))
+                .await,
+        );
+        assert!(!refused.ok);
+
+        // Once the target session is onboarded, the message queues for its next host.
+        let coordinator = SessionId::new();
+        store
+            .record_thread(&crate::capabilities::session_coordination::ThreadRecord {
+                thread_id: target,
+                coordinator,
+                workspace_root: dir.path().to_path_buf(),
+                launch: Vec::new(),
+            })
+            .unwrap();
         let response = ControlResponse::from_tool_result(
             capability
                 .execute_control(&json!({

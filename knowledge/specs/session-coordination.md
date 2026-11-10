@@ -119,18 +119,21 @@ entry prunes the ones with nothing left to stop.
 
 A headless host exits after ten idle minutes unless background work is
 pending. A coordinator that restarts keeps its threads, assignments, and
-missed updates. Coordination state lives as per-owner files under
-`<sessions>/coordination/` (presence leases, per-session inboxes,
-coordinator-owned threads and approvals), so senders only create files and
-coordinators never contend on a shared database lock. A legacy
-`everruns-local` database is imported once into those files, then retired to
-a backup.
+missed updates. Each coordinator keeps its own state in its own session
+folder (a registry of the child sessions it owns, their approvals, a lease
+and an inbox like any session); each child session carries a backlink to its
+coordinator. A sender only creates files in the target's folder and delivery
+claims are atomic renames, so coordinators never contend on a shared
+database lock and never scan each other's state. Sending to a session that
+was never onboarded is rejected instead of conjuring a session shell. A
+legacy `everruns-local` database (and the interim `coordination/` files) are
+imported once into this layout, then retired to a backup.
 
 ## Escalations from headless threads
 
 A headless thread has no prompt surface, so its sandbox escalations are put to
-its coordinator. The thread's gate files the request under
-`coordination/approvals/` and waits; the coordinator's host, on each supervision pass, asks the person
+its coordinator. The thread's gate files the request under the
+coordinator's `approvals/` folder and waits; the coordinator's host, on each supervision pass, asks the person
 through its own approval prompt, labelled with the thread, and writes the
 answer back. The thread's gate applies the answer, so approving "for this
 session" approves the thread's session, never the coordinator's. A coordinator

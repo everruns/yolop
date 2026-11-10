@@ -106,6 +106,7 @@ pub(crate) struct HostApprovals {
 /// An escalation this thread host relayed and is waiting on.
 struct RelayedApproval {
     approval_id: String,
+    thread_id: SessionId,
     request_digest: [u8; 32],
     reply: tokio::sync::oneshot::Sender<ApprovalDecision>,
     deadline: tokio::time::Instant,
@@ -195,14 +196,21 @@ pub(crate) struct LiveSession {
 ///   anyone else's state. Claiming is an atomic rename to
 ///   `<message>.claimed-<host>.json`, so exactly one host delivers each
 ///   message even when two processes poll the same inbox.
-/// - `<sessions_dir>/coordination/threads/<thread>.json`: owned by the
-///   thread's coordinator; only that coordinator records or respawns it.
-/// - `<sessions_dir>/coordination/approvals/<id>.json`: filed by a thread
+/// - `<sessions_dir>/<coordinator>/registry.json`: the coordinator's
+///   registry of the child sessions it owns. Only the owning coordinator
+///   writes it, so coordinators never contend and supervision reads only its
+///   own registry instead of scanning every session.
+/// - `<sessions_dir>/<child>/coordinator.json`: the backlink a coordinator
+///   writes when it onboards a child, so the child (and anyone holding just
+///   the child id) can resolve its coordinator without a global scan.
+/// - `<sessions_dir>/<coordinator>/approvals/<id>.json`: filed by a thread
 ///   host, decided by its coordinator.
 ///
-/// Readers scan directories; writers touch only their own paths (plus atomic
-/// file creation into a target's inbox). No shared database, so no
-/// single-writer lock for coordinators to collide on.
+/// The heartbeat lease is only written when the session folder already
+/// exists: a heartbeat must never conjure a session shell, and sending to a
+/// session that was never onboarded is rejected. No shared database, so no
+/// single-writer lock for coordinators to collide on. Nothing here is ever
+/// read across coordinators except through an id both sides already hold.
 #[derive(Clone)]
 pub(crate) struct CoordinationStore {
     sessions_dir: PathBuf,
@@ -400,32 +408,72 @@ impl CoordinationStore {
         self.sessions_dir.join("coordination")
     }
 
-    fn threads_dir(&self) -> PathBuf {
-        self.coordination_dir().join("threads")
-    }
-
-    fn approvals_dir(&self) -> PathBuf {
-        self.coordination_dir().join("approvals")
-    }
-
-    fn presence_dir(&self) -> PathBuf {
-        self.coordination_dir().join("presence")
+    fn session_dir(&self, session_id: &str) -> PathBuf {
+        self.sessions_dir.join(session_id)
     }
 
     fn presence_path(&self, session_id: &str) -> PathBuf {
-        self.presence_dir().join(format!("{session_id}.json"))
+        self.session_dir(session_id).join("presence.json")
     }
 
     fn inbox_dir(&self, session_id: &str) -> PathBuf {
-        self.coordination_dir().join("inbox").join(session_id)
+        self.session_dir(session_id).join("inbox")
     }
 
-    fn thread_path(&self, thread_id: &str) -> PathBuf {
-        self.threads_dir().join(format!("{thread_id}.json"))
+    fn registry_path(&self, coordinator: &str) -> PathBuf {
+        self.session_dir(coordinator).join("registry.json")
     }
 
-    fn approval_path(&self, approval_id: &str) -> PathBuf {
-        self.approvals_dir().join(format!("{approval_id}.json"))
+    fn backlink_path(&self, thread_id: &str) -> PathBuf {
+        self.session_dir(thread_id).join("coordinator.json")
+    }
+
+    fn approvals_dir(&self, coordinator: &str) -> PathBuf {
+        self.session_dir(coordinator).join("approvals")
+    }
+
+    fn approval_path(&self, coordinator: &str, approval_id: &str) -> PathBuf {
+        self.approvals_dir(coordinator)
+            .join(format!("{approval_id}.json"))
+    }
+
+    fn spawn_lock_path(&self, coordinator: &str, thread_id: &str) -> PathBuf {
+        self.session_dir(coordinator)
+            .join(format!(".spawn-{thread_id}.lock"))
+    }
+
+    /// The registry of child sessions a coordinator owns. Only that
+    /// coordinator writes it.
+    fn read_registry(
+        &self,
+        coordinator: &str,
+    ) -> anyhow::Result<std::collections::HashMap<String, ThreadFile>> {
+        Ok(read_best_effort(&self.registry_path(coordinator))?.unwrap_or_default())
+    }
+
+    fn write_registry(
+        &self,
+        coordinator: &str,
+        registry: &std::collections::HashMap<String, ThreadFile>,
+    ) -> anyhow::Result<()> {
+        let path = self.registry_path(coordinator);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        write_json(&path, registry)
+    }
+
+    /// Which coordinator owns `thread_id`, from the backlink the coordinator
+    /// wrote when it onboarded the child. No global scan.
+    fn coordinator_of(&self, thread_id: &str) -> anyhow::Result<Option<String>> {
+        #[derive(serde::Deserialize)]
+        struct Backlink {
+            coordinator: String,
+        }
+        Ok(
+            read_best_effort::<Backlink>(&self.backlink_path(thread_id))?
+                .map(|link| link.coordinator),
+        )
     }
 
     fn read_presence(&self, session_id: &str) -> anyhow::Result<Option<PresenceFile>> {
@@ -440,50 +488,33 @@ impl CoordinationStore {
             None => false,
         }
     }
-    /// Every presence lease, newest first.
+    /// Every presence lease, newest first. Read-only scan: listing leases
+    /// never creates session folders.
     fn all_presence(&self) -> anyhow::Result<Vec<(String, PresenceFile)>> {
         let mut out = Vec::new();
-        let entries = match std::fs::read_dir(self.presence_dir()) {
+        let entries = match std::fs::read_dir(&self.sessions_dir) {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(out),
             Err(error) => return Err(error.into()),
             Ok(entries) => entries,
         };
         for entry in entries.flatten() {
             let path = entry.path();
-            let Some(name) = path.file_stem().and_then(|stem| stem.to_str()) else {
-                continue;
-            };
-            if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            if !path.is_dir() {
                 continue;
             }
-            if let Some(presence) = read_best_effort::<PresenceFile>(&path)? {
-                out.push((name.to_string(), presence));
+            let Some(name) = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(str::to_owned)
+            else {
+                continue;
+            };
+            if let Some(presence) = read_best_effort::<PresenceFile>(&self.presence_path(&name))? {
+                out.push((name, presence));
             }
         }
         out.sort_by_key(|(_, presence)| std::cmp::Reverse(presence.heartbeat_at_ms));
         Ok(out)
-    }
-
-    /// All thread records. Threads are owned by their coordinator (only it
-    /// writes them) but kept in one directory so any process can resolve a
-    /// thread to its coordinator without a shared database.
-    fn all_threads(&self) -> anyhow::Result<Vec<ThreadFile>> {
-        let mut threads = Vec::new();
-        let entries = match std::fs::read_dir(self.threads_dir()) {
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(threads),
-            Err(error) => return Err(error.into()),
-            Ok(entries) => entries,
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
-                continue;
-            }
-            if let Some(thread) = read_best_effort::<ThreadFile>(&path)? {
-                threads.push(thread);
-            }
-        }
-        Ok(threads)
     }
 
     /// Pending (unclaimed, due) inbox messages for one session, oldest first.
@@ -517,15 +548,6 @@ impl CoordinationStore {
 
     /// Whether `host_id` currently holds a fresh lease anywhere. Tells a
     /// live claim holder apart from a dead one when reoffering deliveries.
-    fn host_is_live(&self, host_id: &str) -> anyhow::Result<bool> {
-        for (_, presence) in self.all_presence()? {
-            if presence.host_id == host_id && Self::presence_is_live(Some(&presence)) {
-                return Ok(true);
-            }
-        }
-        Ok(false)
-    }
-
     /// Whether `session_id` has any unacked inbox file, pending or claimed.
     /// Crash restarts ignore backoff: a claimed message still needs a host.
     fn has_unacked_inbox(&self, session_id: &str) -> bool {
@@ -537,42 +559,36 @@ impl CoordinationStore {
             .any(|entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("json"))
     }
 
-    /// The claim file for `message_id` in any inbox, if one exists. The
-    /// filename base must equal the message id exactly: a prefix match could
-    /// hand back another message's claim.
-    fn find_claim(&self, message_id: &str) -> anyhow::Result<Option<(PathBuf, String)>> {
-        let inboxes = self.coordination_dir().join("inbox");
-        let entries = match std::fs::read_dir(&inboxes) {
+    /// The claim file for `message_id` in one session's inbox, if one
+    /// exists. The filename base must equal the message id exactly: a prefix
+    /// match could hand back another message's claim.
+    fn find_claim(
+        &self,
+        session_id: &str,
+        message_id: &str,
+    ) -> anyhow::Result<Option<(PathBuf, String)>> {
+        let entries = match std::fs::read_dir(self.inbox_dir(session_id)) {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(error.into()),
             Ok(entries) => entries,
         };
-        for entry in entries.flatten() {
-            let inbox = entry.path();
-            if !inbox.is_dir() {
-                continue;
-            }
-            let Ok(claims) = std::fs::read_dir(&inbox) else {
+        for claim in entries.flatten() {
+            let path = claim.path();
+            let Some(name) = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(str::to_owned)
+            else {
                 continue;
             };
-            for claim in claims.flatten() {
-                let path = claim.path();
-                let Some(name) = path
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .map(str::to_owned)
-                else {
-                    continue;
-                };
-                let Some(stem) = name.strip_suffix(".json").map(str::to_owned) else {
-                    continue;
-                };
-                let Some((base, _holder)) = stem.split_once(".claimed-") else {
-                    continue;
-                };
-                if base == message_id {
-                    return Ok(Some((path, base.to_string())));
-                }
+            let Some(stem) = name.strip_suffix(".json").map(str::to_owned) else {
+                continue;
+            };
+            let Some((base, _holder)) = stem.split_once(".claimed-") else {
+                continue;
+            };
+            if base == message_id {
+                return Ok(Some((path, base.to_string())));
             }
         }
         Ok(None)
@@ -586,6 +602,12 @@ impl CoordinationStore {
         workspace_root: &Path,
         headless: bool,
     ) -> anyhow::Result<()> {
+        // A lease must never conjure a session shell: a coordinator always
+        // has its session folder by the time it hosts, and a host without
+        // one has nothing to coordinate yet.
+        if !self.session_dir(&session_id.to_string()).is_dir() {
+            return Ok(());
+        }
         let presence = PresenceFile {
             host_id: host_id.to_string(),
             project_id: project_id.to_string(),
@@ -598,6 +620,9 @@ impl CoordinationStore {
     }
 
     fn heartbeat(&self, session_id: SessionId, host_id: &str) -> anyhow::Result<()> {
+        if !self.session_dir(&session_id.to_string()).is_dir() {
+            return Ok(());
+        }
         let path = self.presence_path(&session_id.to_string());
         let Some(mut presence) = read_best_effort::<PresenceFile>(&path)? else {
             return Ok(());
@@ -666,13 +691,19 @@ impl CoordinationStore {
 
     /// Restart the backoff on a thread's host spawn, so the coordinator does
     /// not start a headless host for a session a person is opening.
+    /// Restart the backoff on a thread's host spawn, so the coordinator does
+    /// not start a headless host for a session a person is opening.
     fn defer_spawn(&self, thread_id: SessionId) -> anyhow::Result<()> {
-        let path = self.thread_path(&thread_id.to_string());
-        let Some(mut thread) = read_best_effort::<ThreadFile>(&path)? else {
+        let thread_id = thread_id.to_string();
+        let Some(coordinator) = self.coordinator_of(&thread_id)? else {
             return Ok(());
         };
-        thread.spawned_at_ms = now_ms();
-        write_json(&path, &thread)
+        let mut registry = self.read_registry(&coordinator)?;
+        if let Some(record) = registry.get_mut(&thread_id) {
+            record.spawned_at_ms = now_ms();
+            self.write_registry(&coordinator, &registry)?;
+        }
+        Ok(())
     }
 
     fn release_requested(&self, session_id: SessionId, host_id: &str) -> anyhow::Result<bool> {
@@ -692,7 +723,7 @@ impl CoordinationStore {
     ) -> anyhow::Result<String> {
         request.validate()?;
         let digest = request.digest();
-        if let Ok(entries) = std::fs::read_dir(self.approvals_dir()) {
+        if let Ok(entries) = std::fs::read_dir(self.approvals_dir(&coordinator.to_string())) {
             for entry in entries.flatten() {
                 let path = entry.path();
                 let Ok(Some(approval)) = read_json::<ApprovalFile>(&path) else {
@@ -716,7 +747,10 @@ impl CoordinationStore {
             request_digest: Some(digest.to_vec()),
             created_at_ms: now_ms(),
         };
-        write_json(&self.approval_path(&approval_id), &approval)?;
+        write_json(
+            &self.approval_path(&coordinator.to_string(), &approval_id),
+            &approval,
+        )?;
         Ok(approval_id)
     }
 
@@ -724,12 +758,17 @@ impl CoordinationStore {
     /// or a digest mismatch fails closed to deny, as before.
     fn approval_answer(
         &self,
+        thread_id: SessionId,
         approval_id: &str,
         digest: &[u8; 32],
     ) -> anyhow::Result<Option<ApprovalDecision>> {
         // A corrupt approval file fails closed to deny (and is quarantined);
         // a missing one means no answer yet.
-        let path = self.approval_path(approval_id);
+        // An approval for an unknown thread cannot be verified: deny it.
+        let Some(coordinator) = self.coordinator_of(&thread_id.to_string())? else {
+            return Ok(Some(ApprovalDecision::Deny));
+        };
+        let path = self.approval_path(&coordinator, approval_id);
         let bytes = match std::fs::read(&path) {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(error.into()),
@@ -766,8 +805,10 @@ impl CoordinationStore {
             .and_then(ApprovalDecision::parse))
     }
 
-    fn drop_approval(&self, approval_id: &str) {
-        let _ = std::fs::remove_file(self.approval_path(approval_id));
+    fn drop_approval(&self, thread_id: SessionId, approval_id: &str) {
+        if let Ok(Some(coordinator)) = self.coordinator_of(&thread_id.to_string()) {
+            let _ = std::fs::remove_file(self.approval_path(&coordinator, approval_id));
+        }
     }
 
     /// Pending escalations for `coordinator`, oldest first. Stale ones
@@ -775,7 +816,7 @@ impl CoordinationStore {
     /// dropped instead of presented, as before.
     fn pending_approvals(&self, coordinator: SessionId) -> anyhow::Result<Vec<ThreadApproval>> {
         let mut approvals = Vec::new();
-        let entries = match std::fs::read_dir(self.approvals_dir()) {
+        let entries = match std::fs::read_dir(self.approvals_dir(&coordinator.to_string())) {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 return Ok(approvals);
             }
@@ -788,14 +829,29 @@ impl CoordinationStore {
             if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
                 continue;
             }
-            let Some(approval) = read_best_effort::<ApprovalFile>(&path)? else {
+            let Some(mut approval) = read_best_effort::<ApprovalFile>(&path)? else {
                 continue;
             };
             if approval.coordinator != coordinator.to_string() || approval.decision.is_some() {
                 continue;
             }
+            // Fail closed in place: the file being listed is the record, so
+            // denying writes the decision back to it directly instead of
+            // resolving a coordinator first.
+            let deny_here = |approval: &mut ApprovalFile| {
+                approval.decision = Some(ApprovalDecision::Deny.as_str().to_string());
+                let _ = write_json(&path, approval);
+            };
+            let Ok(thread_id) = approval.thread_id.parse::<SessionId>() else {
+                tracing::warn!(
+                    approval = %approval.approval_id,
+                    "denying approval with an unparseable thread"
+                );
+                deny_here(&mut approval);
+                continue;
+            };
             let Some(scope) = ApprovalScope::parse(&approval.scope) else {
-                let _ = self.answer_approval(&approval.approval_id, ApprovalDecision::Deny);
+                deny_here(&mut approval);
                 continue;
             };
             let request = ApprovalRequest {
@@ -804,7 +860,7 @@ impl CoordinationStore {
                 scope,
             };
             if !request.matches_digest(approval.request_digest.as_deref()) {
-                let _ = self.answer_approval(&approval.approval_id, ApprovalDecision::Deny);
+                deny_here(&mut approval);
                 continue;
             }
             let live = self
@@ -814,14 +870,6 @@ impl CoordinationStore {
             if !live {
                 continue;
             }
-            let Ok(thread_id) = approval.thread_id.parse::<SessionId>() else {
-                tracing::warn!(
-                    approval = %approval.approval_id,
-                    "denying approval with an unparseable thread"
-                );
-                let _ = self.answer_approval(&approval.approval_id, ApprovalDecision::Deny);
-                continue;
-            };
             approvals.push(ThreadApproval {
                 approval_id: approval.approval_id,
                 thread_id,
@@ -831,8 +879,16 @@ impl CoordinationStore {
         Ok(approvals)
     }
 
-    fn answer_approval(&self, approval_id: &str, decision: ApprovalDecision) -> anyhow::Result<()> {
-        let path = self.approval_path(approval_id);
+    fn answer_approval(
+        &self,
+        thread_id: SessionId,
+        approval_id: &str,
+        decision: ApprovalDecision,
+    ) -> anyhow::Result<()> {
+        let Some(coordinator) = self.coordinator_of(&thread_id.to_string())? else {
+            return Ok(());
+        };
+        let path = self.approval_path(&coordinator, approval_id);
         let Some(mut approval) = read_best_effort::<ApprovalFile>(&path)? else {
             return Ok(());
         };
@@ -847,18 +903,13 @@ impl CoordinationStore {
     /// each thread. Presence comes from per-session leases, thread ownership
     /// from the coordinator-owned thread files.
     pub(crate) fn live_sessions(&self) -> anyhow::Result<Vec<LiveSession>> {
-        let threads: std::collections::HashMap<String, String> = self
-            .all_threads()?
-            .into_iter()
-            .map(|thread| (thread.thread_id, thread.coordinator))
-            .collect();
         let mut sessions = Vec::new();
         for (session_id, presence) in self.all_presence()? {
             if !Self::presence_is_live(Some(&presence)) {
                 continue;
             }
             sessions.push(LiveSession {
-                thread_of: threads.get(&session_id).cloned(),
+                thread_of: self.coordinator_of(&session_id)?,
                 workspace_root: presence.workspace_root,
                 session_id,
             });
@@ -868,7 +919,8 @@ impl CoordinationStore {
 
     /// Fan out one message into the target's inbox. The sender only creates
     /// a uniquely-named file, so senders never contend with each other or
-    /// with the target's host.
+    /// with the target's host. Sending to a session that was never onboarded
+    /// is an error, not a new session shell.
     pub(crate) fn enqueue(
         &self,
         target: SessionId,
@@ -881,7 +933,11 @@ impl CoordinationStore {
             "coordination message is {} bytes, over the {MAX_MESSAGE_BYTES} byte limit",
             rendered.len()
         );
-        let dir = self.inbox_dir(&target.to_string());
+        let target = target.to_string();
+        if !self.session_dir(&target).is_dir() {
+            anyhow::bail!("no such session: {target}");
+        }
+        let dir = self.inbox_dir(&target);
         std::fs::create_dir_all(&dir)?;
         for _ in 0..3 {
             let message_id = new_message_id();
@@ -936,7 +992,14 @@ impl CoordinationStore {
                 if claim_host == host_id {
                     continue;
                 }
-                if self.host_is_live(claim_host)? {
+                // A claim belongs to whoever holds this session's live lease.
+                // Anything else (a dead incarnation, or a holder from before
+                // the session moved hosts) is reoffered to the poller.
+                let live_holder = self
+                    .read_presence(&session)?
+                    .filter(|seen| Self::presence_is_live(Some(seen)))
+                    .map(|seen| seen.host_id);
+                if live_holder.as_deref() == Some(claim_host) {
                     continue;
                 }
                 if let Some(message) = read_best_effort::<InboxFile>(&path)? {
@@ -976,8 +1039,8 @@ impl CoordinationStore {
         Ok(None)
     }
 
-    fn ack(&self, message_id: &str) -> anyhow::Result<()> {
-        if let Some((path, _)) = self.find_claim(message_id)? {
+    fn ack(&self, session_id: SessionId, message_id: &str) -> anyhow::Result<()> {
+        if let Some((path, _)) = self.find_claim(&session_id.to_string(), message_id)? {
             match std::fs::remove_file(&path) {
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
                 Err(error) => Err(error.into()),
@@ -991,18 +1054,18 @@ impl CoordinationStore {
     /// Return a message to its inbox with backoff. Thread briefs are not
     /// retried: a failed thread turn fails the assignment instead. An
     /// exhausted message is dropped, as before.
-    fn nack(&self, message_id: &str) -> anyhow::Result<()> {
-        let Some((path, base)) = self.find_claim(message_id)? else {
+    fn nack(&self, session_id: SessionId, message_id: &str) -> anyhow::Result<()> {
+        let Some((path, base)) = self.find_claim(&session_id.to_string(), message_id)? else {
             return Ok(());
         };
         let Some(mut message) = read_best_effort::<InboxFile>(&path)? else {
             return Ok(());
         };
         if message.payload.is_thread() {
-            return self.ack(message_id);
+            return self.ack(session_id, message_id);
         }
         if message.attempts >= MAX_DELIVERY_ATTEMPTS as u32 {
-            return self.ack(message_id);
+            return self.ack(session_id, message_id);
         }
         message.available_at_ms =
             now_ms() + DELIVERY_RETRY_BACKOFF_MS * (message.attempts.max(1) as i64);
@@ -1017,23 +1080,39 @@ impl CoordinationStore {
     }
     /// Record a thread under its coordinator. Only the owning coordinator
     /// writes its threads; everyone else resolves them read-only.
+    /// Onboard a thread under its coordinator: create the child session
+    /// folder with a backlink to its coordinator, and record the thread in
+    /// the coordinator's registry. Only the owning coordinator writes its
+    /// registry; the backlink is written once at onboard time.
     pub(crate) fn record_thread(&self, thread: &ThreadRecord) -> anyhow::Result<()> {
-        let record = ThreadFile {
-            thread_id: thread.thread_id.to_string(),
-            coordinator: thread.coordinator.to_string(),
-            workspace_root: thread.workspace_root.to_string_lossy().into_owned(),
-            launch: thread.launch.clone(),
-            created_at_ms: now_ms(),
-            spawned_at_ms: 0,
-        };
-        let bytes = serde_json::to_vec_pretty(&record)?;
-        create_new(&self.thread_path(&record.thread_id), &bytes)?;
-        Ok(())
+        let thread_id = thread.thread_id.to_string();
+        let coordinator = thread.coordinator.to_string();
+        let child_dir = self.session_dir(&thread_id);
+        std::fs::create_dir_all(&child_dir)?;
+        write_json(
+            &self.backlink_path(&thread_id),
+            &serde_json::json!({ "coordinator": coordinator }),
+        )?;
+        let mut registry = self.read_registry(&coordinator)?;
+        registry
+            .entry(thread_id.clone())
+            .or_insert_with(|| ThreadFile {
+                thread_id: thread_id.clone(),
+                coordinator: coordinator.clone(),
+                workspace_root: thread.workspace_root.to_string_lossy().into_owned(),
+                launch: thread.launch.clone(),
+                created_at_ms: now_ms(),
+                spawned_at_ms: 0,
+            });
+        self.write_registry(&coordinator, &registry)
     }
 
     pub(crate) fn thread(&self, thread_id: SessionId) -> anyhow::Result<Option<ThreadRecord>> {
-        let Some(record) = read_json::<ThreadFile>(&self.thread_path(&thread_id.to_string()))?
-        else {
+        let thread_id = thread_id.to_string();
+        let Some(coordinator) = self.coordinator_of(&thread_id)? else {
+            return Ok(None);
+        };
+        let Some(record) = self.read_registry(&coordinator)?.remove(&thread_id) else {
             return Ok(None);
         };
         Ok(Some(ThreadRecord {
@@ -1045,42 +1124,37 @@ impl CoordinationStore {
     }
 
     pub(crate) fn has_threads(&self, coordinator: SessionId) -> anyhow::Result<bool> {
-        let coordinator = coordinator.to_string();
-        Ok(self
-            .all_threads()?
-            .iter()
-            .any(|thread| thread.coordinator == coordinator))
+        Ok(!self.read_registry(&coordinator.to_string())?.is_empty())
     }
 
     /// Threads with pending messages, no live host, and a past spawn
     /// backoff: the coordinator's supervisor starts a host for these.
+    /// Threads with pending messages, no live host, and a past spawn
+    /// backoff, read from the coordinator's own registry: the coordinator
+    /// starts a host for these. Never scans other coordinators' state.
     fn threads_needing_host(&self, coordinator: SessionId) -> anyhow::Result<Vec<ThreadRecord>> {
-        let coordinator = coordinator.to_string();
         let now = now_ms();
         let mut threads = Vec::new();
-        for thread in self.all_threads()? {
-            if thread.coordinator != coordinator {
-                continue;
-            }
+        for record in self.read_registry(&coordinator.to_string())?.values() {
             if !self
-                .pending_inbox(&thread.thread_id)?
+                .pending_inbox(&record.thread_id)?
                 .iter()
                 .any(|(_, message)| message.attempts < MAX_DELIVERY_ATTEMPTS as u32)
             {
                 continue;
             }
-            if Self::presence_is_live(self.read_presence(&thread.thread_id)?.as_ref()) {
+            if Self::presence_is_live(self.read_presence(&record.thread_id)?.as_ref()) {
                 continue;
             }
-            if thread.spawned_at_ms > 0 && thread.spawned_at_ms > now - THREAD_SPAWN_BACKOFF_MS {
+            if record.spawned_at_ms > 0 && record.spawned_at_ms > now - THREAD_SPAWN_BACKOFF_MS {
                 continue;
             }
             let (Ok(thread_id), Ok(coordinator)) = (
-                thread.thread_id.parse::<SessionId>(),
-                thread.coordinator.parse::<SessionId>(),
+                record.thread_id.parse::<SessionId>(),
+                record.coordinator.parse::<SessionId>(),
             ) else {
                 tracing::warn!(
-                    thread = %thread.thread_id,
+                    thread = %record.thread_id,
                     "skipping thread record with an unparseable id"
                 );
                 continue;
@@ -1088,8 +1162,8 @@ impl CoordinationStore {
             threads.push(ThreadRecord {
                 thread_id,
                 coordinator,
-                workspace_root: PathBuf::from(thread.workspace_root),
-                launch: thread.launch,
+                workspace_root: PathBuf::from(record.workspace_root.clone()),
+                launch: record.launch.clone(),
             });
         }
         threads.sort_by_key(|thread| thread.thread_id.to_string());
@@ -1099,29 +1173,29 @@ impl CoordinationStore {
     /// Threads with no live host and no pending messages that once spawned:
     /// their host vanished mid-assignment, so the coordinator restarts them
     /// with a note to check what survived.
+    /// Threads with no live host and no unacked messages that once spawned:
+    /// their host vanished mid-assignment, so the coordinator restarts them
+    /// with a note to check what survived. Reads only the coordinator's own
+    /// registry.
     fn hostless_threads(&self, coordinator: SessionId) -> anyhow::Result<Vec<ThreadRecord>> {
-        let coordinator = coordinator.to_string();
         let now = now_ms();
         let mut threads = Vec::new();
-        for thread in self.all_threads()? {
-            if thread.coordinator != coordinator {
+        for record in self.read_registry(&coordinator.to_string())?.values() {
+            if Self::presence_is_live(self.read_presence(&record.thread_id)?.as_ref()) {
                 continue;
             }
-            if Self::presence_is_live(self.read_presence(&thread.thread_id)?.as_ref()) {
+            if self.has_unacked_inbox(&record.thread_id) {
                 continue;
             }
-            if self.has_unacked_inbox(&thread.thread_id) {
-                continue;
-            }
-            if thread.spawned_at_ms > now - THREAD_SPAWN_BACKOFF_MS {
+            if record.spawned_at_ms > now - THREAD_SPAWN_BACKOFF_MS {
                 continue;
             }
             let (Ok(thread_id), Ok(coordinator)) = (
-                thread.thread_id.parse::<SessionId>(),
-                thread.coordinator.parse::<SessionId>(),
+                record.thread_id.parse::<SessionId>(),
+                record.coordinator.parse::<SessionId>(),
             ) else {
                 tracing::warn!(
-                    thread = %thread.thread_id,
+                    thread = %record.thread_id,
                     "skipping thread record with an unparseable id"
                 );
                 continue;
@@ -1129,8 +1203,8 @@ impl CoordinationStore {
             threads.push(ThreadRecord {
                 thread_id,
                 coordinator,
-                workspace_root: PathBuf::from(thread.workspace_root),
-                launch: thread.launch,
+                workspace_root: PathBuf::from(record.workspace_root.clone()),
+                launch: record.launch.clone(),
             });
         }
         Ok(threads)
@@ -1139,21 +1213,31 @@ impl CoordinationStore {
     /// Atomically claim the right to spawn a host for `thread_id`. The
     /// create-new sentinel is the mutual exclusion: two supervisors racing
     /// for the same thread cannot both win, even across processes.
+    /// Atomically claim the right to spawn a host for `thread_id`. The
+    /// create-new sentinel in the coordinator's folder is the mutual
+    /// exclusion: two supervisors racing for the same thread cannot both
+    /// win, even across processes.
     fn claim_spawn(&self, thread_id: SessionId) -> anyhow::Result<bool> {
-        let path = self.thread_path(&thread_id.to_string());
-        let Some(thread) = read_best_effort::<ThreadFile>(&path)? else {
+        let thread_id = thread_id.to_string();
+        let Some(coordinator) = self.coordinator_of(&thread_id)? else {
             return Ok(false);
         };
-        if thread.spawned_at_ms > 0 && thread.spawned_at_ms > now_ms() - THREAD_SPAWN_BACKOFF_MS {
+        let spawned_at = self
+            .read_registry(&coordinator)?
+            .get(&thread_id)
+            .map(|record| record.spawned_at_ms)
+            .unwrap_or(0);
+        if spawned_at > 0 && spawned_at > now_ms() - THREAD_SPAWN_BACKOFF_MS {
             return Ok(false);
         }
-        let lock = self.threads_dir().join(format!(".spawn-{thread_id}.lock"));
+        let lock = self.spawn_lock_path(&coordinator, &thread_id);
         let now = now_ms();
-        if !create_new(&lock, format!("{}\n{now}", std::process::id()).as_bytes())? {
+        let stamp = format!("{}\n{now}", std::process::id());
+        if !create_new(&lock, stamp.as_bytes())? {
             // A complete lock file decides: a fresh one means another
             // supervisor is spawning right now. Anything else (stale,
-            // foreign, or vanished under us) falls through to a second atomic
-            // attempt, whose link decides the winner.
+            // foreign, or vanished under us) falls through to a second
+            // atomic attempt, whose link decides the winner.
             let fresh = std::fs::read_to_string(&lock)
                 .ok()
                 .and_then(|content| content.lines().nth(1)?.parse::<i64>().ok())
@@ -1162,16 +1246,17 @@ impl CoordinationStore {
                 return Ok(false);
             }
             let _ = std::fs::remove_file(&lock);
-            if !create_new(&lock, format!("{}\n{now}", std::process::id()).as_bytes())? {
+            if !create_new(&lock, stamp.as_bytes())? {
                 return Ok(false);
             }
         }
         let spawned = (|| -> anyhow::Result<bool> {
-            let Some(mut thread) = read_best_effort::<ThreadFile>(&path)? else {
+            let mut registry = self.read_registry(&coordinator)?;
+            let Some(record) = registry.get_mut(&thread_id) else {
                 return Ok(false);
             };
-            thread.spawned_at_ms = now;
-            write_json(&path, &thread)?;
+            record.spawned_at_ms = now;
+            self.write_registry(&coordinator, &registry)?;
             Ok(true)
         })();
         let _ = std::fs::remove_file(&lock);
@@ -1184,18 +1269,31 @@ impl CoordinationStore {
 /// backup and a marker records the migration, so a later open never
 /// reimports. A failed import leaves the database in place and retries on
 /// the next open; nothing is deleted until every row has a file.
+/// Bring any pre-per-session coordination state into the per-session
+/// layout: the legacy shared database first, then the interim
+/// `coordination/` files, which are newer than any legacy row. Runs once per
+/// sessions dir; a failed import leaves everything in place and retries on
+/// the next open.
 fn migrate_legacy_db(sessions_dir: &Path) {
-    let legacy = sessions_dir.join("everruns-local/local.db");
-    let marker = sessions_dir.join("coordination/migrated-v1");
-    if marker.exists() || !legacy.exists() {
+    let marker = sessions_dir.join("coordination/migrated-v2");
+    if marker.exists() {
         return;
     }
-    match import_legacy_db(sessions_dir, &legacy) {
+    let legacy = sessions_dir.join("everruns-local/local.db");
+    let legacy_marker = sessions_dir.join("coordination/migrated-v1");
+    let store = CoordinationStore {
+        sessions_dir: sessions_dir.to_path_buf(),
+        _temp: None,
+    };
+    let imported = import_legacy_state(&store, &legacy, &legacy_marker);
+    match imported {
         Ok(()) => {
-            let backup =
-                sessions_dir.join(format!("everruns-local/local.db.migrated-{}", now_ms()));
-            let _ = std::fs::rename(&legacy, &backup);
-            let _ = write_atomic(&marker, b"migrated from everruns-local/local.db");
+            if legacy.exists() {
+                let backup =
+                    sessions_dir.join(format!("everruns-local/local.db.migrated-{}", now_ms()));
+                let _ = std::fs::rename(&legacy, &backup);
+            }
+            let _ = write_atomic(&marker, b"migrated to per-session coordination");
         }
         Err(error) => {
             eprintln!("yolop: coordination migration deferred, will retry: {error:#}");
@@ -1297,7 +1395,20 @@ fn legacy_blob(
     }
 }
 
-fn import_legacy_db(sessions_dir: &Path, legacy: &Path) -> anyhow::Result<()> {
+fn import_legacy_state(
+    store: &CoordinationStore,
+    legacy: &Path,
+    legacy_marker: &Path,
+) -> anyhow::Result<()> {
+    if legacy.exists() && !legacy_marker.exists() {
+        import_legacy_db(store, legacy)?;
+        let _ = write_atomic(legacy_marker, b"migrated from everruns-local/local.db");
+    }
+    import_coordination_dir(store)?;
+    Ok(())
+}
+
+fn import_legacy_db(store: &CoordinationStore, legacy: &Path) -> anyhow::Result<()> {
     let conn =
         rusqlite::Connection::open_with_flags(legacy, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     conn.busy_timeout(std::time::Duration::from_secs(5))?;
@@ -1305,22 +1416,24 @@ fn import_legacy_db(sessions_dir: &Path, legacy: &Path) -> anyhow::Result<()> {
         .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")?
         .query_map([], |row| row.get::<_, String>(0))?
         .collect::<Result<_, _>>()?;
-    let store = CoordinationStore {
-        sessions_dir: sessions_dir.to_path_buf(),
-        _temp: None,
-    };
 
-    // Older databases predate newer columns (release flags, delivery
-    // bookkeeping, verification digests); missing values fall back to
-    // fail-closed defaults instead of aborting the import.
     if tables.contains("yolop_session_presence") {
         for row in legacy_rows(&conn, "yolop_session_presence")? {
             let (Some(session_id), Some(host_id)) = (
-                legacy_text(&row, "session_id").filter(|id| id.parse::<SessionId>().is_ok()),
+                legacy_text(&row, "session_id"),
                 legacy_text(&row, "host_id").and_then(|id| legacy_component(&id)),
             ) else {
                 continue;
             };
+            // Never clobber a live lease: legacy heartbeats are stale by
+            // definition.
+            let path = store.presence_path(&session_id);
+            if path.exists() {
+                continue;
+            }
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
             let presence = PresenceFile {
                 host_id,
                 project_id: legacy_text(&row, "project_id").unwrap_or_default(),
@@ -1329,7 +1442,7 @@ fn import_legacy_db(sessions_dir: &Path, legacy: &Path) -> anyhow::Result<()> {
                 headless: legacy_int(&row, "headless", 0) != 0,
                 release_requested_at_ms: legacy_int(&row, "release_requested_at_ms", 0),
             };
-            write_json(&store.presence_path(&session_id), &presence)?;
+            write_json(&path, &presence)?;
         }
     }
 
@@ -1383,16 +1496,15 @@ fn import_legacy_db(sessions_dir: &Path, legacy: &Path) -> anyhow::Result<()> {
             let Ok(launch) = serde_json::from_str::<Vec<String>>(&launch_json) else {
                 continue;
             };
-            let record = ThreadFile {
-                thread_id: thread_id.clone(),
-                coordinator,
-                workspace_root: legacy_text(&row, "workspace_root").unwrap_or_default(),
+            import_thread_record(
+                store,
+                &thread_id,
+                &coordinator,
+                legacy_text(&row, "workspace_root").unwrap_or_default(),
                 launch,
-                created_at_ms: legacy_int(&row, "created_at_ms", now_ms()),
-                spawned_at_ms: legacy_int(&row, "spawned_at_ms", 0).max(0),
-            };
-            let bytes = serde_json::to_vec_pretty(&record)?;
-            create_new(&store.thread_path(&thread_id), &bytes)?;
+                legacy_int(&row, "created_at_ms", now_ms()),
+                legacy_int(&row, "spawned_at_ms", 0).max(0),
+            )?;
         }
     }
 
@@ -1417,7 +1529,7 @@ fn import_legacy_db(sessions_dir: &Path, legacy: &Path) -> anyhow::Result<()> {
             let approval = ApprovalFile {
                 approval_id: approval_id.clone(),
                 thread_id,
-                coordinator,
+                coordinator: coordinator.clone(),
                 host_id,
                 command,
                 reason,
@@ -1426,12 +1538,194 @@ fn import_legacy_db(sessions_dir: &Path, legacy: &Path) -> anyhow::Result<()> {
                 request_digest: legacy_blob(&row, "request_digest"),
                 created_at_ms,
             };
-            write_json(&store.approval_path(&approval_id), &approval)?;
+            let path = store.approval_path(&coordinator, &approval_id);
+            if path.exists() {
+                continue;
+            }
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            write_json(&path, &approval)?;
         }
     }
 
     Ok(())
 }
+
+/// Record an imported thread without clobbering live registry state.
+fn import_thread_record(
+    store: &CoordinationStore,
+    thread_id: &str,
+    coordinator: &str,
+    workspace_root: String,
+    launch: Vec<String>,
+    created_at_ms: i64,
+    spawned_at_ms: i64,
+) -> anyhow::Result<()> {
+    let child_dir = store.session_dir(thread_id);
+    std::fs::create_dir_all(&child_dir)?;
+    let backlink = store.backlink_path(thread_id);
+    if !backlink.exists() {
+        write_json(
+            &backlink,
+            &serde_json::json!({ "coordinator": coordinator }),
+        )?;
+    }
+    let mut registry = store.read_registry(coordinator)?;
+    registry.entry(thread_id.to_string()).or_insert(ThreadFile {
+        thread_id: thread_id.to_string(),
+        coordinator: coordinator.to_string(),
+        workspace_root,
+        launch,
+        created_at_ms,
+        spawned_at_ms,
+    });
+    store.write_registry(coordinator, &registry)
+}
+
+/// Overlay the interim `coordination/` files left by the previous layout:
+/// presence, inbox, threads, and approvals. Newer than any legacy row.
+fn import_coordination_dir(store: &CoordinationStore) -> anyhow::Result<()> {
+    let dir = store.coordination_dir();
+    if !dir.is_dir() {
+        return Ok(());
+    }
+    let read_opt = |path: &Path| -> Option<serde_json::Value> {
+        serde_json::from_slice(&std::fs::read(path).ok()?).ok()
+    };
+
+    let presence_dir = dir.join("presence");
+    if let Ok(entries) = std::fs::read_dir(&presence_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Some(stem) = path
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .map(str::to_owned)
+            else {
+                continue;
+            };
+            if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+                continue;
+            }
+            let Some(value) = read_opt(&path) else {
+                continue;
+            };
+            let Ok(presence) = serde_json::from_value::<PresenceFile>(value) else {
+                continue;
+            };
+            let target = store.presence_path(&stem);
+            if target.exists() {
+                continue;
+            }
+            if let Some(parent) = target.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            write_json(&target, &presence)?;
+        }
+    }
+
+    let inbox_dir = dir.join("inbox");
+    if let Ok(entries) = std::fs::read_dir(&inbox_dir) {
+        for entry in entries.flatten() {
+            let target = entry.file_name().to_string_lossy().into_owned();
+            if target.parse::<SessionId>().is_err() {
+                continue;
+            }
+            let Ok(files) = std::fs::read_dir(entry.path()) else {
+                continue;
+            };
+            let out_dir = store.inbox_dir(&target);
+            for file in files.flatten() {
+                let path = file.path();
+                if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+                    continue;
+                }
+                let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                    continue;
+                };
+                if name.contains(".claimed-") {
+                    let Some(stem) = name.strip_suffix(".json") else {
+                        continue;
+                    };
+                    let Some((base, _)) = stem.split_once(".claimed-") else {
+                        continue;
+                    };
+                    if legacy_component(base).is_none() {
+                        continue;
+                    }
+                } else if legacy_component(name.trim_end_matches(".json")).is_none() {
+                    continue;
+                }
+                std::fs::create_dir_all(&out_dir)?;
+                let _ = create_new(&out_dir.join(name), &std::fs::read(&path)?);
+            }
+        }
+    }
+
+    let threads_dir = dir.join("threads");
+    if let Ok(entries) = std::fs::read_dir(&threads_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+                continue;
+            }
+            let Some(value) = read_opt(&path) else {
+                continue;
+            };
+            let Ok(record) = serde_json::from_value::<ThreadFile>(value) else {
+                continue;
+            };
+            if record.thread_id.parse::<SessionId>().is_err()
+                || record.coordinator.parse::<SessionId>().is_err()
+            {
+                continue;
+            }
+            import_thread_record(
+                store,
+                &record.thread_id,
+                &record.coordinator,
+                record.workspace_root,
+                record.launch,
+                record.created_at_ms,
+                record.spawned_at_ms,
+            )?;
+        }
+    }
+
+    let approvals_dir = dir.join("approvals");
+    if let Ok(entries) = std::fs::read_dir(&approvals_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+                continue;
+            }
+            let Some(value) = read_opt(&path) else {
+                continue;
+            };
+            let Ok(approval) = serde_json::from_value::<ApprovalFile>(value) else {
+                continue;
+            };
+            if approval.thread_id.parse::<SessionId>().is_err()
+                || approval.coordinator.parse::<SessionId>().is_err()
+                || legacy_component(&approval.approval_id).is_none()
+            {
+                continue;
+            }
+            let target = store.approval_path(&approval.coordinator, &approval.approval_id);
+            if target.exists() {
+                continue;
+            }
+            if let Some(parent) = target.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            write_json(&target, &approval)?;
+        }
+    }
+
+    Ok(())
+}
+
 /// One claimed inbox message, identified so its outcome can be settled.
 #[derive(Clone, Debug)]
 struct Delivery {
@@ -1766,6 +2060,7 @@ impl CoordinationHost {
                         };
                         match poll_store.request_approval(session_id, coordinator, &poll_host_id, &request) {
                             Ok(approval_id) => relayed.push(RelayedApproval {
+                                thread_id: session_id,
                                 approval_id,
                                 request_digest: request.digest(),
                                 reply,
@@ -1861,7 +2156,11 @@ fn settle_relayed_approvals(
     let now = tokio::time::Instant::now();
     let mut waiting = Vec::with_capacity(relayed.len());
     for approval in relayed.drain(..) {
-        let answer = match store.approval_answer(&approval.approval_id, &approval.request_digest) {
+        let answer = match store.approval_answer(
+            approval.thread_id,
+            &approval.approval_id,
+            &approval.request_digest,
+        ) {
             Ok(Some(decision)) => Some(decision),
             Ok(None) if yielding || now >= approval.deadline => Some(ApprovalDecision::Deny),
             Ok(None) => None,
@@ -1872,7 +2171,7 @@ fn settle_relayed_approvals(
         };
         match answer {
             Some(decision) => {
-                store.drop_approval(&approval.approval_id);
+                store.drop_approval(approval.thread_id, &approval.approval_id);
                 let _ = approval.reply.send(decision);
             }
             None => waiting.push(approval),
@@ -1919,7 +2218,9 @@ fn ask_for_threads(
             };
             // A host with no prompt surface denies, as for its own commands.
             let decision = gate.ask(request).await.unwrap_or(ApprovalDecision::Deny);
-            if let Err(error) = store.answer_approval(&approval.approval_id, decision) {
+            if let Err(error) =
+                store.answer_approval(approval.thread_id, &approval.approval_id, decision)
+            {
                 tracing::warn!(%error, "could not answer a thread approval");
             }
             asking
@@ -2114,8 +2415,8 @@ async fn settle(
         TurnOutcome::Started => return,
         // A failed thread turn already failed its assignment, which wakes the
         // coordinator; replaying the brief would race its decision.
-        TurnOutcome::Failed(_) if !observed.thread => store.nack(&observed.message_id),
-        _ => store.ack(&observed.message_id),
+        TurnOutcome::Failed(_) if !observed.thread => store.nack(session_id, &observed.message_id),
+        _ => store.ack(session_id, &observed.message_id),
     };
     if let Err(error) = result {
         tracing::warn!(%error, %session_id, "inbox settle failed");
@@ -2188,12 +2489,11 @@ mod tests {
     }
 
     fn make_available_now(store: &CoordinationStore) {
-        let inboxes = store.coordination_dir().join("inbox");
-        let Ok(entries) = std::fs::read_dir(&inboxes) else {
+        let Ok(entries) = std::fs::read_dir(&store.sessions_dir) else {
             return;
         };
         for entry in entries.flatten() {
-            let Ok(files) = std::fs::read_dir(entry.path()) else {
+            let Ok(files) = std::fs::read_dir(entry.path().join("inbox")) else {
                 continue;
             };
             for file in files.flatten() {
@@ -2360,10 +2660,11 @@ mod tests {
         store
             .register_host(thread, "host_t", "p", &record.workspace_root, true)
             .unwrap();
-        let thread_file = store.thread_path(&thread.to_string());
-        let mut record = read_json::<ThreadFile>(&thread_file).unwrap().unwrap();
-        record.spawned_at_ms = 0;
-        write_json(&thread_file, &record).unwrap();
+        let mut registry = store.read_registry(&coordinator.to_string()).unwrap();
+        registry.get_mut(&thread.to_string()).unwrap().spawned_at_ms = 0;
+        store
+            .write_registry(&coordinator.to_string(), &registry)
+            .unwrap();
         supervise_threads(&store, tasks.as_ref(), &launcher, coordinator).await;
         assert_eq!(started.lock().unwrap().len(), 1);
 
@@ -2448,6 +2749,9 @@ mod tests {
         let (store, _tasks) = test_store();
         let served = SessionId::new();
         let interactive = SessionId::new();
+        for session in [served, interactive] {
+            std::fs::create_dir_all(store.session_dir(&session.to_string())).unwrap();
+        }
         store
             .register_host(served, "host_s", "p", Path::new("/repo"), true)
             .unwrap();
@@ -2546,6 +2850,14 @@ mod tests {
         let coordinator = SessionId::new();
         let thread = SessionId::new();
         store
+            .record_thread(&ThreadRecord {
+                thread_id: thread,
+                coordinator,
+                workspace_root: PathBuf::from("/repo"),
+                launch: Vec::new(),
+            })
+            .unwrap();
+        store
             .register_host(thread, "host_t", "p", Path::new("/repo"), true)
             .unwrap();
         let mut request = escalation(&"é".repeat(MAX_MESSAGE_BYTES / 2));
@@ -2562,12 +2874,13 @@ mod tests {
 
     async fn answer_for(
         store: &CoordinationStore,
+        thread_id: SessionId,
         approval_id: &str,
         request: &ApprovalRequest,
     ) -> ApprovalDecision {
         for _ in 0..200 {
             if let Some(decision) = store
-                .approval_answer(approval_id, &request.digest())
+                .approval_answer(thread_id, approval_id, &request.digest())
                 .unwrap()
             {
                 return decision;
@@ -2586,6 +2899,14 @@ mod tests {
             let (store, _tasks) = test_store();
             let coordinator = SessionId::new();
             let thread = SessionId::new();
+            store
+                .record_thread(&ThreadRecord {
+                    thread_id: thread,
+                    coordinator,
+                    workspace_root: PathBuf::from("/repo"),
+                    launch: vec![],
+                })
+                .unwrap();
             store
                 .register_host(thread, "host_t", "p", Path::new("/repo"), true)
                 .unwrap();
@@ -2608,9 +2929,13 @@ mod tests {
             assert!(displayed.reason.ends_with(&request.reason));
             assert_eq!(displayed.scope, request.scope);
             answer.send(decision).unwrap();
-            assert_eq!(answer_for(&store, &approval_id, &request).await, decision);
+            assert_eq!(
+                answer_for(&store, thread, &approval_id, &request).await,
+                decision
+            );
             let mut relayed = vec![RelayedApproval {
                 approval_id: approval_id.clone(),
+                thread_id: thread,
                 request_digest: expected_digest,
                 reply,
                 deadline: tokio::time::Instant::now() + APPROVAL_TIMEOUT,
@@ -2659,11 +2984,15 @@ mod tests {
                 request_digest: None,
                 created_at_ms: now_ms(),
             };
-            write_json(&store.approval_path(&approval_id), &approval).unwrap();
+            write_json(
+                &store.approval_path(&coordinator.to_string(), &approval_id),
+                &approval,
+            )
+            .unwrap();
             assert!(store.pending_approvals(coordinator).unwrap().is_empty());
             assert_eq!(
                 store
-                    .approval_answer(&approval_id, &request.digest())
+                    .approval_answer(thread, &approval_id, &request.digest())
                     .unwrap(),
                 Some(ApprovalDecision::Deny)
             );
@@ -2768,9 +3097,224 @@ mod tests {
             migrated |= name.starts_with("local.db.migrated-");
         }
         assert!(migrated, "legacy database is kept as a backup");
-        assert!(dir.path().join("coordination/migrated-v1").exists());
+        assert!(dir.path().join("coordination/migrated-v2").exists());
         let reopened = CoordinationStore::open(dir.path()).unwrap();
-        assert_eq!(reopened.all_threads().unwrap().len(), 1);
+        assert_eq!(
+            reopened
+                .read_registry(&coordinator.to_string())
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn delivery_claims_match_exact_message_ids() {
+        let (store, _tasks) = test_store();
+        let target = SessionId::new();
+        let dir = store.inbox_dir(&target.to_string());
+        std::fs::create_dir_all(&dir).unwrap();
+        let other = InboxFile {
+            message_id: "m1x".to_string(),
+            source_session_id: None,
+            payload: InboxPayload::Message {
+                from: None,
+                text: "other".into(),
+            },
+            created_at_ms: now_ms(),
+            attempts: 1,
+            available_at_ms: 0,
+            delivered_host_id: Some("host_h".to_string()),
+        };
+        write_json(&dir.join("m1x.claimed-host_h.json"), &other).unwrap();
+        assert!(
+            store
+                .find_claim(&target.to_string(), "m1")
+                .unwrap()
+                .is_none()
+        );
+        let (path, base) = store
+            .find_claim(&target.to_string(), "m1x")
+            .unwrap()
+            .unwrap();
+        assert_eq!(base, "m1x");
+        assert!(path.ends_with("m1x.claimed-host_h.json"));
+    }
+
+    #[test]
+    fn corrupt_inbox_files_are_quarantined_not_fatal() {
+        let (store, _tasks) = test_store();
+        let target = SessionId::new();
+        let dir = store.inbox_dir(&target.to_string());
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("cmsg_broken.json"), b"{not json").unwrap();
+        let message_id = store
+            .enqueue(
+                target,
+                None,
+                &InboxPayload::Message {
+                    from: None,
+                    text: "ok".into(),
+                },
+            )
+            .unwrap();
+        let delivery = store.next_delivery(target, "host_q").unwrap().unwrap();
+        assert_eq!(delivery.message_id, message_id);
+        assert!(!dir.join("cmsg_broken.json").exists());
+        assert!(dir.join("cmsg_broken.json.corrupt").exists());
+    }
+
+    #[test]
+    fn unparseable_thread_approvals_are_denied_without_aborting_listing() {
+        let (store, _tasks) = test_store();
+        let coordinator = SessionId::new();
+        let request = escalation("unparseable thread");
+        let presence = PresenceFile {
+            host_id: "host_u".to_string(),
+            project_id: "p".to_string(),
+            workspace_root: "/repo".to_string(),
+            heartbeat_at_ms: now_ms(),
+            headless: true,
+            release_requested_at_ms: 0,
+        };
+        write_json(&store.presence_path("!!!"), &presence).unwrap();
+        let approval_id = "appr-unparseable";
+        let approval = ApprovalFile {
+            approval_id: approval_id.to_string(),
+            thread_id: "!!!".to_string(),
+            coordinator: coordinator.to_string(),
+            host_id: "host_u".to_string(),
+            command: request.command.clone(),
+            reason: request.reason.clone(),
+            scope: request.scope.as_str().to_string(),
+            decision: None,
+            request_digest: Some(request.digest().to_vec()),
+            created_at_ms: now_ms(),
+        };
+        write_json(
+            &store.approval_path(&coordinator.to_string(), approval_id),
+            &approval,
+        )
+        .unwrap();
+        assert!(store.pending_approvals(coordinator).unwrap().is_empty());
+        let stored: ApprovalFile =
+            read_json(&store.approval_path(&coordinator.to_string(), approval_id))
+                .unwrap()
+                .unwrap();
+        assert_eq!(stored.decision.as_deref(), Some("deny"));
+    }
+
+    #[test]
+    fn nack_backoff_grows_with_attempts() {
+        let (store, _tasks) = test_store();
+        let session = SessionId::new();
+        std::fs::create_dir_all(store.session_dir(&session.to_string())).unwrap();
+        let message_id = store
+            .enqueue(
+                session,
+                None,
+                &InboxPayload::Message {
+                    from: None,
+                    text: "x".into(),
+                },
+            )
+            .unwrap();
+        fn requeued(store: &CoordinationStore, session: &SessionId) -> InboxFile {
+            let dir = store.inbox_dir(&session.to_string());
+            let entry = std::fs::read_dir(&dir)
+                .unwrap()
+                .flatten()
+                .find(|entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("json"))
+                .unwrap();
+            read_json(&entry.path()).unwrap().unwrap()
+        }
+        store.next_delivery(session, "host_0").unwrap().unwrap();
+        let before = now_ms();
+        store.nack(session, &message_id).unwrap();
+        let file = requeued(&store, &session);
+        let wait = file.available_at_ms - before;
+        assert!(
+            (DELIVERY_RETRY_BACKOFF_MS..DELIVERY_RETRY_BACKOFF_MS * 2).contains(&wait),
+            "first backoff scales by one attempt: {wait}"
+        );
+        make_available_now(&store);
+        store.next_delivery(session, "host_1").unwrap().unwrap();
+        let before = now_ms();
+        store.nack(session, &message_id).unwrap();
+        let file = requeued(&store, &session);
+        let wait = file.available_at_ms - before;
+        assert!(
+            (DELIVERY_RETRY_BACKOFF_MS * 2..DELIVERY_RETRY_BACKOFF_MS * 3).contains(&wait),
+            "second backoff scales by two attempts: {wait}"
+        );
+    }
+
+    #[test]
+    fn legacy_approval_ids_are_deterministic() {
+        let first = legacy_approval_id("session_t", "do", "why", "read", 42);
+        assert_eq!(
+            first,
+            legacy_approval_id("session_t", "do", "why", "read", 42)
+        );
+        assert_ne!(
+            first,
+            legacy_approval_id("session_t", "do!", "why", "read", 42)
+        );
+    }
+
+    #[test]
+    fn sending_to_an_unknown_session_is_rejected() {
+        let (store, _tasks) = test_store();
+        let missing = SessionId::new();
+        let error = store
+            .enqueue(
+                missing,
+                None,
+                &InboxPayload::Message {
+                    from: None,
+                    text: "hello?".into(),
+                },
+            )
+            .unwrap_err();
+        assert!(
+            error.to_string().contains(&missing.to_string()),
+            "unexpected error: {error:#}"
+        );
+    }
+
+    #[test]
+    fn presence_is_skipped_when_the_session_folder_is_missing() {
+        let (store, _tasks) = test_store();
+        let missing = SessionId::new();
+        store
+            .register_host(missing, "host_x", "p", std::path::Path::new("/repo"), true)
+            .unwrap();
+        assert!(!store.session_dir(&missing.to_string()).exists());
+        assert!(!store.is_live(missing).unwrap());
+    }
+
+    #[test]
+    fn thread_lookup_uses_the_child_backlink() {
+        let (store, _tasks) = test_store();
+        let coordinator = SessionId::new();
+        let thread = SessionId::new();
+        store
+            .record_thread(&ThreadRecord {
+                thread_id: thread,
+                coordinator,
+                workspace_root: PathBuf::from("/repo"),
+                launch: Vec::new(),
+            })
+            .unwrap();
+        let found = store.thread(thread).unwrap().unwrap();
+        assert_eq!(found.coordinator, coordinator);
+        assert_eq!(
+            store
+                .coordinator_of(&thread.to_string())
+                .unwrap()
+                .as_deref(),
+            Some(coordinator.to_string().as_str())
+        );
     }
 
     #[test]
@@ -2794,12 +3338,17 @@ mod tests {
             request_digest: None,
             created_at_ms: now_ms(),
         };
-        write_json(&store.approval_path(&approval_id), &approval).unwrap();
+        write_json(
+            &store.approval_path(&coordinator.to_string(), &approval_id),
+            &approval,
+        )
+        .unwrap();
         assert!(store.pending_approvals(coordinator).unwrap().is_empty());
-        let decision = read_json::<ApprovalFile>(&store.approval_path(&approval_id))
-            .unwrap()
-            .unwrap()
-            .decision;
+        let decision =
+            read_json::<ApprovalFile>(&store.approval_path(&coordinator.to_string(), &approval_id))
+                .unwrap()
+                .unwrap()
+                .decision;
         assert_eq!(decision.as_deref(), Some("deny"));
         assert!(store.pending_approvals(coordinator).unwrap().is_empty());
     }
@@ -2810,6 +3359,14 @@ mod tests {
         let coordinator = SessionId::new();
         let other = SessionId::new();
         let thread = SessionId::new();
+        store
+            .record_thread(&ThreadRecord {
+                thread_id: thread,
+                coordinator,
+                workspace_root: PathBuf::from("/repo"),
+                launch: vec![],
+            })
+            .unwrap();
         store
             .register_host(thread, "host_t", "p", Path::new("/repo"), true)
             .unwrap();
@@ -2834,13 +3391,14 @@ mod tests {
         assert!(prompt.reason.starts_with("thread "), "{}", prompt.reason);
         reply.send(ApprovalDecision::ApproveForSession).unwrap();
         assert_eq!(
-            answer_for(&store, &approval_id, &escalation("cargo fetch")).await,
+            answer_for(&store, thread, &approval_id, &escalation("cargo fetch")).await,
             ApprovalDecision::ApproveForSession
         );
         assert!(prompts.try_recv().is_err());
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
         let mut relayed = vec![RelayedApproval {
             approval_id: approval_id.clone(),
+            thread_id: thread,
             request_digest: escalation("cargo fetch").digest(),
             reply: reply_tx,
             deadline: tokio::time::Instant::now() + APPROVAL_TIMEOUT,
@@ -2850,7 +3408,7 @@ mod tests {
         assert_eq!(reply_rx.await.unwrap(), ApprovalDecision::ApproveForSession);
         assert_eq!(
             store
-                .approval_answer(&approval_id, &escalation("cargo fetch").digest())
+                .approval_answer(thread, &approval_id, &escalation("cargo fetch").digest())
                 .unwrap(),
             None
         );
@@ -2861,7 +3419,7 @@ mod tests {
             .unwrap();
         ask_for_threads(&store, &ApprovalGate::deny(), &asking, coordinator);
         assert_eq!(
-            answer_for(&store, &denied, &escalation("curl")).await,
+            answer_for(&store, thread, &denied, &escalation("curl")).await,
             ApprovalDecision::Deny
         );
     }
@@ -2872,6 +3430,14 @@ mod tests {
         let coordinator = SessionId::new();
         let thread = SessionId::new();
         store
+            .record_thread(&ThreadRecord {
+                thread_id: thread,
+                coordinator,
+                workspace_root: PathBuf::from("/repo"),
+                launch: Vec::new(),
+            })
+            .unwrap();
+        store
             .register_host(thread, "host_t", "p", Path::new("/repo"), true)
             .unwrap();
         let approval_id = store
@@ -2880,6 +3446,7 @@ mod tests {
         let (reply_tx, mut reply_rx) = tokio::sync::oneshot::channel();
         let mut relayed = vec![RelayedApproval {
             approval_id: approval_id.clone(),
+            thread_id: thread,
             request_digest: escalation("make").digest(),
             reply: reply_tx,
             deadline: tokio::time::Instant::now() + APPROVAL_TIMEOUT,
@@ -2902,6 +3469,7 @@ mod tests {
     fn an_unacknowledged_delivery_is_offered_to_the_next_host() {
         let (store, _tasks) = test_store();
         let session = SessionId::new();
+        std::fs::create_dir_all(store.session_dir(&session.to_string())).unwrap();
         let message = InboxPayload::Message {
             from: None,
             text: "hello".into(),
@@ -2914,7 +3482,7 @@ mod tests {
         // The host died before its turn finished: a restarted session gets it.
         let again = store.next_delivery(session, "host_b").unwrap().unwrap();
         assert_eq!(again.message_id, first.message_id);
-        store.ack(&again.message_id).unwrap();
+        store.ack(session, &again.message_id).unwrap();
         assert!(store.next_delivery(session, "host_c").unwrap().is_none());
         // Other sessions never see it.
         assert!(
@@ -2929,6 +3497,7 @@ mod tests {
     fn a_failing_message_is_retried_then_dropped() {
         let (store, _tasks) = test_store();
         let session = SessionId::new();
+        std::fs::create_dir_all(store.session_dir(&session.to_string())).unwrap();
         store
             .enqueue(
                 session,
@@ -2945,7 +3514,7 @@ mod tests {
                 .next_delivery(session, &format!("host_{attempt}"))
                 .unwrap()
                 .expect("offered again after a failure");
-            store.nack(&delivery.message_id).unwrap();
+            store.nack(session, &delivery.message_id).unwrap();
             assert!(
                 store.next_delivery(session, "host_wait").unwrap().is_none(),
                 "a retry waits out its backoff"
@@ -3065,6 +3634,14 @@ mod tests {
         let coordinator = SessionId::new();
         let thread = SessionId::new();
         let task = assignment(tasks.as_ref(), coordinator, thread).await;
+        store
+            .record_thread(&ThreadRecord {
+                thread_id: thread,
+                coordinator,
+                workspace_root: PathBuf::from("/repo"),
+                launch: Vec::new(),
+            })
+            .unwrap();
         // The thread's process: its registry reports to the coordinator's inbox.
         let observed = Arc::new(
             everruns_core::ObservingTaskRegistry::new(tasks.clone())
@@ -3114,6 +3691,14 @@ mod tests {
         let coordinator = SessionId::new();
         let thread = SessionId::new();
         let task = assignment(tasks.as_ref(), coordinator, thread).await;
+        store
+            .record_thread(&ThreadRecord {
+                thread_id: thread,
+                coordinator,
+                workspace_root: PathBuf::from("/repo"),
+                launch: Vec::new(),
+            })
+            .unwrap();
         let message_id = store
             .enqueue(
                 thread,
@@ -3162,6 +3747,14 @@ mod tests {
                 wake_policy: TaskWakePolicy::OnTerminal,
             })
             .await
+            .unwrap();
+        store
+            .record_thread(&ThreadRecord {
+                thread_id: thread,
+                coordinator,
+                workspace_root: PathBuf::from("/repo"),
+                launch: Vec::new(),
+            })
             .unwrap();
         let message_id = store
             .enqueue(
@@ -3218,156 +3811,6 @@ mod tests {
                 .next_delivery(coordinator, "host_c")
                 .unwrap()
                 .is_none()
-        );
-    }
-
-    #[test]
-    fn delivery_claims_match_exact_message_ids() {
-        let (store, _tasks) = test_store();
-        let target = SessionId::new();
-        let dir = store.inbox_dir(&target.to_string());
-        std::fs::create_dir_all(&dir).unwrap();
-        // A claim whose name merely starts with the queried id must not match.
-        let other = InboxFile {
-            message_id: "m1x".to_string(),
-            source_session_id: None,
-            payload: InboxPayload::Message {
-                from: None,
-                text: "other".into(),
-            },
-            created_at_ms: now_ms(),
-            attempts: 1,
-            available_at_ms: 0,
-            delivered_host_id: Some("host_h".to_string()),
-        };
-        write_json(&dir.join("m1x.claimed-host_h.json"), &other).unwrap();
-        assert!(store.find_claim("m1").unwrap().is_none());
-        let (path, base) = store.find_claim("m1x").unwrap().unwrap();
-        assert_eq!(base, "m1x");
-        assert!(path.ends_with("m1x.claimed-host_h.json"));
-    }
-
-    #[test]
-    fn corrupt_inbox_files_are_quarantined_not_fatal() {
-        let (store, _tasks) = test_store();
-        let target = SessionId::new();
-        let dir = store.inbox_dir(&target.to_string());
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("cmsg_broken.json"), b"{not json").unwrap();
-        let message_id = store
-            .enqueue(
-                target,
-                None,
-                &InboxPayload::Message {
-                    from: None,
-                    text: "ok".into(),
-                },
-            )
-            .unwrap();
-        let delivery = store.next_delivery(target, "host_q").unwrap().unwrap();
-        assert_eq!(delivery.message_id, message_id);
-        assert!(!dir.join("cmsg_broken.json").exists());
-        assert!(dir.join("cmsg_broken.json.corrupt").exists());
-    }
-
-    #[test]
-    fn approval_with_unparseable_thread_is_denied() {
-        let (store, _tasks) = test_store();
-        let coordinator = SessionId::new();
-        let request = escalation("unparseable thread");
-        let host = "host_u";
-        let presence = PresenceFile {
-            host_id: host.to_string(),
-            project_id: "p".to_string(),
-            workspace_root: "/repo".to_string(),
-            heartbeat_at_ms: now_ms(),
-            headless: true,
-            release_requested_at_ms: 0,
-        };
-        write_json(&store.presence_path("!!!"), &presence).unwrap();
-        let approval_id = "appr-unparseable".to_string();
-        let approval = ApprovalFile {
-            approval_id: approval_id.clone(),
-            thread_id: "!!!".to_string(),
-            coordinator: coordinator.to_string(),
-            host_id: host.to_string(),
-            command: request.command.clone(),
-            reason: request.reason.clone(),
-            scope: request.scope.as_str().to_string(),
-            decision: None,
-            request_digest: Some(request.digest().to_vec()),
-            created_at_ms: now_ms(),
-        };
-        write_json(&store.approval_path(&approval_id), &approval).unwrap();
-        assert!(store.pending_approvals(coordinator).unwrap().is_empty());
-        let stored: ApprovalFile = read_json(&store.approval_path(&approval_id))
-            .unwrap()
-            .unwrap();
-        assert_eq!(stored.decision.as_deref(), Some("deny"));
-        assert_eq!(
-            store
-                .approval_answer(&approval_id, &request.digest())
-                .unwrap(),
-            Some(ApprovalDecision::Deny)
-        );
-    }
-
-    #[test]
-    fn nack_backoff_grows_with_attempts() {
-        let (store, _tasks) = test_store();
-        let session = SessionId::new();
-        let message_id = store
-            .enqueue(
-                session,
-                None,
-                &InboxPayload::Message {
-                    from: None,
-                    text: "x".into(),
-                },
-            )
-            .unwrap();
-        // Read the requeued file directly: it carries a future backoff, so
-        // the due-only listing correctly hides it.
-        fn requeued(store: &CoordinationStore, session: &SessionId) -> InboxFile {
-            let dir = store.inbox_dir(&session.to_string());
-            let entry = std::fs::read_dir(&dir)
-                .unwrap()
-                .flatten()
-                .find(|entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("json"))
-                .unwrap();
-            read_json(&entry.path()).unwrap().unwrap()
-        }
-        store.next_delivery(session, "host_0").unwrap().unwrap();
-        let before = now_ms();
-        store.nack(&message_id).unwrap();
-        let file = requeued(&store, &session);
-        let wait = file.available_at_ms - before;
-        assert!(
-            (DELIVERY_RETRY_BACKOFF_MS..DELIVERY_RETRY_BACKOFF_MS * 2).contains(&wait),
-            "first backoff scales by one attempt: {wait}"
-        );
-        make_available_now(&store);
-        store.next_delivery(session, "host_1").unwrap().unwrap();
-        let before = now_ms();
-        store.nack(&message_id).unwrap();
-        let file = requeued(&store, &session);
-        let wait = file.available_at_ms - before;
-        assert!(
-            (DELIVERY_RETRY_BACKOFF_MS * 2..DELIVERY_RETRY_BACKOFF_MS * 3).contains(&wait),
-            "second backoff scales by two attempts: {wait}"
-        );
-    }
-
-    #[test]
-    fn legacy_approval_ids_are_deterministic() {
-        let first = legacy_approval_id("session_t", "do", "why", "read", 42);
-        assert_eq!(
-            first,
-            legacy_approval_id("session_t", "do", "why", "read", 42)
-        );
-        assert_ne!(
-            first,
-            legacy_approval_id("session_t", "do!", "why", "read", 42)
         );
     }
 }

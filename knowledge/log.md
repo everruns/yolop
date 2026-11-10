@@ -3,13 +3,14 @@
 ## 2026-11-08, File-backed session coordination
 
 - [Session coordination](specs/session-coordination.md): coordinator state no
-  longer shares one SQLite database across processes. Presence leases,
-  per-session inboxes, coordinator-owned threads, and approvals live as files
-  under `<sessions>/coordination/`; senders only create files and claims are
-  atomic renames, so concurrent coordinators cannot hit `database is locked`.
-- A legacy `everruns-local/local.db` is imported once on open, with
-  fail-closed defaults for columns and tables older schemas lack, then retired
-  to a timestamped backup.
+  longer shares one SQLite database across processes. Each coordinator keeps
+  its own registry, inbox, lease, and approvals in its session folder; each
+  child session carries a backlink to its coordinator. Senders only create
+  files in the target's folder, claims are atomic renames, and sending to a
+  session that was never onboarded is rejected instead of conjuring a shell.
+- A legacy `everruns-local/local.db` (and the interim `coordination/` files)
+  are imported once on open, with fail-closed defaults for columns and tables
+  older schemas lack, then retired to a timestamped backup.
 
 ## 2026-11-07, MCP readiness
 
