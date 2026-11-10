@@ -4408,6 +4408,14 @@ pub async fn build_with_options(
     // (directory name is the session id).
     let session_id = resume_session_id.unwrap_or_default();
     let session_dir = session_dir_path(&sessions_dir, session_id);
+    // Own the source before copying any history or coordination state.
+    let mut startup_lease = Some(session_log::lock_session(&session_dir)?);
+    let coordination_store = CoordinationStore::open_for_host(
+        &sessions_dir,
+        session_id,
+        startup_lease.as_ref().expect("startup session lease"),
+    )
+    .context("initialize session coordination store")?;
     let log_path = session_log_path(&session_dir);
     let _legacy_log = migrate_legacy_session_log(&sessions_dir, &session_dir, session_id)?;
 
@@ -4427,16 +4435,15 @@ pub async fn build_with_options(
     // turns worktrees off: threads run side by side on one repository, and
     // the coordinator reviews each one's branch before bringing it in.
     let (thread_of, has_threads) = match resume_session_id {
-        Some(id) => {
-            let store = CoordinationStore::open(&sessions_dir)?;
-            (
-                store
-                    .thread(id)
-                    .context("read thread record")?
-                    .map(|thread| thread.coordinator),
-                store.has_threads(id).context("read thread records")?,
-            )
-        }
+        Some(id) => (
+            coordination_store
+                .thread(id)
+                .context("read thread record")?
+                .map(|thread| thread.coordinator),
+            coordination_store
+                .has_threads(id)
+                .context("read thread records")?,
+        ),
         None => (None, false),
     };
     // A headless thread has no prompt surface of its own: its escalations go
@@ -4603,8 +4610,6 @@ pub async fn build_with_options(
     let connection_catalog = Arc::new(ConnectionCatalog::with_defaults());
     use everruns::hosting::SessionHosting;
     let connection_resolver = Arc::new(YolopConnectionResolver::new(connections.clone()));
-    std::fs::create_dir_all(&sessions_dir)?;
-    let mut startup_lease = Some(session_log::lock_session(&session_dir)?);
     let authority_directory = sessions_dir.join(".engine");
     let authority_key = engine_keys::open_or_create(&sessions_dir)?;
     // TODO(everruns#5323): remove vendor/everruns and use the upstream API directly
@@ -4725,11 +4730,6 @@ pub async fn build_with_options(
             provider: provider_state.clone(),
             settings: settings.clone(),
         });
-    // Coordination is file backed under the sessions dir (per-owner leases,
-    // inboxes, threads, and approvals); native execution uses per-session authorities.
-    // Opening imports the legacy shared database once when one is present.
-    let coordination_store =
-        CoordinationStore::open(&sessions_dir).context("initialize session coordination store")?;
     // Assignment changes this process makes for a coordinator hosted elsewhere
     // (this session is its thread) reach that coordinator through its inbox.
     let task_registry: Arc<dyn SessionTaskRegistry> = Arc::new(

@@ -70,9 +70,10 @@ Concurrent first opens serialize key creation. Back up the key, `.engine/`
 and the product session directories together. Credentials stay in host stores.
 
 A former shared `engine.sqlite` is a read-only transfer source. Opening a
-session copies its complete canonical state under the exclusive session lease
-into a private temporary database, then publishes that database atomically.
-Children transfer independently under their own leases. Live execution epochs
+session first acquires the complete source family's exclusive leases, including
+ancestors and siblings when a worker opens first. It then copies each member's
+complete canonical state into a private temporary database and publishes it
+atomically. This preserves late child reports written before handoff. Live execution epochs
 refuse transfer. Failed transfers never replace a destination and retry from
 the original source. Completed transfers do not reopen the source. Do not
 resume a transferred session with an older Yolop binary.

@@ -3,6 +3,7 @@
 ## 2026-11-10, Session-owned Engine databases
 
 - [Engine execution](specs/engine-execution.md): route every session and child to its own authority, retain parent-owned child registries and transfer shared canonical state under exclusive session leases.
+- Quiesce complete source families before native snapshots and stop older source hosts before the one-time coordination import.
 - Use the same upstream implementation through a temporary facade backport, removed after the next aligned Everruns release.
 
 ## 2026-11-09, Sliding repair-clock window

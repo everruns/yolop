@@ -127,7 +127,11 @@ claims are atomic renames, so coordinators never contend on a shared
 database lock and never scan each other's state. Sending to a session that
 was never onboarded is rejected instead of conjuring a session shell. A
 legacy `everruns-local` database (and the interim `coordination/` files) are
-imported once into this layout. The original database remains at its existing
+imported once into this layout. This first import requires all older source
+hosts to stop; exclusive source leases prevent copying an inbox while an old
+host can still write it. An owned source refuses import without publishing the
+completion marker. Use the updated binary for every host after handoff.
+The original database remains at its existing
 path for legacy session cutover and to preserve SQLite WAL ownership for older
 open handles. New hosts use only the per-session coordination files. On Unix, directories and records
 are owner-only from first publication, including a child's initial inbox before

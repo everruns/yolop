@@ -173,7 +173,7 @@ Inside the TUI:
 
 A coordinator session can hand work to threads that run as their own Yolop processes, and any session can message another with `yolop sessions send`: see [docs/session-coordination.md](docs/session-coordination.md).
 
-Sessions run on the Everruns Engine with a local SQLite authority. Reopening an older session imports its full history, branches and rewind state automatically. Every session, including a child, has its own database under `sessions/.engine/<session-id>/`. Back up `.engine/` and the private `engine.key` together with the session directories. `events.jsonl` remains a readable export.
+Sessions run on the Everruns Engine with a local SQLite authority. Reopening an older session imports its full history, branches and rewind state automatically. Every session, including a child, has its own database under `sessions/.engine/<session-id>/`. Back up `.engine/` and the private `engine.key` together with the session directories. `events.jsonl` remains a readable export. Stop older Yolop hosts before the first upgrade import, then use the updated binary for all resumed sessions.
 
 `yolop sessions migration-check <session-id>` checks a closed session's saved history, branches, and compaction records. It reports a source fingerprint and counts without printing conversation content or transferring ownership.
 

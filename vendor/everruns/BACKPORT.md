@@ -2,8 +2,9 @@
 
 This is the published `everruns` 0.51.0 facade, with the session-directory
 SQLite change from [everruns/everruns#5323](https://github.com/everruns/everruns/pull/5323).
-The implementation module is byte-identical to upstream commit `fa36fab31`. The other Everruns family
-crates stay on aligned published 0.51.0 versions.
+The implementation module is byte-identical to upstream commit `e0c03d2f9`. The other Everruns family
+crates stay on aligned published 0.51.0 versions. The module SHA-256 is
+`c25dddc71f4f1c2917cdde47cf0eabe0dff2efdd078bb5f98d3f6d11aa0494bd`.
 
 Changed upstream files:
 

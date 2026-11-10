@@ -45,6 +45,8 @@
 //!   is restarted with a note to check what survived, since its background
 //!   processes may not have.
 
+use anyhow::Context;
+
 use crate::runtime::background_wake::{WakeMessage, WakeSender};
 use crate::sandbox_approval::{
     ApprovalDecision, ApprovalGate, ApprovalReceiver, ApprovalRequest, ApprovalScope,
@@ -441,7 +443,23 @@ impl CoordinationStore {
     /// Open the file-backed store at `sessions_dir`, importing the legacy
     /// shared database on first open when one is present.
     pub(crate) fn open(sessions_dir: &Path) -> anyhow::Result<Self> {
-        migrate_legacy_db(sessions_dir);
+        Self::open_with_source_owner(sessions_dir, None)
+    }
+
+    /// The runtime already holds this session's exclusive lease before import.
+    pub(crate) fn open_for_host(
+        sessions_dir: &Path,
+        session: SessionId,
+        _lease: &crate::runtime::session_log::SessionFileLease,
+    ) -> anyhow::Result<Self> {
+        Self::open_with_source_owner(sessions_dir, Some(session))
+    }
+
+    fn open_with_source_owner(
+        sessions_dir: &Path,
+        source_owner: Option<SessionId>,
+    ) -> anyhow::Result<Self> {
+        migrate_legacy_db(sessions_dir, source_owner)?;
         Ok(Self {
             sessions_dir: sessions_dir.to_path_buf(),
             _temp: None,
@@ -1322,26 +1340,80 @@ impl CoordinationStore {
 /// original path: legacy session cutover still reads tasks from it, and moving
 /// an open SQLite file would separate it from its WAL and existing handles.
 /// Failed imports leave the source and marker untouched so the next open retries.
-fn migrate_legacy_db(sessions_dir: &Path) {
+fn migrate_legacy_db(sessions_dir: &Path, source_owner: Option<SessionId>) -> anyhow::Result<()> {
     let marker = sessions_dir.join("coordination/migrated-v2");
     if marker.exists() {
-        return;
+        return Ok(());
     }
     let legacy = sessions_dir.join("everruns-local/local.db");
     let legacy_marker = sessions_dir.join("coordination/migrated-v1");
+    // Old hosts can write to any inbox. Quiesce the old transport before the
+    // one-time import; a heartbeat timeout is insufficient if SQLite is locked.
+    let mut sources = std::collections::BTreeMap::new();
+    if legacy.exists() {
+        let conn = rusqlite::Connection::open_with_flags(
+            &legacy,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )?;
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        let has_presence: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='yolop_session_presence')",
+            [],
+            |row| row.get(0),
+        )?;
+        if has_presence {
+            let mut stmt =
+                conn.prepare("SELECT session_id FROM yolop_session_presence LIMIT 65537")?;
+            for (index, id) in stmt
+                .query_map([], |row| row.get::<_, String>(0))?
+                .enumerate()
+            {
+                anyhow::ensure!(
+                    index < 65536,
+                    "too many legacy coordination hosts to import"
+                );
+                if let Ok(session) = id?.parse::<SessionId>() {
+                    sources.insert(session.to_string(), session);
+                }
+            }
+        }
+    }
+    let presence_dir = sessions_dir.join("coordination/presence");
+    if presence_dir.is_dir() {
+        for entry in std::fs::read_dir(presence_dir)? {
+            let path = entry?.path();
+            if path.extension().and_then(|s| s.to_str()) == Some("json")
+                && let Some(id) = path.file_stem().and_then(|s| s.to_str())
+                && let Ok(session) = id.parse::<SessionId>()
+            {
+                sources.insert(session.to_string(), session);
+            }
+            anyhow::ensure!(
+                sources.len() <= 65536,
+                "too many legacy coordination hosts to import"
+            );
+        }
+    }
+    anyhow::ensure!(
+        sources.len() <= 65536,
+        "too many legacy coordination hosts to import"
+    );
+    let _source_leases = sources
+        .into_values()
+        .filter(|session| Some(*session) != source_owner)
+        .map(|session| {
+            crate::runtime::session_log::lock_session(&sessions_dir.join(session.to_string()))
+                .with_context(|| format!(
+                    "stop older Yolop hosts before importing shared coordination, session {session} is still owned"
+                ))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
     let store = CoordinationStore {
         sessions_dir: sessions_dir.to_path_buf(),
         _temp: None,
     };
-    let imported = import_legacy_state(&store, &legacy, &legacy_marker);
-    match imported {
-        Ok(()) => {
-            let _ = write_atomic(&marker, b"migrated to per-session coordination");
-        }
-        Err(error) => {
-            eprintln!("yolop: coordination migration deferred, will retry: {error:#}");
-        }
-    }
+    import_legacy_state(&store, &legacy, &legacy_marker)?;
+    write_atomic(&marker, b"migrated to per-session coordination")
 }
 
 /// Filename components coming out of a legacy database are validated
@@ -1445,7 +1517,7 @@ fn import_legacy_state(
 ) -> anyhow::Result<()> {
     if legacy.exists() && !legacy_marker.exists() {
         import_legacy_db(store, legacy)?;
-        let _ = write_atomic(legacy_marker, b"migrated from everruns-local/local.db");
+        write_atomic(legacy_marker, b"migrated from everruns-local/local.db")?;
     }
     import_coordination_dir(store)?;
     Ok(())
@@ -1703,7 +1775,7 @@ fn import_coordination_dir(store: &CoordinationStore) -> anyhow::Result<()> {
                     continue;
                 }
                 ensure_private_directory(&out_dir)?;
-                let _ = create_new(&out_dir.join(name), &std::fs::read(&path)?);
+                create_new(&out_dir.join(name), &std::fs::read(&path)?)?;
             }
         }
     }
@@ -3131,6 +3203,71 @@ mod tests {
         );
         assert!(!sessions.join("presence.json").exists());
         assert!(!outer.path().join("presence.json").exists());
+    }
+
+    #[test]
+    fn coordination_import_refuses_a_running_legacy_source_host() {
+        let outer = tempfile::tempdir().unwrap();
+        let sessions = outer.path().join("sessions");
+        let legacy = sessions.join("everruns-local");
+        std::fs::create_dir_all(&legacy).unwrap();
+        let session = SessionId::new();
+        let db = rusqlite::Connection::open(legacy.join("local.db")).unwrap();
+        db.execute_batch("CREATE TABLE yolop_session_presence(session_id TEXT,host_id TEXT);")
+            .unwrap();
+        db.execute(
+            "INSERT INTO yolop_session_presence VALUES (?,'host_old')",
+            [session.to_string()],
+        )
+        .unwrap();
+        let lease =
+            crate::runtime::session_log::lock_session(&sessions.join(session.to_string())).unwrap();
+        assert!(
+            CoordinationStore::open(&sessions).is_err(),
+            "a running old host can still write messages after a premature snapshot"
+        );
+        assert!(!sessions.join("coordination/migrated-v2").exists());
+        drop(lease);
+        CoordinationStore::open(&sessions).unwrap();
+        assert!(
+            sessions
+                .join(session.to_string())
+                .join("presence.json")
+                .exists()
+        );
+    }
+
+    #[test]
+    fn coordination_overlay_import_reuses_the_runtime_source_lease() {
+        let root = tempfile::tempdir().unwrap();
+        let session = SessionId::new();
+        let presence = root.path().join("coordination/presence");
+        std::fs::create_dir_all(&presence).unwrap();
+        std::fs::write(
+            presence.join(format!("{session}.json")),
+            serde_json::to_vec(&PresenceFile {
+                host_id: "host_old".into(),
+                project_id: String::new(),
+                workspace_root: String::new(),
+                heartbeat_at_ms: 0,
+                headless: false,
+                release_requested_at_ms: 0,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let lease =
+            crate::runtime::session_log::lock_session(&root.path().join(session.to_string()))
+                .unwrap();
+        assert!(CoordinationStore::open(root.path()).is_err());
+        CoordinationStore::open_for_host(root.path(), session, &lease).unwrap();
+        assert!(root.path().join("coordination/migrated-v2").exists());
+        assert!(
+            root.path()
+                .join(session.to_string())
+                .join("presence.json")
+                .exists()
+        );
     }
 
     #[test]
