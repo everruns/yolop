@@ -129,7 +129,10 @@ was never onboarded is rejected instead of conjuring a session shell. A
 legacy `everruns-local` database (and the interim `coordination/` files) are
 imported once into this layout. The original database remains at its existing
 path for legacy session cutover and to preserve SQLite WAL ownership for older
-open handles. New hosts use only the per-session coordination files.
+open handles. New hosts use only the per-session coordination files. On Unix, directories and records
+are owner-only from first publication, including a child's initial inbox before
+its workspace metadata exists. Publishers sync records before acknowledging
+durable transport writes; on Unix they also sync directory entries.
 
 ## Escalations from headless threads
 

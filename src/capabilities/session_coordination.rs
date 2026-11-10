@@ -285,17 +285,74 @@ fn unique_suffix() -> String {
     format!("{}-{}-{n}", now_ms(), std::process::id())
 }
 
+// Coordination records contain prompts, workspace paths and approval text.
+// Their first publication must be private even before workspace.json exists.
+fn ensure_private_directory(path: &Path) -> anyhow::Result<()> {
+    if path.as_os_str().is_empty() {
+        return Ok(());
+    }
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(path)?;
+    let metadata = std::fs::symlink_metadata(path)?;
+    anyhow::ensure!(
+        metadata.is_dir(),
+        "coordination directory must not be a symlink"
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o777 != 0o700 {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
+        }
+    }
+    Ok(())
+}
+
+fn private_new_file(path: &Path) -> std::io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
+    options.open(path)
+}
+
+fn sync_published_directory(path: &Path) -> anyhow::Result<()> {
+    #[cfg(unix)]
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        std::fs::File::open(parent)?.sync_all()?;
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
+}
+
 /// Write `bytes` to `path` atomically: readers never see a half-written
 /// record, and concurrent writers to different paths never block.
 fn write_atomic(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+        ensure_private_directory(parent)?;
     }
     let tmp = path.with_extension(format!("tmp-{}", unique_suffix()));
     let wrote = (|| -> anyhow::Result<()> {
-        std::fs::write(&tmp, bytes)?;
+        use std::io::Write;
+        let mut file = private_new_file(&tmp)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        drop(file);
         std::fs::rename(&tmp, path)?;
-        Ok(())
+        sync_published_directory(path)
     })();
     if wrote.is_err() {
         let _ = std::fs::remove_file(&tmp);
@@ -321,7 +378,7 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> anyhow::Result<Opti
 /// spawn claims; inbox claims use atomic rename instead.
 fn create_new(path: &Path, bytes: &[u8]) -> anyhow::Result<bool> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+        ensure_private_directory(parent)?;
     }
     // Write to a unique temp file first and hard-link it into place: the
     // link is atomic and fails when the destination exists, so concurrent
@@ -330,10 +387,7 @@ fn create_new(path: &Path, bytes: &[u8]) -> anyhow::Result<bool> {
     let tmp = path.with_extension(format!("tmp-{}.new", unique_suffix()));
     {
         use std::io::Write;
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&tmp)?;
+        let mut file = private_new_file(&tmp)?;
         let wrote = file.write_all(bytes).and_then(|()| file.sync_all());
         if wrote.is_err() {
             let _ = std::fs::remove_file(&tmp);
@@ -343,6 +397,7 @@ fn create_new(path: &Path, bytes: &[u8]) -> anyhow::Result<bool> {
     match std::fs::hard_link(&tmp, path) {
         Ok(()) => {
             let _ = std::fs::remove_file(&tmp);
+            sync_published_directory(path)?;
             Ok(true)
         }
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -458,7 +513,7 @@ impl CoordinationStore {
     ) -> anyhow::Result<()> {
         let path = self.registry_path(coordinator);
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
+            ensure_private_directory(parent)?;
         }
         write_json(&path, registry)
     }
@@ -938,7 +993,7 @@ impl CoordinationStore {
             anyhow::bail!("no such session: {target}");
         }
         let dir = self.inbox_dir(&target);
-        std::fs::create_dir_all(&dir)?;
+        ensure_private_directory(&dir)?;
         for _ in 0..3 {
             let message_id = new_message_id();
             let message = InboxFile {
@@ -1088,7 +1143,7 @@ impl CoordinationStore {
         let thread_id = thread.thread_id.to_string();
         let coordinator = thread.coordinator.to_string();
         let child_dir = self.session_dir(&thread_id);
-        std::fs::create_dir_all(&child_dir)?;
+        ensure_private_directory(&child_dir)?;
         write_json(
             &self.backlink_path(&thread_id),
             &serde_json::json!({ "coordinator": coordinator }),
@@ -1408,7 +1463,7 @@ fn import_legacy_db(store: &CoordinationStore, legacy: &Path) -> anyhow::Result<
     if tables.contains("yolop_session_presence") {
         for row in legacy_rows(&conn, "yolop_session_presence")? {
             let (Some(session_id), Some(host_id)) = (
-                legacy_text(&row, "session_id"),
+                legacy_text(&row, "session_id").filter(|id| id.parse::<SessionId>().is_ok()),
                 legacy_text(&row, "host_id").and_then(|id| legacy_component(&id)),
             ) else {
                 continue;
@@ -1420,7 +1475,7 @@ fn import_legacy_db(store: &CoordinationStore, legacy: &Path) -> anyhow::Result<
                 continue;
             }
             if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent)?;
+                ensure_private_directory(parent)?;
             }
             let presence = PresenceFile {
                 host_id,
@@ -1462,7 +1517,7 @@ fn import_legacy_db(store: &CoordinationStore, legacy: &Path) -> anyhow::Result<
             };
             let bytes = serde_json::to_vec_pretty(&message)?;
             let dir = store.inbox_dir(&target);
-            std::fs::create_dir_all(&dir)?;
+            ensure_private_directory(&dir)?;
             let name = match delivered {
                 Some(host) => format!("{message_id}.claimed-{host}.json"),
                 None => format!("{message_id}.json"),
@@ -1531,7 +1586,7 @@ fn import_legacy_db(store: &CoordinationStore, legacy: &Path) -> anyhow::Result<
                 continue;
             }
             if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent)?;
+                ensure_private_directory(parent)?;
             }
             write_json(&path, &approval)?;
         }
@@ -1551,7 +1606,7 @@ fn import_thread_record(
     spawned_at_ms: i64,
 ) -> anyhow::Result<()> {
     let child_dir = store.session_dir(thread_id);
-    std::fs::create_dir_all(&child_dir)?;
+    ensure_private_directory(&child_dir)?;
     let backlink = store.backlink_path(thread_id);
     if !backlink.exists() {
         write_json(
@@ -1593,7 +1648,9 @@ fn import_coordination_dir(store: &CoordinationStore) -> anyhow::Result<()> {
             else {
                 continue;
             };
-            if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            if path.extension().and_then(|ext| ext.to_str()) != Some("json")
+                || stem.parse::<SessionId>().is_err()
+            {
                 continue;
             }
             let Some(value) = read_opt(&path) else {
@@ -1607,7 +1664,7 @@ fn import_coordination_dir(store: &CoordinationStore) -> anyhow::Result<()> {
                 continue;
             }
             if let Some(parent) = target.parent() {
-                std::fs::create_dir_all(parent)?;
+                ensure_private_directory(parent)?;
             }
             write_json(&target, &presence)?;
         }
@@ -1645,7 +1702,7 @@ fn import_coordination_dir(store: &CoordinationStore) -> anyhow::Result<()> {
                 } else if legacy_component(name.trim_end_matches(".json")).is_none() {
                     continue;
                 }
-                std::fs::create_dir_all(&out_dir)?;
+                ensure_private_directory(&out_dir)?;
                 let _ = create_new(&out_dir.join(name), &std::fs::read(&path)?);
             }
         }
@@ -1705,7 +1762,7 @@ fn import_coordination_dir(store: &CoordinationStore) -> anyhow::Result<()> {
                 continue;
             }
             if let Some(parent) = target.parent() {
-                std::fs::create_dir_all(parent)?;
+                ensure_private_directory(parent)?;
             }
             write_json(&target, &approval)?;
         }
@@ -2985,6 +3042,95 @@ mod tests {
                 Some(ApprovalDecision::Deny)
             );
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn coordination_publication_is_private_before_a_thread_starts() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let store = CoordinationStore::open(root.path()).unwrap();
+        let coordinator = SessionId::new();
+        let child = SessionId::new();
+        store
+            .record_thread(&ThreadRecord {
+                thread_id: child,
+                coordinator,
+                workspace_root: PathBuf::from("/repo"),
+                launch: Vec::new(),
+            })
+            .unwrap();
+        store
+            .enqueue(
+                child,
+                Some(coordinator),
+                &InboxPayload::Thread {
+                    text: "private brief".into(),
+                },
+            )
+            .unwrap();
+        let mut pending = vec![root.path().to_path_buf()];
+        while let Some(directory) = pending.pop() {
+            for entry in std::fs::read_dir(directory).unwrap() {
+                let path = entry.unwrap().path();
+                let metadata = std::fs::metadata(&path).unwrap();
+                let expected = if metadata.is_dir() { 0o700 } else { 0o600 };
+                assert_eq!(
+                    metadata.permissions().mode() & 0o777,
+                    expected,
+                    "{}",
+                    path.display()
+                );
+                if metadata.is_dir() {
+                    pending.push(path);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn malformed_legacy_presence_cannot_create_files_outside_sessions() {
+        let outer = tempfile::tempdir().unwrap();
+        let sessions = outer.path().join("sessions");
+        let legacy = sessions.join("everruns-local");
+        std::fs::create_dir_all(&legacy).unwrap();
+        let db = rusqlite::Connection::open(legacy.join("local.db")).unwrap();
+        db.execute_batch("CREATE TABLE yolop_session_presence(session_id TEXT,host_id TEXT); INSERT INTO yolop_session_presence VALUES ('../outside','host_old');").unwrap();
+        CoordinationStore::open(&sessions).unwrap();
+        assert!(!outer.path().join("outside").exists());
+    }
+
+    #[test]
+    fn malformed_presence_overlay_names_cannot_escape_sessions() {
+        let outer = tempfile::tempdir().unwrap();
+        let sessions = outer.path().join("sessions");
+        let overlay = sessions.join("coordination/presence");
+        std::fs::create_dir_all(&overlay).unwrap();
+        let valid = SessionId::new();
+        let presence = serde_json::to_vec(&PresenceFile {
+            host_id: "host_old".into(),
+            project_id: "project".into(),
+            workspace_root: "/repo".into(),
+            heartbeat_at_ms: now_ms(),
+            headless: false,
+            release_requested_at_ms: 0,
+        })
+        .unwrap();
+        for name in [
+            "..json".to_string(),
+            "...json".to_string(),
+            format!("{valid}.json"),
+        ] {
+            std::fs::write(overlay.join(name), &presence).unwrap();
+        }
+        let store = CoordinationStore::open(&sessions).unwrap();
+        assert!(
+            store.is_live(valid).unwrap(),
+            "valid presence must still migrate"
+        );
+        assert!(!sessions.join("presence.json").exists());
+        assert!(!outer.path().join("presence.json").exists());
     }
 
     #[test]
