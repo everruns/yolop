@@ -136,13 +136,14 @@ selection (`--axis harness=no-progress-guard`), and `--group-by harness`.
    cases instead use `--acp`, perform the `initialize`, `session/new`, and
    `session/prompt` JSON-RPC exchange, then wait for their declared automatic
    wake completion condition (default cap 600s, `HARNESS_BASIC_TIMEOUT_S`).
-4. Mine the session `events.jsonl` for usage/cost (once per
+4. Mine the session event journal (`engine.sqlite`, or `events.jsonl` from
+   binaries that predate its removal) for usage/cost (once per
    `output.message.completed`; yolop repeats usage on `reason.completed`),
   tool calls + failures, trajectory counters, iterations/turns, the final
   response, and the reasoning effort actually applied.
 5. Read the workdir back so file scorers grade what yolop actually wrote.
 
-Raw per-case `events.jsonl` logs are kept under the gitignored
+Raw per-case journals are kept, projected to `events.jsonl`, under the gitignored
 `.cache/sessions/` and each case's `metadata.session_log` records the path.
 
 ## Scoring
