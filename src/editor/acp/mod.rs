@@ -90,9 +90,9 @@ struct ConfigRuntimeFactory {
 
 #[async_trait]
 impl RuntimeFactory for ConfigRuntimeFactory {
-    fn session_exists(&self, session_id: RuntimeSessionId) -> bool {
+    async fn session_exists(&self, session_id: RuntimeSessionId) -> bool {
         let session_dir = session_dir_path(&self.sessions_dir, session_id);
-        crate::runtime::saved_sessions::exists(&session_dir, session_id)
+        crate::runtime::saved_sessions::exists(&session_dir, session_id).await
     }
 
     fn auth_methods(&self) -> Vec<AuthMethod> {
@@ -253,9 +253,9 @@ mod tests {
 
     #[async_trait]
     impl RuntimeFactory for ScriptedFactory {
-        fn session_exists(&self, session_id: RuntimeSessionId) -> bool {
+        async fn session_exists(&self, session_id: RuntimeSessionId) -> bool {
             let session_dir = session_dir_path(&self.sessions_dir, session_id);
-            crate::runtime::saved_sessions::exists(&session_dir, session_id)
+            crate::runtime::saved_sessions::exists(&session_dir, session_id).await
         }
 
         fn auth_methods(&self) -> Vec<AuthMethod> {
@@ -313,9 +313,9 @@ mod tests {
 
     #[async_trait]
     impl RuntimeFactory for RecordingFactory {
-        fn session_exists(&self, session_id: RuntimeSessionId) -> bool {
+        async fn session_exists(&self, session_id: RuntimeSessionId) -> bool {
             let session_dir = session_dir_path(&self.sessions_dir, session_id);
-            crate::runtime::saved_sessions::exists(&session_dir, session_id)
+            crate::runtime::saved_sessions::exists(&session_dir, session_id).await
         }
 
         async fn build(
@@ -362,8 +362,8 @@ mod tests {
 
     #[async_trait]
     impl RuntimeFactory for SetupHintFactory {
-        fn session_exists(&self, session_id: RuntimeSessionId) -> bool {
-            self.inner.session_exists(session_id)
+        async fn session_exists(&self, session_id: RuntimeSessionId) -> bool {
+            self.inner.session_exists(session_id).await
         }
 
         async fn setup_page_url(&self) -> Option<String> {

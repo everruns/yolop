@@ -74,7 +74,7 @@ const TURN_POLL_INTERVAL: Duration = Duration::from_millis(150);
 /// substitute a scripted llmsim runtime for the real provider wiring.
 #[async_trait]
 pub trait RuntimeFactory: Send + Sync + 'static {
-    fn session_exists(&self, session_id: RuntimeSessionId) -> bool;
+    async fn session_exists(&self, session_id: RuntimeSessionId) -> bool;
 
     /// URL of a live loopback setup page, when this run serves one (the
     /// `--acp-setup-page` flag or the `acp_setup_page` setting). `None`
@@ -744,7 +744,7 @@ async fn handle_load_session<F: RuntimeFactory>(
     let session = match server.session(&requested_id) {
         Some(session) => session,
         None => {
-            if !server.factory.session_exists(resume_session_id) {
+            if !server.factory.session_exists(resume_session_id).await {
                 return Err(invalid_params(format!(
                     "unknown session id `{requested_id}`"
                 )));

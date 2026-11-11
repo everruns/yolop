@@ -124,12 +124,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_missing_key_for_session_owned_authority_refuses_replacement() {
-        for layout in ["session_test", ".engine/session_test"] {
+    fn a_missing_key_for_existing_authority_refuses_replacement() {
+        for layout in [
+            "session_test/engine.sqlite",
+            ".engine/session_test/engine.sqlite",
+            "engine.sqlite",
+        ] {
             let dir = tempfile::tempdir().unwrap();
-            let session = dir.path().join(layout);
-            std::fs::create_dir_all(&session).unwrap();
-            std::fs::write(session.join("engine.sqlite"), "").unwrap();
+            let database = dir.path().join(layout);
+            std::fs::create_dir_all(database.parent().unwrap()).unwrap();
+            std::fs::write(database, "").unwrap();
             assert!(open_or_create(dir.path()).is_err(), "{layout}");
             assert!(!dir.path().join("engine.key").exists());
         }
