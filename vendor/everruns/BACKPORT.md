@@ -4,7 +4,7 @@ This is the published `everruns` 0.51.0 facade with the session-directory
 SQLite change from [everruns/everruns#5323](https://github.com/everruns/everruns/pull/5323)
 and the layout-transfer and read-only inspection changes from
 [everruns/everruns#5345](https://github.com/everruns/everruns/pull/5345) at commit
-`3272a32077a489d80ed30890dad9d3c687b787a2`. Other Everruns family crates stay
+`68c1d56e7983414cecc0ba4868919bd69354b7a3`. Other Everruns family crates stay
 on aligned published 0.51.0 versions.
 
 Changed upstream files:
@@ -19,8 +19,8 @@ Changed upstream files:
 The last three modules are byte-identical to that upstream commit. SHA-256:
 
 - `export.rs`: `c130831a21024305734129e17b50ccda3db0b9e751a3650cd761ad27d254acf5`
-- `session_directory.rs`: `ff07abfe22924f429e625664bc84dbf9c6f8c535a6d3d8e03e651d393bdc38fc`
-- `session_directory/source.rs`: `d93eaed08680b42663f64801989f4df3cf2d893287916dcfdbda7f694db5d2a2`
+- `session_directory.rs`: `ed09d5077b1022694ef8dff66c80f132c6ca38dbe8729c288f77fcbd884c32d8`
+- `session_directory/source.rs`: `85f46d598b0fe77c38ea715be1178e3bfe8e6cf368791b3c858761f0df7adb55`
 
 The facade is vendored because child execution, fenced persistence and legacy
 cutover use private framework seams. Reimplementing them in Yolop would create

@@ -19,7 +19,7 @@
 //! specifically about the agent control flow.
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use everruns_core::SessionTaskState;
 use everruns_llmsim::{LlmSimConfig, OnExhausted, SimError, SimToolCall, SimTurn};
@@ -351,12 +351,12 @@ async fn scripted_spawn_background_runs_bash_detached() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn predictable_long_command_returns_immediately_and_terminal_result_is_durable() {
-    let (runtime, _workspace) = build_scripted_runtime(LlmSimConfig::scripted(vec![
+    let (runtime, workspace) = build_scripted_runtime(LlmSimConfig::scripted(vec![
         SimTurn::ToolCalls(vec![SimToolCall {
             name: "spawn_background".to_string(),
             arguments: json!({
                 "tool": "bash",
-                "args": { "command": "sleep 3; printf durable-result" },
+                "args": { "command": "while [ ! -f release-background ]; do sleep 0.01; done; printf durable-result" },
                 "title": "synthetic long validation",
                 "signal_on_completion": false
             }),
@@ -366,27 +366,29 @@ async fn predictable_long_command_returns_immediately_and_terminal_result_is_dur
     ]))
     .await;
 
-    let started = Instant::now();
-    let turn = run_single_turn(&runtime, "run the predictable long validation").await;
-    let foreground_elapsed = started.elapsed();
+    let session_id = runtime.handles.session_id;
+    let foreground = tokio::time::timeout(
+        Duration::from_secs(10),
+        run_single_turn(&runtime, "run the predictable long validation"),
+    )
+    .await;
+    let tasks = runtime.task_registry.list(session_id, None).await;
+    // Release the command before assertions, including when foreground times out.
+    std::fs::write(workspace.join("release-background"), "release").unwrap();
+    let turn = foreground.expect("foreground must finish while background is still gated");
     assert!(
         turn.success,
         "background launch turn must succeed: {turn:?}"
     );
-    assert!(
-        foreground_elapsed < Duration::from_millis(2250),
-        "the three-second command must not consume foreground time: {foreground_elapsed:?}"
-    );
-
-    let session_id = runtime.handles.session_id;
-    let task = runtime
-        .task_registry
-        .list(session_id, None)
-        .await
+    let task = tasks
         .expect("list real session tasks")
         .into_iter()
         .find(|task| task.kind == "background_tool")
         .expect("spawn_background must create a session task");
+    assert!(
+        !task.state.is_terminal(),
+        "background must still await release"
+    );
     let terminal = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             let current = runtime

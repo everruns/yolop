@@ -366,5 +366,8 @@ jobs:
       - name: Sandbox + shell tests
         run: cargo test --locked -p yolop sandbox -- --nocapture --test-threads=1
 
+      - name: Resume from the previous SQLite layout
+        run: cargo test --locked -p yolop --test integration llmsim_resume_moves_old_database_and_reads_history_without_event_export -- --exact --nocapture
+
       - name: Offline smoke (PowerShell shell)
         run: cargo run -p yolop -- --provider llmsim -p "hi"
