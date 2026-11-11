@@ -52,7 +52,7 @@ cuda = ["local-inference"]
 
 [dependencies]
 tempfile = "3"
-agent-client-protocol = "3.3.0"
+agent-client-protocol = "5.0.0"
 anyhow = "1.0"
 ast-grep-core = "0.45"
 ast-grep-language = { version = "0.45", default-features = false, features = [
