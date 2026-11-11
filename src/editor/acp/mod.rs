@@ -29,7 +29,7 @@ use async_trait::async_trait;
 use crate::capabilities::ClientUiContext;
 use crate::capabilities::host::EditorClientIdentity;
 use crate::config::{SandboxMode, SettingsStore};
-use crate::runtime::session_log::{legacy_session_log_path, session_dir_path, session_log_path};
+use crate::runtime::session_log::session_dir_path;
 use crate::runtime::{BuildOptions, BuiltRuntime, ProviderChoice, build_with_options};
 use agent_client_protocol::schema::v1::{AuthMethod, AuthMethodAgent};
 use everruns_contracts::typed_id::SessionId as RuntimeSessionId;
@@ -90,10 +90,9 @@ struct ConfigRuntimeFactory {
 
 #[async_trait]
 impl RuntimeFactory for ConfigRuntimeFactory {
-    fn session_exists(&self, session_id: RuntimeSessionId) -> bool {
+    async fn session_exists(&self, session_id: RuntimeSessionId) -> bool {
         let session_dir = session_dir_path(&self.sessions_dir, session_id);
-        session_log_path(&session_dir).exists()
-            || legacy_session_log_path(&self.sessions_dir, session_id).exists()
+        crate::runtime::saved_sessions::exists(&session_dir, session_id).await
     }
 
     fn auth_methods(&self) -> Vec<AuthMethod> {
@@ -254,10 +253,9 @@ mod tests {
 
     #[async_trait]
     impl RuntimeFactory for ScriptedFactory {
-        fn session_exists(&self, session_id: RuntimeSessionId) -> bool {
+        async fn session_exists(&self, session_id: RuntimeSessionId) -> bool {
             let session_dir = session_dir_path(&self.sessions_dir, session_id);
-            session_log_path(&session_dir).exists()
-                || legacy_session_log_path(&self.sessions_dir, session_id).exists()
+            crate::runtime::saved_sessions::exists(&session_dir, session_id).await
         }
 
         fn auth_methods(&self) -> Vec<AuthMethod> {
@@ -315,10 +313,9 @@ mod tests {
 
     #[async_trait]
     impl RuntimeFactory for RecordingFactory {
-        fn session_exists(&self, session_id: RuntimeSessionId) -> bool {
+        async fn session_exists(&self, session_id: RuntimeSessionId) -> bool {
             let session_dir = session_dir_path(&self.sessions_dir, session_id);
-            session_log_path(&session_dir).exists()
-                || legacy_session_log_path(&self.sessions_dir, session_id).exists()
+            crate::runtime::saved_sessions::exists(&session_dir, session_id).await
         }
 
         async fn build(
@@ -365,8 +362,8 @@ mod tests {
 
     #[async_trait]
     impl RuntimeFactory for SetupHintFactory {
-        fn session_exists(&self, session_id: RuntimeSessionId) -> bool {
-            self.inner.session_exists(session_id)
+        async fn session_exists(&self, session_id: RuntimeSessionId) -> bool {
+            self.inner.session_exists(session_id).await
         }
 
         async fn setup_page_url(&self) -> Option<String> {
@@ -1074,11 +1071,15 @@ mod tests {
                     elicitation = Some(msg["params"].clone());
                 }
                 _ if msg.get("id").and_then(Value::as_i64) == Some(2) => {
-                    // What the model was handed is in the session log.
                     let id = session_id.parse().expect("session id");
-                    let log = session_log_path(&session_dir_path(sessions.path(), id));
-                    let log = std::fs::read_to_string(log).expect("session log");
-                    return (elicitation, log);
+                    let mut records = Vec::new();
+                    crate::runtime::saved_sessions::visit_records(
+                        &session_dir_path(sessions.path(), id),
+                        id,
+                        |record| records.push(record.to_string()),
+                    )
+                    .unwrap();
+                    return (elicitation, records.join("\n"));
                 }
                 _ => {}
             }
@@ -2555,7 +2556,12 @@ mod tests {
         })
         .await;
 
-        assert!(run.assistant_text().contains("budget exhausted"));
+        assert!(
+            run.assistant_text().contains("budget exhausted"),
+            "stop={:?}, updates={:?}",
+            run.stop_reason,
+            run.updates
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2808,15 +2814,15 @@ mod tests {
             "expected a proactive wake turn after spawn_background finished (via the wake seam)"
         );
         assert!(
-            sessions.join(&session_id).join(".background").is_dir(),
+            sessions.join(&session_id).join("background").is_dir(),
             "background artifacts should live in the session directory"
         );
         assert!(
-            !cwd.join(".background").exists(),
+            !cwd.join("background").exists(),
             "background execution must not create .background in the workspace"
         );
         let session_dir = sessions.join(&session_id);
-        let run_dir = std::fs::read_dir(session_dir.join(".background"))
+        let run_dir = std::fs::read_dir(session_dir.join("background"))
             .expect("list durable background artifacts")
             .next()
             .expect("one background run")
@@ -2862,8 +2868,15 @@ mod tests {
                 .join("\n")
         );
 
-        let durable_events = std::fs::read_to_string(session_dir.join("events.jsonl"))
-            .expect("read durable parent history");
+        let mut records = Vec::new();
+        crate::runtime::saved_sessions::visit_records(
+            &session_dir,
+            session_id.parse().unwrap(),
+            |record| records.push(record),
+        )
+        .unwrap();
+        let durable_events = serde_json::to_string(&records).unwrap();
+        assert!(!session_dir.join("events.jsonl").exists());
         assert!(
             durable_events.contains("LONG_PARENT_HISTORY_MARKER"),
             "compaction must not rewrite durable parent history"
@@ -3160,14 +3173,16 @@ mod tests {
             5,
             "one completion review is allowed; a consumed task must not create another agent generation"
         );
-        let events = std::fs::read_to_string(sessions.join(session_id).join("events.jsonl"))
-            .expect("read events");
+        let mut events = Vec::new();
+        crate::runtime::saved_sessions::visit_records(
+            &sessions.join(&session_id),
+            session_id.parse().unwrap(),
+            |record| events.push(record),
+        )
+        .unwrap();
         let started = events
-            .lines()
-            .filter(|line| {
-                serde_json::from_str::<everruns_core::Event>(line)
-                    .is_ok_and(|event| event.event_type == "turn.started")
-            })
+            .iter()
+            .filter(|event| event["type"] == "turn.started")
             .count();
         assert_eq!(
             started, 1,

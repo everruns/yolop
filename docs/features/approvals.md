@@ -94,7 +94,7 @@ as "you don't need to ask for local commits."
 
 After you approve, yolop calls the internal `record_approval` tool with a short
 description of the approved action. That tool call is written into the
-session's durable `events.jsonl` log with the rest of the session events.
+session's durable `engine.sqlite` journal with the rest of the session events.
 
 The audit entry is intended to answer what was approved and when. Do not put
 secrets in an approval message; command details and approval text can be

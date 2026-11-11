@@ -2042,9 +2042,6 @@ impl ThreadRouting {
         use crate::runtime::session_log;
         let dir = session_log::session_dir_path(&self.sessions_dir, thread.thread_id);
         let path = session_log::session_log_path(&dir);
-        if !path.exists() {
-            return Ok(Vec::new());
-        }
         let replayed = session_log::replay(&path, thread.thread_id)?;
         Ok(session_log::messages_from_events(&replayed.events))
     }

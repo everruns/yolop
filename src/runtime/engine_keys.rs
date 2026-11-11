@@ -76,15 +76,16 @@ pub fn open_or_create(directory: &Path) -> Result<String> {
 }
 
 fn session_authority_exists(directory: &Path) -> Result<bool> {
-    let engines = directory.join(".engine");
-    let entries = match std::fs::read_dir(engines) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => return Err(error).context("inspect session authority directories"),
-    };
-    for entry in entries {
-        if entry?.path().join("engine.sqlite").exists() {
-            return Ok(true);
+    for root in [directory.to_path_buf(), directory.join(".engine")] {
+        let entries = match std::fs::read_dir(root) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error).context("inspect session authority directories"),
+        };
+        for entry in entries {
+            if entry?.path().join("engine.sqlite").exists() {
+                return Ok(true);
+            }
         }
     }
     Ok(false)
@@ -123,13 +124,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_missing_key_for_session_owned_authority_refuses_replacement() {
-        let dir = tempfile::tempdir().unwrap();
-        let session = dir.path().join(".engine/session_test");
-        std::fs::create_dir_all(&session).unwrap();
-        std::fs::write(session.join("engine.sqlite"), "").unwrap();
-        assert!(open_or_create(dir.path()).is_err());
-        assert!(!dir.path().join("engine.key").exists());
+    fn a_missing_key_for_existing_authority_refuses_replacement() {
+        for layout in [
+            "session_test/engine.sqlite",
+            ".engine/session_test/engine.sqlite",
+            "engine.sqlite",
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let database = dir.path().join(layout);
+            std::fs::create_dir_all(database.parent().unwrap()).unwrap();
+            std::fs::write(database, "").unwrap();
+            assert!(open_or_create(dir.path()).is_err(), "{layout}");
+            assert!(!dir.path().join("engine.key").exists());
+        }
     }
 
     #[test]

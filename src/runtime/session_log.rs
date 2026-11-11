@@ -1,5 +1,5 @@
 // Native sessions use this module for private host diagnostics, frontend
-// observation, saved-format import and readable JSONL exports. SqliteHosting
+// observation, saved-format import and SQLite replay. SqliteHosting
 // owns canonical events. The legacy writable emitter remains a test fixture.
 // Session file leases cover startup before a discoverable directory exists.
 // Prompts, reasoning and diagnostic files retain owner-only permissions.
@@ -318,37 +318,6 @@ fn write_private_file(path: &Path, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
-/// Copy a pre-folder-layout session log into the current session folder.
-///
-/// The old layout wrote `<sessions_dir>/<session_id>.jsonl`; the current
-/// layout writes `<sessions_dir>/<session_id>/events.jsonl`. Copying instead
-/// of renaming keeps older yolop binaries able to read the legacy file.
-pub fn migrate_legacy_session_log(
-    sessions_dir: &Path,
-    session_dir: &Path,
-    session_id: SessionId,
-) -> Result<Option<PathBuf>> {
-    let current = session_log_path(session_dir);
-    if current.exists() {
-        return Ok(None);
-    }
-    let legacy = legacy_session_log_path(sessions_dir, session_id);
-    if !legacy.exists() {
-        return Ok(None);
-    }
-    std::fs::create_dir_all(session_dir).map_err(|e| {
-        AgentLoopError::config(format!("create session dir {}: {e}", session_dir.display()))
-    })?;
-    std::fs::copy(&legacy, &current).map_err(|e| {
-        AgentLoopError::config(format!(
-            "migrate legacy session log {} to {}: {e}",
-            legacy.display(),
-            current.display()
-        ))
-    })?;
-    Ok(Some(legacy))
-}
-
 /// Result of replaying a JSONL session log from disk.
 #[derive(Debug, Default)]
 pub struct ReplayedSession {
@@ -365,6 +334,26 @@ pub struct ReplayedSession {
 /// a tracing warning; a half-written tail line shouldn't take down the
 /// next session.
 pub fn replay(path: &Path, expected: SessionId) -> Result<ReplayedSession> {
+    if path.file_name().is_some_and(|name| name == "events.jsonl") {
+        let mut events = Vec::new();
+        if super::saved_sessions::visit_native(
+            path.parent().unwrap_or_else(|| Path::new(".")),
+            expected,
+            |event| {
+                events.push(event);
+                Ok(())
+            },
+        )
+        .map_err(|error| AgentLoopError::store(error.to_string()))?
+        .is_some()
+        {
+            return Ok(ReplayedSession {
+                max_sequence: events.iter().filter_map(|event| event.sequence).max(),
+                messages: messages_from_events(&events),
+                events,
+            });
+        }
+    }
     if !path.exists() {
         return Ok(ReplayedSession::default());
     }
@@ -565,15 +554,14 @@ impl JsonlEventEmitter {
     }
 
     /// Observation and product diagnostics after ownership moves to Engine.
-    /// Canonical JSONL is rebuilt by the authority. Host diagnostics have a
-    /// separate journal and no canonical sequence or conversation content.
+    /// Canonical events remain in SQLite. Host diagnostics have a separate
+    /// journal and no canonical sequence or conversation content.
     pub(crate) fn observe_authority(
-        path: &Path,
+        session_dir: &Path,
         materializer: Arc<SessionMaterializer>,
         lease: SessionFileLease,
     ) -> Self {
         let (live, _) = broadcast::channel(EVENT_BROADCAST_CAPACITY);
-        let session_dir = path.parent().expect("session export has a parent");
         Self {
             events: Arc::new(RwLock::new(Vec::new())),
             sequence: Arc::new(AtomicI32::new(0)),
@@ -660,7 +648,7 @@ impl JsonlEventEmitter {
     }
 
     /// Replace the model-visible branch after a conversation rewind. The
-    /// discarded suffix remains durable in `events.jsonl`; only the live view
+    /// discarded suffix remains durable in the native authority; only the live view
     /// queried by the runtime and transcript changes.
     pub async fn replace_collected_events(&self, events: Vec<Event>) {
         let mut collected = self.events.write().await;
@@ -995,7 +983,7 @@ impl EventReader for JsonlEventEmitter {
     /// This is where yolop's rewind survives the move to an append-only
     /// canonical log. `self.events` holds only the branch the model can see —
     /// `replace_collected_events` swaps it after a rewind, while the discarded
-    /// suffix stays durable in `events.jsonl` for redo. Paging over that view
+    /// suffix stays durable in the native authority for redo. Paging over that view
     /// therefore hands the runtime the active branch without the log needing
     /// any truncation or mutation contract.
     async fn read_page(
@@ -1581,50 +1569,6 @@ mod tests {
         assert_eq!(collected.len(), 3, "seeded + 1 new");
         // New event sequence continues from start_sequence we opened with.
         assert_eq!(collected[2].sequence, Some(3));
-    }
-
-    #[test]
-    fn migrate_legacy_session_log_copies_flat_jsonl() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let session_id = SessionId::from_seed(48200);
-        let legacy_path = legacy_session_log_path(dir.path(), session_id);
-        std::fs::write(&legacy_path, "legacy event\n").expect("write legacy");
-
-        let session_dir = session_dir_path(dir.path(), session_id);
-        let migrated =
-            migrate_legacy_session_log(dir.path(), &session_dir, session_id).expect("migrate");
-        let current_path = session_log_path(&session_dir);
-
-        assert_eq!(migrated.as_deref(), Some(legacy_path.as_path()));
-        assert_eq!(
-            std::fs::read_to_string(&current_path).expect("read migrated"),
-            "legacy event\n"
-        );
-        assert!(
-            legacy_path.exists(),
-            "migration copies instead of renaming for old yolop compatibility"
-        );
-    }
-
-    #[test]
-    fn migrate_legacy_session_log_does_not_overwrite_current_log() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let session_id = SessionId::from_seed(48201);
-        let legacy_path = legacy_session_log_path(dir.path(), session_id);
-        std::fs::write(&legacy_path, "legacy event\n").expect("write legacy");
-        let session_dir = session_dir_path(dir.path(), session_id);
-        std::fs::create_dir_all(&session_dir).expect("create session dir");
-        let current_path = session_log_path(&session_dir);
-        std::fs::write(&current_path, "current event\n").expect("write current");
-
-        let migrated =
-            migrate_legacy_session_log(dir.path(), &session_dir, session_id).expect("migrate");
-
-        assert!(migrated.is_none());
-        assert_eq!(
-            std::fs::read_to_string(&current_path).expect("read current"),
-            "current event\n"
-        );
     }
 
     #[test]

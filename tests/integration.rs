@@ -551,12 +551,47 @@ fn single_session_id(sessions_dir: &Path) -> String {
     ids[0].clone()
 }
 
-fn session_log_line_count(sessions_dir: &Path, session_id: &str) -> usize {
-    let log = sessions_dir.join(session_id).join("events.jsonl");
-    std::fs::read_to_string(&log)
-        .unwrap_or_else(|e| panic!("read session log {}: {e}", log.display()))
-        .lines()
-        .count()
+fn session_event_count(sessions_dir: &Path, session_id: &str) -> usize {
+    let database = sessions_dir.join(session_id).join("engine.sqlite");
+    let mut count = 0;
+    assert!(
+        everruns::hosting::SqliteHosting::visit_session_events(
+            database,
+            session_id.parse().unwrap(),
+            |_| {
+                count += 1;
+                Ok(())
+            }
+        )
+        .unwrap()
+    );
+    count
+}
+
+fn assert_no_saved_conversations(directory: &Path) {
+    let output = yolop_command()
+        .args([
+            "--session-dir",
+            directory.to_str().unwrap(),
+            "sessions",
+            "list",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        value["count"], 0,
+        "empty authorities must not appear as saved conversations"
+    );
+    for session in session_ids(directory) {
+        assert!(!directory.join(&session).join("workspace.json").exists());
+        assert!(!directory.join(&session).join("events.jsonl").exists());
+    }
 }
 
 #[test]
@@ -1243,10 +1278,9 @@ fn llmsim_print_writes_atif_trajectory() {
 }
 
 #[test]
-fn llmsim_resume_replays_prior_events() {
-    // Two-shot test: the first invocation starts a fresh session and writes a
-    // JSONL log; the second invocation resumes that session via `--session <id>`
-    // and appends to the same log without relying on print-mode chrome.
+fn llmsim_resume_moves_old_database_and_reads_history_without_event_export() {
+    // Resume an authority from the previous directory layout through the CLI,
+    // then search its canonical history with no event-export file.
     let tmp = tempfile::tempdir().expect("tempdir");
     let session_dir = tmp.path().to_str().unwrap();
 
@@ -1275,8 +1309,19 @@ fn llmsim_resume_replays_prior_events() {
     let session_id = single_session_id(tmp.path());
     let persisted_session = tmp.path().join(&session_id);
     assert!(persisted_session.join("workspace.json").is_file());
-    let first_log_lines = session_log_line_count(tmp.path(), &session_id);
+    let first_log_lines = session_event_count(tmp.path(), &session_id);
     assert!(first_log_lines > 0, "first run should write a session log");
+
+    let database = persisted_session.join("engine.sqlite");
+    assert!(database.exists());
+    assert!(!persisted_session.join("events.jsonl").exists());
+    {
+        let db = rusqlite::Connection::open(&database).unwrap();
+        db.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)").unwrap();
+    }
+    let previous = tmp.path().join(".engine").join(&session_id);
+    fs::create_dir_all(&previous).unwrap();
+    fs::rename(&database, previous.join("engine.sqlite")).unwrap();
 
     let second = yolop_command()
         .args([
@@ -1307,13 +1352,69 @@ fn llmsim_resume_replays_prior_events() {
         sessions == [session_id.clone()],
         "resume should reuse the existing session dir: {sessions:?}"
     );
-    let second_log_lines = session_log_line_count(tmp.path(), &session_id);
+    let second_log_lines = session_event_count(tmp.path(), &session_id);
     assert!(second_log_lines > first_log_lines);
+    assert!(database.exists());
+    assert!(!persisted_session.join("events.jsonl").exists());
+    let search = yolop_command()
+        .args([
+            "--session-dir",
+            session_dir,
+            "sessions",
+            "search",
+            "--query",
+            "second turn",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        search.status.success(),
+        "{}",
+        String::from_utf8_lossy(&search.stderr)
+    );
+    let matches: serde_json::Value = serde_json::from_slice(&search.stdout).unwrap();
+    assert_eq!(matches["sessions"][0]["session_id"], session_id);
+
+    #[cfg(unix)]
+    {
+        // A WAL-only write can leave the directory mtime older than idle sessions.
+        // Discovery orders journal activity, not directory creation or heartbeats.
+        let older = tmp.path().join("session_00000000000000000000000000000001");
+        fs::create_dir(&older).unwrap();
+        let older_journal = older.join("events.jsonl");
+        fs::write(&older_journal, r#"{"type":"input.message","ts":"2000-01-01T00:00:00Z","data":{"message":{"role":"user","content":[{"type":"text","text":"older history"}]}}}"#).unwrap();
+        let old_time = std::fs::FileTimes::new().set_modified(std::time::SystemTime::UNIX_EPOCH);
+        fs::File::open(older_journal)
+            .unwrap()
+            .set_times(old_time)
+            .unwrap();
+        fs::File::open(&persisted_session)
+            .unwrap()
+            .set_times(old_time)
+            .unwrap();
+        let listed = yolop_command()
+            .args([
+                "--session-dir",
+                session_dir,
+                "sessions",
+                "list",
+                "--limit",
+                "1",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            listed.status.success(),
+            "{}",
+            String::from_utf8_lossy(&listed.stderr)
+        );
+        let listed: serde_json::Value = serde_json::from_slice(&listed.stdout).unwrap();
+        assert_eq!(listed["sessions"][0]["session_id"], session_id);
+    }
 }
 
 #[test]
 fn failed_post_build_startup_leaves_no_session_shell() {
-    const EAGER_BASELINE_SHELLS_PER_STARTUP: usize = 1;
     let sessions = tempfile::tempdir().expect("sessions tempdir");
     let output = yolop_command()
         .args([
@@ -1328,12 +1429,7 @@ fn failed_post_build_startup_leaves_no_session_shell() {
         .expect("spawn failed startup");
 
     assert!(!output.status.success(), "unknown theme must fail startup");
-    let shells = session_ids(sessions.path()).len();
-    assert_eq!(
-        shells,
-        EAGER_BASELINE_SHELLS_PER_STARTUP - 1,
-        "lazy startup must eliminate the eager baseline shell"
-    );
+    assert_no_saved_conversations(sessions.path());
 }
 
 #[test]
@@ -1348,10 +1444,7 @@ fn immediate_tui_exit_leaves_no_session_shell() {
     tui.write_input(b"\x03\x03");
     assert!(tui.wait_or_kill(Duration::from_secs(3)).success());
 
-    assert!(
-        session_ids(&sessions).is_empty(),
-        "immediate exit must not create a discoverable empty session"
-    );
+    assert_no_saved_conversations(&sessions);
 }
 
 #[test]

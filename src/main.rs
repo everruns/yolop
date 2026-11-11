@@ -1083,11 +1083,15 @@ async fn async_main(crash_reporter: &crash_report::CrashReporter) -> Result<()> 
         }
         return Ok(());
     }
-    let cli_registry = detached_cli_registry()?;
+    let cli_registry = detached_cli_registry(None)?;
     let root = cli_registry.augment(Cli::command())?;
     let mut matches = match root.clone().try_get_matches() {
         Ok(matches) => matches,
         Err(err) => exit_with_cli_error(err, &root),
+    };
+    let cli_registry = match matches.get_one::<PathBuf>("session_dir") {
+        Some(directory) => detached_cli_registry(Some(directory.clone()))?,
+        None => cli_registry,
     };
     if let Some(invocation) = cli_registry.invocation(&matches)? {
         tracing_subscriber::fmt()
@@ -1948,7 +1952,7 @@ async fn run_command(command: Commands) -> Result<()> {
     }
 }
 
-fn detached_cli_registry() -> Result<control::CliRegistry> {
+fn detached_cli_registry(sessions_dir: Option<PathBuf>) -> Result<control::CliRegistry> {
     // CLI metadata must remain available even in stripped-down environments
     // with no platform config directory. Operations against these fallbacks
     // still fail visibly if they need to persist state.
@@ -2002,19 +2006,16 @@ fn detached_cli_registry() -> Result<control::CliRegistry> {
         settings.clone(),
     )))?;
     registry.register(Arc::new(capabilities::WorktreeCapability::detached()))?;
-    let coordination_store = match runtime::session_log::default_sessions_dir()
-        .ok()
-        .and_then(|dir| capabilities::CoordinationStore::open(&dir).ok())
-    {
-        Some(store) => store,
-        None => capabilities::CoordinationStore::ephemeral()?,
+    let sessions_dir = sessions_dir
+        .or_else(|| runtime::session_log::default_sessions_dir().ok())
+        .unwrap_or_else(|| workspace.join(".yolop").join("sessions"));
+    let coordination_store = match capabilities::CoordinationStore::open(&sessions_dir) {
+        Ok(store) => store,
+        Err(_) => capabilities::CoordinationStore::ephemeral()?,
     };
     registry.register(Arc::new(capabilities::SkillManagementCapability::new(
         capabilities::SkillDirs::resolve(&workspace, None),
     )))?;
-    let sessions_dir = runtime::session_log::default_sessions_dir()
-        .ok()
-        .unwrap_or_else(|| workspace.join(".yolop").join("sessions"));
     registry.register(Arc::new(capabilities::SessionsCapability::detached(
         sessions_dir,
         coordination_store,
@@ -2582,7 +2583,7 @@ async fn run_print_mode(
         settings,
         ..
     } = runtime;
-    let _ = (&startup.session_dir, &startup.session_log_path);
+    let _ = (&startup.session_dir, &startup.session_database_path);
     if let Some(notice) = &startup.untrusted_hooks_notice {
         eprintln!("yolop: {notice}");
     }
@@ -3030,7 +3031,7 @@ mod tests {
             }
         }
 
-        let registry = detached_cli_registry().expect("build detached CLI registry");
+        let registry = detached_cli_registry(None).expect("build detached CLI registry");
         let root = registry
             .augment(Cli::command())
             .expect("augment root command");
@@ -3150,7 +3151,7 @@ mod tests {
 
     #[tokio::test]
     async fn detached_management_commands_dispatch() {
-        let registry = detached_cli_registry().expect("build detached CLI registry");
+        let registry = detached_cli_registry(None).expect("build detached CLI registry");
         for argv in [
             vec!["yolop", "config", "hooks", "list"],
             vec!["yolop", "skills", "list"],
@@ -3208,7 +3209,7 @@ mod tests {
 
     #[test]
     fn attached_config_is_nested_and_top_level_models_is_absent() {
-        let registry = detached_cli_registry().expect("build detached CLI registry");
+        let registry = detached_cli_registry(None).expect("build detached CLI registry");
         let root = registry
             .augment(Cli::command())
             .expect("augment root command");
