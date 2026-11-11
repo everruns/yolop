@@ -12,7 +12,8 @@ study keeps a small generic sample set for broad feature A/Bs, while every
 sample here is a **trap for lexical navigation**: cases where grep/ast-grep
 is wrong or wasteful and a language server is precise. Structurally it is the
 same pure-Rust `mira-eval` SDK pattern, driving headless `yolop -p` per case
-and mining the session `events.jsonl`.
+and mining the session event journal (`engine.sqlite`, or `events.jsonl`
+from older binaries).
 
 ## The matrix
 

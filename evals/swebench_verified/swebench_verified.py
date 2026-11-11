@@ -63,6 +63,7 @@ import json
 import os
 import re
 import shutil
+import sqlite3
 import subprocess
 import sys
 import time
@@ -401,6 +402,41 @@ def _yolop_usage_cost(usage: dict | None) -> float:
     return float(usage.get("estimated_cost_usd") or 0.0)
 
 
+def yolop_journal(session_dir: str | Path, session_id: str) -> Path:
+    """Path to the session's event journal as JSONL.
+
+    Current yolop keeps events only in `<session>/engine.sqlite` (no
+    `events.jsonl` export), so project committed rows (through the authority's
+    `head`) into a sibling `<session_id>.events.jsonl` outside the session
+    folder, where yolop never reads it. Older binaries still write
+    `events.jsonl`, which wins when present.
+    """
+    folder = Path(session_dir) / session_id
+    legacy = folder / "events.jsonl"
+    if legacy.exists():
+        return legacy
+    out = Path(session_dir) / f"{session_id}.events.jsonl"
+    database = folder / "engine.sqlite"
+    if not database.is_file():
+        return out
+    try:
+        with sqlite3.connect(f"file:{database}?mode=ro", uri=True, timeout=5) as db:
+            row = db.execute(
+                "SELECT control FROM framework_authority WHERE session=?", (session_id,)
+            ).fetchone()
+            if row is None:
+                return out
+            head = json.loads(row[0])["head"]
+            rows = db.execute(
+                "SELECT value FROM framework_events WHERE session=? AND seq<=? ORDER BY seq",
+                (session_id, head),
+            ).fetchall()
+    except (sqlite3.Error, KeyError, ValueError):
+        return out
+    out.write_text("".join(value + "\n" for (value,) in rows))
+    return out
+
+
 def running_cost(session_log_path: str | Path) -> float:
     """Cheap incremental cost read for in-flight budget enforcement (yolop)."""
     total = 0.0
@@ -657,14 +693,14 @@ def run_yolop(cfg: dict, instance: Instance, workdir: str, session_dir: str) -> 
     env = dict(os.environ)
     env["XDG_CONFIG_HOME"] = str(config_home)
     env.update(cfg.get("env") or {})
-    log_path = Path(session_dir) / session_id / "events.jsonl"
 
     start = time.monotonic()
     res = run_agent_process(
         cmd, env=env, name="yolop", timeout=cfg["timeout"],
-        max_cost_usd=cfg.get("max_cost_usd"), cost_probe=lambda: running_cost(log_path),
+        max_cost_usd=cfg.get("max_cost_usd"), cost_probe=lambda: running_cost(yolop_journal(session_dir, session_id)),
     )
     error, stop_reason = res.error, res.stop_reason
+    log_path = yolop_journal(session_dir, session_id)
     if log_path.exists():
         metrics = extract_yolop(log_path)
     else:
@@ -736,7 +772,6 @@ def run_yolop_container(cfg: dict, instance: Instance, session_dir: str) -> Agen
     image = _ensure_image(instance)
     sess = Path(session_dir)
     sess.mkdir(parents=True, exist_ok=True)
-    log_path = sess / session_id / "events.jsonl"
 
     # worktrees off so edits land in /testbed (not a linked branch); settings
     # live under the mounted session dir.
@@ -794,13 +829,14 @@ def run_yolop_container(cfg: dict, instance: Instance, session_dir: str) -> Agen
         start = time.monotonic()
         res = run_agent_process(
             exec_cmd, env=dict(os.environ), name="yolop", timeout=cfg["timeout"],
-            max_cost_usd=cfg.get("max_cost_usd"), cost_probe=lambda: running_cost(log_path),
+            max_cost_usd=cfg.get("max_cost_usd"), cost_probe=lambda: running_cost(yolop_journal(session_dir, session_id)),
         )
         error, stop_reason = res.error, res.stop_reason
         patch = _container_patch(cid)
     finally:
         _docker(["rm", "-f", cid])
 
+    log_path = yolop_journal(sess, session_id)
     if log_path.exists():
         metrics = extract_yolop(log_path)
     else:

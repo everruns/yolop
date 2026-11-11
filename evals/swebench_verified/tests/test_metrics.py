@@ -112,3 +112,33 @@ class MetricsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class JournalTest(unittest.TestCase):
+    """`yolop_journal` must mine the SQLite authority current yolop writes."""
+
+    def test_projects_engine_sqlite_from_real_yolop(self):
+        import os
+        import subprocess
+        import uuid
+
+        from swebench_verified import yolop_journal
+
+        repo = Path(__file__).resolve().parents[3]
+        binary = Path(os.environ.get("YOLOP_BIN", repo / "target" / "debug" / "yolop"))
+        if not binary.exists():
+            self.skipTest(f"no yolop binary at {binary}")
+        with tempfile.TemporaryDirectory() as tmp:
+            session_id = "session_" + uuid.uuid4().hex
+            env = dict(os.environ, XDG_CONFIG_HOME=str(Path(tmp) / "config"),
+                       XDG_DATA_HOME=str(Path(tmp) / "data"))
+            subprocess.run(
+                [str(binary), "--provider", "llmsim", "--session", session_id,
+                 "--session-dir", tmp, "-p", "say hi"],
+                cwd=tmp, env=env, check=True, capture_output=True, timeout=120,
+            )
+            journal = yolop_journal(tmp, session_id)
+            self.assertTrue(journal.exists(), journal)
+            m = extract_metrics(journal)
+            self.assertGreaterEqual(m.llm_calls, 1)
+            self.assertGreater(m.tokens.input_tokens, 0)
