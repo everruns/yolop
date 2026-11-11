@@ -18,9 +18,7 @@ use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 
 use super::compaction_checkpoint::{LegacyCompactionAttempt, read_legacy_compaction};
-use super::session_log::{
-    SessionFileLease, SessionWorkspaceMetadata, lock_session, session_log_path,
-};
+use super::session_log::{SessionFileLease, SessionWorkspaceMetadata, lock_session};
 use crate::session_state::checkpoint::{LegacyConversation, read_legacy_conversation};
 
 // Matches the SQLite authority's maximum imported event envelope.
@@ -42,6 +40,7 @@ pub struct LegacySessionSource {
     journal: Vec<Event>,
     journal_digest: [u8; 32],
     source_dir: std::path::PathBuf,
+    journal_path: std::path::PathBuf,
     lease: Option<SessionFileLease>,
 }
 
@@ -374,7 +373,8 @@ impl LegacySessionSource {
         mut parents: HashMap<SessionId, SessionId>,
         lease: Option<SessionFileLease>,
     ) -> Result<Self> {
-        if !session_dir.is_dir() {
+        let journal_path = super::saved_sessions::legacy_journal(session_dir, session_id);
+        if !session_dir.is_dir() && !journal_path.is_file() {
             bail!("migration source session does not exist");
         }
         let lease = match lease {
@@ -382,7 +382,7 @@ impl LegacySessionSource {
             None => lock_session(session_dir)?,
         };
         let mut digest = Sha256::new();
-        let mut events: Vec<Event> = read_records(&session_log_path(session_dir), &mut digest)?;
+        let mut events: Vec<Event> = read_records(&journal_path, &mut digest)?;
         let journal_digest = digest.clone().finalize().into();
         let mut sequence = 0i32;
         let mut ids = HashSet::new();
@@ -513,6 +513,7 @@ impl LegacySessionSource {
             journal,
             journal_digest,
             source_dir: session_dir.to_path_buf(),
+            journal_path,
             fingerprint: digest
                 .finalize()
                 .iter()
@@ -541,7 +542,7 @@ impl LegacySessionSource {
             everruns_contracts::typed_id::EventId::new()
         ));
         let mut archive = options.open(&temporary)?;
-        let source = read_source_file(&session_log_path(&self.source_dir))?
+        let source = read_source_file(&self.journal_path)?
             .context("migration source journal disappeared")?;
         let result = self.verify_and_copy_journal(source, Some(&mut archive));
         if let Err(error) = result {
@@ -583,7 +584,7 @@ impl LegacySessionSource {
         let mut fingerprint = Sha256::new();
         digest_source(
             &mut fingerprint,
-            Path::new("events.jsonl"),
+            &self.journal_path,
             Some(&digest.finalize()),
         );
         fingerprint.update(length.to_be_bytes());
@@ -858,6 +859,28 @@ mod tests {
             path,
             &events.iter().map(|event| json!(event)).collect::<Vec<_>>(),
         );
+    }
+
+    #[test]
+    fn flat_legacy_journal_is_frozen_and_archived_without_an_event_export() {
+        let root = tempfile::tempdir().unwrap();
+        let session = SessionId::new();
+        let directory = root.path().join(session.to_string());
+        let flat = root.path().join(format!("{session}.jsonl"));
+        journal(&flat, &[event(session, Some(1), "flat source")]);
+        let bytes = std::fs::read(&flat).unwrap();
+        let source = LegacySessionSource::read(&directory, session).unwrap();
+        assert!(!directory.exists(), "preflight must not copy the journal");
+        // Runtime opens the session authority before publishing the archive.
+        std::fs::create_dir(&directory).unwrap();
+        source.retain_source_journal().unwrap();
+        source.retain_source_journal().unwrap();
+        assert_eq!(
+            std::fs::read(directory.join("legacy-events.jsonl")).unwrap(),
+            bytes
+        );
+        assert_eq!(std::fs::read(flat).unwrap(), bytes);
+        assert!(!directory.join("events.jsonl").exists());
     }
 
     fn budget_event(owner: &Event, sequence: i32, kind: &str) -> Event {
@@ -1144,7 +1167,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(source.summary()["event_count"], 4);
-        let profile = SqliteHosting::open_session(temp.path().join(".engine"), root).unwrap();
+        let profile = SqliteHosting::open_session(temp.path(), root).unwrap();
         let build = AgentBuild::new("yolop", "family-test");
         let agent = everruns::Agent::builder()
             .model(everruns::Model::simulated("reply"))
@@ -1204,11 +1227,8 @@ mod tests {
             json!(child)
         );
         for (owner, registered) in [(root, Some(child)), (child, Some(nested)), (nested, None)] {
-            let db = rusqlite::Connection::open(SqliteHosting::session_db_path(
-                temp.path().join(".engine"),
-                owner,
-            ))
-            .unwrap();
+            let db = rusqlite::Connection::open(SqliteHosting::session_db_path(temp.path(), owner))
+                .unwrap();
             let children = db
                 .prepare("SELECT session FROM framework_session_children")
                 .unwrap()

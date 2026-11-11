@@ -19,7 +19,9 @@ mod session_start;
 // `everruns-openrouter` reports those gates as first-class kinds.
 pub(crate) mod attestation;
 pub(crate) mod reasoning;
+pub(crate) mod saved_sessions;
 pub mod session;
+mod session_layout;
 pub mod session_log;
 pub(crate) mod speed;
 pub(crate) mod turn_scope;
@@ -120,8 +122,8 @@ use crate::exec::workspace_host::WorkspaceHost;
 use crate::exec::worktree::{WorktreeManager, detect_repo_root, restore_worktree_from_metadata};
 use crate::runtime::session_log::{
     JsonlEventEmitter, SessionKind, SessionWorkspaceMetadata, latest_session_title,
-    migrate_legacy_session_log, read_session_workspace_metadata, replay, session_dir_path,
-    session_log_path, update_session_workspace_title,
+    read_session_workspace_metadata, replay, session_dir_path, session_log_path,
+    update_session_workspace_title,
 };
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -757,10 +759,14 @@ impl CodingCliSessionFileStore {
         );
         let normalized =
             everruns_core::session_path::to_session_path(relative.as_deref().unwrap_or(path));
+        let normalized = match normalized.strip_prefix("/.background") {
+            Some(tail) if tail.is_empty() || tail.starts_with('/') => format!("/background{tail}"),
+            _ => normalized,
+        };
         if normalized == "/outputs"
             || normalized.starts_with("/outputs/")
-            || normalized == "/.background"
-            || normalized.starts_with("/.background/")
+            || normalized == "/background"
+            || normalized.starts_with("/background/")
         {
             Some(normalized)
         } else {
@@ -886,6 +892,11 @@ impl SessionFileSystem for CodingCliSessionFileStore {
             return format!("/workspace/skills/{index}/{}", relative.display());
         }
         if let Some(relative) = self.session_artifact_path(input) {
+            // TODO: remove this policy alias after the aligned Everruns release
+            // recognizes /background as a read-only runtime artifact root.
+            if let Some(tail) = relative.strip_prefix("/background") {
+                return format!("/workspace/.background{tail}");
+            }
             return format!("/workspace{relative}");
         }
         if let Ok(root) = self.workspace.host_root() {
@@ -3705,9 +3716,8 @@ pub struct StartupInfo {
     pub capability_commands: Vec<CommandDescriptor>,
     /// User-invocable skills resolved from the effective startup scopes.
     pub skill_commands: Vec<CommandDescriptor>,
-    /// On-disk JSONL log for this session. Populated even for fresh ids
-    /// so the startup banner can show where new events are being written.
-    pub session_log_path: PathBuf,
+    /// SQLite authority for this session, colocated with its local artifacts.
+    pub session_database_path: PathBuf,
     /// On-disk folder containing this session's durable local artifacts.
     pub session_dir: PathBuf,
     /// How many events were replayed from disk into the new session.
@@ -4410,6 +4420,7 @@ pub async fn build_with_options(
     let session_dir = session_dir_path(&sessions_dir, session_id);
     // Own the source before copying any history or coordination state.
     let mut startup_lease = Some(session_log::lock_session(&session_dir)?);
+    session_layout::migrate_background(&session_dir)?;
     let coordination_store = CoordinationStore::open_for_host(
         &sessions_dir,
         session_id,
@@ -4417,7 +4428,7 @@ pub async fn build_with_options(
     )
     .context("initialize session coordination store")?;
     let log_path = session_log_path(&session_dir);
-    let _legacy_log = migrate_legacy_session_log(&sessions_dir, &session_dir, session_id)?;
+    let legacy_source_path = saved_sessions::legacy_journal(&session_dir, session_id);
 
     let saved_metadata = read_session_workspace_metadata(&session_dir)?;
     let repo_root = detect_repo_root(&canonical_root);
@@ -4610,15 +4621,18 @@ pub async fn build_with_options(
     let connection_catalog = Arc::new(ConnectionCatalog::with_defaults());
     use everruns::hosting::SessionHosting;
     let connection_resolver = Arc::new(YolopConnectionResolver::new(connections.clone()));
-    let authority_directory = sessions_dir.join(".engine");
     let authority_key = engine_keys::open_or_create(&sessions_dir)?;
-    // TODO(everruns#5323): remove vendor/everruns and use the upstream API directly
-    // after the next aligned Everruns release includes session-owned SQLite.
+    // TODO(everruns#5345): remove vendor/everruns and use the upstream API directly
+    // after the aligned release includes layout transfer, journal inspection
+    // and the visible background root. See vendor/everruns/BACKPORT.md.
     let source_sessions = sessions_dir.clone();
-    let native_hosting = everruns::hosting::SqliteHosting::open_session_from(
-        &authority_directory,
+    let native_hosting = everruns::hosting::SqliteHosting::open_session_from_sources(
+        &sessions_dir,
         session_id,
-        Some(sessions_dir.join("engine.sqlite")),
+        [
+            sessions_dir.join(".engine"),
+            sessions_dir.join("engine.sqlite"),
+        ],
         move |source| {
             if source == session_id {
                 return Ok(Box::new(()));
@@ -4653,7 +4667,7 @@ pub async fn build_with_options(
         engine_build.agent,
         engine_build.build_id
     );
-    let mut migration_source = if retained_binding.is_none() && log_path.exists() {
+    let mut migration_source = if retained_binding.is_none() && legacy_source_path.exists() {
         Some(
             migration::LegacySessionSource::read_for_runtime(
                 &session_dir,
@@ -4681,7 +4695,7 @@ pub async fn build_with_options(
             events,
         }
     } else {
-        replay(&log_path, session_id)?
+        replay(&legacy_source_path, session_id)?
     };
     let next_sequence = replayed.max_sequence.map(|m| m + 1).unwrap_or(1);
 
@@ -4692,7 +4706,7 @@ pub async fn build_with_options(
         initial_workspace,
     ));
     let event_bus_typed = Arc::new(JsonlEventEmitter::observe_authority(
-        &log_path,
+        &session_dir,
         materializer.clone(),
         session_lease,
     ));
@@ -5782,7 +5796,10 @@ pub async fn build_with_options(
             tool_names,
             capability_commands,
             skill_commands,
-            session_log_path: log_path,
+            session_database_path: everruns::hosting::SqliteHosting::session_db_path(
+                &sessions_dir,
+                session_id,
+            ),
             session_dir,
             replayed_events: replayed_events_count,
             setup_recommended,
@@ -7802,8 +7819,8 @@ mod tests {
         .expect("build runtime");
 
         assert!(
-            !built.startup.session_dir.exists(),
-            "runtime construction alone must not create a session shell"
+            !built.startup.session_dir.join("workspace.json").exists(),
+            "runtime construction alone must not materialize workspace metadata"
         );
     }
 
@@ -7838,8 +7855,8 @@ mod tests {
 
         assert!(error.to_string().contains("already writing"), "{error:#}");
         assert!(
-            !first.startup.session_dir.exists(),
-            "coordination must not create a discoverable session shell"
+            !first.startup.session_dir.join("workspace.json").exists(),
+            "coordination must not materialize workspace metadata"
         );
     }
 
@@ -10053,11 +10070,31 @@ mod tests {
             .expect("write background artifact");
 
         assert_eq!(
-            std::fs::read_to_string(session.path().join(".background/run_1/output.log"))
+            std::fs::read_to_string(session.path().join("background/run_1/output.log"))
                 .expect("session background artifact"),
             "background output"
         );
         assert!(!workspace.path().join(".background").exists());
+        assert!(!session.path().join(".background").exists());
+        let visible = "/background/run_1/output.log";
+        let physical = store.display_path(visible);
+        assert_eq!(
+            store
+                .read_file(session_id, &physical)
+                .await
+                .unwrap()
+                .unwrap()
+                .content
+                .as_deref(),
+            Some("background output")
+        );
+        for path in [visible, physical.as_str()] {
+            let logical = store.resolve_path(path);
+            assert!(everruns::WorkspacePolicy::runtime_artifacts().permits_write(&logical));
+            let policy = everruns::WorkspacePolicy::read_write();
+            assert!(policy.permits_read(&logical));
+            assert!(!policy.permits_write(&logical));
+        }
     }
 
     #[tokio::test]

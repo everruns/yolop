@@ -91,7 +91,7 @@ The native authority and per-session product metadata are separate:
 
 ```text
 <session>/
-  events.jsonl                 # rebuildable raw Engine authority export
+  engine.sqlite                # canonical events, branches, tasks and schedules
   host-events.jsonl            # private product budget diagnostics
   restore-intent.json          # present only during a confirmed restore
   legacy-events.jsonl          # retained mixed source when importing children
@@ -100,7 +100,7 @@ The native authority and per-session product metadata are separate:
   workspace.json               # existing session/worktree metadata
 ```
 
-Each `engine.sqlite` lives under `sessions/.engine/<session-id>/`; the private
+Each `engine.sqlite` lives directly in its session directory; the private
 `engine.key` stays at the sessions root. Native
 conversation branches and compaction replacements belong to that authority.
 Workspace snapshots use Git objects in the session worktree's repository,
@@ -183,7 +183,7 @@ not enter public events or logs.
 ## Conversation replay
 
 The Engine authority owns the active conversation branch and compaction lineage.
-`events.jsonl` exports the complete journal, including abandoned history.
+The same SQLite authority retains the complete raw journal, including abandoned history. Read-only search and replay inspect it without a duplicate JSONL export.
 
 Native turn-start lifecycle processing captures the workspace before effects and
 records the input's authoritative sequence and the preceding active ranges.

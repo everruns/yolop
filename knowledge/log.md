@@ -1,5 +1,11 @@
 # Knowledge Log
 
+## 2026-11-10, One session folder and one event authority
+
+- [Engine execution](specs/engine-execution.md): colocate SQLite with session metadata and transfer the previous directory layout under family leases.
+- [Session history](specs/session-history.md): read native events directly, stop continuous JSONL exports and omit empty authorities from discovery.
+- [Background execution](specs/background.md): use visible `background/`, migrate existing artifacts and retain aliases for saved task paths.
+
 ## 2026-11-10, Session-owned Engine databases
 
 - [Engine execution](specs/engine-execution.md): route every session and child to its own authority, retain parent-owned child registries and transfer shared canonical state under exclusive session leases.

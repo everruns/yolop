@@ -15,10 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::cmp::Reverse;
 use std::collections::BTreeSet;
-use std::fs::File;
-use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
 
 use crate::capabilities::session_coordination::{
     CoordinationStore, InboxPayload, MAX_MESSAGE_BYTES,
@@ -433,13 +430,8 @@ fn search_sessions(
         .filter_map(Result::ok)
         .filter_map(|entry| {
             let name = entry.file_name().to_str()?.to_string();
-            if !name.starts_with("session_") || !entry.path().join("events.jsonl").is_file() {
-                return None;
-            }
-            let modified = entry
-                .metadata()
-                .and_then(|metadata| metadata.modified())
-                .unwrap_or(SystemTime::UNIX_EPOCH);
+            let session = name.parse::<SessionId>().ok()?;
+            let modified = crate::runtime::saved_sessions::modified(&entry.path(), session);
             Some((Reverse(modified), name, entry.path()))
         })
         .collect::<Vec<_>>();
@@ -453,7 +445,10 @@ fn search_sessions(
         if current && !include_current {
             continue;
         }
-        let scan = scan_session(&session_dir.join("events.jsonl"), query_lower.as_deref());
+        let id: SessionId = session_id
+            .parse()
+            .map_err(|error| format!("invalid saved session ID: {error}"))?;
+        let (scan, path) = scan_session(&session_dir, id, query_lower.as_deref())?;
         if !scan.valid {
             ignored_session_shells += 1;
             continue;
@@ -477,7 +472,10 @@ fn search_sessions(
                 failed_tool_names: summary.failed_tool_names,
                 event_count: summary.event_count,
                 tool_names: summary.tool_names,
-                path: session_dir.join("events.jsonl").display().to_string(),
+                path: path
+                    .unwrap_or_else(|| session_dir.clone())
+                    .display()
+                    .to_string(),
             });
             if matches.len() == limit {
                 break;
@@ -529,14 +527,11 @@ struct SessionScan {
     summary: Option<SessionSummary>,
 }
 
-fn scan_session(path: &Path, query_lower: Option<&str>) -> SessionScan {
-    let Ok(file) = File::open(path) else {
-        return SessionScan {
-            valid: false,
-            summary: None,
-        };
-    };
-    let reader = BufReader::new(file);
+fn scan_session(
+    directory: &Path,
+    session: SessionId,
+    query_lower: Option<&str>,
+) -> Result<(SessionScan, Option<PathBuf>), String> {
     let mut latest = None;
     let mut matched_message = None;
     let mut matched_failure = None;
@@ -546,10 +541,7 @@ fn scan_session(path: &Path, query_lower: Option<&str>) -> SessionScan {
     let mut tool_names = BTreeSet::new();
     let mut failed_tool_names = BTreeSet::new();
     let mut has_discoverable_content = false;
-    for line in reader.lines().map_while(Result::ok) {
-        let Ok(event) = serde_json::from_str::<Value>(&line) else {
-            continue;
-        };
+    let path = crate::runtime::saved_sessions::visit_records(directory, session, |event| {
         event_count += 1;
         let event_type = event.get("type").and_then(Value::as_str);
         let data = event.get("data");
@@ -572,7 +564,7 @@ fn scan_session(path: &Path, query_lower: Option<&str>) -> SessionScan {
             {
                 failed_tool_names.insert(tool_name.to_string());
             }
-            continue;
+            return;
         }
         if event_type.is_some_and(|kind| kind.starts_with("budget."))
             && let Some(diagnostic) = event
@@ -596,7 +588,7 @@ fn scan_session(path: &Path, query_lower: Option<&str>) -> SessionScan {
                     text: Some(text),
                 });
             }
-            continue;
+            return;
         }
         if event_type == Some("reason.completed") {
             let error = event
@@ -619,18 +611,18 @@ fn scan_session(path: &Path, query_lower: Option<&str>) -> SessionScan {
                     });
                 }
             }
-            continue;
+            return;
         }
         let is_message =
             event_type == Some("input.message") || event_type == Some("output.message.completed");
         if !is_message {
-            continue;
+            return;
         }
         let Some(message) = event.get("data").and_then(|data| data.get("message")) else {
-            continue;
+            return;
         };
         let Some(content) = message.get("content").and_then(Value::as_array) else {
-            continue;
+            return;
         };
         let text = content
             .iter()
@@ -639,7 +631,7 @@ fn scan_session(path: &Path, query_lower: Option<&str>) -> SessionScan {
             .collect::<Vec<_>>()
             .join("\n");
         if text.is_empty() {
-            continue;
+            return;
         }
         has_discoverable_content = true;
         let hit = MessageHit {
@@ -652,28 +644,32 @@ fn scan_session(path: &Path, query_lower: Option<&str>) -> SessionScan {
         };
         if query_lower.is_some_and(|query| text.to_lowercase().contains(query)) {
             matched_message = Some(hit);
-            continue;
+            return;
         }
         if query_lower.is_none() {
             latest = Some(hit);
         }
-    }
+    })
+    .map_err(|error| error.to_string())?;
     let hit = if query_lower.is_some() {
         matched_failure.or(matched_message)
     } else {
         latest
     };
-    SessionScan {
-        valid: has_discoverable_content,
-        summary: hit.map(|hit| SessionSummary {
-            hit,
-            failed,
-            reason_failed,
-            event_count,
-            tool_names: tool_names.into_iter().collect(),
-            failed_tool_names: failed_tool_names.into_iter().collect(),
-        }),
-    }
+    Ok((
+        SessionScan {
+            valid: has_discoverable_content,
+            summary: hit.map(|hit| SessionSummary {
+                hit,
+                failed,
+                reason_failed,
+                event_count,
+                tool_names: tool_names.into_iter().collect(),
+                failed_tool_names: failed_tool_names.into_iter().collect(),
+            }),
+        },
+        path,
+    ))
 }
 
 fn truncate_chars(text: &str, max_chars: usize) -> String {

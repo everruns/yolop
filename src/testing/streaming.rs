@@ -221,7 +221,7 @@ async fn broadcast_does_not_persist_delta_events_to_jsonl() {
     // carry deltas — otherwise the "not on disk" assertion is
     // vacuously true (no deltas to leak either way).
     let runtime = build_llmsim_runtime().await;
-    let log_path = runtime.startup.session_log_path.clone();
+    let log_path = runtime.startup.session_dir.join("events.jsonl");
     let mut live = runtime.handles.events.subscribe();
 
     let input = runtime.model.input_message("anything");
@@ -242,7 +242,11 @@ async fn broadcast_does_not_persist_delta_events_to_jsonl() {
         "test setup expected at least one OutputMessageDelta on the broadcast",
     );
 
-    let on_disk = std::fs::read_to_string(&log_path).expect("read session log");
+    assert!(
+        !log_path.exists(),
+        "native sessions must not write an event export"
+    );
+    let on_disk = serde_json::to_string(&runtime.handles.host.events().await.unwrap()).unwrap();
     assert!(
         !on_disk.contains("\"type\":\"output.message.delta\""),
         "JSONL log must not persist delta events: {on_disk}"

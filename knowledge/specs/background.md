@@ -40,10 +40,10 @@ spawn_background { tool: "bash", args: { command: "gh pr checks 42 --watch" } }
 ```
 
 The run executes on a detached task, streams to a session-file log
-(`/.background/<run_id>/output.log` in the VFS, backed by
-`<session_dir>/.background/<run_id>/output.log`), writes a `result.json`, and
+(`/background/<run_id>/output.log` in the VFS, backed by
+`<session_dir>/background/<run_id>/output.log`), writes a `result.json`, and
 mirrors its lifecycle onto a `background_tool` session task (`Running` →
-`Succeeded` / `Failed` / `Canceled`). It never creates `.background` in the
+`Succeeded` / `Failed` / `Canceled`). It never creates background artifacts in the
 workspace. `signal_on_completion` defaults to `true`.
 Foreground shell calls retain the short interactive deadline; detached shell
 runs use a separate 24-hour wall-clock limit so CI watches can outlive a turn
@@ -55,6 +55,13 @@ owns its leased schedule runner. The process's retained native supervisor
 executes admitted monitor inputs. The resulting turn starts the wrapped tool;
 its completion follows the ordinary task handoff path. Frontend wake channels
 observe this work and do not authorize schedule execution.
+
+Existing `.background/` artifacts merge into `background/` under the startup
+session lease. Conflicting files refuse migration so evidence is never replaced.
+Old task paths remain readable aliases. Until the aligned Everruns release
+recognizes the visible root, Yolop maps its filesystem policy namespace to the
+published hidden-root policy while keeping the physical path visible. Remove
+that bridge with the dependency backport.
 
 ### Steering (poll-proofing)
 
