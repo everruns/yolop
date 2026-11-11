@@ -81,7 +81,7 @@ tar = "0.4"
 # `.worktreeinclude` matching for copying ignored local files into worktrees.
 ignore = "0.4"
 include_dir = "0.7"
-jsonschema = { version = "0.60.2", default-features = false }
+jsonschema = { version = "0.61.0", default-features = false }
 # Local-model weight downloads behind the `local-inference` feature.
 # The inference engine (mistralrs -> candle-core -> zip 7.2.0) is
 # temporarily removed: mistralrs 0.8.1 pins candle-core 0.10.2 which
