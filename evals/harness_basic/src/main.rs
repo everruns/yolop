@@ -2870,8 +2870,19 @@ fn sessions_search_result_sessions(data: &Value) -> Option<Vec<Value>> {
         return Some(sessions.clone());
     }
     let stdout = value.get("stdout")?.as_str()?;
-    let parsed: Value = serde_json::from_str(stdout).ok()?;
-    parsed.get("sessions")?.as_array().cloned()
+    // Models often chain `yolop sessions --help && yolop sessions search ...`
+    // in one call, so the JSON report can follow other text. Take the first
+    // object that starts a line and carries `sessions`.
+    std::iter::once(0)
+        .chain(stdout.match_indices("\n{").map(|(index, _)| index + 1))
+        .filter(|&start| stdout[start..].starts_with('{'))
+        .find_map(|start| {
+            let parsed = serde_json::Deserializer::from_str(&stdout[start..])
+                .into_iter::<Value>()
+                .next()?
+                .ok()?;
+            parsed.get("sessions")?.as_array().cloned()
+        })
 }
 
 fn classify_tool(data: &Value) -> ToolKind {
@@ -5355,6 +5366,19 @@ mod tests {
         // The subject passes this straight to `yolop --model`.
         assert_eq!(target.model, "Qwen/Qwen3-8B");
         unsafe { std::env::remove_var("YOLOP_LOCAL_MODEL") };
+    }
+
+    #[test]
+    fn sessions_search_report_is_found_after_chained_help_output() {
+        let report = json!({"sessions": [{"session_id": OVERLAP_EVAL_SESSION_ID}]});
+        let stdout = format!("Usage: yolop sessions <COMMAND>\n\n--- search ---\n{report:#}\n");
+        let data = json!({
+            "tool_name": "bash",
+            "arguments": {"command": "yolop sessions --help && yolop sessions search QUASAR-9182"},
+            "result": {"stdout": stdout, "exit_code": 0}
+        });
+        let sessions = sessions_search_result_sessions(&data).expect("report parsed");
+        assert_eq!(sessions[0]["session_id"], json!(OVERLAP_EVAL_SESSION_ID));
     }
 
     /// Drives the subject end-to-end: spawns the real yolop binary against its
