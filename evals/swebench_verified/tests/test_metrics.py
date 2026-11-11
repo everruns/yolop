@@ -110,9 +110,6 @@ class MetricsTest(unittest.TestCase):
         self.assertEqual(m.assistant_messages, 0)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class JournalTest(unittest.TestCase):
     """`yolop_journal` must mine the SQLite authority current yolop writes."""
@@ -142,3 +139,7 @@ class JournalTest(unittest.TestCase):
             m = extract_metrics(journal)
             self.assertGreaterEqual(m.llm_calls, 1)
             self.assertGreater(m.tokens.input_tokens, 0)
+
+
+if __name__ == "__main__":
+    unittest.main()
