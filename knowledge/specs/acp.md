@@ -331,19 +331,20 @@ writes (see `knowledge/specs/maintenance.md`) remains the standing guardrail eit
 
 ACP v2 is a draft. It is what Zed's Delta requires of external agents, and the
 reason yolop speaks it before it is stable. Everything is in
-`src/editor/acp/server/v2.rs`, as a translation layer over the v1 session core:
+`src/editor/acp/server/v2.rs` (activity reporting in `v2/activity.rs`), as a translation layer over the v1 session core:
 the same runtime, turn loop, approvals, and slash commands, with v2 handlers
 mapping requests onto the shared helpers and a `Link` translating each v1
 `session/update` the core emits. A second turn loop would drift.
 
 | Area | v2 behaviour |
 |------|-------------|
-| `initialize` | Returns `protocolVersion: 2`, `info`, and `capabilities.session` (prompt `image` and `embeddedContext`; MCP `stdio` and `http`). Auth methods carry `methodId` and `type: "agent"`. The client's `info.name` feeds editor detection. |
+| `initialize` | Returns `protocolVersion: 2`, `info`, and `capabilities.session` (prompt `image` and `embeddedContext`; MCP `stdio` and `http`; `delete`; `systemPrompt` with `override`). Auth methods carry `methodId` and `type: "agent"`. The client's `info.name` feeds editor detection. |
 | `auth/login`, `auth/logout` | Login runs the same browser flows as v1 `authenticate`. Logout forgets the Codex grant and the stored OpenRouter key; keys from the environment stay. |
-| `session/new` | Returns the session id, `configOptions` (model, reasoning effort, `mode`) and `availableCommands`. No `modes`. |
+| `session/new` | Returns the session id, `configOptions` (model, reasoning effort, `mode`) and `availableCommands`. No `modes`. An optional `systemPrompt` (text only) is appended to yolop's prompt as "Client instructions", or replaces it in `override` mode; profile instructions, tools, approvals and workspace context stay either way. |
 | `session/list` | Saved sessions with a recorded absolute workspace, newest first, filtered by `cwd` when given. No paging. |
-| `session/resume` | Rehydrates like v1 `session/load`. `replayFrom: {type: "start"}` replays history first; any other cursor is `-32602`. A current-state snapshot (`state_update`, `config_option_update`, `available_commands_update`) always precedes the response. |
+| `session/resume` | Rehydrates like v1 `session/load`. `replayFrom: {type: "start"}` replays history first; any other cursor is `-32602`. A current-state `state_update` precedes the response, which carries `configOptions` and `availableCommands`. `systemPrompt` applies as on `session/new`; yolop does not store it, so a client resends it. |
 | `session/close` | Cancels running work, waits for its final updates, then forgets the session. Later requests for it get `-32002`. |
+| `session/delete` | Closes the session if it is active, then removes its saved directory, so it leaves `session/list` and cannot be resumed. An unknown id is `-32002`. |
 | `session/prompt` | Validates, then answers `{messageId}` at once: the message is inserted, not finished. A `user_message` echo with that id follows, then the turn. Prompts for a busy session queue in order. An error response means nothing was inserted. |
 | `session/cancel` | Cancels the running turn, which ends in `idle` with `stopReason: cancelled`. |
 | `session/set_config_option` | `{configId, type: "id", value}` for `model`, `reasoning_effort`, and `mode`; returns every option. |
@@ -351,9 +352,15 @@ mapping requests onto the shared helpers and a `Link` translating each v1
 Session state is reported with `state_update`: `running` when foreground work
 starts (a client prompt or a background wake turn), `requires_action` while a
 permission request or form elicitation waits on the person, and `idle` with the
-stop reason once no queued work remains. Background wake turns therefore show
-up in the client as work the agent started on its own, which v1 could not
-express.
+stop reason and the foreground work's token `usage` once no queued work
+remains. Background wake turns therefore show up in the client as work the
+agent started on its own, which v1 could not express.
+
+Every state update lists running background tasks (subagents, background
+tools, monitors) in `background`, as tool calls with id `task_<id>`: each is
+announced with a `tool_call_update` (name `background_task`) when first
+listed, and settled with its status and summary when it ends. A task that ends
+while the session is idle triggers a fresh `idle` with the shorter list.
 
 Update translation:
 
@@ -365,12 +372,35 @@ Update translation:
 - Commands and their input gain `type` discriminators; config options use
   `configId`.
 - `current_mode_update` has no v2 form; the `mode` option carries the level.
-- `session/request_permission` names the gated tool call as its `subject` and
-  gets a `title`.
+- `session/request_permission` gets a `title`. A shell command's subject is
+  `command` (the command, the workspace as `cwd`, and its `toolCallId`, which
+  an upsert announces first); any other gated tool's subject is the tool call.
+- A guardrail replacement of the agent's text revises the message with a
+  whole `agent_message` under the same id. In a `replayFrom: start` replay,
+  each chunked message opens with an empty whole-message update.
 
-Not implemented: `session/delete`, replay cursors other than `start`, terminal
-and diff updates (yolop reports tool output as content), and the `background`
-list on `idle`. None is advertised.
+Tool activity v1 had no update for:
+
+- **Terminals.** Each `bash` call is an agent-owned terminal with the tool
+  call's id: `terminal_update` with the command and workspace `cwd` when it
+  starts, `terminal_output_chunk` for streamed output (base64), and a final
+  `terminal_update` with the full output and `exitStatus`. The tool call's
+  content leads with the terminal reference.
+- **Diffs.** `write_file`, `edit_file`, `delete_file` and `apply_patch` end
+  with a `diff` content item: per-file `operation` and `fileType`, plus a
+  `git_patch`. Decision: the diff compares file snapshots, not tool
+  arguments. The approval hook's observer runs before every tool call, so the
+  link reads each named file before the tool and again on completion; a
+  failed or no-op edit reports nothing, and files over 1 MiB or not UTF-8 are
+  listed as `binary` without a patch.
+- **Other streamed output** (a tool other than `bash` that streams) arrives as
+  `tool_call_content_chunk`.
+
+Not implemented, and not advertised: replay cursors other than `start` (the
+spec defines no other), `tool_call/cancel` and `terminal/cancel` (the runtime
+cannot cancel one tool call without cancelling the turn, so the SDK answers
+`-32602` as the spec allows), and `additionalDirectories` (yolop's file tools,
+search and sandbox work in one root).
 
 ## Architecture
 

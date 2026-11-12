@@ -73,6 +73,15 @@ use crate::capabilities::host::{
 /// in case the final event was already drained from the broadcast.
 const TURN_POLL_INTERVAL: Duration = Duration::from_millis(150);
 
+/// What a v2 client adds to a session beyond v1: an observer that sees each
+/// tool call before it runs (file snapshots for diffs) and its own system
+/// prompt. v1 sessions use the default.
+#[derive(Clone, Default)]
+pub struct SessionExtras {
+    pub tool_observer: Option<crate::capabilities::ToolObserver>,
+    pub system_prompt: Option<crate::runtime::ClientSystemPrompt>,
+}
+
 /// Builds a runtime for a freshly opened ACP session. Abstracted so tests can
 /// substitute a scripted llmsim runtime for the real provider wiring.
 #[async_trait]
@@ -105,6 +114,12 @@ pub trait RuntimeFactory: Send + Sync + 'static {
         Ok(())
     }
 
+    /// v2 `session/delete`: remove a saved session from disk. The caller has
+    /// already closed it if it was open.
+    async fn delete_session(&self, _session_id: RuntimeSessionId) -> Result<()> {
+        anyhow::bail!("deleting sessions is not supported")
+    }
+
     /// Saved sessions for v2 `session/list`, newest first, optionally only
     /// those rooted at `cwd`.
     async fn list_sessions(&self, _cwd: Option<&std::path::Path>) -> Vec<v2::SavedSession> {
@@ -118,6 +133,7 @@ pub trait RuntimeFactory: Send + Sync + 'static {
         client_mcp_servers: ScopedMcpServers,
         tool_approver: Option<Arc<dyn ToolApprover>>,
         ask_user: Arc<dyn AskUser>,
+        extras: SessionExtras,
     ) -> Result<BuiltRuntime>;
 
     /// Record the editor identity from `initialize`, so later `session/new`
@@ -256,18 +272,38 @@ impl Peer {
         }
     }
 
+    fn before_event(&self, session_id: &str, event: &everruns_core::events::Event) {
+        if let PeerLink::V2(link) = &self.link {
+            link.before_event(session_id, event);
+        }
+    }
+
+    fn after_event(&self, session_id: &str, event: &everruns_core::events::Event) {
+        if let PeerLink::V2(link) = &self.link {
+            link.after_event(session_id, event);
+        }
+    }
+
     /// Foreground work began for this session: a client prompt or a
     /// background wake turn. v1 has no session state, so only v2 reports it.
-    fn work_started(&self, session_id: &str) {
+    async fn work_started(&self, session_id: &str) {
         if let PeerLink::V2(link) = &self.link {
-            link.work_started(session_id);
+            link.work_started(session_id).await;
         }
     }
 
     /// Foreground work ended; v2 reports `idle` once nothing else is queued.
-    fn work_finished(&self, session_id: &str, stop: StopReason) {
+    async fn work_finished(&self, session_id: &str, stop: StopReason) {
         if let PeerLink::V2(link) = &self.link {
-            link.work_finished(session_id, stop);
+            link.work_finished(session_id, stop).await;
+        }
+    }
+
+    /// A background task finished. v2 lists running background work on its
+    /// state updates; v1 has nowhere to put it.
+    async fn background_changed(&self, session_id: &str) {
+        if let PeerLink::V2(link) = &self.link {
+            link.background_changed(session_id).await;
         }
     }
 
@@ -318,7 +354,8 @@ impl ToolApprover for AcpToolApprover {
         let fields = ToolCallUpdateFields::new()
             .title(tool_def.name().to_string())
             .kind(tool_kind(&tool_call.name))
-            .status(ToolCallStatus::Pending);
+            .status(ToolCallStatus::Pending)
+            .raw_input(tool_call.arguments.clone());
         let request = RequestPermissionParams::new(
             session_id.to_string(),
             ToolCallUpdate::new(tool_call.id.clone(), fields),
@@ -752,7 +789,14 @@ async fn handle_new_session<F: RuntimeFactory>(
     params: NewSessionParams,
 ) -> std::result::Result<NewSessionResult, agent_client_protocol::Error> {
     let client_mcp_servers = scoped_mcp_servers_from_acp(&params.mcp_servers)?;
-    let session = open_session(server, peer, params.cwd, client_mcp_servers).await?;
+    let session = open_session(
+        server,
+        peer,
+        params.cwd,
+        client_mcp_servers,
+        SessionExtras::default(),
+    )
+    .await?;
     let mode = session.settings.snapshot().approval_mode();
     Ok(NewSessionResult::new(session.acp_id.clone())
         .modes(modes::session_mode_state(mode))
@@ -765,6 +809,7 @@ async fn open_session<F: RuntimeFactory>(
     peer: &Arc<Peer>,
     cwd: PathBuf,
     client_mcp_servers: ScopedMcpServers,
+    extras: SessionExtras,
 ) -> std::result::Result<Arc<Session>, agent_client_protocol::Error> {
     let tool_approver: Option<Arc<dyn ToolApprover>> =
         Some(Arc::new(AcpToolApprover { peer: peer.clone() }));
@@ -777,6 +822,7 @@ async fn open_session<F: RuntimeFactory>(
             client_mcp_servers,
             tool_approver,
             server.questioner(peer),
+            extras,
         )
         .await
         .map_err(|e| internal_error(format!("build runtime: {e}")))?;
@@ -799,6 +845,7 @@ async fn handle_load_session<F: RuntimeFactory>(
         &params.session_id.to_string(),
         params.cwd,
         client_mcp_servers,
+        SessionExtras::default(),
     )
     .await?;
     replay_session_history(peer, &session).await?;
@@ -819,6 +866,7 @@ async fn reopen_session<F: RuntimeFactory>(
     requested_id: &str,
     cwd: PathBuf,
     client_mcp_servers: ScopedMcpServers,
+    extras: SessionExtras,
 ) -> std::result::Result<Arc<Session>, agent_client_protocol::Error> {
     let resume_session_id = requested_id
         .parse::<RuntimeSessionId>()
@@ -842,6 +890,7 @@ async fn reopen_session<F: RuntimeFactory>(
             client_mcp_servers,
             tool_approver,
             server.questioner(peer),
+            extras,
         )
         .await
         .map_err(|e| internal_error(format!("load runtime: {e}")))?;
@@ -884,6 +933,13 @@ fn register_session<F: RuntimeFactory>(
         .unwrap()
         .insert(acp_id.clone(), session.clone());
 
+    if let PeerLink::V2(link) = &peer.link {
+        link.register(
+            &acp_id,
+            built.worktree.clone(),
+            session.task_registry.clone(),
+        );
+    }
     let wake_drain = spawn_background_wake_drain(
         session,
         peer.clone(),
@@ -1003,6 +1059,7 @@ fn spawn_background_wake_drain(
             // lock are one observation point, not separate model obligations.
             let message = coalesce_pending_wakes(message, &mut wake_rx)
                 .resolve_artifacts(session.handles.host.files.clone().as_ref());
+            peer.background_changed(&session.acp_id).await;
             if let Some(id) = message.admission()
                 && let Ok(engine_session) = session
                     .handles
@@ -1062,9 +1119,9 @@ fn spawn_background_wake_drain(
             // turn below emits no text of its own.
             mark_background_reported(&session, &message);
             let input = crate::runtime::background_wake::input_for_wake(&message);
-            peer.work_started(&session.acp_id);
+            peer.work_started(&session.acp_id).await;
             let stop = run_prompt(peer.clone(), session.clone(), input).await;
-            peer.work_finished(&session.acp_id, stop);
+            peer.work_finished(&session.acp_id, stop).await;
         }
     })
 }
@@ -1084,9 +1141,7 @@ async fn replay_session_history(
         if event.session_id != session.handles.session_id {
             continue;
         }
-        for update in translator.on_event(&event) {
-            peer.session_update(&session.acp_id, update);
-        }
+        forward_event(peer, &session.acp_id, &mut translator, &event);
     }
     Ok(())
 }
@@ -2005,9 +2060,7 @@ async fn run_prompt_once(
             recv = live.recv() => match recv {
                 Ok(event) => {
                     if event.session_id == session_id && scope.accepts(&handles.session, &event).await {
-                        for update in translator.on_event(&event) {
-                            peer.session_update(&acp_id, update);
-                        }
+                        forward_event(&peer, &acp_id, &mut translator, &event);
                     }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
@@ -2243,10 +2296,27 @@ async fn drain_events(
         if event.session_id != handles.session_id || !scope.accepts(&handles.session, event).await {
             continue;
         }
-        for update in translator.on_event(event) {
-            peer.session_update(acp_id, update);
-        }
+        forward_event(peer, acp_id, translator, event);
     }
+}
+
+/// Send one runtime event's updates. A v2 link also sees the raw event on
+/// either side of them, for what v1 has no update for (terminal output,
+/// diffs, usage, message replacement).
+fn forward_event(
+    peer: &Peer,
+    acp_id: &str,
+    translator: &mut Translator,
+    event: &everruns_core::events::Event,
+) {
+    if translator.has_seen(event) {
+        return;
+    }
+    peer.before_event(acp_id, event);
+    for update in translator.on_event(event) {
+        peer.session_update(acp_id, update);
+    }
+    peer.after_event(acp_id, event);
 }
 
 /// Deterministic credit watcher: fixed 60s probes of the key endpoint (no

@@ -19,28 +19,38 @@
 //!
 //! See `knowledge/specs/acp.md`, "Protocol v2".
 
+mod activity;
+
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 
+use crate::exec::worktree::WorktreeManager;
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::v1::schema as v1s;
 use agent_client_protocol::v2::schema as s;
 use agent_client_protocol::v2::{self as acp2, ConnectionTo};
 use agent_client_protocol::{Agent, Client, ConnectTo};
-use everruns_core::{McpServerTransportType, ScopedMcpServer, ScopedMcpServers};
+use everruns_contracts::runtime::session_task::SessionTask;
+use everruns_contracts::tool_types::ToolCall as RuntimeToolCall;
+use everruns_contracts::typed_id::SessionId as RuntimeSessionId;
+use everruns_core::events::Event as RuntimeEvent;
+use everruns_core::session_task::SessionTaskRegistry;
+use everruns_core::{EventData, McpServerTransportType, ScopedMcpServer, ScopedMcpServers};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
 use super::{
-    Peer, PeerLink, RuntimeFactory, Server, StopReason, detect_client_identity,
-    emit_config_options, internal_error, invalid_params, notify_available_commands,
-    offer_setup_page, open_session, prompt_input, reopen_session, replay_session_history,
-    run_client_turn, session_config_options, set_config_value,
+    Peer, PeerLink, RuntimeFactory, Server, SessionExtras, StopReason, detect_client_identity,
+    emit_config_options, internal_error, invalid_params, offer_setup_page, open_session,
+    prompt_input, reopen_session, replay_session_history, run_client_turn, session_config_options,
+    set_config_value,
 };
+use crate::capabilities::ToolObserver;
+use crate::runtime::ClientSystemPrompt;
 
 /// `-32002`: the session is unknown or no longer active on this connection.
 const SESSION_NOT_FOUND: i32 = -32002;
@@ -48,8 +58,8 @@ const SESSION_NOT_FOUND: i32 = -32002;
 const PLAN_ID: &str = "todos";
 
 /// The v2 side of a connection: the SDK handle plus the per-session state v2
-/// adds on top of v1 (message ids and the foreground-work count behind
-/// `state_update`).
+/// adds on top of v1 (message ids, foreground work behind `state_update`,
+/// terminals, file snapshots, background work and usage).
 pub(in crate::editor::acp) struct Link {
     cx: ConnectionTo<Client>,
     sessions: StdMutex<HashMap<String, LinkSession>>,
@@ -67,12 +77,32 @@ struct LinkSession {
     agent_message: Option<String>,
     agent_thought: Option<String>,
     user_message: Option<String>,
+    /// The agent message a guardrail replacement revises.
+    last_agent_message: Option<String>,
+    /// History replay in progress: each message starts with an empty
+    /// whole-message update, as v2 asks of replayed chunked messages.
+    replaying: bool,
     /// Foreground work started and not yet finished: queued prompts plus a
     /// running prompt or wake turn. `idle` is reported when it returns to 0.
     active: usize,
-    /// Permission requests in flight, so `requires_action` lasts until the
-    /// last one is answered.
+    /// Permission requests and forms in flight, so `requires_action` lasts
+    /// until the last one is answered.
     waiting: usize,
+    /// Set by `register`: the workspace (for terminal cwds and edit paths) and
+    /// the task registry (for background work).
+    worktree: Option<Arc<WorktreeManager>>,
+    tasks: Option<Arc<dyn SessionTaskRegistry>>,
+    runtime_session: Option<RuntimeSessionId>,
+    /// Background tasks listed in the last snapshot, by task id.
+    background: Vec<String>,
+    /// Shell tool calls shown as terminals: output received so far.
+    terminals: HashMap<String, Vec<u8>>,
+    /// Files each edit tool call is about to change, captured before it ran.
+    snapshots: HashMap<String, Vec<activity::FileSnapshot>>,
+    /// Diff content waiting for the tool call's completion update.
+    diffs: HashMap<String, Value>,
+    /// Token usage of the foreground work since the last `idle`.
+    usage: Option<s::Usage>,
 }
 
 impl Link {
@@ -94,6 +124,11 @@ impl Link {
         format!("{prefix}_{:x}_{n}", self.epoch)
     }
 
+    fn with_state<T>(&self, session_id: &str, f: impl FnOnce(&mut LinkSession) -> T) -> T {
+        let mut sessions = self.sessions.lock().unwrap();
+        f(sessions.entry(session_id.to_string()).or_default())
+    }
+
     fn send(&self, session_id: &str, update: s::SessionUpdate) {
         let notification = s::UpdateSessionNotification::new(session_id.to_string(), update);
         if let Err(err) = self.cx.send_notification(notification) {
@@ -101,15 +136,48 @@ impl Link {
         }
     }
 
+    /// Send an update written as v2 JSON. Every such shape is pinned by a test.
+    fn send_json(&self, session_id: &str, update: Value) {
+        match serde_json::from_value::<s::SessionUpdate>(update) {
+            Ok(update) => self.send(session_id, update),
+            Err(err) => tracing::warn!(%err, "acp v2: malformed update"),
+        }
+    }
+
+    /// Record what the session runs in, once its runtime is built.
+    pub(super) fn register(
+        &self,
+        session_id: &str,
+        worktree: Arc<WorktreeManager>,
+        tasks: Arc<dyn SessionTaskRegistry>,
+    ) {
+        let runtime_session = session_id.parse::<RuntimeSessionId>().ok();
+        self.with_state(session_id, |state| {
+            state.worktree = Some(worktree);
+            state.tasks = Some(tasks);
+            state.runtime_session = runtime_session;
+        });
+    }
+
+    fn root(&self, session_id: &str) -> Option<PathBuf> {
+        self.with_state(session_id, |state| {
+            state
+                .worktree
+                .as_ref()
+                .map(|worktree| worktree.active_root())
+        })
+    }
+
     pub(super) fn session_update(&self, session_id: &str, update: v1s::SessionUpdate) {
-        let translated = {
-            let mut sessions = self.sessions.lock().unwrap();
-            let state = sessions.entry(session_id.to_string()).or_default();
+        let translated = self.with_state(session_id, |state| {
             translate_update(state, update, || self.new_id("msg"))
-        };
+        });
         match translated {
-            Ok(Some(update)) => self.send(session_id, update),
-            Ok(None) => {}
+            Ok(updates) => {
+                for update in updates {
+                    self.send(session_id, update);
+                }
+            }
             Err(err) => tracing::warn!(%err, "acp v2: could not translate session update"),
         }
     }
@@ -126,60 +194,292 @@ impl Link {
     }
 
     fn close_messages(&self, session_id: &str) {
-        let mut sessions = self.sessions.lock().unwrap();
-        let state = sessions.entry(session_id.to_string()).or_default();
-        state.close_messages();
+        self.with_state(session_id, LinkSession::close_messages);
     }
 
-    pub(super) fn work_started(&self, session_id: &str) {
-        let first = {
-            let mut sessions = self.sessions.lock().unwrap();
-            let state = sessions.entry(session_id.to_string()).or_default();
-            state.active += 1;
-            state.active == 1
+    fn set_replaying(&self, session_id: &str, replaying: bool) {
+        self.with_state(session_id, |state| {
+            state.replaying = replaying;
+            state.close_messages();
+        });
+    }
+
+    /// Just before the v1 updates for `event`. A shell command's exit and an
+    /// edit's diff are settled here, so the completion update carries them.
+    pub(super) fn before_event(&self, session_id: &str, event: &RuntimeEvent) {
+        let EventData::ToolCompleted(data) = &event.data else {
+            return;
         };
-        if first {
-            self.send(
+        let id = data.tool_call_id.clone();
+        let (terminal, snapshots) = self.with_state(session_id, |state| {
+            (
+                state.terminals.get(&id).cloned(),
+                state.snapshots.remove(&id),
+            )
+        });
+        if let Some(streamed) = terminal {
+            let result = tool_result_value(data);
+            let (captured, exit_code) = activity::shell_result(result.as_ref());
+            let output = if streamed.is_empty() {
+                captured
+            } else {
+                streamed
+            };
+            let mut exit = json!({});
+            if let Some(code) = exit_code {
+                exit["exitCode"] = json!(code);
+            } else if !data.success {
+                exit["exitCode"] = json!(1);
+            }
+            self.send_json(
                 session_id,
-                s::SessionUpdate::StateUpdate(
-                    s::StateUpdate::Running(s::RunningStateUpdate::new()),
-                ),
+                json!({
+                    "sessionUpdate": "terminal_update",
+                    "terminalId": id,
+                    "output": { "data": activity::base64(&output) },
+                    "exitStatus": exit,
+                }),
             );
+        }
+        if let Some(diff) = snapshots.as_deref().and_then(activity::diff_content) {
+            self.with_state(session_id, |state| state.diffs.insert(id, diff));
         }
     }
 
-    pub(super) fn work_finished(&self, session_id: &str, stop: StopReason) {
-        let last = {
-            let mut sessions = self.sessions.lock().unwrap();
-            let state = sessions.entry(session_id.to_string()).or_default();
+    /// Just after the v1 updates for `event`: what v1 has no update for.
+    pub(super) fn after_event(&self, session_id: &str, event: &RuntimeEvent) {
+        match &event.data {
+            EventData::ToolStarted(data) => {
+                let Some(command) =
+                    activity::shell_command(&data.tool_call.name, &data.tool_call.arguments)
+                else {
+                    return;
+                };
+                let id = data.tool_call.id.clone();
+                let cwd = self.root(session_id);
+                self.with_state(session_id, |state| {
+                    state.terminals.insert(id.clone(), Vec::new())
+                });
+                let mut terminal = json!({
+                    "sessionUpdate": "terminal_update",
+                    "terminalId": id,
+                    "command": command,
+                });
+                if let Some(cwd) = cwd.filter(|cwd| cwd.is_absolute()) {
+                    terminal["cwd"] = json!(cwd);
+                }
+                self.send_json(session_id, terminal);
+                self.send_json(
+                    session_id,
+                    json!({
+                        "sessionUpdate": "tool_call_update",
+                        "toolCallId": id,
+                        "name": "bash",
+                        "content": [{ "type": "terminal", "terminalId": id }],
+                    }),
+                );
+            }
+            EventData::ToolOutputDelta(data) => {
+                if data.delta.is_empty() {
+                    return;
+                }
+                let terminal = self.with_state(session_id, |state| {
+                    state.terminals.get_mut(&data.tool_call_id).map(|output| {
+                        output.extend_from_slice(data.delta.as_bytes());
+                    })
+                });
+                let update = if terminal.is_some() {
+                    json!({
+                        "sessionUpdate": "terminal_output_chunk",
+                        "terminalId": data.tool_call_id,
+                        "data": activity::base64(data.delta.as_bytes()),
+                    })
+                } else {
+                    json!({
+                        "sessionUpdate": "tool_call_content_chunk",
+                        "toolCallId": data.tool_call_id,
+                        "content": { "type": "content", "content": { "type": "text", "text": data.delta } },
+                    })
+                };
+                self.send_json(session_id, update);
+            }
+            EventData::TurnCompleted(data) => {
+                if let Some(usage) = &data.usage {
+                    self.with_state(session_id, |state| add_usage(&mut state.usage, usage));
+                }
+            }
+            EventData::OutputMessageReplaced(data) => {
+                let id = self.with_state(session_id, |state| {
+                    state
+                        .agent_message
+                        .clone()
+                        .or_else(|| state.last_agent_message.clone())
+                });
+                if let Some(id) = id {
+                    self.send_json(
+                        session_id,
+                        json!({
+                            "sessionUpdate": "agent_message",
+                            "messageId": id,
+                            "content": [{ "type": "text", "text": data.replacement }],
+                        }),
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// The approval gate's observer: capture the files an edit is about to
+    /// change. Runs before the tool, unlike the event stream.
+    pub(super) fn before_tool(&self, session_id: &str, tool_call: &RuntimeToolCall) {
+        let Some(root) = self.root(session_id) else {
+            return;
+        };
+        let Some(paths) = activity::edited_paths(&tool_call.name, &tool_call.arguments, &root)
+        else {
+            return;
+        };
+        let snapshots = paths
+            .into_iter()
+            .map(|path| activity::FileSnapshot {
+                before: activity::read_snapshot(&path),
+                path,
+            })
+            .collect();
+        self.with_state(session_id, |state| {
+            state.snapshots.insert(tool_call.id.clone(), snapshots)
+        });
+    }
+
+    /// Re-read the session's background tasks: announce new ones as tool
+    /// calls and settle finished ones, so the next state update can list
+    /// exactly what is still running.
+    async fn refresh_background(&self, session_id: &str) {
+        let Some((tasks, runtime_session)) = self.with_state(session_id, |state| {
+            Some((state.tasks.clone()?, state.runtime_session?))
+        }) else {
+            return;
+        };
+        let Ok(all) = tasks.list(runtime_session, None).await else {
+            return;
+        };
+        let updates = self.with_state(session_id, |state| {
+            let mut updates = Vec::new();
+            let running: Vec<&SessionTask> = all
+                .iter()
+                .filter(|task| !task.state.is_terminal())
+                .collect();
+            for task in &running {
+                if !state.background.contains(&task.id) {
+                    updates.push(activity::task_update(task));
+                }
+            }
+            for listed in &state.background {
+                if running.iter().any(|task| &task.id == listed) {
+                    continue;
+                }
+                if let Some(task) = all.iter().find(|task| &task.id == listed) {
+                    updates.push(activity::task_update(task));
+                } else {
+                    updates.push(json!({
+                        "sessionUpdate": "tool_call_update",
+                        "toolCallId": activity::task_tool_call_id(listed),
+                        "status": "completed",
+                    }));
+                }
+            }
+            state.background = running.iter().map(|task| task.id.clone()).collect();
+            updates
+        });
+        for update in updates {
+            self.send_json(session_id, update);
+        }
+    }
+
+    fn background(&self, session_id: &str) -> Option<Vec<s::BackgroundWork>> {
+        self.with_state(session_id, |state| {
+            state.tasks.as_ref()?;
+            Some(
+                state
+                    .background
+                    .iter()
+                    .map(|task| {
+                        s::BackgroundWork::ToolCall(s::BackgroundToolCall::new(
+                            activity::task_tool_call_id(task),
+                        ))
+                    })
+                    .collect(),
+            )
+        })
+    }
+
+    fn running(&self, session_id: &str) -> s::SessionUpdate {
+        s::SessionUpdate::StateUpdate(s::StateUpdate::Running(
+            s::RunningStateUpdate::new().background(self.background(session_id)),
+        ))
+    }
+
+    fn requires_action(&self, session_id: &str) -> s::SessionUpdate {
+        s::SessionUpdate::StateUpdate(s::StateUpdate::RequiresAction(
+            s::RequiresActionStateUpdate::new().background(self.background(session_id)),
+        ))
+    }
+
+    fn idle(&self, session_id: &str, stop: Option<StopReason>) -> s::SessionUpdate {
+        let usage = self.with_state(session_id, |state| state.usage.take());
+        let mut update = s::IdleStateUpdate::new()
+            .background(self.background(session_id))
+            .usage(usage);
+        if let Some(stop) = stop {
+            update = update.stop_reason(stop_reason(stop));
+        }
+        s::SessionUpdate::StateUpdate(s::StateUpdate::Idle(update))
+    }
+
+    pub(super) async fn work_started(&self, session_id: &str) {
+        let first = self.with_state(session_id, |state| {
+            state.active += 1;
+            state.active == 1
+        });
+        if first {
+            self.refresh_background(session_id).await;
+            self.send(session_id, self.running(session_id));
+        }
+    }
+
+    pub(super) async fn work_finished(&self, session_id: &str, stop: StopReason) {
+        let last = self.with_state(session_id, |state| {
             state.active = state.active.saturating_sub(1);
             if state.active == 0 {
                 state.close_messages();
             }
             state.active == 0
-        };
+        });
         if last {
-            self.send(session_id, idle(Some(stop)));
+            self.refresh_background(session_id).await;
+            self.send(session_id, self.idle(session_id, Some(stop)));
+        }
+    }
+
+    /// Background work changed outside foreground work (a task finished
+    /// while the session was idle): report the new list.
+    pub(super) async fn background_changed(&self, session_id: &str) {
+        self.refresh_background(session_id).await;
+        let idle = self.with_state(session_id, |state| state.active == 0);
+        if idle {
+            self.send(session_id, self.idle(session_id, None));
         }
     }
 
     /// The current state, sent before a `session/resume` response.
-    fn state_snapshot(&self, session_id: &str) {
-        let state = {
-            let sessions = self.sessions.lock().unwrap();
-            sessions
-                .get(session_id)
-                .map(|state| (state.active, state.waiting))
-                .unwrap_or_default()
-        };
-        let update = match state {
-            (0, _) => idle(None),
-            (_, 0) => {
-                s::SessionUpdate::StateUpdate(s::StateUpdate::Running(s::RunningStateUpdate::new()))
-            }
-            _ => s::SessionUpdate::StateUpdate(s::StateUpdate::RequiresAction(
-                s::RequiresActionStateUpdate::new(),
-            )),
+    async fn state_snapshot(&self, session_id: &str) {
+        self.refresh_background(session_id).await;
+        let (active, waiting) = self.with_state(session_id, |state| (state.active, state.waiting));
+        let update = match (active, waiting) {
+            (0, _) => self.idle(session_id, None),
+            (_, 0) => self.running(session_id),
+            _ => self.requires_action(session_id),
         };
         self.send(session_id, update);
     }
@@ -189,7 +489,12 @@ impl Link {
         request: v1s::RequestPermissionRequest,
     ) -> Result<Option<String>, agent_client_protocol::Error> {
         let session_id = request.session_id.to_string();
-        let request = permission_request(request)?;
+        let cwd = self.root(&session_id);
+        let (upsert, request) = permission_request(request, cwd.as_deref())?;
+        if let Some(upsert) = upsert {
+            self.close_messages(&session_id);
+            self.send_json(&session_id, upsert);
+        }
         self.set_waiting(&session_id, true);
         let response = self.cx.send_request(request).block_task().await;
         self.set_waiting(&session_id, false);
@@ -202,9 +507,7 @@ impl Link {
     }
 
     fn set_waiting(&self, session_id: &str, waiting: bool) {
-        let transition = {
-            let mut sessions = self.sessions.lock().unwrap();
-            let state = sessions.entry(session_id.to_string()).or_default();
+        let transition = self.with_state(session_id, |state| {
             if waiting {
                 state.waiting += 1;
                 (state.waiting == 1).then_some(true)
@@ -212,20 +515,10 @@ impl Link {
                 state.waiting = state.waiting.saturating_sub(1);
                 (state.waiting == 0 && state.active > 0).then_some(false)
             }
-        };
+        });
         match transition {
-            Some(true) => self.send(
-                session_id,
-                s::SessionUpdate::StateUpdate(s::StateUpdate::RequiresAction(
-                    s::RequiresActionStateUpdate::new(),
-                )),
-            ),
-            Some(false) => self.send(
-                session_id,
-                s::SessionUpdate::StateUpdate(
-                    s::StateUpdate::Running(s::RunningStateUpdate::new()),
-                ),
-            ),
+            Some(true) => self.send(session_id, self.requires_action(session_id)),
+            Some(false) => self.send(session_id, self.running(session_id)),
             None => {}
         }
     }
@@ -261,18 +554,45 @@ impl Link {
 
 impl LinkSession {
     fn close_messages(&mut self) {
-        self.agent_message = None;
+        if let Some(id) = self.agent_message.take() {
+            self.last_agent_message = Some(id);
+        }
         self.agent_thought = None;
         self.user_message = None;
     }
 }
 
-fn idle(stop: Option<StopReason>) -> s::SessionUpdate {
-    let mut update = s::IdleStateUpdate::new();
-    if let Some(stop) = stop {
-        update = update.stop_reason(stop_reason(stop));
-    }
-    s::SessionUpdate::StateUpdate(s::StateUpdate::Idle(update))
+fn add_usage(total: &mut Option<s::Usage>, usage: &everruns_core::TokenUsage) {
+    let input = u64::from(usage.input_tokens);
+    let output = u64::from(usage.output_tokens);
+    let read = usage.cache_read_tokens.map(u64::from);
+    let write = usage.cache_creation_tokens.map(u64::from);
+    let sum = |a: Option<u64>, b: Option<u64>| match (a, b) {
+        (None, None) => None,
+        (a, b) => Some(a.unwrap_or(0) + b.unwrap_or(0)),
+    };
+    let next = match total.take() {
+        Some(previous) => {
+            let input = previous.input_tokens + input;
+            let output = previous.output_tokens + output;
+            s::Usage::new(input + output, input, output)
+                .cached_read_tokens(sum(previous.cached_read_tokens, read))
+                .cached_write_tokens(sum(previous.cached_write_tokens, write))
+        }
+        None => s::Usage::new(input + output, input, output)
+            .cached_read_tokens(read)
+            .cached_write_tokens(write),
+    };
+    *total = Some(next);
+}
+
+/// The JSON payload a tool returned, the runtime's convention of stashing
+/// structured results as JSON text in the first text part.
+fn tool_result_value(data: &everruns_core::ToolCompletedData) -> Option<Value> {
+    data.result.as_ref()?.iter().find_map(|part| match part {
+        everruns_core::ContentPart::Text(text) => serde_json::from_str(&text.text).ok(),
+        _ => None,
+    })
 }
 
 fn stop_reason(stop: StopReason) -> s::StopReason {
@@ -296,13 +616,14 @@ fn convert<A: Serialize, B: DeserializeOwned>(
     serde_json::from_value(value).map_err(|e| internal_error(e.to_string()))
 }
 
-/// Translate one v1 `session/update` into its v2 form, or `None` for updates
-/// v2 dropped (`current_mode_update`: the `mode` config option replaces it).
+/// Translate one v1 `session/update` into its v2 form: usually one update,
+/// none for updates v2 dropped (`current_mode_update`: the `mode` config
+/// option replaces it), two when a replayed message opens with its marker.
 fn translate_update(
     state: &mut LinkSession,
     update: v1s::SessionUpdate,
     mut new_id: impl FnMut() -> String,
-) -> Result<Option<s::SessionUpdate>, agent_client_protocol::Error> {
+) -> Result<Vec<s::SessionUpdate>, agent_client_protocol::Error> {
     let mut value = serde_json::to_value(&update).map_err(|e| internal_error(e.to_string()))?;
     let kind = value
         .get("sessionUpdate")
@@ -310,25 +631,31 @@ fn translate_update(
         .unwrap_or_default()
         .to_string();
     let Some(object) = value.as_object_mut() else {
-        return Ok(None);
+        return Ok(Vec::new());
     };
+    let mut before = None;
     match kind.as_str() {
         "agent_message_chunk" | "agent_thought_chunk" | "user_message_chunk" => {
-            let open = match kind.as_str() {
-                "agent_message_chunk" => &mut state.agent_message,
-                "agent_thought_chunk" => &mut state.agent_thought,
-                _ => &mut state.user_message,
+            let (open, whole) = match kind.as_str() {
+                "agent_message_chunk" => (&mut state.agent_message, "agent_message"),
+                "agent_thought_chunk" => (&mut state.agent_thought, "agent_thought"),
+                _ => (&mut state.user_message, "user_message"),
             };
+            let opened = open.is_none();
             let id = open.get_or_insert_with(&mut new_id).clone();
-            let keep = kind.clone();
-            // A different kind of chunk starts a new message of its own.
-            if keep != "agent_message_chunk" {
-                state.agent_message = None;
+            if opened && state.replaying {
+                before = Some(json!({ "sessionUpdate": whole, "messageId": id, "content": [] }));
             }
-            if keep != "agent_thought_chunk" {
+            // A different kind of chunk starts a new message of its own.
+            if kind != "agent_message_chunk"
+                && let Some(closed) = state.agent_message.take()
+            {
+                state.last_agent_message = Some(closed);
+            }
+            if kind != "agent_thought_chunk" {
                 state.agent_thought = None;
             }
-            if keep != "user_message_chunk" {
+            if kind != "user_message_chunk" {
                 state.user_message = None;
             }
             // v1 may carry its own optional id; v2 requires the link's.
@@ -338,6 +665,21 @@ fn translate_update(
             state.close_messages();
             // v2 has no separate create: the first upsert for an id creates it.
             object.insert("sessionUpdate".into(), json!("tool_call_update"));
+            let id = object
+                .get("toolCallId")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            // A concrete content array replaces the call's content, so it
+            // keeps the terminal and gains the edit's diff.
+            if let Some(Value::Array(content)) = object.get_mut("content") {
+                if let Some(diff) = state.diffs.remove(&id) {
+                    content.insert(0, diff);
+                }
+                if state.terminals.contains_key(&id) {
+                    content.insert(0, json!({ "type": "terminal", "terminalId": id }));
+                }
+            }
         }
         "plan" => {
             state.close_messages();
@@ -369,15 +711,19 @@ fn translate_update(
         }
         "session_info_update" | "usage_update" => {}
         // v2 removed modes; the `mode` config option carries the level.
-        "current_mode_update" => return Ok(None),
+        "current_mode_update" => return Ok(Vec::new()),
         other => {
             tracing::debug!(kind = other, "acp v2: dropping update with no v2 form");
-            return Ok(None);
+            return Ok(Vec::new());
         }
     }
-    serde_json::from_value(value)
-        .map(Some)
-        .map_err(|e| internal_error(format!("{kind}: {e}")))
+    let mut updates = Vec::new();
+    for value in before.into_iter().chain(std::iter::once(value)) {
+        updates.push(
+            serde_json::from_value(value).map_err(|e| internal_error(format!("{kind}: {e}")))?,
+        );
+    }
+    Ok(updates)
 }
 
 /// v1 command → v2: commands and their input gain a `type` discriminator.
@@ -438,28 +784,57 @@ fn available_commands(commands: Vec<v1s::AvailableCommand>) -> Vec<s::AvailableC
         .collect()
 }
 
-/// v1 `session/request_permission` → v2: the gated tool call becomes the
-/// request's `subject`, and its name the required `title`.
+/// v1 `session/request_permission` → v2. A shell command becomes a
+/// `command` subject (what will run, and where); any other gated tool call
+/// becomes a `tool_call` subject. The tool's name is the required `title`.
+///
+/// Returns the request and, for a command, the tool call upsert to send
+/// first, so the subject's `toolCallId` names a call the client knows.
 fn permission_request(
     request: v1s::RequestPermissionRequest,
-) -> Result<s::RequestPermissionRequest, agent_client_protocol::Error> {
+    cwd: Option<&Path>,
+) -> Result<(Option<Value>, s::RequestPermissionRequest), agent_client_protocol::Error> {
     let title = request
         .tool_call
         .fields
         .title
         .clone()
         .unwrap_or_else(|| "Run tool".to_string());
-    let tool_call =
+    let mut tool_call =
         serde_json::to_value(&request.tool_call).map_err(|e| internal_error(e.to_string()))?;
     let options =
         serde_json::to_value(&request.options).map_err(|e| internal_error(e.to_string()))?;
-    serde_json::from_value(json!({
+    let command = (request.tool_call.fields.kind == Some(v1s::ToolKind::Execute))
+        .then(|| {
+            request
+                .tool_call
+                .fields
+                .raw_input
+                .as_ref()?
+                .get("command")?
+                .as_str()
+                .map(str::to_string)
+        })
+        .flatten();
+    let (upsert, subject) = match (command, cwd.filter(|cwd| cwd.is_absolute())) {
+        (Some(command), Some(cwd)) => {
+            let id = request.tool_call.tool_call_id.to_string();
+            tool_call["sessionUpdate"] = json!("tool_call_update");
+            (
+                Some(tool_call),
+                json!({ "type": "command", "command": command, "cwd": cwd, "toolCallId": id }),
+            )
+        }
+        _ => (None, json!({ "type": "tool_call", "toolCall": tool_call })),
+    };
+    let request = serde_json::from_value(json!({
         "sessionId": request.session_id.to_string(),
         "title": format!("Allow {title}?"),
-        "subject": { "type": "tool_call", "toolCall": tool_call },
+        "subject": subject,
         "options": options,
     }))
-    .map_err(|e| internal_error(e.to_string()))
+    .map_err(|e| internal_error(e.to_string()))?;
+    Ok((upsert, request))
 }
 
 /// v2 prompt content → the v1 blocks the core reads. Same wire shape.
@@ -531,16 +906,23 @@ fn initialize_response(auth_methods: Vec<v1s::AuthMethod>) -> s::InitializeRespo
     let auth_methods = auth_methods
         .iter()
         .filter_map(|method| {
+            // Yolop offers only agent-run login; anything else has no v2
+            // form yet and is skipped, loudly so a drift is visible.
             let v1s::AuthMethod::Agent(agent) = method else {
+                tracing::warn!(id = %method.id(), "acp v2: skipping non-agent auth method");
                 return None;
             };
-            let mut value = serde_json::to_value(agent).ok()?;
+            let mut value = serde_json::to_value(agent)
+                .inspect_err(|err| tracing::warn!(%err, "acp v2: auth method did not serialize"))
+                .ok()?;
             let object = value.as_object_mut()?;
             if let Some(id) = object.remove("id") {
                 object.insert("methodId".into(), id);
             }
             object.insert("type".into(), json!("agent"));
-            serde_json::from_value(value).ok()
+            serde_json::from_value(value)
+                .inspect_err(|err| tracing::warn!(%err, "acp v2: auth method did not convert"))
+                .ok()
         })
         .collect();
     s::InitializeResponse::new(
@@ -560,6 +942,13 @@ fn initialize_response(auth_methods: Vec<v1s::AuthMethod>) -> s::InitializeRespo
                     s::McpCapabilities::new()
                         .stdio(s::McpStdioCapabilities::new())
                         .http(s::McpHttpCapabilities::new()),
+                )
+                .delete(s::SessionDeleteCapabilities::new())
+                .system_prompt(
+                    s::SessionSystemPromptCapabilities::new().mode(
+                        s::SessionSystemPromptModeCapabilities::new()
+                            .override_(s::SessionSystemPromptOverrideCapabilities::new()),
+                    ),
                 ),
         ),
     )
@@ -674,15 +1063,20 @@ pub(super) fn agent<F: RuntimeFactory>(
                 let server = server.clone();
                 let peer_for = peer_for.clone();
                 async move |params: s::NewSessionRequest, responder: acp2::Responder<_>, cx| {
-                    let (_, peer) = peer_for(&cx);
+                    let (link, peer) = peer_for(&cx);
                     let mcp = match scoped_mcp_servers(&params.mcp_servers) {
                         Ok(mcp) => mcp,
                         Err(err) => return responder.respond_with_error(err),
                     };
-                    let session = match open_session(&server, &peer, params.cwd.0, mcp).await {
-                        Ok(session) => session,
+                    let extras = match session_extras(&link, params.system_prompt.as_ref()) {
+                        Ok(extras) => extras,
                         Err(err) => return responder.respond_with_error(err),
                     };
+                    let session =
+                        match open_session(&server, &peer, params.cwd.0, mcp, extras).await {
+                            Ok(session) => session,
+                            Err(err) => return responder.respond_with_error(err),
+                        };
                     let options = session_config_options(&session).await;
                     *session.last_config_options.lock().unwrap() = Some(options.clone());
                     let commands = session.commands.lock().unwrap().clone();
@@ -720,41 +1114,55 @@ pub(super) fn agent<F: RuntimeFactory>(
                         Ok(mcp) => mcp,
                         Err(err) => return responder.respond_with_error(err),
                     };
+                    let extras = match session_extras(&link, params.system_prompt.as_ref()) {
+                        Ok(extras) => extras,
+                        Err(err) => return responder.respond_with_error(err),
+                    };
+                    // v2 answers an unknown session with `-32002`, so check
+                    // before `reopen_session`, whose v1 error is invalid params.
+                    let known = server.session(&session_id).is_some()
+                        || match session_id.parse::<RuntimeSessionId>() {
+                            Ok(id) => server.factory.session_exists(id).await,
+                            Err(_) => false,
+                        };
+                    if !known {
+                        return responder.respond_with_error(session_not_found(&session_id));
+                    }
                     let session = match reopen_session(
                         &server,
                         &peer,
                         &session_id,
                         params.cwd.0,
                         mcp,
+                        extras,
                     )
                     .await
                     {
                         Ok(session) => session,
-                        Err(err)
-                            if err.code == agent_client_protocol::ErrorCode::INVALID_PARAMS
-                                && err.data.as_ref().is_some_and(|data| {
-                                    data.as_str()
-                                        .is_some_and(|text| text.starts_with("unknown session id"))
-                                }) =>
-                        {
-                            return responder.respond_with_error(session_not_found(&session_id));
-                        }
                         Err(err) => return responder.respond_with_error(err),
                     };
                     session.closed.store(false, Ordering::Release);
                     if replay {
-                        if let Err(err) = replay_session_history(&peer, &session).await {
+                        link.set_replaying(&session_id, true);
+                        let replayed = replay_session_history(&peer, &session).await;
+                        link.set_replaying(&session_id, false);
+                        if let Err(err) = replayed {
                             return responder.respond_with_error(err);
                         }
-                        link.close_messages(&session_id);
                     }
                     // Current state, never history: the snapshot follows the
                     // replay and precedes the response.
-                    link.state_snapshot(&session_id);
-                    emit_config_options(&peer, &session).await;
+                    link.state_snapshot(&session_id).await;
+                    let options = session_config_options(&session).await;
+                    *session.last_config_options.lock().unwrap() = Some(options.clone());
                     let commands = session.commands.lock().unwrap().clone();
-                    notify_available_commands(&peer, &session_id, &commands);
-                    responder.respond(s::ResumeSessionResponse::new())?;
+                    responder.respond(
+                        s::ResumeSessionResponse::new()
+                            .config_options(config_options(options))
+                            .available_commands(available_commands(super::available_commands(
+                                &commands,
+                            ))),
+                    )?;
                     super::maybe_spawn_settings_watcher(&server, &peer);
                     Ok(())
                 }
@@ -806,6 +1214,38 @@ pub(super) fn agent<F: RuntimeFactory>(
             {
                 let server = server.clone();
                 let peer_for = peer_for.clone();
+                async move |params: s::DeleteSessionRequest, responder: acp2::Responder<_>, cx| {
+                    let (link, _) = peer_for(&cx);
+                    let session_id = params.session_id.to_string();
+                    let Ok(runtime_id) = session_id.parse::<RuntimeSessionId>() else {
+                        return responder.respond_with_error(session_not_found(&session_id));
+                    };
+                    // Deleting an active session closes it first, the same way
+                    // `session/close` does.
+                    if let Some(session) = server.session(&session_id) {
+                        session.closed.store(true, Ordering::Release);
+                        session.trigger_cancel();
+                        let _turn = session.turn_lock.lock().await;
+                        server.sessions.lock().unwrap().remove(&session_id);
+                        session.handles.flush_trace_exporters().await;
+                        link.forget(&session_id);
+                    }
+                    match server.factory.delete_session(runtime_id).await {
+                        Ok(()) => responder.respond(s::DeleteSessionResponse::new()),
+                        Err(err) if err.to_string().starts_with("unknown session id") => {
+                            responder.respond_with_error(session_not_found(&session_id))
+                        }
+                        Err(err) => responder
+                            .respond_with_error(internal_error(format!("session/delete: {err}"))),
+                    }
+                }
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            {
+                let server = server.clone();
+                let peer_for = peer_for.clone();
                 async move |params: s::PromptRequest, responder: acp2::Responder<_>, cx| {
                     let (link, peer) = peer_for(&cx);
                     let session_id = params.session_id.to_string();
@@ -829,10 +1269,10 @@ pub(super) fn agent<F: RuntimeFactory>(
                     let message_id = link.new_id("user");
                     // Count the work before answering, so a `session/close`
                     // racing this prompt still sees it.
-                    peer.work_started(&session_id);
+                    peer.work_started(&session_id).await;
                     if let Err(err) = responder.respond(s::PromptResponse::new(message_id.clone()))
                     {
-                        peer.work_finished(&session_id, StopReason::Cancelled);
+                        peer.work_finished(&session_id, StopReason::Cancelled).await;
                         return Err(err);
                     }
                     link.user_message(&session_id, &message_id, params.prompt);
@@ -845,7 +1285,7 @@ pub(super) fn agent<F: RuntimeFactory>(
                             let stop =
                                 run_client_turn(&server, peer.clone(), session, &blocks, input)
                                     .await;
-                            peer.work_finished(&session_id, stop);
+                            peer.work_finished(&session_id, stop).await;
                         }
                     });
                     Ok(())
@@ -898,6 +1338,64 @@ pub(super) fn agent<F: RuntimeFactory>(
             },
             agent_client_protocol::on_receive_notification!(),
         )
+}
+
+/// What a v2 session adds to its runtime: the link's file snapshot observer
+/// and the client's system prompt, if it sent one.
+fn session_extras(
+    link: &Arc<Link>,
+    system_prompt: Option<&s::SystemPrompt>,
+) -> Result<SessionExtras, agent_client_protocol::Error> {
+    let observer: ToolObserver = {
+        let link = Arc::downgrade(link);
+        Arc::new(
+            move |session_id: RuntimeSessionId, tool_call: &RuntimeToolCall| {
+                if let Some(link) = link.upgrade() {
+                    link.before_tool(&session_id.to_string(), tool_call);
+                }
+            },
+        )
+    };
+    Ok(SessionExtras {
+        tool_observer: Some(observer),
+        system_prompt: system_prompt.map(client_system_prompt).transpose()?,
+    })
+}
+
+/// v2 `systemPrompt` → the runtime's. Text blocks only: the system prompt is
+/// instructions, and the harness has nowhere to put an image or resource.
+fn client_system_prompt(
+    prompt: &s::SystemPrompt,
+) -> Result<ClientSystemPrompt, agent_client_protocol::Error> {
+    let mut text = Vec::new();
+    for block in &prompt.content {
+        match block {
+            s::ContentBlock::Text(block) => text.push(block.text.as_str()),
+            _ => return Err(invalid_params("systemPrompt supports text content only")),
+        }
+    }
+    let text = text.join("\n\n");
+    match &prompt.mode {
+        s::SystemPromptMode::Append => Ok(ClientSystemPrompt::Append(text)),
+        s::SystemPromptMode::Override => Ok(ClientSystemPrompt::Override(text)),
+        other => Err(invalid_params(format!(
+            "unsupported systemPrompt mode `{other:?}`"
+        ))),
+    }
+}
+
+/// Remove a saved session's directory. Unknown ids are reported as such, so
+/// the handler can answer `-32002`.
+pub(in crate::editor::acp) async fn delete_saved_session(
+    sessions_dir: &Path,
+    session_id: RuntimeSessionId,
+) -> anyhow::Result<()> {
+    let dir = crate::runtime::session_log::session_dir_path(sessions_dir, session_id);
+    if !tokio::fs::try_exists(&dir).await.unwrap_or(false) {
+        anyhow::bail!("unknown session id {session_id}");
+    }
+    tokio::fs::remove_dir_all(&dir).await?;
+    Ok(())
 }
 
 /// A saved session, as `session/list` reports it.
@@ -957,15 +1455,22 @@ mod tests {
     use super::*;
 
     fn translate(state: &mut LinkSession, update: v1s::SessionUpdate) -> Value {
+        let mut updates = translate_all(state, update);
+        assert_eq!(updates.len(), 1, "one v2 update: {updates:?}");
+        updates.remove(0)
+    }
+
+    fn translate_all(state: &mut LinkSession, update: v1s::SessionUpdate) -> Vec<Value> {
         // Ids come from the link's counter; a fresh one per call is enough
         // to tell an open message (same id) from a new one.
         static NEXT: AtomicU64 = AtomicU64::new(1);
-        let update = translate_update(state, update, || {
+        translate_update(state, update, || {
             format!("id{}", NEXT.fetch_add(1, Ordering::Relaxed))
         })
         .expect("translates")
-        .expect("has a v2 form");
-        serde_json::to_value(update).unwrap()
+        .into_iter()
+        .map(|update| serde_json::to_value(update).unwrap())
+        .collect()
     }
 
     fn text(text: &str) -> v1s::ContentChunk {
@@ -1065,24 +1570,155 @@ mod tests {
             || "id".into(),
         )
         .unwrap();
-        assert!(update.is_none());
+        assert!(update.is_empty());
+    }
+
+    #[test]
+    fn replayed_messages_open_with_an_empty_whole_message() {
+        let mut state = LinkSession {
+            replaying: true,
+            ..LinkSession::default()
+        };
+        let first = translate_all(&mut state, v1s::SessionUpdate::AgentMessageChunk(text("a")));
+        assert_eq!(first.len(), 2);
+        assert_eq!(first[0]["sessionUpdate"], "agent_message");
+        assert_eq!(first[0]["messageId"], first[1]["messageId"]);
+        assert_eq!(first[1]["sessionUpdate"], "agent_message_chunk");
+        let next = translate_all(&mut state, v1s::SessionUpdate::AgentMessageChunk(text("b")));
+        assert_eq!(next.len(), 1, "the open message takes more chunks");
+    }
+
+    #[test]
+    fn a_completed_edit_carries_its_diff_and_a_shell_call_its_terminal() {
+        let mut state = LinkSession::default();
+        state
+            .diffs
+            .insert("edit".into(), json!({ "type": "diff", "changes": [] }));
+        state.terminals.insert("sh".into(), b"out".to_vec());
+        let done = |id: &str| {
+            v1s::SessionUpdate::ToolCallUpdate(v1s::ToolCallUpdate::new(
+                id.to_string(),
+                v1s::ToolCallUpdateFields::new()
+                    .status(v1s::ToolCallStatus::Completed)
+                    .content(vec![v1s::ToolCallContent::from("done")]),
+            ))
+        };
+        let edit = translate(&mut state, done("edit"));
+        assert_eq!(edit["content"][0]["type"], "diff");
+        assert_eq!(edit["content"][1]["type"], "content");
+        let shell = translate(&mut state, done("sh"));
+        assert_eq!(shell["content"][0]["type"], "terminal");
+        assert_eq!(shell["content"][0]["terminalId"], "sh");
+    }
+
+    #[test]
+    fn link_only_updates_parse_as_v2() {
+        // The updates the link writes as JSON, so a schema change fails here
+        // rather than being dropped with a warning at runtime.
+        for update in [
+            json!({ "sessionUpdate": "terminal_update", "terminalId": "t", "command": "ls", "cwd": "/w" }),
+            json!({ "sessionUpdate": "terminal_update", "terminalId": "t",
+                    "output": { "data": activity::base64(b"hi") }, "exitStatus": { "exitCode": 0 } }),
+            json!({ "sessionUpdate": "terminal_output_chunk", "terminalId": "t", "data": "aGk=" }),
+            json!({ "sessionUpdate": "tool_call_update", "toolCallId": "t", "name": "bash",
+                    "content": [{ "type": "terminal", "terminalId": "t" }] }),
+            json!({ "sessionUpdate": "tool_call_content_chunk", "toolCallId": "t",
+                    "content": { "type": "content", "content": { "type": "text", "text": "x" } } }),
+            json!({ "sessionUpdate": "agent_message", "messageId": "m",
+                    "content": [{ "type": "text", "text": "redacted" }] }),
+            json!({ "sessionUpdate": "tool_call_update", "toolCallId": "e",
+                    "content": [{ "type": "diff", "changes": [{ "operation": "modify", "path": "/w/a", "fileType": "text" }],
+                                  "patch": { "format": "git_patch", "text": "diff --git a/w/a b/w/a\n" } }] }),
+        ] {
+            let parsed: s::SessionUpdate = serde_json::from_value(update.clone())
+                .unwrap_or_else(|err| panic!("{update}: {err}"));
+            let round = serde_json::to_value(parsed).unwrap();
+            assert_eq!(round["sessionUpdate"], update["sessionUpdate"]);
+        }
+    }
+
+    #[test]
+    fn usage_accumulates_until_idle() {
+        let mut total = None;
+        let usage = |input, output| everruns_core::TokenUsage {
+            input_tokens: input,
+            output_tokens: output,
+            ..Default::default()
+        };
+        add_usage(&mut total, &usage(10, 2));
+        add_usage(&mut total, &usage(5, 1));
+        let total = total.unwrap();
+        assert_eq!(
+            (total.input_tokens, total.output_tokens, total.total_tokens),
+            (15, 3, 18)
+        );
+    }
+
+    #[test]
+    fn system_prompts_take_text_and_both_modes() {
+        let text = |t: &str| s::ContentBlock::Text(s::TextContent::new(t));
+        let append = s::SystemPrompt::new(vec![text("a"), text("b")]);
+        assert!(matches!(
+            client_system_prompt(&append).unwrap(),
+            ClientSystemPrompt::Append(text) if text == "a\n\nb"
+        ));
+        let replace = s::SystemPrompt::new(vec![text("only")]).mode(s::SystemPromptMode::Override);
+        assert!(matches!(
+            client_system_prompt(&replace).unwrap(),
+            ClientSystemPrompt::Override(text) if text == "only"
+        ));
+    }
+
+    #[test]
+    fn shell_permission_requests_name_the_command_as_their_subject() {
+        let (upsert, request) = permission_request(
+            v1s::RequestPermissionRequest::new(
+                "session",
+                v1s::ToolCallUpdate::new(
+                    "call_1",
+                    v1s::ToolCallUpdateFields::new()
+                        .title("bash".to_string())
+                        .kind(v1s::ToolKind::Execute)
+                        .raw_input(json!({ "command": "cargo test" })),
+                ),
+                vec![v1s::PermissionOption::new(
+                    "allow_once",
+                    "Allow",
+                    v1s::PermissionOptionKind::AllowOnce,
+                )],
+            ),
+            Some(Path::new("/work")),
+        )
+        .unwrap();
+        let value = serde_json::to_value(request).unwrap();
+        assert_eq!(value["subject"]["type"], "command");
+        assert_eq!(value["subject"]["command"], "cargo test");
+        assert_eq!(value["subject"]["cwd"], "/work");
+        assert_eq!(value["subject"]["toolCallId"], "call_1");
+        let upsert = upsert.expect("the tool call is announced first");
+        assert_eq!(upsert["sessionUpdate"], "tool_call_update");
+        let _: s::SessionUpdate = serde_json::from_value(upsert).unwrap();
     }
 
     #[test]
     fn permission_requests_name_the_tool_call_as_their_subject() {
-        let request = permission_request(v1s::RequestPermissionRequest::new(
-            "session",
-            v1s::ToolCallUpdate::new(
-                "call_1",
-                v1s::ToolCallUpdateFields::new().title("bash".to_string()),
+        let (upsert, request) = permission_request(
+            v1s::RequestPermissionRequest::new(
+                "session",
+                v1s::ToolCallUpdate::new(
+                    "call_1",
+                    v1s::ToolCallUpdateFields::new().title("bash".to_string()),
+                ),
+                vec![v1s::PermissionOption::new(
+                    "allow_once",
+                    "Allow",
+                    v1s::PermissionOptionKind::AllowOnce,
+                )],
             ),
-            vec![v1s::PermissionOption::new(
-                "allow_once",
-                "Allow",
-                v1s::PermissionOptionKind::AllowOnce,
-            )],
-        ))
+            Some(Path::new("/work")),
+        )
         .unwrap();
+        assert!(upsert.is_none());
         let value = serde_json::to_value(request).unwrap();
         assert_eq!(value["title"], "Allow bash?");
         assert_eq!(value["subject"]["type"], "tool_call");
