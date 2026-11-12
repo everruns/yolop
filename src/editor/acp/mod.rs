@@ -203,6 +203,7 @@ impl RuntimeFactory for ConfigRuntimeFactory {
                 tool_approver,
                 tool_observer: extras.tool_observer,
                 client_system_prompt: extras.system_prompt,
+                additional_directories: extras.additional_directories,
                 sandbox_mode_override: self.sandbox_mode_override,
                 extra_environment_context: self.extra_environment_context.clone(),
                 editor_context_value,
@@ -333,6 +334,7 @@ mod tests {
                     tool_approver,
                     tool_observer: extras.tool_observer,
                     client_system_prompt: extras.system_prompt,
+                    additional_directories: extras.additional_directories,
                     ..BuildOptions::default()
                 },
             )
@@ -380,6 +382,7 @@ mod tests {
                     tool_approver,
                     tool_observer: extras.tool_observer,
                     client_system_prompt: extras.system_prompt,
+                    additional_directories: extras.additional_directories,
                     ..BuildOptions::default()
                 },
             )
@@ -3462,10 +3465,60 @@ mod tests {
         assert!(session["prompt"]["embeddedContext"].is_object(), "{init}");
         assert!(session["mcp"]["http"].is_object(), "{init}");
         assert!(session["mcp"]["stdio"].is_object(), "{init}");
+        assert!(session["additionalDirectories"].is_object(), "{init}");
         for method in result["authMethods"].as_array().expect("auth methods") {
             assert_eq!(method["type"], "agent", "{method}");
             assert!(method["methodId"].is_string(), "{method}");
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn v2_sessions_take_additional_folders_and_refuse_unknown_cancels() {
+        let sessions = tempfile::tempdir().expect("sessions tempdir");
+        let cwd = tempfile::tempdir().expect("cwd tempdir");
+        let other = tempfile::tempdir().expect("other folder");
+        let (mut w, mut reader, _server) =
+            start_raw_server(fixed("hi"), sessions.path().to_path_buf());
+        v2_initialize(&mut w, &mut reader).await;
+
+        send_json(
+            &mut w,
+            json!({ "jsonrpc": "2.0", "id": 1, "method": "session/new",
+                    "params": { "cwd": cwd.path(),
+                                "additionalDirectories": [other.path().join("missing")] } }),
+        )
+        .await;
+        let (missing, _) = v2_until_response(&mut w, &mut reader, 1, "").await;
+        assert_eq!(missing["error"]["code"], -32602, "{missing}");
+
+        send_json(
+            &mut w,
+            json!({ "jsonrpc": "2.0", "id": 2, "method": "session/new",
+                    "params": { "cwd": cwd.path(), "additionalDirectories": [other.path()] } }),
+        )
+        .await;
+        let (created, _) = v2_until_response(&mut w, &mut reader, 2, "").await;
+        let session_id = created["result"]["sessionId"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{created}"))
+            .to_string();
+
+        send_json(
+            &mut w,
+            json!({ "jsonrpc": "2.0", "id": 3, "method": "tool_call/cancel",
+                    "params": { "sessionId": session_id, "toolCallId": "nope" } }),
+        )
+        .await;
+        let (unknown, _) = v2_until_response(&mut w, &mut reader, 3, "").await;
+        assert_eq!(unknown["error"]["code"], -32602, "{unknown}");
+        send_json(
+            &mut w,
+            json!({ "jsonrpc": "2.0", "id": 4, "method": "terminal/cancel",
+                    "params": { "sessionId": session_id, "terminalId": "nope" } }),
+        )
+        .await;
+        let (unknown, _) = v2_until_response(&mut w, &mut reader, 4, "").await;
+        assert_eq!(unknown["error"]["code"], -32602, "{unknown}");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

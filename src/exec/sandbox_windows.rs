@@ -87,6 +87,7 @@ pub(crate) fn command(
     cwd: &Path,
     script: &str,
     mode: SandboxMode,
+    extra_roots: &[std::path::PathBuf],
     control: Option<&ControlEndpoint>,
 ) -> Result<ContainedCommand> {
     if mode == SandboxMode::DangerFullAccess {
@@ -119,11 +120,17 @@ pub(crate) fn command(
     };
     if mode == SandboxMode::WorkspaceWrite {
         filesystem.readwrite_paths.push(path_string(cwd));
+        filesystem
+            .readwrite_paths
+            .extend(extra_roots.iter().map(|root| path_string(root)));
         if let Some(skills) = super::sandbox::prepared_global_skills_dir()? {
             filesystem.readwrite_paths.push(path_string(&skills));
         }
     } else {
         filesystem.readonly_paths.push(path_string(cwd));
+        filesystem
+            .readonly_paths
+            .extend(extra_roots.iter().map(|root| path_string(root)));
     }
     let tools = available_tools_policy(
         None,

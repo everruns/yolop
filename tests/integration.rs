@@ -321,6 +321,56 @@ fn meta_provider_reaches_credential_boundary_from_real_binary() {
 }
 
 #[cfg(target_os = "linux")]
+#[test]
+fn linux_sandbox_worker_lets_commands_write_additional_workspace_folders() {
+    if !require_native_sandbox(
+        "linux_sandbox_worker_lets_commands_write_additional_workspace_folders",
+    ) {
+        return;
+    }
+    let root = tempfile::Builder::new()
+        .prefix("yolop-linux-folders-test-")
+        .tempdir_in(std::env::current_dir().unwrap())
+        .expect("sandbox root outside shared temp");
+    let workspace = root.path().join("workspace");
+    let folder = root.path().join("folder");
+    let outside = root.path().join("outside");
+    let private_temp = root.path().join("private-temp");
+    for path in [&workspace, &folder, &outside, &private_temp] {
+        std::fs::create_dir_all(path).unwrap();
+    }
+    let output = yolop_command()
+        .arg("__sandbox-exec")
+        .arg("--cwd")
+        .arg(&workspace)
+        .arg("--temp")
+        .arg(&private_temp)
+        .arg("--mode")
+        .arg("workspace-write")
+        .arg("--root")
+        .arg(&folder)
+        .arg("--script")
+        .arg(format!(
+            "printf ok > '{}/written.txt' && ! printf denied > '{}/denied.txt'",
+            folder.display(),
+            outside.display()
+        ))
+        .output()
+        .expect("spawn Linux sandbox worker");
+    assert!(
+        output.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(folder.join("written.txt")).unwrap(),
+        "ok"
+    );
+    assert!(!outside.join("denied.txt").exists());
+}
+
+#[cfg(target_os = "linux")]
 fn run_linux_sandbox_worker(
     cwd: &Path,
     temp: &Path,

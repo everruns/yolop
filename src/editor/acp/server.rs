@@ -74,12 +74,13 @@ use crate::capabilities::host::{
 const TURN_POLL_INTERVAL: Duration = Duration::from_millis(150);
 
 /// What a v2 client adds to a session beyond v1: an observer that sees each
-/// tool call before it runs (file snapshots for diffs) and its own system
-/// prompt. v1 sessions use the default.
+/// tool call before it runs (file snapshots for diffs), its own system
+/// prompt and additional workspace folders. v1 sessions use the default.
 #[derive(Clone, Default)]
 pub struct SessionExtras {
     pub tool_observer: Option<crate::capabilities::ToolObserver>,
     pub system_prompt: Option<crate::runtime::ClientSystemPrompt>,
+    pub additional_directories: Vec<PathBuf>,
 }
 
 /// Builds a runtime for a freshly opened ACP session. Abstracted so tests can
