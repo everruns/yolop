@@ -25,6 +25,7 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io::AsyncReadExt;
+use tokio_util::sync::CancellationToken;
 
 /// Workspace context for the bash tool. The host disk repoints when a session
 /// worktree is activated mid-session (EVE-660).
@@ -100,6 +101,8 @@ struct BashRunOutput {
     stderr_text: String,
     exit_code: i32,
     timed_out: bool,
+    /// The editor cancelled the command (ACP `tool_call/cancel`).
+    cancelled: bool,
     out_truncated: bool,
     err_truncated: bool,
     duration: Duration,
@@ -204,6 +207,7 @@ impl BashTool {
         command: &str,
         sink: Option<Arc<dyn BackgroundEventSink>>,
         sandbox: &Arc<dyn SandboxProvider>,
+        cancel: Option<&CancellationToken>,
     ) -> Result<BashRunOutput, ToolExecutionResult> {
         let cwd = match self.ws.host.spawn_cwd() {
             Ok(cwd) => cwd,
@@ -315,20 +319,32 @@ impl BashTool {
             child.wait().await
         };
 
-        let (status, timed_out) = match tokio::time::timeout(timeout, run).await {
-            Ok(status) => (status.ok(), false),
-            Err(_) => {
+        // TODO(everruns#5384): drop this race once the act loop cancels the
+        // call upstream; dropping the future then kills the group on its own.
+        let cancelled = async {
+            match cancel {
+                Some(token) => token.cancelled().await,
+                None => std::future::pending().await,
+            }
+        };
+        let outcome = tokio::select! {
+            outcome = tokio::time::timeout(timeout, run) => outcome.map_err(|_| false),
+            () = cancelled => Err(true),
+        };
+        let (status, timed_out, cancelled) = match outcome {
+            Ok(status) => (status.ok(), false, false),
+            Err(cancelled) => {
                 // Keep already-read output outside the canceled future. It is
                 // often the only evidence needed to diagnose a failing build.
                 #[cfg(unix)]
                 group.kill();
                 let _ = child.start_kill();
                 let _ = child.wait().await;
-                (None, true)
+                (None, !cancelled, cancelled)
             }
         };
         #[cfg(unix)]
-        if timed_out || out_truncated || err_truncated {
+        if timed_out || cancelled || out_truncated || err_truncated {
             group.kill();
         } else {
             // A normally finished command may deliberately launch a service.
@@ -340,6 +356,7 @@ impl BashTool {
             stderr_text: String::from_utf8_lossy(&err_buf).to_string(),
             exit_code: status.flatten().unwrap_or(-1),
             timed_out,
+            cancelled,
             out_truncated,
             err_truncated,
             duration: start.elapsed(),
@@ -380,6 +397,7 @@ impl BashTool {
         sink: Option<Arc<dyn BackgroundEventSink>>,
         request_full_access: bool,
         justification: Option<&str>,
+        cancel: Option<&CancellationToken>,
     ) -> Result<BashRunOutput, ToolExecutionResult> {
         if command_can_signal_yolop(command, std::process::id()) {
             return Err(ToolExecutionResult::tool_error(
@@ -395,7 +413,7 @@ impl BashTool {
                 )
                 .await?;
             }
-            return self.run_command(command, sink, &self.sandbox).await;
+            return self.run_command(command, sink, &self.sandbox, cancel).await;
         }
 
         match self.approval_policy {
@@ -408,7 +426,7 @@ impl BashTool {
                     )
                     .await?;
                 }
-                self.run_command(command, sink, &self.sandbox).await
+                self.run_command(command, sink, &self.sandbox, cancel).await
             }
             ApprovalPolicy::OnRequest if request_full_access => {
                 let reason = justification
@@ -424,6 +442,7 @@ impl BashTool {
                     command,
                     sink,
                     &crate::exec::sandbox::provider(SandboxMode::DangerFullAccess),
+                    cancel,
                 )
                 .await
             }
@@ -432,9 +451,15 @@ impl BashTool {
             )),
             ApprovalPolicy::OnFailure => {
                 let first = self
-                    .run_command(command, sink.clone(), &self.sandbox)
+                    .run_command(command, sink.clone(), &self.sandbox, cancel)
                     .await?;
-                if likely_sandbox_denial(first.sandbox_mode, first.exit_code, &first.stderr_text) {
+                if !first.cancelled
+                    && likely_sandbox_denial(
+                        first.sandbox_mode,
+                        first.exit_code,
+                        &first.stderr_text,
+                    )
+                {
                     self.request_approval(
                         command,
                         "command failed because the sandbox likely blocked it; retry with danger-full-access"
@@ -446,6 +471,7 @@ impl BashTool {
                         command,
                         sink,
                         &crate::exec::sandbox::provider(SandboxMode::DangerFullAccess),
+                        cancel,
                     )
                     .await
                 } else {
@@ -453,7 +479,7 @@ impl BashTool {
                 }
             }
             ApprovalPolicy::OnRequest | ApprovalPolicy::Never => {
-                self.run_command(command, sink, &self.sandbox).await
+                self.run_command(command, sink, &self.sandbox, cancel).await
             }
         }
     }
@@ -554,6 +580,36 @@ impl Tool for BashTool {
             .with_supports_background(true)
     }
     async fn execute(&self, arguments: Value) -> ToolExecutionResult {
+        self.execute_cancellable(arguments, None).await
+    }
+
+    async fn execute_with_context(
+        &self,
+        arguments: Value,
+        context: &ToolContext,
+    ) -> ToolExecutionResult {
+        // TODO(everruns#5384): the act loop registers every call upstream;
+        // then this override goes and `execute` is enough.
+        let Some(tool_call_id) = context.tool_call_id.as_deref() else {
+            return self.execute(arguments).await;
+        };
+        let registration =
+            crate::runtime::tool_cancel::shared().register(context.session_id, tool_call_id);
+        self.execute_cancellable(arguments, Some(registration.token()))
+            .await
+    }
+
+    fn as_background_executable(&self) -> Option<&dyn BackgroundExecutableTool> {
+        Some(self)
+    }
+}
+
+impl BashTool {
+    async fn execute_cancellable(
+        &self,
+        arguments: Value,
+        cancel: Option<&CancellationToken>,
+    ) -> ToolExecutionResult {
         let command = match arguments.get("command").and_then(Value::as_str) {
             Some(c) => c.to_string(),
             None => return ToolExecutionResult::tool_error("'command' is required"),
@@ -571,7 +627,7 @@ impl Tool for BashTool {
             == Some("require_escalated");
         let justification = arguments.get("justification").and_then(Value::as_str);
         let output = match self
-            .execute_with_policy(&command, None, request_full_access, justification)
+            .execute_with_policy(&command, None, request_full_access, justification, cancel)
             .await
         {
             Ok(output) => output,
@@ -601,6 +657,13 @@ impl Tool for BashTool {
             "output_limited": output.out_truncated || output.err_truncated,
             "sandbox": output.sandbox_mode.as_str(),
         });
+        if output.cancelled {
+            return ToolExecutionResult::tool_error(format!(
+                "{} Output before it stopped:\n{}",
+                crate::runtime::tool_cancel::CANCELLED_MESSAGE,
+                json!({ "stdout": result["stdout"], "stderr": result["stderr"] })
+            ));
+        }
         if output.timed_out {
             result["error"] = json!(format!(
                 "command timed out after {}s; partial stdout and stderr are preserved. For long work use spawn_background, then review its completion; in one-shot mode wait_task waits for it.",
@@ -615,10 +678,6 @@ impl Tool for BashTool {
         }
         ToolExecutionResult::success_with_raw_output(result, raw_output)
     }
-
-    fn as_background_executable(&self) -> Option<&dyn BackgroundExecutableTool> {
-        Some(self)
-    }
 }
 
 #[async_trait]
@@ -626,7 +685,7 @@ impl BackgroundExecutableTool for BashTool {
     async fn execute_background(
         &self,
         arguments: Value,
-        _context: ToolContext,
+        context: ToolContext,
         sink: Arc<dyn BackgroundEventSink>,
     ) -> Result<BackgroundOutcome, ToolExecutionResult> {
         let command = match arguments.get("command").and_then(Value::as_str) {
@@ -640,14 +699,24 @@ impl BackgroundExecutableTool for BashTool {
         let request_full_access = arguments.get("sandbox_permissions").and_then(Value::as_str)
             == Some("require_escalated");
         let justification = arguments.get("justification").and_then(Value::as_str);
+        // A detached call stays cancellable by its id, like a foreground one.
+        // TODO(everruns#5384): upstream registers only inline calls; keep this
+        // registration (through the upstream registry) after the switch.
+        let registration = context.tool_call_id.as_deref().map(|tool_call_id| {
+            crate::runtime::tool_cancel::shared().register(context.session_id, tool_call_id)
+        });
         let output = self
             .execute_with_policy(
                 &command,
                 Some(sink.clone()),
                 request_full_access,
                 justification,
+                registration
+                    .as_ref()
+                    .map(|registration| registration.token()),
             )
             .await?;
+        drop(registration);
         let payload = bounded_exec_payload(&output, output_mode);
         let ExecToolResultPayload {
             stdout,
@@ -658,6 +727,13 @@ impl BackgroundExecutableTool for BashTool {
             total_lines,
             raw_output,
         } = payload;
+        if output.cancelled {
+            return Err(ToolExecutionResult::tool_error(format!(
+                "{} Output before it stopped:\n{}",
+                crate::runtime::tool_cancel::CANCELLED_MESSAGE,
+                json!({ "stdout": stdout, "stderr": stderr })
+            )));
+        }
         let output_limited = output.out_truncated || output.err_truncated;
         let sandbox_denial =
             likely_sandbox_denial(output.sandbox_mode, exit_code, &output.stderr_text);
@@ -862,6 +938,44 @@ mod tests {
                 "expected unrelated command: {command}"
             );
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_editor_cancels_a_running_command_and_keeps_its_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let tool = BashTool::new(Workspace::from_path(dir.path().to_path_buf()));
+        let session_id = everruns_contracts::typed_id::SessionId::new();
+        let mut context = ToolContext::new(session_id);
+        context.tool_call_id = Some("call_sleep".into());
+        let cancels = crate::runtime::tool_cancel::shared();
+        let canceller = tokio::spawn(async move {
+            // Let the command print before it is stopped.
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            for _ in 0..200 {
+                if cancels.cancel(session_id, "call_sleep") {
+                    return true;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            false
+        });
+        let started = Instant::now();
+        let result = tool
+            .execute_with_context(json!({ "command": "echo before; sleep 30" }), &context)
+            .await;
+
+        assert!(canceller.await.unwrap(), "the running call registered");
+        assert!(started.elapsed() < Duration::from_secs(10), "stopped early");
+        let ToolExecutionResult::ToolError(message) = result else {
+            panic!("a cancelled command is an error the model reads: {result:?}");
+        };
+        assert!(message.starts_with(crate::runtime::tool_cancel::CANCELLED_MESSAGE));
+        assert!(message.contains("before"), "{message}");
+        assert!(
+            !crate::runtime::tool_cancel::shared().cancel(session_id, "call_sleep"),
+            "forgotten once finished"
+        );
     }
 
     #[tokio::test]
@@ -1345,6 +1459,36 @@ mod tests {
             }
             other => panic!("expected ToolError, got: {other:?}"),
         }
+
+        // A detached command stays cancellable by its call id.
+        let session_id = SessionId::new();
+        let mut context = ToolContext::new(session_id);
+        context.tool_call_id = Some("call_bg".into());
+        let canceller = tokio::spawn(async move {
+            for _ in 0..500 {
+                if crate::runtime::tool_cancel::shared().cancel(session_id, "call_bg") {
+                    return true;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            false
+        });
+        let err = tool
+            .as_background_executable()
+            .expect("background executor")
+            .execute_background(
+                json!({ "command": "sleep 30" }),
+                context,
+                Arc::new(NoopSink),
+            )
+            .await
+            .expect_err("a cancelled background command fails");
+        assert!(canceller.await.unwrap());
+        assert!(matches!(
+            err,
+            ToolExecutionResult::ToolError(message)
+                if message.starts_with(crate::runtime::tool_cancel::CANCELLED_MESSAGE)
+        ));
     }
 
     #[tokio::test]
@@ -1385,7 +1529,7 @@ mod tests {
         tool.max_output_bytes = 5;
         let sink = Arc::new(RecordingSink::default());
         let output = tool
-            .run_command("printf 1234567890", Some(sink.clone()), &tool.sandbox)
+            .run_command("printf 1234567890", Some(sink.clone()), &tool.sandbox, None)
             .await
             .expect("background command should return capped output");
 

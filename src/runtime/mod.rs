@@ -24,6 +24,7 @@ pub mod session;
 mod session_layout;
 pub mod session_log;
 pub(crate) mod speed;
+pub(crate) mod tool_cancel;
 pub(crate) mod turn_scope;
 
 use crate::capabilities::mcp::McpCapability as YolopMcpCapability;
@@ -329,6 +330,8 @@ struct CodingCliSessionFileSystemFactory {
     skill_system: Option<PathBuf>,
     skill_environment: Option<PathBuf>,
     extension_skills: Vec<(String, PathBuf)>,
+    /// Additional workspace folders, writable like the workspace.
+    extra_roots: Vec<PathBuf>,
 }
 
 #[async_trait]
@@ -367,13 +370,15 @@ impl SessionFileSystemFactory for CodingCliSessionFileSystemFactory {
         .flatten()
         .collect::<Vec<_>>();
         skill_roots.extend(self.extension_skills.iter().map(|(_, path)| path.clone()));
-        let composite: Arc<dyn SessionFileSystem> =
-            Arc::new(CodingCliSessionFileStore::new_with_materializer(
+        let composite: Arc<dyn SessionFileSystem> = Arc::new(
+            CodingCliSessionFileStore::new_with_materializer(
                 self.workspace.clone(),
                 self.session_dir.clone(),
                 skill_roots,
                 self.materializer.clone(),
-            )?);
+            )?
+            .with_extra_roots(&self.extra_roots)?,
+        );
         let write_blocklist: Arc<dyn SessionFileSystem> =
             Arc::new(WriteBlocklistFileStore::new(composite.clone()));
         Ok(Arc::new(GrepOptionsForwardingFileStore::new(
@@ -683,6 +688,9 @@ struct CodingCliSessionFileStore {
     workspace_disk: RealDiskFileStore,
     session: StdMutex<Option<RealDiskFileStore>>,
     skill_roots: Vec<(PathBuf, RealDiskFileStore)>,
+    /// Additional workspace folders, addressed by absolute host path and
+    /// writable. Policy sees each as `/workspace/roots/<index>`.
+    extra_roots: Vec<(PathBuf, RealDiskFileStore)>,
     session_dir: PathBuf,
     materializer: Arc<session_log::SessionMaterializer>,
 }
@@ -726,9 +734,34 @@ impl CodingCliSessionFileStore {
             workspace_disk: workspace.disk().as_ref().clone(),
             session: StdMutex::new(None),
             skill_roots,
+            extra_roots: Vec::new(),
             session_dir,
             materializer,
         })
+    }
+
+    fn with_extra_roots(mut self, roots: &[PathBuf]) -> everruns_contracts::error::Result<Self> {
+        self.extra_roots = roots
+            .iter()
+            .map(|path| Ok((path.clone(), RealDiskFileStore::new(path.clone())?)))
+            .collect::<everruns_contracts::error::Result<Vec<_>>>()?;
+        Ok(self)
+    }
+
+    /// The additional folder holding a host-absolute `path`, and the path
+    /// inside it.
+    fn extra_route(&self, path: &str) -> Option<(&RealDiskFileStore, String)> {
+        use crate::capabilities::skills::relative_under;
+
+        self.extra_roots.iter().find_map(|(root, store)| {
+            relative_under(path, root.to_string_lossy().as_ref()).map(|rest| (store, rest))
+        })
+    }
+
+    /// The store a host-absolute `path` belongs to when it is not the
+    /// workspace's: a skill root (read-only) or an additional folder.
+    fn other_root(&self, path: &str) -> Option<(&RealDiskFileStore, String)> {
+        self.skill_route(path).or_else(|| self.extra_route(path))
     }
 
     /// The shared workspace disk, repointed via `set_host_root` (EVE-660) when
@@ -891,6 +924,16 @@ impl SessionFileSystem for CodingCliSessionFileStore {
                 .unwrap_or_else(|_| Path::new(""));
             return format!("/workspace/skills/{index}/{}", relative.display());
         }
+        if let Some(index) = self
+            .extra_roots
+            .iter()
+            .position(|(root, _)| Path::new(input).starts_with(root))
+        {
+            let relative = Path::new(input)
+                .strip_prefix(&self.extra_roots[index].0)
+                .unwrap_or_else(|_| Path::new(""));
+            return format!("/workspace/roots/{index}/{}", relative.display());
+        }
         if let Some(relative) = self.session_artifact_path(input) {
             // TODO: remove this policy alias after the aligned Everruns release
             // recognizes /background as a read-only runtime artifact root.
@@ -910,7 +953,7 @@ impl SessionFileSystem for CodingCliSessionFileStore {
     }
 
     fn display_path(&self, path: &str) -> String {
-        if self.skill_route(path).is_some() {
+        if self.other_root(path).is_some() {
             return path.to_string();
         }
         if let Some(relative) = self.session_artifact_path(path) {
@@ -937,7 +980,7 @@ impl SessionFileSystem for CodingCliSessionFileStore {
         session_id: SessionId,
         path: &str,
     ) -> everruns_contracts::error::Result<Option<SessionFile>> {
-        if let Some((store, path)) = self.skill_route(path) {
+        if let Some((store, path)) = self.other_root(path) {
             return store.read_file(session_id, &path).await;
         }
         if let Some(path) = self.session_artifact_path(path) {
@@ -958,6 +1001,9 @@ impl SessionFileSystem for CodingCliSessionFileStore {
     ) -> everruns_contracts::error::Result<SessionFile> {
         if self.skill_route(path).is_some() {
             return Err(Self::readonly_skill_error(path));
+        }
+        if let Some((store, path)) = self.extra_route(path) {
+            return store.write_file(session_id, &path, content, encoding).await;
         }
         if let Some(path) = self.session_artifact_path(path) {
             let file = self
@@ -986,6 +1032,18 @@ impl SessionFileSystem for CodingCliSessionFileStore {
     ) -> everruns_contracts::error::Result<Option<SessionFile>> {
         if self.skill_route(path).is_some() {
             return Err(Self::readonly_skill_error(path));
+        }
+        if let Some((store, path)) = self.extra_route(path) {
+            return store
+                .write_file_if_content_matches(
+                    session_id,
+                    &path,
+                    expected_content,
+                    expected_encoding,
+                    content,
+                    encoding,
+                )
+                .await;
         }
         if let Some(path) = self.session_artifact_path(path) {
             return self
@@ -1022,6 +1080,9 @@ impl SessionFileSystem for CodingCliSessionFileStore {
         if self.skill_route(path).is_some() {
             return Err(Self::readonly_skill_error(path));
         }
+        if let Some((store, path)) = self.extra_route(path) {
+            return store.delete_file(session_id, &path, recursive).await;
+        }
         if let Some(path) = self.session_artifact_path(path) {
             return match self.session_store(false)? {
                 Some(store) => store.delete_file(session_id, &path, recursive).await,
@@ -1038,7 +1099,7 @@ impl SessionFileSystem for CodingCliSessionFileStore {
         session_id: SessionId,
         path: &str,
     ) -> everruns_contracts::error::Result<Vec<FileInfo>> {
-        if let Some((store, path)) = self.skill_route(path) {
+        if let Some((store, path)) = self.other_root(path) {
             return store.list_directory(session_id, &path).await;
         }
         if let Some(path) = self.session_artifact_path(path) {
@@ -1057,7 +1118,7 @@ impl SessionFileSystem for CodingCliSessionFileStore {
         session_id: SessionId,
         path: &str,
     ) -> everruns_contracts::error::Result<Option<FileStat>> {
-        if let Some((store, path)) = self.skill_route(path) {
+        if let Some((store, path)) = self.other_root(path) {
             return store.stat_file(session_id, &path).await;
         }
         if let Some(path) = self.session_artifact_path(path) {
@@ -1076,7 +1137,7 @@ impl SessionFileSystem for CodingCliSessionFileStore {
         path_pattern: Option<&str>,
     ) -> everruns_contracts::error::Result<Vec<GrepMatch>> {
         if let Some(path) = path_pattern
-            && let Some((store, path)) = self.skill_route(path)
+            && let Some((store, path)) = self.other_root(path)
         {
             return store.grep_files(session_id, pattern, Some(&path)).await;
         }
@@ -1099,7 +1160,7 @@ impl SessionFileSystem for CodingCliSessionFileStore {
         options: &GrepOptions,
     ) -> everruns_contracts::error::Result<GrepSearchResult> {
         if let Some(path) = options.path_pattern.as_deref()
-            && let Some((store, path)) = self.skill_route(path)
+            && let Some((store, path)) = self.other_root(path)
         {
             let mut routed = options.clone();
             routed.path_pattern = Some(path);
@@ -1140,6 +1201,9 @@ impl SessionFileSystem for CodingCliSessionFileStore {
     ) -> everruns_contracts::error::Result<FileInfo> {
         if self.skill_route(path).is_some() {
             return Err(Self::readonly_skill_error(path));
+        }
+        if let Some((store, path)) = self.extra_route(path) {
+            return store.create_directory(session_id, &path).await;
         }
         if let Some(path) = self.session_artifact_path(path) {
             return self
@@ -4141,6 +4205,10 @@ pub struct BuildOptions {
     pub tool_observer: Option<crate::capabilities::ToolObserver>,
     /// Instructions an ACP v2 client supplies for the session.
     pub client_system_prompt: Option<ClientSystemPrompt>,
+    /// More workspace folders beside the working directory (ACP v2
+    /// `additionalDirectories`). File tools reach them by absolute path and
+    /// shell commands may write them as they may the workspace.
+    pub additional_directories: Vec<PathBuf>,
     /// Override structured questions for a host with its own answer transport.
     pub ask_user_responder: Option<Arc<dyn everruns_core::builtins::ask_user::AskUser>>,
     /// Override the global extensions directory for this build. Tests inject a
@@ -4192,6 +4260,7 @@ impl Default for BuildOptions {
             tool_approver: None,
             tool_observer: None,
             client_system_prompt: None,
+            additional_directories: Vec::new(),
             ask_user_responder: None,
             provider_stall_timeout: None,
             mcp_readiness_budget: None,
@@ -4404,6 +4473,45 @@ fn thread_context(
     context
 }
 
+/// Environment context entry naming a session's additional workspace folders.
+const WORKSPACE_FOLDERS_CONTEXT_KEY: &str = "additional_workspace_folders";
+
+fn workspace_folders_context(folders: &[PathBuf]) -> String {
+    let list = folders
+        .iter()
+        .map(|folder| folder.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "{list}. These folders are part of the workspace beside the working directory: \
+         read, search and edit them by absolute path"
+    )
+}
+
+/// The session's additional workspace folders: canonical, existing
+/// directories, without the root itself or repeats.
+fn additional_workspace_folders(root: &Path, folders: &[PathBuf]) -> Result<Vec<PathBuf>> {
+    let mut resolved: Vec<PathBuf> = Vec::new();
+    for folder in folders {
+        anyhow::ensure!(
+            folder.is_absolute(),
+            "workspace folder must be an absolute path: {}",
+            folder.display()
+        );
+        let canonical = std::fs::canonicalize(folder)
+            .with_context(|| format!("workspace folder: {}", folder.display()))?;
+        anyhow::ensure!(
+            canonical.is_dir(),
+            "workspace folder is not a directory: {}",
+            folder.display()
+        );
+        if canonical != root && !resolved.contains(&canonical) {
+            resolved.push(canonical);
+        }
+    }
+    Ok(resolved)
+}
+
 /// Merge operator and protocol entries over the sandbox builtins. Later
 /// sources win: CLI `--env-context` defaults over builtins, then the
 /// protocol-detected `editor` value over both on its reserved key.
@@ -4440,7 +4548,10 @@ pub async fn build_with_options(
     let sandbox_mode = options
         .sandbox_mode_override
         .unwrap_or_else(|| settings.snapshot().sandbox_mode());
-    let sandbox = crate::exec::sandbox::provider(sandbox_mode);
+    let additional_directories =
+        additional_workspace_folders(&canonical_root, &options.additional_directories)?;
+    let sandbox =
+        crate::exec::sandbox::provider_with_roots(sandbox_mode, additional_directories.clone());
     let approval_policy = settings.snapshot().approval_policy();
 
     // Pin the SessionId so resume can re-attach to the same session folder
@@ -4879,6 +4990,12 @@ pub async fn build_with_options(
         environment_context.set(
             THREAD_CONTEXT_KEY,
             thread_context(coordinator, worktree.owned_worktree_info().as_ref()),
+        );
+    }
+    if !additional_directories.is_empty() {
+        environment_context.set(
+            WORKSPACE_FOLDERS_CONTEXT_KEY,
+            workspace_folders_context(&additional_directories),
         );
     }
     apply_extra_environment_context(
@@ -5483,6 +5600,7 @@ pub async fn build_with_options(
         skill_system: skill_dirs.system.clone(),
         skill_environment: skill_dirs.environment.clone(),
         extension_skills: extension_skill_scopes.clone(),
+        extra_roots: additional_directories.clone(),
     }
     .create_session_file_system(Default::default())
     .await?;
@@ -10145,6 +10263,78 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn additional_workspace_folders_are_read_and_written_by_absolute_path() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let other = tempfile::tempdir().expect("other folder");
+        let session = tempfile::tempdir().expect("session");
+        let session_id = SessionId::from_seed(21);
+        let root = std::fs::canonicalize(workspace.path()).expect("root");
+        let folders = additional_workspace_folders(
+            &root,
+            &[
+                other.path().to_path_buf(),
+                other.path().to_path_buf(),
+                workspace.path().to_path_buf(),
+            ],
+        )
+        .expect("folders");
+        let other_root = std::fs::canonicalize(other.path()).expect("other root");
+        assert_eq!(
+            folders,
+            vec![other_root.clone()],
+            "deduplicated, root left out"
+        );
+        assert!(additional_workspace_folders(&root, &[PathBuf::from("relative")]).is_err());
+        assert!(additional_workspace_folders(&root, &[other_root.join("missing")]).is_err());
+
+        let host = Arc::new(
+            WorkspaceHost::new(
+                Arc::new(RwLock::new(workspace.path().to_path_buf())),
+                workspace.path().to_path_buf(),
+            )
+            .expect("workspace host"),
+        );
+        let store =
+            CodingCliSessionFileStore::new(host, session.path().to_path_buf(), None, None, None)
+                .expect("store")
+                .with_extra_roots(&folders)
+                .expect("extra roots");
+
+        let path = other_root.join("notes/todo.md").display().to_string();
+        store
+            .write_file(session_id, &path, "ship it", "text")
+            .await
+            .expect("write into the folder");
+        assert_eq!(
+            std::fs::read_to_string(other_root.join("notes/todo.md")).expect("on disk"),
+            "ship it"
+        );
+        assert!(!workspace.path().join("notes").exists());
+        let read = store
+            .read_file(session_id, &path)
+            .await
+            .expect("read")
+            .expect("file");
+        assert_eq!(read.content.as_deref(), Some("ship it"));
+        assert_eq!(store.display_path(&path), path);
+        let logical = store.resolve_path(&path);
+        assert_eq!(logical, "/workspace/roots/0/notes/todo.md");
+        assert!(everruns::WorkspacePolicy::read_write().permits_write(&logical));
+        let found = store
+            .grep_files(session_id, "ship", Some(&other_root.display().to_string()))
+            .await
+            .expect("grep the folder");
+        assert_eq!(found.len(), 1);
+        assert!(
+            store
+                .delete_file(session_id, &path, false)
+                .await
+                .expect("delete")
+        );
+        assert!(!other_root.join("notes/todo.md").exists());
+    }
+
+    #[tokio::test]
     async fn production_file_store_forwards_contextual_grep_through_write_blocklist() {
         let workspace = tempfile::tempdir().expect("workspace");
         let session = tempfile::tempdir().expect("session");
@@ -10168,6 +10358,7 @@ mod tests {
             skill_system: None,
             skill_environment: None,
             extension_skills: Vec::new(),
+            extra_roots: Vec::new(),
         };
         let store = factory
             .create_session_file_system(SessionFileSystemFactoryContext::default())
@@ -10248,6 +10439,7 @@ mod tests {
             skill_system: None,
             skill_environment: None,
             extension_skills: Vec::new(),
+            extra_roots: Vec::new(),
         };
         let store = factory
             .create_session_file_system(SessionFileSystemFactoryContext::default())
@@ -10337,6 +10529,7 @@ mod tests {
             skill_system: None,
             skill_environment: None,
             extension_skills: Vec::new(),
+            extra_roots: Vec::new(),
         };
         let store = factory
             .create_session_file_system(SessionFileSystemFactoryContext::default())
@@ -10651,6 +10844,7 @@ mod tests {
             skill_system: None,
             skill_environment: Some(environment_dir.clone()),
             extension_skills: Vec::new(),
+            extra_roots: Vec::new(),
         };
 
         let store = factory
@@ -10724,6 +10918,7 @@ mod tests {
             skill_system: None,
             skill_environment: None,
             extension_skills: vec![("demo".to_string(), skills_dir.clone())],
+            extra_roots: Vec::new(),
         };
         let store = factory
             .create_session_file_system(SessionFileSystemFactoryContext::default())

@@ -397,11 +397,26 @@ Tool activity v1 had no update for:
 - **Other streamed output** (a tool other than `bash` that streams) arrives as
   `tool_call_content_chunk`.
 
+- **Cancelling one command.** A `bash` call and its terminal advertise
+  `capabilities.cancel`. `tool_call/cancel` or `terminal/cancel` kills the
+  command's process group; the model reads that the user cancelled it, with
+  the output so far, and the turn goes on. The call ends `cancelled`, the
+  terminal with `exitStatus.signal` `SIGKILL`, and both drop their controls.
+  An unknown, finished or non-shell call gets `-32602`. Decision: until the
+  aligned everruns release cancels any inline call in its act loop
+  (everruns#5384), only `bash` registers, through a local registry with the
+  same API (`src/runtime/tool_cancel.rs`, TODO markers name the switch).
+
+**Additional folders.** `session/new` and `session/resume` take
+`additionalDirectories`, existing absolute directories (else `-32602`). They
+are workspace beside `cwd`: file tools and search reach them by absolute path
+(policy sees `/workspace/roots/<n>`), shell commands may write them under
+`workspace-write` on every platform sandbox, and the environment context
+names them. A resume's list is the session's complete list, so a live session
+opened with another list is rebuilt. `session/list` does not report them.
+
 Not implemented, and not advertised: replay cursors other than `start` (the
-spec defines no other), `tool_call/cancel` and `terminal/cancel` (the runtime
-cannot cancel one tool call without cancelling the turn, so the SDK answers
-`-32602` as the spec allows), and `additionalDirectories` (yolop's file tools,
-search and sandbox work in one root).
+spec defines no other).
 
 ## Architecture
 

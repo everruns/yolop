@@ -103,6 +103,10 @@ struct LinkSession {
     diffs: HashMap<String, Value>,
     /// Token usage of the foreground work since the last `idle`.
     usage: Option<s::Usage>,
+    /// Tool calls the client cancelled: their final status is `cancelled`.
+    cancelled: HashSet<String>,
+    /// The additional workspace folders the session was opened with.
+    directories: Vec<PathBuf>,
 }
 
 impl Link {
@@ -211,10 +215,11 @@ impl Link {
             return;
         };
         let id = data.tool_call_id.clone();
-        let (terminal, snapshots) = self.with_state(session_id, |state| {
+        let (terminal, snapshots, cancelled) = self.with_state(session_id, |state| {
             (
                 state.terminals.get(&id).cloned(),
                 state.snapshots.remove(&id),
+                state.cancelled.contains(&id),
             )
         });
         if let Some(streamed) = terminal {
@@ -226,7 +231,13 @@ impl Link {
                 streamed
             };
             let mut exit = json!({});
-            if let Some(code) = exit_code {
+            if cancelled {
+                // Unix kills the command's process group; elsewhere the exit
+                // is only known to have happened.
+                if cfg!(unix) {
+                    exit["signal"] = json!("SIGKILL");
+                }
+            } else if let Some(code) = exit_code {
                 exit["exitCode"] = json!(code);
             } else if !data.success {
                 exit["exitCode"] = json!(1);
@@ -238,6 +249,7 @@ impl Link {
                     "terminalId": id,
                     "output": { "data": activity::base64(&output) },
                     "exitStatus": exit,
+                    "capabilities": null,
                 }),
             );
         }
@@ -264,6 +276,7 @@ impl Link {
                     "sessionUpdate": "terminal_update",
                     "terminalId": id,
                     "command": command,
+                    "capabilities": { "cancel": {} },
                 });
                 if let Some(cwd) = cwd.filter(|cwd| cwd.is_absolute()) {
                     terminal["cwd"] = json!(cwd);
@@ -276,6 +289,7 @@ impl Link {
                         "toolCallId": id,
                         "name": "bash",
                         "content": [{ "type": "terminal", "terminalId": id }],
+                        "capabilities": { "cancel": {} },
                     }),
                 );
             }
@@ -550,6 +564,39 @@ impl Link {
     fn forget(&self, session_id: &str) {
         self.sessions.lock().unwrap().remove(session_id);
     }
+
+    /// `tool_call/cancel` and `terminal/cancel` (a terminal's id is its
+    /// call's). `false` when the call is unknown, final or not cancellable.
+    ///
+    /// TODO(everruns#5384): only shell commands register until the upstream
+    /// act loop cancels any call; then accept every running tool call and
+    /// cancel through `everruns_core::engine::tool_cancel`.
+    fn cancel_call(&self, session_id: &str, tool_call_id: &str) -> bool {
+        let Some(runtime) = self.with_state(session_id, |state| {
+            state
+                .terminals
+                .contains_key(tool_call_id)
+                .then_some(state.runtime_session)
+                .flatten()
+        }) else {
+            return false;
+        };
+        if !crate::runtime::tool_cancel::shared().cancel(runtime, tool_call_id) {
+            return false;
+        }
+        self.with_state(session_id, |state| {
+            state.cancelled.insert(tool_call_id.to_string())
+        });
+        true
+    }
+
+    fn set_directories(&self, session_id: &str, directories: Vec<PathBuf>) {
+        self.with_state(session_id, |state| state.directories = directories);
+    }
+
+    fn directories(&self, session_id: &str) -> Vec<PathBuf> {
+        self.with_state(session_id, |state| state.directories.clone())
+    }
 }
 
 impl LinkSession {
@@ -678,6 +725,20 @@ fn translate_update(
                 }
                 if state.terminals.contains_key(&id) {
                     content.insert(0, json!({ "type": "terminal", "terminalId": id }));
+                }
+            }
+            let status = object
+                .get("status")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            let status = status.as_deref();
+            if matches!(status, Some("completed" | "failed")) {
+                // A final status ends every control the call offered.
+                if state.terminals.contains_key(&id) {
+                    object.insert("capabilities".into(), Value::Null);
+                }
+                if status == Some("failed") && state.cancelled.remove(&id) {
+                    object.insert("status".into(), json!("cancelled"));
                 }
             }
         }
@@ -944,6 +1005,7 @@ fn initialize_response(auth_methods: Vec<v1s::AuthMethod>) -> s::InitializeRespo
                         .http(s::McpHttpCapabilities::new()),
                 )
                 .delete(s::SessionDeleteCapabilities::new())
+                .additional_directories(s::SessionAdditionalDirectoriesCapabilities::new())
                 .system_prompt(
                     s::SessionSystemPromptCapabilities::new().mode(
                         s::SessionSystemPromptModeCapabilities::new()
@@ -1068,15 +1130,21 @@ pub(super) fn agent<F: RuntimeFactory>(
                         Ok(mcp) => mcp,
                         Err(err) => return responder.respond_with_error(err),
                     };
-                    let extras = match session_extras(&link, params.system_prompt.as_ref()) {
+                    let extras = match session_extras(
+                        &link,
+                        params.system_prompt.as_ref(),
+                        &params.additional_directories,
+                    ) {
                         Ok(extras) => extras,
                         Err(err) => return responder.respond_with_error(err),
                     };
+                    let directories = extras.additional_directories.clone();
                     let session =
                         match open_session(&server, &peer, params.cwd.0, mcp, extras).await {
                             Ok(session) => session,
                             Err(err) => return responder.respond_with_error(err),
                         };
+                    link.set_directories(&session.acp_id, directories);
                     let options = session_config_options(&session).await;
                     *session.last_config_options.lock().unwrap() = Some(options.clone());
                     let commands = session.commands.lock().unwrap().clone();
@@ -1114,10 +1182,15 @@ pub(super) fn agent<F: RuntimeFactory>(
                         Ok(mcp) => mcp,
                         Err(err) => return responder.respond_with_error(err),
                     };
-                    let extras = match session_extras(&link, params.system_prompt.as_ref()) {
+                    let extras = match session_extras(
+                        &link,
+                        params.system_prompt.as_ref(),
+                        &params.additional_directories,
+                    ) {
                         Ok(extras) => extras,
                         Err(err) => return responder.respond_with_error(err),
                     };
+                    let directories = extras.additional_directories.clone();
                     // v2 answers an unknown session with `-32002`, so check
                     // before `reopen_session`, whose v1 error is invalid params.
                     let known = server.session(&session_id).is_some()
@@ -1127,6 +1200,13 @@ pub(super) fn agent<F: RuntimeFactory>(
                         };
                     if !known {
                         return responder.respond_with_error(session_not_found(&session_id));
+                    }
+                    // The request's folders are the session's complete list.
+                    // A live session built with others is rebuilt with these.
+                    if let Some(live) = server.session(&session_id)
+                        && link.directories(&session_id) != directories
+                    {
+                        close_live_session(&server, &link, &live).await;
                     }
                     let session = match reopen_session(
                         &server,
@@ -1142,6 +1222,7 @@ pub(super) fn agent<F: RuntimeFactory>(
                         Err(err) => return responder.respond_with_error(err),
                     };
                     session.closed.store(false, Ordering::Release);
+                    link.set_directories(&session_id, directories);
                     if replay {
                         link.set_replaying(&session_id, true);
                         let replayed = replay_session_history(&peer, &session).await;
@@ -1314,6 +1395,42 @@ pub(super) fn agent<F: RuntimeFactory>(
             },
             agent_client_protocol::on_receive_request!(),
         )
+        .on_receive_request(
+            {
+                let peer_for = peer_for.clone();
+                async move |params: s::CancelToolCallRequest, responder: acp2::Responder<_>, cx| {
+                    let (link, _) = peer_for(&cx);
+                    let session_id = params.session_id.to_string();
+                    let tool_call_id = params.tool_call_id.to_string();
+                    if link.cancel_call(&session_id, &tool_call_id) {
+                        responder.respond(s::CancelToolCallResponse::new())
+                    } else {
+                        responder.respond_with_error(invalid_params(format!(
+                            "tool call `{tool_call_id}` is not running or cannot be cancelled"
+                        )))
+                    }
+                }
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            {
+                let peer_for = peer_for.clone();
+                async move |params: s::CancelTerminalRequest, responder: acp2::Responder<_>, cx| {
+                    let (link, _) = peer_for(&cx);
+                    let session_id = params.session_id.to_string();
+                    let terminal_id = params.terminal_id.to_string();
+                    if link.cancel_call(&session_id, &terminal_id) {
+                        responder.respond(s::CancelTerminalResponse::new())
+                    } else {
+                        responder.respond_with_error(invalid_params(format!(
+                            "terminal `{terminal_id}` is not running or cannot be cancelled"
+                        )))
+                    }
+                }
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
         .on_receive_notification(
             {
                 let server = server.clone();
@@ -1349,6 +1466,7 @@ async fn close_live_session<F: RuntimeFactory>(
 fn session_extras(
     link: &Arc<Link>,
     system_prompt: Option<&s::SystemPrompt>,
+    additional_directories: &[s::AbsolutePath],
 ) -> Result<SessionExtras, agent_client_protocol::Error> {
     let observer: ToolObserver = {
         let link = Arc::downgrade(link);
@@ -1363,7 +1481,29 @@ fn session_extras(
     Ok(SessionExtras {
         tool_observer: Some(observer),
         system_prompt: system_prompt.map(client_system_prompt).transpose()?,
+        additional_directories: workspace_folders(additional_directories)?,
     })
+}
+
+/// `additionalDirectories` → existing directories. A folder that is not
+/// there is the client's error, reported before the session opens.
+fn workspace_folders(
+    directories: &[s::AbsolutePath],
+) -> Result<Vec<PathBuf>, agent_client_protocol::Error> {
+    directories
+        .iter()
+        .map(|directory| {
+            let path = directory.0.clone();
+            if path.is_absolute() && path.is_dir() {
+                Ok(path)
+            } else {
+                Err(invalid_params(format!(
+                    "additionalDirectories: not an existing absolute directory: {}",
+                    path.display()
+                )))
+            }
+        })
+        .collect()
 }
 
 /// v2 `systemPrompt` → the runtime's. Text blocks only: the system prompt is
@@ -1617,12 +1757,17 @@ mod tests {
         // The updates the link writes as JSON, so a schema change fails here
         // rather than being dropped with a warning at runtime.
         for update in [
-            json!({ "sessionUpdate": "terminal_update", "terminalId": "t", "command": "ls", "cwd": "/w" }),
+            json!({ "sessionUpdate": "terminal_update", "terminalId": "t", "command": "ls", "cwd": "/w",
+                    "capabilities": { "cancel": {} } }),
             json!({ "sessionUpdate": "terminal_update", "terminalId": "t",
-                    "output": { "data": activity::base64(b"hi") }, "exitStatus": { "exitCode": 0 } }),
+                    "output": { "data": activity::base64(b"hi") }, "exitStatus": { "exitCode": 0 },
+                    "capabilities": null }),
+            json!({ "sessionUpdate": "terminal_update", "terminalId": "t",
+                    "exitStatus": { "signal": "SIGKILL" }, "capabilities": null }),
             json!({ "sessionUpdate": "terminal_output_chunk", "terminalId": "t", "data": "aGk=" }),
             json!({ "sessionUpdate": "tool_call_update", "toolCallId": "t", "name": "bash",
-                    "content": [{ "type": "terminal", "terminalId": "t" }] }),
+                    "content": [{ "type": "terminal", "terminalId": "t" }],
+                    "capabilities": { "cancel": {} } }),
             json!({ "sessionUpdate": "tool_call_content_chunk", "toolCallId": "t",
                     "content": { "type": "content", "content": { "type": "text", "text": "x" } } }),
             json!({ "sessionUpdate": "agent_message", "messageId": "m",
@@ -1635,7 +1780,41 @@ mod tests {
                 .unwrap_or_else(|err| panic!("{update}: {err}"));
             let round = serde_json::to_value(parsed).unwrap();
             assert_eq!(round["sessionUpdate"], update["sessionUpdate"]);
+            // Malformed controls fall back to none, so check they survive.
+            assert_eq!(
+                round.get("capabilities"),
+                update.get("capabilities"),
+                "{update}"
+            );
+            assert_eq!(
+                round.get("exitStatus"),
+                update.get("exitStatus"),
+                "{update}"
+            );
         }
+    }
+
+    #[test]
+    fn a_cancelled_shell_call_ends_cancelled_without_controls() {
+        let mut state = LinkSession::default();
+        state.terminals.insert("sh".into(), Vec::new());
+        state.terminals.insert("other".into(), Vec::new());
+        state.cancelled.insert("sh".into());
+        let failed = |id: &str| {
+            v1s::SessionUpdate::ToolCallUpdate(v1s::ToolCallUpdate::new(
+                id.to_string(),
+                v1s::ToolCallUpdateFields::new().status(v1s::ToolCallStatus::Failed),
+            ))
+        };
+        let shell = translate(&mut state, failed("sh"));
+        assert_eq!(shell["status"], "cancelled");
+        assert_eq!(shell.get("capabilities"), Some(&Value::Null));
+        assert!(!state.cancelled.contains("sh"));
+        let other = translate(&mut state, failed("other"));
+        assert_eq!(
+            other["status"], "failed",
+            "only a cancelled call reads cancelled"
+        );
     }
 
     #[test]

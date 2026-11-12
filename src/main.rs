@@ -294,6 +294,9 @@ enum Commands {
         temp: PathBuf,
         #[arg(long)]
         mode: config::SandboxMode,
+        /// An additional workspace folder, writable like `cwd`.
+        #[arg(long = "root")]
+        roots: Vec<PathBuf>,
         #[arg(long, allow_hyphen_values = true)]
         script: String,
     },
@@ -1847,8 +1850,9 @@ async fn run_command(command: Commands) -> Result<()> {
             cwd,
             temp,
             mode,
+            roots,
             script,
-        } => exec::sandbox::run_linux_worker(&cwd, &temp, mode, &script),
+        } => exec::sandbox::run_linux_worker(&cwd, &temp, mode, &roots, &script),
         Commands::Into(into) => match into.target {
             IntoTarget::Buzz(args) => {
                 let command = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("yolop"));

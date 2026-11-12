@@ -1,5 +1,10 @@
 # Knowledge Log
 
+## 2026-11-12, ACP v2 tool cancel and additional folders
+
+- [ACP](specs/acp.md): `tool_call/cancel` and `terminal/cancel` stop a running shell command and let the turn go on; `additionalDirectories` adds writable workspace folders to file tools, search and the sandbox.
+- Cancel uses a local registry shaped like everruns#5384's until an aligned release; then every tool call becomes cancellable.
+
 ## 2026-11-12, ACP protocol v2
 
 - [ACP](specs/acp.md): serve draft ACP v2 beside v1 through the SDK protocol router, as a translation layer over the shared session core. Delta accepts only v2 agents.
