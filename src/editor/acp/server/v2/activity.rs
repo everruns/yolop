@@ -59,7 +59,14 @@ pub(super) fn edited_paths(name: &str, arguments: &Value, root: &Path) -> Option
         "apply_patch" => patch_paths(arguments.get("input")?.as_str()?),
         _ => return None,
     };
-    let mut resolved: Vec<PathBuf> = paths.iter().map(|path| resolve(root, path)).collect();
+    // Only files inside the workspace are read for a diff: an edit aimed
+    // elsewhere is the tool's and the sandbox's business, not the client's.
+    let root = normalize(root);
+    let mut resolved: Vec<PathBuf> = paths
+        .iter()
+        .map(|path| normalize(&resolve(&root, path)))
+        .filter(|path| path.starts_with(&root) && path != &root)
+        .collect();
     resolved.dedup();
     (!resolved.is_empty()).then_some(resolved)
 }
@@ -82,6 +89,22 @@ fn patch_paths(patch: &str) -> Vec<String> {
         })
         .filter(|path| !path.is_empty())
         .collect()
+}
+
+/// `.` and `..` resolved without touching the filesystem, so a path that
+/// climbs out of the workspace is seen to.
+fn normalize(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 /// File tools take paths relative to the workspace, often written with a
@@ -275,6 +298,18 @@ mod tests {
         );
         let inside = root.path().join("src/y.rs");
         assert_eq!(resolve(root.path(), inside.to_str().unwrap()), inside);
+    }
+
+    #[test]
+    fn only_workspace_files_are_snapshotted() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let edit = |path: &str| edited_paths("write_file", &json!({ "path": path }), root.path());
+        assert_eq!(edit("a.txt"), Some(vec![root.path().join("a.txt")]));
+        assert_eq!(edit("../escape.txt"), None);
+        assert_eq!(edit("src/../../escape.txt"), None);
+        let elsewhere = outside.path().join("x.txt");
+        assert_eq!(edit(elsewhere.to_str().unwrap()), None);
     }
 
     #[test]

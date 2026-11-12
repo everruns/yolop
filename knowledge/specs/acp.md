@@ -391,7 +391,8 @@ Tool activity v1 had no update for:
   `git_patch`. Decision: the diff compares file snapshots, not tool
   arguments. The approval hook's observer runs before every tool call, so the
   link reads each named file before the tool and again on completion; a
-  failed or no-op edit reports nothing, and files over 1 MiB or not UTF-8 are
+  failed or no-op edit reports nothing, only files inside the workspace are
+  read, and files over 1 MiB or not UTF-8 are
   listed as `binary` without a patch.
 - **Other streamed output** (a tool other than `bash` that streams) arrives as
   `tool_call_content_chunk`.

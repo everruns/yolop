@@ -1196,15 +1196,7 @@ pub(super) fn agent<F: RuntimeFactory>(
                     let Some(session) = server.session(&session_id) else {
                         return responder.respond_with_error(session_not_found(&session_id));
                     };
-                    // Stop queued and running work, then wait for the running
-                    // turn to finish its final updates (and `idle: cancelled`)
-                    // before answering.
-                    session.closed.store(true, Ordering::Release);
-                    session.trigger_cancel();
-                    let _turn = session.turn_lock.lock().await;
-                    server.sessions.lock().unwrap().remove(&session_id);
-                    session.handles.flush_trace_exporters().await;
-                    link.forget(&session_id);
+                    close_live_session(&server, &link, &session).await;
                     responder.respond(s::CloseSessionResponse::new())
                 }
             },
@@ -1220,21 +1212,17 @@ pub(super) fn agent<F: RuntimeFactory>(
                     let Ok(runtime_id) = session_id.parse::<RuntimeSessionId>() else {
                         return responder.respond_with_error(session_not_found(&session_id));
                     };
+                    let live = server.session(&session_id);
+                    if live.is_none() && !server.factory.session_exists(runtime_id).await {
+                        return responder.respond_with_error(session_not_found(&session_id));
+                    }
                     // Deleting an active session closes it first, the same way
                     // `session/close` does.
-                    if let Some(session) = server.session(&session_id) {
-                        session.closed.store(true, Ordering::Release);
-                        session.trigger_cancel();
-                        let _turn = session.turn_lock.lock().await;
-                        server.sessions.lock().unwrap().remove(&session_id);
-                        session.handles.flush_trace_exporters().await;
-                        link.forget(&session_id);
+                    if let Some(session) = live {
+                        close_live_session(&server, &link, &session).await;
                     }
                     match server.factory.delete_session(runtime_id).await {
                         Ok(()) => responder.respond(s::DeleteSessionResponse::new()),
-                        Err(err) if err.to_string().starts_with("unknown session id") => {
-                            responder.respond_with_error(session_not_found(&session_id))
-                        }
                         Err(err) => responder
                             .respond_with_error(internal_error(format!("session/delete: {err}"))),
                     }
@@ -1340,6 +1328,22 @@ pub(super) fn agent<F: RuntimeFactory>(
         )
 }
 
+/// Stop queued and running work, wait for the running turn to send its
+/// final updates (and `idle: cancelled`), then forget the session. Shared by
+/// `session/close` and `session/delete`.
+async fn close_live_session<F: RuntimeFactory>(
+    server: &Arc<Server<F>>,
+    link: &Link,
+    session: &Arc<super::Session>,
+) {
+    session.closed.store(true, Ordering::Release);
+    session.trigger_cancel();
+    let _turn = session.turn_lock.lock().await;
+    server.sessions.lock().unwrap().remove(&session.acp_id);
+    session.handles.flush_trace_exporters().await;
+    link.forget(&session.acp_id);
+}
+
 /// What a v2 session adds to its runtime: the link's file snapshot observer
 /// and the client's system prompt, if it sent one.
 fn session_extras(
@@ -1384,16 +1388,13 @@ fn client_system_prompt(
     }
 }
 
-/// Remove a saved session's directory. Unknown ids are reported as such, so
-/// the handler can answer `-32002`.
+/// Remove a saved session's directory. The handler has already checked the
+/// session exists.
 pub(in crate::editor::acp) async fn delete_saved_session(
     sessions_dir: &Path,
     session_id: RuntimeSessionId,
 ) -> anyhow::Result<()> {
     let dir = crate::runtime::session_log::session_dir_path(sessions_dir, session_id);
-    if !tokio::fs::try_exists(&dir).await.unwrap_or(false) {
-        anyhow::bail!("unknown session id {session_id}");
-    }
     tokio::fs::remove_dir_all(&dir).await?;
     Ok(())
 }
