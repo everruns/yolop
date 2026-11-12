@@ -255,12 +255,15 @@ jobs:
           cargo llvm-cov report --lcov --output-path lcov.info
           cargo llvm-cov report --summary-only
 
+      # Codecov is an external reporting service: an outage or a deactivated
+      # repository there (as on 2026-11-11) must not turn main red. Coverage
+      # still runs above, and the lcov artifact below is the source of truth.
       - name: Upload coverage to Codecov
         if: always()
         uses: codecov/codecov-action@v7
         with:
           files: lcov.info
-          fail_ci_if_error: ${{ github.event_name == 'push' }}
+          fail_ci_if_error: false
           token: ${{ secrets.CODECOV_TOKEN }}
 
       - name: Upload coverage artifact
