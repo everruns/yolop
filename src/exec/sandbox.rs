@@ -770,7 +770,13 @@ mod tests {
     fn macos_native_command_rejects_writable_parser_location() {
         let image = crate::exec::self_exe::control_reexec_path().unwrap();
         let cwd = image.parent().unwrap();
-        let result = native_command(cwd, "printf ordinary", SandboxMode::WorkspaceWrite, None);
+        let result = native_command(
+            cwd,
+            "printf ordinary",
+            SandboxMode::WorkspaceWrite,
+            &[],
+            None,
+        );
         if !Path::new("/usr/bin/sandbox-exec").is_file() {
             assert!(
                 result
@@ -787,7 +793,7 @@ mod tests {
                 .contains("outside every sandbox write root")
         );
         let read_only =
-            native_command(cwd, "printf ordinary", SandboxMode::ReadOnly, None).unwrap();
+            native_command(cwd, "printf ordinary", SandboxMode::ReadOnly, &[], None).unwrap();
         assert_eq!(read_only.as_std().get_program(), "/usr/bin/sandbox-exec");
         // Inspect the real launch entry point without starting a process.
     }
