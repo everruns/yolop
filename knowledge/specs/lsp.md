@@ -6,7 +6,9 @@ description: Defines the `lsp`, language-server integration (optional) contract 
 
 # `lsp`, language-server integration (optional)
 
-Status: implemented in `src/capabilities/lsp/`. **Off by default.**
+Status: implemented upstream in the `everruns-coding` crate (`LspCapability`),
+shared with the hosted Everruns coding harness. Yolop registers it over this
+machine's disk (`LocalCodeHost`). **Off by default.**
 
 ## Why
 

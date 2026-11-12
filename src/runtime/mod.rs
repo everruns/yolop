@@ -936,11 +936,6 @@ impl SessionFileSystem for CodingCliSessionFileStore {
             return format!("/workspace/roots/{index}/{}", relative.display());
         }
         if let Some(relative) = self.session_artifact_path(input) {
-            // TODO: remove this policy alias after the aligned Everruns release
-            // recognizes /background as a read-only runtime artifact root.
-            if let Some(tail) = relative.strip_prefix("/background") {
-                return format!("/workspace/.background{tail}");
-            }
             return format!("/workspace{relative}");
         }
         if let Ok(root) = self.workspace.host_root() {
@@ -4770,9 +4765,6 @@ pub async fn build_with_options(
     use everruns::hosting::SessionHosting;
     let connection_resolver = Arc::new(YolopConnectionResolver::new(connections.clone()));
     let authority_key = engine_keys::open_or_create(&sessions_dir)?;
-    // TODO(everruns#5345): remove vendor/everruns and use the upstream API directly
-    // after the aligned release includes layout transfer, journal inspection
-    // and the visible background root. See vendor/everruns/BACKPORT.md.
     let source_sessions = sessions_dir.clone();
     let native_hosting = everruns::hosting::SqliteHosting::open_session_from_sources(
         &sessions_dir,
@@ -5029,8 +5021,20 @@ pub async fn build_with_options(
     let skill_management = Arc::new(crate::capabilities::skills::SkillManagementCapability::new(
         skill_dirs.clone(),
     ));
-    capabilities.register(RepoMapCapability::new(workspace_host.clone()));
-    capabilities.register(AstGrepCapability::new(workspace_host.clone()));
+    // Code navigation comes from everruns-coding, over this machine's disk. The
+    // root is asked on every call so the tools follow a worktree switch.
+    let code_host: Arc<dyn everruns_coding::CodeHost> = {
+        let workspace = workspace_host.clone();
+        Arc::new(everruns_coding::LocalCodeHost::with_root_provider(
+            move || {
+                workspace
+                    .host_root()
+                    .map_err(|error| anyhow::anyhow!("{error}"))
+            },
+        ))
+    };
+    capabilities.register(RepoMapCapability::new(code_host.clone()));
+    capabilities.register(AstGrepCapability::new(code_host.clone()));
     // The built-in search covers machines without a real ripgrep; where `rg`
     // resolves on PATH the model keeps using that instead.
     if crate::capabilities::rg::system_rg_available() {
@@ -5043,7 +5047,7 @@ pub async fn build_with_options(
     // `ast_edit` — structural rewrites with preview-first `dry_run`. Registered
     // for the catalog but intentionally NOT part of the default harness; enable
     // with `[[capabilities]] ref = "ast_edit"` in settings.toml.
-    capabilities.register(AstEditCapability::new(workspace_host.clone()));
+    capabilities.register(AstEditCapability::new(code_host.clone()));
     // `native_edit_tools`: the edit-tool shape each model family was trained
     // on (`apply_patch` for OpenAI GPT/Codex). Catalog-only like `ast_edit`:
     // enable with `[[capabilities]] ref = "native_edit_tools"`. See
@@ -5054,7 +5058,7 @@ pub async fn build_with_options(
     // and can be switched on, but intentionally NOT part of the default
     // harness: it spawns external server processes, so it is opt-in via
     // `[[capabilities]] ref = "lsp"` in settings.toml. See knowledge/specs/lsp.md.
-    capabilities.register(LspCapability::new(workspace_host.clone()));
+    capabilities.register(LspCapability::new(code_host));
     // Installed extension packages (`<config_dir>/yolop/extensions/<name>/`,
     // `YOLOP_EXTENSIONS_DIR` override) — each becomes an `ext:<name>`
     // capability proxying a YEP capability server. Registered for the catalog
@@ -12093,7 +12097,7 @@ mod tests {
     /// until explicitly enabled in settings.toml.
     #[test]
     fn coding_harness_does_not_enable_ast_edit_by_default() {
-        use crate::capabilities::ast_grep::AST_EDIT_CAPABILITY_ID;
+        use everruns_coding::AST_EDIT_CAPABILITY_ID;
 
         let ids = coding_harness_capabilities(false, None, &Settings::default());
         assert!(
@@ -12155,7 +12159,7 @@ mod tests {
     /// part of the default harness.
     #[test]
     fn coding_harness_does_not_enable_lsp_by_default() {
-        use crate::capabilities::lsp::LSP_CAPABILITY_ID;
+        use everruns_coding::LSP_CAPABILITY_ID;
 
         let ids = coding_harness_capabilities(false, None, &Settings::default());
         assert!(

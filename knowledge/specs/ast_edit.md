@@ -6,7 +6,8 @@ description: Defines the `ast_edit`, previewed ast-grep rewrites (optional) cont
 
 # `ast_edit`, previewed ast-grep rewrites (optional)
 
-Status: implemented in `src/capabilities/ast_grep.rs` (`AstEditCapability`).
+Status: implemented upstream in the `everruns-coding` crate
+(`AstEditCapability`), shared with the hosted Everruns coding harness.
 **Off by default.**
 
 ## Why

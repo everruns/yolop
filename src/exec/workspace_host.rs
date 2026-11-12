@@ -97,11 +97,6 @@ impl WorkspaceHost {
 pub struct HostPath(PathBuf);
 
 impl HostPath {
-    /// Borrow the contained, containment-checked host path.
-    pub fn as_path(&self) -> &Path {
-        &self.0
-    }
-
     /// Consume into the owned host path.
     pub fn into_path_buf(self) -> PathBuf {
         self.0

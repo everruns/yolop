@@ -1,5 +1,11 @@
 # Knowledge Log
 
+## 2026-11-15, Code navigation shared with the hosted coding harness
+
+- [LSP](specs/lsp.md) and [ast_edit](specs/ast_edit.md): language servers, structural search and edit, and the repository map now come from `everruns-coding`; Yolop keeps only the registration over the local disk.
+- [Engine execution](specs/engine-execution.md): Everruns 0.52.0, vendored session-database backport removed.
+- [Maintenance](specs/maintenance.md): `everruns-coding` and `tuika-codeformatters` move together on tree-sitter.
+
 ## 2026-11-12, ACP v2 tool cancel and additional folders
 
 - [ACP](specs/acp.md): `tool_call/cancel` and `terminal/cancel` stop a running shell command and let the turn go on; `additionalDirectories` adds writable workspace folders to file tools, search and the sandbox.
