@@ -4080,6 +4080,28 @@ fn apply_speed(mut input: InputMessage, speed: Option<String>) -> InputMessage {
     input
 }
 
+/// Session instructions supplied by an ACP v2 client (`systemPrompt`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ClientSystemPrompt {
+    /// Added after yolop's own system prompt.
+    Append(String),
+    /// Replaces yolop's shipped system prompt. Tools, approvals and workspace
+    /// context are unchanged.
+    Override(String),
+}
+
+/// The prompt the harness starts from: the shipped one, with a client's
+/// instructions appended or standing in for it.
+fn base_system_prompt(client: Option<&ClientSystemPrompt>) -> String {
+    match client {
+        Some(ClientSystemPrompt::Override(text)) => text.clone(),
+        Some(ClientSystemPrompt::Append(text)) => {
+            format!("{SYSTEM_PROMPT}\n\n## Client instructions\n\n{text}\n")
+        }
+        None => SYSTEM_PROMPT.to_string(),
+    }
+}
+
 /// Optional knobs for [`build`]. Lets the streaming integration tests
 /// replace the bundled llmsim config (which is sized for offline demos
 /// — too short and too fast to ever cross the runtime's 100ms delta
@@ -4114,6 +4136,11 @@ pub struct BuildOptions {
     /// registered and enforces the current approval level; hosts without an
     /// interactive prompt (the TUI, `--print`) leave it `None`.
     pub tool_approver: Option<Arc<dyn crate::capabilities::ToolApprover>>,
+    /// Sees each tool call before the approval gate (registered only with
+    /// `tool_approver`).
+    pub tool_observer: Option<crate::capabilities::ToolObserver>,
+    /// Instructions an ACP v2 client supplies for the session.
+    pub client_system_prompt: Option<ClientSystemPrompt>,
     /// Override structured questions for a host with its own answer transport.
     pub ask_user_responder: Option<Arc<dyn everruns_core::builtins::ask_user::AskUser>>,
     /// Override the global extensions directory for this build. Tests inject a
@@ -4163,6 +4190,8 @@ impl Default for BuildOptions {
             acp_allow_hosted_provider_fallback: true,
             client_mcp_servers: ScopedMcpServers::new(),
             tool_approver: None,
+            tool_observer: None,
+            client_system_prompt: None,
             ask_user_responder: None,
             provider_stall_timeout: None,
             mcp_readiness_budget: None,
@@ -5266,10 +5295,10 @@ pub async fn build_with_options(
     // it blocks risky tools behind that approval instead of trusting the model
     // to pause.
     if let Some(approver) = options.tool_approver.clone() {
-        capabilities.register(crate::capabilities::ToolApprovalCapability::new(
-            approver,
-            settings.clone(),
-        ));
+        capabilities.register(
+            crate::capabilities::ToolApprovalCapability::new(approver, settings.clone())
+                .with_observer(options.tool_observer.clone()),
+        );
     }
     capabilities.register(CodingBashCapability {
         workspace: workspace.clone(),
@@ -5478,9 +5507,14 @@ pub async fn build_with_options(
     // A profile's `instructions` ride after `system.md` so a profile can give
     // the agent a standing job (triage, review, release duty) without editing
     // the shipped prompt or the repository's AGENTS.md.
+    //
+    // An ACP v2 client's own instructions either follow the shipped prompt or,
+    // in override mode, stand in for it. Profile instructions still follow,
+    // since they are the user's own standing job for this launch.
+    let base_prompt = base_system_prompt(options.client_system_prompt.as_ref());
     let harness_prompt = match settings_snapshot.instructions.as_deref() {
-        Some(extra) => format!("{SYSTEM_PROMPT}\n\n## Profile instructions\n\n{extra}\n"),
-        None => SYSTEM_PROMPT.to_string(),
+        Some(extra) => format!("{base_prompt}\n\n## Profile instructions\n\n{extra}\n"),
+        None => base_prompt,
     };
     // The native runtime catalog materializes on activation. This read-only
     // presentation record supplies titles and parentage before the first turn.
@@ -6195,6 +6229,19 @@ mod tests {
             repair.config_value(),
             &serde_json::json!({ "max_reprompts": 1 })
         );
+    }
+
+    #[test]
+    fn client_system_prompts_append_or_replace_the_shipped_prompt() {
+        assert_eq!(base_system_prompt(None), SYSTEM_PROMPT);
+        let appended =
+            base_system_prompt(Some(&ClientSystemPrompt::Append("Be terse.".to_string())));
+        assert!(appended.starts_with(SYSTEM_PROMPT));
+        assert!(appended.contains("## Client instructions\n\nBe terse."));
+        let replaced = base_system_prompt(Some(&ClientSystemPrompt::Override(
+            "Only this.".to_string(),
+        )));
+        assert_eq!(replaced, "Only this.");
     }
 
     #[test]

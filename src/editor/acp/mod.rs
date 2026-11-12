@@ -35,7 +35,7 @@ use agent_client_protocol::v1::schema::{AuthMethod, AuthMethodAgent};
 use everruns_contracts::typed_id::SessionId as RuntimeSessionId;
 use everruns_core::ScopedMcpServers;
 
-pub use server::{RuntimeFactory, serve};
+pub use server::{RuntimeFactory, SessionExtras, serve};
 
 /// Id of the agent-handled method that opens the loopback setup page.
 /// Advertised only when the page is enabled; `server` then treats it as the
@@ -120,6 +120,29 @@ impl RuntimeFactory for ConfigRuntimeFactory {
         }
     }
 
+    async fn logout(&self) -> Result<()> {
+        // The two browser logins store a Codex OAuth grant and an OpenRouter
+        // key; logging out forgets both. Keys from the environment stay, since
+        // yolop never stored them.
+        self.settings.clear_codex_auth()?;
+        self.settings.clear_token("openrouter")?;
+        Ok(())
+    }
+
+    async fn delete_session(&self, session_id: RuntimeSessionId) -> Result<()> {
+        server::v2::delete_saved_session(&self.sessions_dir, session_id).await
+    }
+
+    async fn list_sessions(&self, cwd: Option<&std::path::Path>) -> Vec<server::v2::SavedSession> {
+        let sessions_dir = self.sessions_dir.clone();
+        let cwd = cwd.map(std::path::Path::to_path_buf);
+        tokio::task::spawn_blocking(move || {
+            server::v2::list_saved_sessions(&sessions_dir, cwd.as_deref())
+        })
+        .await
+        .unwrap_or_default()
+    }
+
     async fn setup_page_url(&self) -> Option<String> {
         match self.setup_page.as_ref()?.url().await {
             Ok(url) => Some(url),
@@ -153,6 +176,7 @@ impl RuntimeFactory for ConfigRuntimeFactory {
         client_mcp_servers: ScopedMcpServers,
         tool_approver: Option<Arc<dyn crate::capabilities::ToolApprover>>,
         ask_user: Arc<dyn everruns_core::builtins::ask_user::AskUser>,
+        extras: SessionExtras,
     ) -> Result<BuiltRuntime> {
         // ACP sessions always carry the editor entry: detected identity, or
         // `unknown` when the client never identified itself. It wins over a
@@ -177,6 +201,8 @@ impl RuntimeFactory for ConfigRuntimeFactory {
                 acp_allow_hosted_provider_fallback: !self.provider_was_explicit,
                 client_mcp_servers,
                 tool_approver,
+                tool_observer: extras.tool_observer,
+                client_system_prompt: extras.system_prompt,
                 sandbox_mode_override: self.sandbox_mode_override,
                 extra_environment_context: self.extra_environment_context.clone(),
                 editor_context_value,
@@ -257,6 +283,17 @@ mod tests {
             crate::runtime::saved_sessions::exists(&session_dir, session_id).await
         }
 
+        async fn list_sessions(
+            &self,
+            cwd: Option<&std::path::Path>,
+        ) -> Vec<server::v2::SavedSession> {
+            server::v2::list_saved_sessions(&self.sessions_dir, cwd)
+        }
+
+        async fn delete_session(&self, session_id: RuntimeSessionId) -> Result<()> {
+            server::v2::delete_saved_session(&self.sessions_dir, session_id).await
+        }
+
         fn auth_methods(&self) -> Vec<AuthMethod> {
             vec![AuthMethod::Agent(AuthMethodAgent::new(
                 "test_connect_openai",
@@ -280,6 +317,7 @@ mod tests {
             client_mcp_servers: ScopedMcpServers,
             tool_approver: Option<Arc<dyn crate::capabilities::ToolApprover>>,
             ask_user: Arc<dyn everruns_core::builtins::ask_user::AskUser>,
+            extras: SessionExtras,
         ) -> Result<BuiltRuntime> {
             build_with_options(
                 cwd,
@@ -293,6 +331,8 @@ mod tests {
                     ask_user_responder: Some(ask_user),
                     client_mcp_servers,
                     tool_approver,
+                    tool_observer: extras.tool_observer,
+                    client_system_prompt: extras.system_prompt,
                     ..BuildOptions::default()
                 },
             )
@@ -324,6 +364,7 @@ mod tests {
             client_mcp_servers: ScopedMcpServers,
             tool_approver: Option<Arc<dyn crate::capabilities::ToolApprover>>,
             ask_user: Arc<dyn everruns_core::builtins::ask_user::AskUser>,
+            extras: SessionExtras,
         ) -> Result<BuiltRuntime> {
             let built = build_with_options(
                 cwd,
@@ -337,6 +378,8 @@ mod tests {
                     ask_user_responder: Some(ask_user),
                     client_mcp_servers,
                     tool_approver,
+                    tool_observer: extras.tool_observer,
+                    client_system_prompt: extras.system_prompt,
                     ..BuildOptions::default()
                 },
             )
@@ -376,6 +419,7 @@ mod tests {
             client_mcp_servers: ScopedMcpServers,
             tool_approver: Option<Arc<dyn crate::capabilities::ToolApprover>>,
             ask_user: Arc<dyn everruns_core::builtins::ask_user::AskUser>,
+            extras: SessionExtras,
         ) -> Result<BuiltRuntime> {
             self.inner
                 .build(
@@ -384,6 +428,7 @@ mod tests {
                     client_mcp_servers,
                     tool_approver,
                     ask_user,
+                    extras,
                 )
                 .await
         }
@@ -3299,5 +3344,459 @@ mod tests {
             messages.contains("scheduled run completed"),
             "expected the scheduled run completion to wake the session, got: {messages:?}"
         );
+    }
+
+    // ACP protocol v2: what Zed's Delta requires of external agents.
+
+    /// Read messages until the response for `id`, answering any permission
+    /// request with `option_id`. Returns the response and every notification.
+    async fn v2_until_response(
+        w: &mut DuplexStream,
+        reader: &mut Lines<BufReader<DuplexStream>>,
+        id: i64,
+        option_id: &str,
+    ) -> (Value, Vec<Value>) {
+        let mut seen = Vec::new();
+        loop {
+            let msg = next_json(reader).await;
+            if msg.get("method").and_then(Value::as_str) == Some("session/request_permission") {
+                send_json(
+                    w,
+                    json!({ "jsonrpc": "2.0", "id": msg["id"],
+                            "result": { "outcome": { "outcome": "selected", "optionId": option_id } } }),
+                )
+                .await;
+                seen.push(msg);
+                continue;
+            }
+            if msg.get("method").is_some() {
+                seen.push(msg);
+                continue;
+            }
+            if msg.get("id").and_then(Value::as_i64) == Some(id) {
+                return (msg, seen);
+            }
+        }
+    }
+
+    /// Read updates until the session reports `idle`, answering permission
+    /// requests with `option_id`.
+    async fn v2_until_idle(
+        w: &mut DuplexStream,
+        reader: &mut Lines<BufReader<DuplexStream>>,
+        option_id: &str,
+    ) -> Vec<Value> {
+        let mut seen = Vec::new();
+        loop {
+            let msg = next_json(reader).await;
+            if msg.get("method").and_then(Value::as_str) == Some("session/request_permission") {
+                send_json(
+                    w,
+                    json!({ "jsonrpc": "2.0", "id": msg["id"],
+                            "result": { "outcome": { "outcome": "selected", "optionId": option_id } } }),
+                )
+                .await;
+            }
+            let idle = msg["params"]["update"]["sessionUpdate"] == "state_update"
+                && msg["params"]["update"]["state"] == "idle";
+            seen.push(msg);
+            if idle {
+                return seen;
+            }
+        }
+    }
+
+    fn v2_updates<'a>(seen: &'a [Value], kind: &str) -> Vec<&'a Value> {
+        seen.iter()
+            .filter(|msg| msg["method"] == "session/update")
+            .map(|msg| &msg["params"]["update"])
+            .filter(|update| update["sessionUpdate"] == kind)
+            .collect()
+    }
+
+    fn v2_states(seen: &[Value]) -> Vec<String> {
+        v2_updates(seen, "state_update")
+            .into_iter()
+            .filter_map(|update| update["state"].as_str().map(str::to_string))
+            .collect()
+    }
+
+    async fn v2_initialize(
+        w: &mut DuplexStream,
+        reader: &mut Lines<BufReader<DuplexStream>>,
+    ) -> Value {
+        send_json(
+            w,
+            json!({ "jsonrpc": "2.0", "id": 0, "method": "initialize",
+                    "params": { "protocolVersion": 2, "info": { "name": "delta", "version": "0.1.0" },
+                                "capabilities": {} } }),
+        )
+        .await;
+        v2_until_response(w, reader, 0, "").await.0
+    }
+
+    async fn v2_new_session(
+        w: &mut DuplexStream,
+        reader: &mut Lines<BufReader<DuplexStream>>,
+        cwd: &std::path::Path,
+    ) -> Value {
+        send_json(
+            w,
+            json!({ "jsonrpc": "2.0", "id": 1, "method": "session/new", "params": { "cwd": cwd } }),
+        )
+        .await;
+        v2_until_response(w, reader, 1, "").await.0
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn v2_initialize_negotiates_protocol_two() {
+        let sessions = tempfile::tempdir().expect("sessions tempdir");
+        let (mut w, mut reader, _server) =
+            start_raw_server(fixed("hi"), sessions.path().to_path_buf());
+        let init = v2_initialize(&mut w, &mut reader).await;
+        let result = &init["result"];
+        assert_eq!(result["protocolVersion"], 2, "{init}");
+        assert_eq!(result["info"]["name"], "yolop");
+        let session = &result["capabilities"]["session"];
+        assert!(session["prompt"]["image"].is_object(), "{init}");
+        assert!(session["prompt"]["embeddedContext"].is_object(), "{init}");
+        assert!(session["mcp"]["http"].is_object(), "{init}");
+        assert!(session["mcp"]["stdio"].is_object(), "{init}");
+        for method in result["authMethods"].as_array().expect("auth methods") {
+            assert_eq!(method["type"], "agent", "{method}");
+            assert!(method["methodId"].is_string(), "{method}");
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn v2_prompt_answers_with_a_message_id_then_reports_state() {
+        let sessions = tempfile::tempdir().expect("sessions tempdir");
+        let cwd = tempfile::tempdir().expect("cwd tempdir");
+        let (mut w, mut reader, _server) =
+            start_raw_server(fixed("hello from yolop"), sessions.path().to_path_buf());
+        v2_initialize(&mut w, &mut reader).await;
+        let created = v2_new_session(&mut w, &mut reader, cwd.path()).await;
+        let session_id = created["result"]["sessionId"]
+            .as_str()
+            .expect("id")
+            .to_string();
+        let options = created["result"]["configOptions"]
+            .as_array()
+            .expect("options");
+        let mode = options
+            .iter()
+            .find(|option| option["configId"] == "mode")
+            .expect("approval level is a mode config option");
+        assert_eq!(mode["category"], "mode");
+        assert!(created["result"].get("modes").is_none(), "v2 has no modes");
+
+        send_json(
+            &mut w,
+            json!({ "jsonrpc": "2.0", "id": 2, "method": "session/prompt",
+                    "params": { "sessionId": session_id, "prompt": [{ "type": "text", "text": "hi" }] } }),
+        )
+        .await;
+        let (response, mut seen) = v2_until_response(&mut w, &mut reader, 2, "").await;
+        let message_id = response["result"]["messageId"]
+            .as_str()
+            .expect("prompt answers with a message id")
+            .to_string();
+        seen.extend(v2_until_idle(&mut w, &mut reader, "").await);
+
+        let echo = v2_updates(&seen, "user_message");
+        assert_eq!(echo.len(), 1, "{seen:#?}");
+        assert_eq!(echo[0]["messageId"], message_id);
+        assert_eq!(echo[0]["content"][0]["text"], "hi");
+
+        let chunks = v2_updates(&seen, "agent_message_chunk");
+        let text: String = chunks
+            .iter()
+            .filter_map(|chunk| chunk["content"]["text"].as_str())
+            .collect();
+        assert!(text.contains("hello from yolop"), "{seen:#?}");
+        assert!(chunks.iter().all(|chunk| chunk["messageId"].is_string()));
+
+        assert_eq!(v2_states(&seen), vec!["running", "idle"], "{seen:#?}");
+        let idle = v2_updates(&seen, "state_update").pop().unwrap().clone();
+        assert_eq!(idle["stopReason"], "end_turn", "{idle}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn v2_gated_tool_requires_action_then_runs() {
+        let sessions = tempfile::tempdir().expect("sessions tempdir");
+        let cwd = tempfile::tempdir().expect("cwd tempdir");
+        let (mut w, mut reader, _server) =
+            start_raw_server(one_bash_call(), sessions.path().to_path_buf());
+        v2_initialize(&mut w, &mut reader).await;
+        let created = v2_new_session(&mut w, &mut reader, cwd.path()).await;
+        let session_id = created["result"]["sessionId"]
+            .as_str()
+            .expect("id")
+            .to_string();
+
+        send_json(
+            &mut w,
+            json!({ "jsonrpc": "2.0", "id": 2, "method": "session/set_config_option",
+                    "params": { "sessionId": session_id, "configId": "mode",
+                                "type": "id", "value": "protective" } }),
+        )
+        .await;
+        let (set, _) = v2_until_response(&mut w, &mut reader, 2, "").await;
+        let mode = set["result"]["configOptions"]
+            .as_array()
+            .expect("options")
+            .iter()
+            .find(|option| option["configId"] == "mode")
+            .cloned()
+            .expect("mode option");
+        assert_eq!(mode["currentValue"], "protective", "{set}");
+
+        send_json(
+            &mut w,
+            json!({ "jsonrpc": "2.0", "id": 3, "method": "session/prompt",
+                    "params": { "sessionId": session_id, "prompt": [{ "type": "text", "text": "go" }] } }),
+        )
+        .await;
+        let (_, mut seen) = v2_until_response(&mut w, &mut reader, 3, "allow_once").await;
+        seen.extend(v2_until_idle(&mut w, &mut reader, "allow_once").await);
+
+        let asked = seen
+            .iter()
+            .find(|msg| msg["method"] == "session/request_permission")
+            .expect("the gated tool asks");
+        // A shell command is asked about as the command, in the workspace.
+        assert_eq!(asked["params"]["subject"]["type"], "command", "{asked}");
+        assert_eq!(asked["params"]["subject"]["command"], "printf gated");
+        assert_eq!(asked["params"]["subject"]["toolCallId"], "call_1");
+        assert!(asked["params"]["title"].is_string(), "{asked}");
+
+        // The command runs as an agent-owned terminal: announced with its
+        // command, then settled with its output and exit status.
+        let terminals = v2_updates(&seen, "terminal_update");
+        assert_eq!(
+            terminals.first().map(|t| &t["command"]),
+            Some(&json!("printf gated")),
+            "{seen:#?}"
+        );
+        let last = terminals.last().expect("terminal updates");
+        assert_eq!(last["exitStatus"]["exitCode"], 0, "{last}");
+        use base64::Engine as _;
+        let output = base64::engine::general_purpose::STANDARD
+            .decode(last["output"]["data"].as_str().expect("output"))
+            .unwrap();
+        assert!(String::from_utf8_lossy(&output).contains("gated"), "{last}");
+        assert!(
+            v2_updates(&seen, "tool_call_update").iter().any(|update| {
+                update["toolCallId"] == "call_1" && update["content"][0]["type"] == "terminal"
+            }),
+            "{seen:#?}"
+        );
+
+        assert_eq!(
+            v2_states(&seen),
+            vec!["running", "requires_action", "running", "idle"],
+            "{seen:#?}"
+        );
+        let statuses: Vec<&str> = v2_updates(&seen, "tool_call_update")
+            .into_iter()
+            .filter(|update| update["toolCallId"] == "call_1")
+            .filter_map(|update| update["status"].as_str())
+            .collect();
+        assert_eq!(statuses.last(), Some(&"completed"), "{seen:#?}");
+        assert!(
+            v2_updates(&seen, "tool_call").is_empty(),
+            "v2 has no tool_call"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn v2_file_edits_report_a_structured_diff() {
+        let sessions = tempfile::tempdir().expect("sessions tempdir");
+        let cwd = tempfile::tempdir().expect("cwd tempdir");
+        let cwd_path = cwd.path().canonicalize().expect("canonical cwd");
+        std::fs::write(cwd_path.join("notes.txt"), "one\ntwo\n").unwrap();
+        let script = LlmSimConfig::scripted(vec![
+            SimTurn::ToolCalls(vec![SimToolCall {
+                name: "write_file".to_string(),
+                arguments: json!({ "path": "notes.txt", "content": "one\nTWO\n" }),
+                id: Some("call_1".to_string()),
+            }]),
+            SimTurn::Assistant("done".to_string()),
+        ]);
+        let (mut w, mut reader, _server) = start_raw_server(script, sessions.path().to_path_buf());
+        v2_initialize(&mut w, &mut reader).await;
+        let created = v2_new_session(&mut w, &mut reader, &cwd_path).await;
+        let session_id = created["result"]["sessionId"]
+            .as_str()
+            .expect("id")
+            .to_string();
+        send_json(
+            &mut w,
+            json!({ "jsonrpc": "2.0", "id": 2, "method": "session/prompt",
+                    "params": { "sessionId": session_id, "prompt": [{ "type": "text", "text": "edit" }] } }),
+        )
+        .await;
+        let (_, mut seen) = v2_until_response(&mut w, &mut reader, 2, "allow_once").await;
+        seen.extend(v2_until_idle(&mut w, &mut reader, "allow_once").await);
+        assert_eq!(
+            std::fs::read_to_string(cwd_path.join("notes.txt")).unwrap(),
+            "one\nTWO\n"
+        );
+        let diff = v2_updates(&seen, "tool_call_update")
+            .into_iter()
+            .filter(|update| update["toolCallId"] == "call_1")
+            .find_map(|update| {
+                update["content"]
+                    .as_array()?
+                    .iter()
+                    .find(|content| content["type"] == "diff")
+                    .cloned()
+            })
+            .unwrap_or_else(|| panic!("a diff for the edit: {seen:#?}"));
+        assert_eq!(diff["changes"][0]["operation"], "modify", "{diff}");
+        assert_eq!(
+            diff["changes"][0]["path"],
+            json!(cwd_path.join("notes.txt")),
+            "{diff}"
+        );
+        let patch = diff["patch"]["text"].as_str().expect("patch");
+        assert!(patch.contains("-two\n+TWO"), "{patch}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn v2_list_and_resume_replay_a_saved_session() {
+        let sessions = tempfile::tempdir().expect("sessions tempdir");
+        let cwd = tempfile::tempdir().expect("cwd tempdir");
+        let cwd_path = cwd.path().canonicalize().expect("canonical cwd");
+        let session_id = {
+            let (mut w, mut reader, server) =
+                start_raw_server(fixed("first answer"), sessions.path().to_path_buf());
+            v2_initialize(&mut w, &mut reader).await;
+            let created = v2_new_session(&mut w, &mut reader, &cwd_path).await;
+            let session_id = created["result"]["sessionId"]
+                .as_str()
+                .expect("id")
+                .to_string();
+            send_json(
+                &mut w,
+                json!({ "jsonrpc": "2.0", "id": 2, "method": "session/prompt",
+                        "params": { "sessionId": session_id,
+                                    "prompt": [{ "type": "text", "text": "remember me" }] } }),
+            )
+            .await;
+            v2_until_response(&mut w, &mut reader, 2, "").await;
+            v2_until_idle(&mut w, &mut reader, "").await;
+            send_json(
+                &mut w,
+                json!({ "jsonrpc": "2.0", "id": 3, "method": "session/close",
+                        "params": { "sessionId": session_id } }),
+            )
+            .await;
+            let (closed, _) = v2_until_response(&mut w, &mut reader, 3, "").await;
+            assert!(closed.get("result").is_some(), "{closed}");
+            send_json(
+                &mut w,
+                json!({ "jsonrpc": "2.0", "id": 4, "method": "session/prompt",
+                        "params": { "sessionId": session_id,
+                                    "prompt": [{ "type": "text", "text": "again" }] } }),
+            )
+            .await;
+            let (after_close, _) = v2_until_response(&mut w, &mut reader, 4, "").await;
+            assert_eq!(after_close["error"]["code"], -32002, "{after_close}");
+            drop(w);
+            drop(reader);
+            let _ = server.await;
+            session_id
+        };
+
+        let (mut w, mut reader, _server) =
+            start_raw_server(fixed("second answer"), sessions.path().to_path_buf());
+        v2_initialize(&mut w, &mut reader).await;
+        send_json(
+            &mut w,
+            json!({ "jsonrpc": "2.0", "id": 1, "method": "session/list",
+                    "params": { "cwd": cwd_path } }),
+        )
+        .await;
+        let (listed, _) = v2_until_response(&mut w, &mut reader, 1, "").await;
+        let listed = listed["result"]["sessions"]
+            .as_array()
+            .expect("sessions")
+            .clone();
+        assert!(
+            listed.iter().any(|info| info["sessionId"] == session_id),
+            "{listed:#?}"
+        );
+
+        send_json(
+            &mut w,
+            json!({ "jsonrpc": "2.0", "id": 2, "method": "session/resume",
+                    "params": { "sessionId": session_id, "cwd": cwd_path,
+                                "replayFrom": { "type": "start" } } }),
+        )
+        .await;
+        let (resumed, seen) = v2_until_response(&mut w, &mut reader, 2, "").await;
+        assert!(resumed.get("result").is_some(), "{resumed}");
+        let replayed: String = v2_updates(&seen, "user_message_chunk")
+            .iter()
+            .filter_map(|chunk| chunk["content"]["text"].as_str())
+            .collect();
+        assert!(replayed.contains("remember me"), "{seen:#?}");
+        // Replayed chunked messages open with an empty whole message.
+        let first_chunk = &v2_updates(&seen, "user_message_chunk")[0];
+        assert!(
+            v2_updates(&seen, "user_message")
+                .iter()
+                .any(|marker| marker["messageId"] == first_chunk["messageId"]),
+            "{seen:#?}"
+        );
+        assert_eq!(
+            v2_states(&seen),
+            vec!["idle"],
+            "a current-state snapshot: {seen:#?}"
+        );
+        assert!(
+            resumed["result"]["configOptions"]
+                .as_array()
+                .is_some_and(|options| options.iter().any(|o| o["configId"] == "mode")),
+            "{resumed}"
+        );
+
+        send_json(
+            &mut w,
+            json!({ "jsonrpc": "2.0", "id": 3, "method": "session/delete",
+                    "params": { "sessionId": session_id } }),
+        )
+        .await;
+        let (deleted, _) = v2_until_response(&mut w, &mut reader, 3, "").await;
+        assert!(deleted.get("result").is_some(), "{deleted}");
+        send_json(
+            &mut w,
+            json!({ "jsonrpc": "2.0", "id": 4, "method": "session/list", "params": {} }),
+        )
+        .await;
+        let (listed, _) = v2_until_response(&mut w, &mut reader, 4, "").await;
+        assert!(
+            !listed["result"]["sessions"]
+                .as_array()
+                .is_some_and(|list| list.iter().any(|info| info["sessionId"] == session_id)),
+            "{listed}"
+        );
+        send_json(
+            &mut w,
+            json!({ "jsonrpc": "2.0", "id": 5, "method": "session/delete",
+                    "params": { "sessionId": session_id } }),
+        )
+        .await;
+        let (again, _) = v2_until_response(&mut w, &mut reader, 5, "").await;
+        assert_eq!(again["error"]["code"], -32002, "{again}");
+        send_json(
+            &mut w,
+            json!({ "jsonrpc": "2.0", "id": 6, "method": "session/resume",
+                    "params": { "sessionId": session_id, "cwd": cwd_path } }),
+        )
+        .await;
+        let (gone, _) = v2_until_response(&mut w, &mut reader, 6, "").await;
+        assert_eq!(gone["error"]["code"], -32002, "{gone}");
     }
 }

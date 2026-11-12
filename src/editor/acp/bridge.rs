@@ -62,6 +62,12 @@ impl Translator {
         }
     }
 
+    /// Whether this event was already translated (live and drained copies of
+    /// one event arrive twice).
+    pub fn has_seen(&self, event: &RuntimeEvent) -> bool {
+        self.seen.contains(&event.id.to_string())
+    }
+
     /// Translate a single runtime event into zero or more ACP updates.
     /// Returns an empty vec for events with no client-visible mapping.
     pub fn on_event(&mut self, event: &RuntimeEvent) -> Vec<SessionUpdate> {

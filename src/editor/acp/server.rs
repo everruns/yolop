@@ -21,7 +21,7 @@ use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::time::Duration;
 
 use agent_client_protocol::v1::{ConnectionTo, Responder};
-use agent_client_protocol::{Agent, Client, Lines};
+use agent_client_protocol::{Agent, Client, ConnectTo, Lines};
 use anyhow::Result;
 use async_trait::async_trait;
 use everruns_contracts::tool_types::{
@@ -33,7 +33,7 @@ use everruns_core::builtins::ask_user::AskUser;
 use everruns_core::command::{CommandDescriptor, CommandSource};
 use everruns_core::{InputMessage, ScopedMcpServers};
 use everruns_core::{McpServerTransportType, ScopedMcpServer};
-use futures::{AsyncBufReadExt, AsyncWriteExt, StreamExt};
+use futures::{AsyncBufReadExt, AsyncWriteExt};
 use serde_json::{Value, json};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{oneshot, watch};
@@ -48,6 +48,8 @@ use crate::runtime::background_wake::{
 use crate::runtime::{BuiltRuntime, ModelState, RuntimeHandles};
 use crate::session_state::task_completion::CompletionController;
 use crate::tui::input::image_input::{MAX_IMAGE_BYTES, image_part_from_base64};
+
+pub(super) mod v2;
 
 use super::bridge::{Translator, tool_kind};
 use super::modes;
@@ -70,6 +72,15 @@ use crate::capabilities::host::{
 /// How often the prompt loop wakes to check whether the turn task finished,
 /// in case the final event was already drained from the broadcast.
 const TURN_POLL_INTERVAL: Duration = Duration::from_millis(150);
+
+/// What a v2 client adds to a session beyond v1: an observer that sees each
+/// tool call before it runs (file snapshots for diffs) and its own system
+/// prompt. v1 sessions use the default.
+#[derive(Clone, Default)]
+pub struct SessionExtras {
+    pub tool_observer: Option<crate::capabilities::ToolObserver>,
+    pub system_prompt: Option<crate::runtime::ClientSystemPrompt>,
+}
 
 /// Builds a runtime for a freshly opened ACP session. Abstracted so tests can
 /// substitute a scripted llmsim runtime for the real provider wiring.
@@ -98,6 +109,23 @@ pub trait RuntimeFactory: Send + Sync + 'static {
         anyhow::bail!("unknown authentication method `{method_id}`")
     }
 
+    /// v2 `auth/logout`: forget the credentials the advertised methods store.
+    async fn logout(&self) -> Result<()> {
+        Ok(())
+    }
+
+    /// v2 `session/delete`: remove a saved session from disk. The caller has
+    /// already closed it if it was open.
+    async fn delete_session(&self, _session_id: RuntimeSessionId) -> Result<()> {
+        anyhow::bail!("deleting sessions is not supported")
+    }
+
+    /// Saved sessions for v2 `session/list`, newest first, optionally only
+    /// those rooted at `cwd`.
+    async fn list_sessions(&self, _cwd: Option<&std::path::Path>) -> Vec<v2::SavedSession> {
+        Vec::new()
+    }
+
     async fn build(
         &self,
         cwd: PathBuf,
@@ -105,6 +133,7 @@ pub trait RuntimeFactory: Send + Sync + 'static {
         client_mcp_servers: ScopedMcpServers,
         tool_approver: Option<Arc<dyn ToolApprover>>,
         ask_user: Arc<dyn AskUser>,
+        extras: SessionExtras,
     ) -> Result<BuiltRuntime>;
 
     /// Record the editor identity from `initialize`, so later `session/new`
@@ -207,16 +236,94 @@ fn scoped_mcp_servers_from_acp(
 }
 
 /// SDK connection wrapper plus yolop-local ids for synthetic command tool calls.
+///
+/// Decision: the session core speaks protocol v1 types and the link decides
+/// what reaches the wire. A v1 link sends them as they are; a v2 link
+/// translates each one (see [`v2::Link`]), so both protocols share one
+/// runtime path instead of two copies of the turn loop.
 struct Peer {
-    cx: ConnectionTo<Client>,
+    link: PeerLink,
     next_id: Arc<AtomicI64>,
 }
 
+#[derive(Clone)]
+pub(super) enum PeerLink {
+    V1(ConnectionTo<Client>),
+    V2(Arc<v2::Link>),
+}
+
 impl Peer {
+    fn v1(cx: ConnectionTo<Client>, next_id: Arc<AtomicI64>) -> Self {
+        Self {
+            link: PeerLink::V1(cx),
+            next_id,
+        }
+    }
+
     fn session_update(&self, session_id: &str, update: SessionUpdate) {
-        let notification = SessionNotification::new(session_id.to_string(), update);
-        if let Err(err) = self.cx.send_notification(notification) {
-            tracing::warn!(%err, "acp: failed to send session update");
+        match &self.link {
+            PeerLink::V1(cx) => {
+                let notification = SessionNotification::new(session_id.to_string(), update);
+                if let Err(err) = cx.send_notification(notification) {
+                    tracing::warn!(%err, "acp: failed to send session update");
+                }
+            }
+            PeerLink::V2(link) => link.session_update(session_id, update),
+        }
+    }
+
+    fn before_event(&self, session_id: &str, event: &everruns_core::events::Event) {
+        if let PeerLink::V2(link) = &self.link {
+            link.before_event(session_id, event);
+        }
+    }
+
+    fn after_event(&self, session_id: &str, event: &everruns_core::events::Event) {
+        if let PeerLink::V2(link) = &self.link {
+            link.after_event(session_id, event);
+        }
+    }
+
+    /// Foreground work began for this session: a client prompt or a
+    /// background wake turn. v1 has no session state, so only v2 reports it.
+    async fn work_started(&self, session_id: &str) {
+        if let PeerLink::V2(link) = &self.link {
+            link.work_started(session_id).await;
+        }
+    }
+
+    /// Foreground work ended; v2 reports `idle` once nothing else is queued.
+    async fn work_finished(&self, session_id: &str, stop: StopReason) {
+        if let PeerLink::V2(link) = &self.link {
+            link.work_finished(session_id, stop).await;
+        }
+    }
+
+    /// A background task finished. v2 lists running background work on its
+    /// state updates; v1 has nowhere to put it.
+    async fn background_changed(&self, session_id: &str) {
+        if let PeerLink::V2(link) = &self.link {
+            link.background_changed(session_id).await;
+        }
+    }
+
+    /// Ask the client to pick one of the permission options. `Ok(None)` means
+    /// the client cancelled the request.
+    async fn request_permission(
+        &self,
+        request: RequestPermissionParams,
+    ) -> std::result::Result<Option<String>, agent_client_protocol::Error> {
+        match &self.link {
+            PeerLink::V1(cx) => match cx.send_request(request).block_task().await?.outcome {
+                RequestPermissionOutcome::Selected(selected) => {
+                    Ok(Some(selected.option_id.to_string()))
+                }
+                RequestPermissionOutcome::Cancelled => Ok(None),
+                // `RequestPermissionOutcome` is non-exhaustive: a future
+                // variant must never read as approval.
+                _ => Ok(Some(String::new())),
+            },
+            PeerLink::V2(link) => link.request_permission(request).await,
         }
     }
 }
@@ -247,7 +354,8 @@ impl ToolApprover for AcpToolApprover {
         let fields = ToolCallUpdateFields::new()
             .title(tool_def.name().to_string())
             .kind(tool_kind(&tool_call.name))
-            .status(ToolCallStatus::Pending);
+            .status(ToolCallStatus::Pending)
+            .raw_input(tool_call.arguments.clone());
         let request = RequestPermissionParams::new(
             session_id.to_string(),
             ToolCallUpdate::new(tool_call.id.clone(), fields),
@@ -275,24 +383,19 @@ impl ToolApprover for AcpToolApprover {
             ],
         );
 
-        match self.peer.cx.send_request(request).block_task().await {
-            Ok(response) => match response.outcome {
-                RequestPermissionOutcome::Cancelled => ApprovalDecision::Cancelled,
-                RequestPermissionOutcome::Selected(selected) => {
-                    match selected.option_id.to_string().as_str() {
-                        PERMISSION_ALLOW_ONCE => ApprovalDecision::Allow,
-                        PERMISSION_ALLOW_ALWAYS => ApprovalDecision::AllowAlways,
-                        PERMISSION_REJECT_ONCE => ApprovalDecision::Reject,
-                        PERMISSION_REJECT_ALWAYS => ApprovalDecision::RejectAlways,
-                        other => {
-                            tracing::warn!(option = other, "acp: unknown permission option");
-                            ApprovalDecision::Reject
-                        }
-                    }
+        match self.peer.request_permission(request).await {
+            Ok(None) => ApprovalDecision::Cancelled,
+            Ok(Some(option_id)) => match option_id.as_str() {
+                PERMISSION_ALLOW_ONCE => ApprovalDecision::Allow,
+                PERMISSION_ALLOW_ALWAYS => ApprovalDecision::AllowAlways,
+                PERMISSION_REJECT_ONCE => ApprovalDecision::Reject,
+                PERMISSION_REJECT_ALWAYS => ApprovalDecision::RejectAlways,
+                // Unknown options, including a future outcome variant, reject
+                // rather than silently allow.
+                other => {
+                    tracing::warn!(option = other, "acp: unknown permission option");
+                    ApprovalDecision::Reject
                 }
-                // `RequestPermissionOutcome` is non-exhaustive: treat any future
-                // variant as a rejection rather than silently allowing.
-                _ => ApprovalDecision::Reject,
             },
             Err(err) => {
                 // The client could not answer or the connection is winding
@@ -336,6 +439,9 @@ struct Session {
     /// turn, or next-turn reconcile), so the reconcile backstop never repeats
     /// them. Only touched while `turn_lock` is held.
     reported_background_tasks: StdMutex<HashSet<String>>,
+    /// Set by v2 `session/close`: queued prompts and wake turns stop instead
+    /// of running against a session the client has let go of.
+    closed: AtomicBool,
 }
 
 impl Session {
@@ -381,7 +487,7 @@ struct Server<F: RuntimeFactory> {
 impl<F: RuntimeFactory> Server<F> {
     fn questioner(&self, peer: &Peer) -> Arc<dyn AskUser> {
         Arc::new(super::questions::AcpQuestioner {
-            cx: peer.cx.clone(),
+            link: peer.link.clone(),
             forms: self.elicitation_forms.clone(),
         })
     }
@@ -414,22 +520,7 @@ where
         elicitation_forms: Arc::new(AtomicBool::new(false)),
     });
     let next_tool_id = Arc::new(AtomicI64::new(1));
-    let (eof_tx, eof_rx) = oneshot::channel::<()>();
-    let incoming_lines = futures::io::BufReader::new(reader.compat()).lines();
-    let incoming = futures::stream::unfold(
-        (incoming_lines, Some(eof_tx)),
-        |(mut lines, mut eof_tx)| async move {
-            match lines.next().await {
-                Some(line) => Some((line, (lines, eof_tx))),
-                None => {
-                    if let Some(tx) = eof_tx.take() {
-                        let _ = tx.send(());
-                    }
-                    None
-                }
-            }
-        },
-    );
+    let incoming = futures::io::BufReader::new(reader.compat()).lines();
     let outgoing = futures::sink::unfold(
         writer.compat_write(),
         async move |mut writer, line: String| {
@@ -441,7 +532,8 @@ where
     );
     let transport = Lines::new(outgoing, incoming);
 
-    let result = Agent
+    let v2_agent = v2::agent(server.clone(), next_tool_id.clone());
+    let v1_agent = Agent
         .v1()
         .name("yolop")
         .on_receive_request(
@@ -482,10 +574,7 @@ where
                     match server.factory.authenticate(&method_id).await {
                         Ok(()) => {
                             responder.respond(AuthenticateResult::new())?;
-                            let peer = Peer {
-                                cx: cx.clone(),
-                                next_id: next_tool_id.clone(),
-                            };
+                            let peer = Peer::v1(cx.clone(), next_tool_id.clone());
                             for session in server.sessions() {
                                 emit_config_options(&peer, &session).await;
                             }
@@ -503,10 +592,7 @@ where
                 let server = server.clone();
                 let next_tool_id = next_tool_id.clone();
                 async move |params: NewSessionParams, responder, cx| {
-                    let peer = Arc::new(Peer {
-                        cx: cx.clone(),
-                        next_id: next_tool_id.clone(),
-                    });
+                    let peer = Arc::new(Peer::v1(cx.clone(), next_tool_id.clone()));
                     match handle_new_session(&server, &peer, params).await {
                         Ok(result) => {
                             let session_id = result.session_id.to_string();
@@ -532,10 +618,7 @@ where
                 let server = server.clone();
                 let next_tool_id = next_tool_id.clone();
                 async move |params: LoadSessionParams, responder, cx| {
-                    let peer = Arc::new(Peer {
-                        cx: cx.clone(),
-                        next_id: next_tool_id.clone(),
-                    });
+                    let peer = Arc::new(Peer::v1(cx.clone(), next_tool_id.clone()));
                     match handle_load_session(&server, &peer, params).await {
                         Ok((result, session_id)) => {
                             let config_options = result.config_options.clone();
@@ -559,10 +642,7 @@ where
                 let server = server.clone();
                 let next_tool_id = next_tool_id.clone();
                 async move |params: PromptParams, responder, cx| {
-                    let peer = Arc::new(Peer {
-                        cx: cx.clone(),
-                        next_id: next_tool_id.clone(),
-                    });
+                    let peer = Arc::new(Peer::v1(cx.clone(), next_tool_id.clone()));
                     tokio::spawn({
                         let server = server.clone();
                         async move {
@@ -611,11 +691,15 @@ where
                 }
             },
             agent_client_protocol::on_receive_notification!(),
-        )
-        .connect_with(transport, async move |_cx| {
-            let _ = eof_rx.await;
-            Ok(())
-        })
+        );
+    // The router reads the first `initialize` and hands the connection to the
+    // implementation for the requested version: v2 and newer to `v2_agent`,
+    // everything else (v1 clients such as Zed today) to `v1_agent` unchanged.
+    let result = Agent
+        .protocol_router()
+        .with_v1(v1_agent)
+        .with_v2(v2_agent)
+        .connect_to(transport)
         .await;
 
     // The connection has wound down: stop every session's wake poller so no
@@ -704,8 +788,29 @@ async fn handle_new_session<F: RuntimeFactory>(
     peer: &Arc<Peer>,
     params: NewSessionParams,
 ) -> std::result::Result<NewSessionResult, agent_client_protocol::Error> {
-    let cwd = params.cwd;
     let client_mcp_servers = scoped_mcp_servers_from_acp(&params.mcp_servers)?;
+    let session = open_session(
+        server,
+        peer,
+        params.cwd,
+        client_mcp_servers,
+        SessionExtras::default(),
+    )
+    .await?;
+    let mode = session.settings.snapshot().approval_mode();
+    Ok(NewSessionResult::new(session.acp_id.clone())
+        .modes(modes::session_mode_state(mode))
+        .config_options(session_config_options(&session).await))
+}
+
+/// Build and register a fresh session. Shared by v1 `session/new` and v2.
+async fn open_session<F: RuntimeFactory>(
+    server: &Arc<Server<F>>,
+    peer: &Arc<Peer>,
+    cwd: PathBuf,
+    client_mcp_servers: ScopedMcpServers,
+    extras: SessionExtras,
+) -> std::result::Result<Arc<Session>, agent_client_protocol::Error> {
     let tool_approver: Option<Arc<dyn ToolApprover>> =
         Some(Arc::new(AcpToolApprover { peer: peer.clone() }));
 
@@ -717,19 +822,15 @@ async fn handle_new_session<F: RuntimeFactory>(
             client_mcp_servers,
             tool_approver,
             server.questioner(peer),
+            extras,
         )
         .await
         .map_err(|e| internal_error(format!("build runtime: {e}")))?;
 
-    let mode = built.settings.snapshot().approval_mode();
     let acp_id = register_session(server, peer, built);
-    let session = server
+    server
         .session(&acp_id)
-        .ok_or_else(|| internal_error("new session was not registered"))?;
-
-    Ok(NewSessionResult::new(acp_id)
-        .modes(modes::session_mode_state(mode))
-        .config_options(session_config_options(&session.model).await))
+        .ok_or_else(|| internal_error("new session was not registered"))
 }
 
 async fn handle_load_session<F: RuntimeFactory>(
@@ -737,48 +838,66 @@ async fn handle_load_session<F: RuntimeFactory>(
     peer: &Arc<Peer>,
     params: LoadSessionParams,
 ) -> std::result::Result<(LoadSessionResult, String), agent_client_protocol::Error> {
-    let requested_id = params.session_id.to_string();
-    let resume_session_id = requested_id
-        .parse::<RuntimeSessionId>()
-        .map_err(|e| invalid_params(format!("invalid session id `{requested_id}`: {e}")))?;
-
-    let session = match server.session(&requested_id) {
-        Some(session) => session,
-        None => {
-            if !server.factory.session_exists(resume_session_id).await {
-                return Err(invalid_params(format!(
-                    "unknown session id `{requested_id}`"
-                )));
-            }
-            let client_mcp_servers = scoped_mcp_servers_from_acp(&params.mcp_servers)?;
-            let tool_approver: Option<Arc<dyn ToolApprover>> =
-                Some(Arc::new(AcpToolApprover { peer: peer.clone() }));
-            let built = server
-                .factory
-                .build(
-                    params.cwd,
-                    Some(resume_session_id),
-                    client_mcp_servers,
-                    tool_approver,
-                    server.questioner(peer),
-                )
-                .await
-                .map_err(|e| internal_error(format!("load runtime: {e}")))?;
-            let acp_id = register_session(server, peer, built);
-            server
-                .session(&acp_id)
-                .ok_or_else(|| internal_error("loaded session was not registered"))?
-        }
-    };
-
+    let client_mcp_servers = scoped_mcp_servers_from_acp(&params.mcp_servers)?;
+    let session = reopen_session(
+        server,
+        peer,
+        &params.session_id.to_string(),
+        params.cwd,
+        client_mcp_servers,
+        SessionExtras::default(),
+    )
+    .await?;
     replay_session_history(peer, &session).await?;
     let mode = session.settings.snapshot().approval_mode();
     Ok((
         LoadSessionResult::new()
             .modes(modes::session_mode_state(mode))
-            .config_options(session_config_options(&session.model).await),
+            .config_options(session_config_options(&session).await),
         session.acp_id.clone(),
     ))
+}
+
+/// Find an open session or rehydrate a saved one from disk. Shared by v1
+/// `session/load` and v2 `session/resume`; replay is the caller's choice.
+async fn reopen_session<F: RuntimeFactory>(
+    server: &Arc<Server<F>>,
+    peer: &Arc<Peer>,
+    requested_id: &str,
+    cwd: PathBuf,
+    client_mcp_servers: ScopedMcpServers,
+    extras: SessionExtras,
+) -> std::result::Result<Arc<Session>, agent_client_protocol::Error> {
+    let resume_session_id = requested_id
+        .parse::<RuntimeSessionId>()
+        .map_err(|e| invalid_params(format!("invalid session id `{requested_id}`: {e}")))?;
+
+    if let Some(session) = server.session(requested_id) {
+        return Ok(session);
+    }
+    if !server.factory.session_exists(resume_session_id).await {
+        return Err(invalid_params(format!(
+            "unknown session id `{requested_id}`"
+        )));
+    }
+    let tool_approver: Option<Arc<dyn ToolApprover>> =
+        Some(Arc::new(AcpToolApprover { peer: peer.clone() }));
+    let built = server
+        .factory
+        .build(
+            cwd,
+            Some(resume_session_id),
+            client_mcp_servers,
+            tool_approver,
+            server.questioner(peer),
+            extras,
+        )
+        .await
+        .map_err(|e| internal_error(format!("load runtime: {e}")))?;
+    let acp_id = register_session(server, peer, built);
+    server
+        .session(&acp_id)
+        .ok_or_else(|| internal_error("loaded session was not registered"))
 }
 
 fn register_session<F: RuntimeFactory>(
@@ -806,6 +925,7 @@ fn register_session<F: RuntimeFactory>(
         turn_lock: tokio::sync::Mutex::new(()),
         turn_seq: std::sync::atomic::AtomicU64::new(0),
         reported_background_tasks: StdMutex::new(HashSet::new()),
+        closed: AtomicBool::new(false),
     });
     server
         .sessions
@@ -813,6 +933,13 @@ fn register_session<F: RuntimeFactory>(
         .unwrap()
         .insert(acp_id.clone(), session.clone());
 
+    if let PeerLink::V2(link) = &peer.link {
+        link.register(
+            &acp_id,
+            built.worktree.clone(),
+            session.task_registry.clone(),
+        );
+    }
     let wake_drain = spawn_background_wake_drain(
         session,
         peer.clone(),
@@ -925,10 +1052,14 @@ fn spawn_background_wake_drain(
             }
             // Serialize with client prompts so two turns never overlap.
             let _turn = session.turn_lock.lock().await;
+            if session.closed.load(Ordering::Acquire) {
+                break;
+            }
             // Completions that accumulated while the foreground turn held the
             // lock are one observation point, not separate model obligations.
             let message = coalesce_pending_wakes(message, &mut wake_rx)
                 .resolve_artifacts(session.handles.host.files.clone().as_ref());
+            peer.background_changed(&session.acp_id).await;
             if let Some(id) = message.admission()
                 && let Ok(engine_session) = session
                     .handles
@@ -988,7 +1119,9 @@ fn spawn_background_wake_drain(
             // turn below emits no text of its own.
             mark_background_reported(&session, &message);
             let input = crate::runtime::background_wake::input_for_wake(&message);
-            run_prompt(peer.clone(), session.clone(), input).await;
+            peer.work_started(&session.acp_id).await;
+            let stop = run_prompt(peer.clone(), session.clone(), input).await;
+            peer.work_finished(&session.acp_id, stop).await;
         }
     })
 }
@@ -1008,17 +1141,41 @@ async fn replay_session_history(
         if event.session_id != session.handles.session_id {
             continue;
         }
-        for update in translator.on_event(&event) {
-            peer.session_update(&session.acp_id, update);
-        }
+        forward_event(peer, &session.acp_id, &mut translator, &event);
     }
     Ok(())
 }
 
 const MODEL_CONFIG_ID: &str = "model";
 const REASONING_EFFORT_CONFIG_ID: &str = "reasoning_effort";
+/// The approval level as a `mode`-category option. ACP v2 removed session
+/// modes for exactly this, and v1 clients that understand config options
+/// prefer them over `modes`, which v1 keeps sending for older clients.
+const MODE_CONFIG_ID: &str = "mode";
 
-async fn session_config_options(model: &ModelState) -> Vec<SessionConfigOption> {
+async fn session_config_options(session: &Session) -> Vec<SessionConfigOption> {
+    let mut options = model_config_options(&session.model).await;
+    let state = modes::session_mode_state(session.settings.snapshot().approval_mode());
+    options.push(
+        SessionConfigOption::select(
+            SessionConfigId::new(MODE_CONFIG_ID),
+            "Approval",
+            state.current_mode_id.to_string(),
+            state
+                .available_modes
+                .into_iter()
+                .map(|mode| {
+                    SessionConfigSelectOption::new(mode.id.to_string(), mode.name)
+                        .description(mode.description)
+                })
+                .collect::<Vec<_>>(),
+        )
+        .category(SessionConfigOptionCategory::Mode),
+    );
+    options
+}
+
+async fn model_config_options(model: &ModelState) -> Vec<SessionConfigOption> {
     let model_options = model
         .model_options()
         .await
@@ -1072,21 +1229,34 @@ async fn apply_set_config_option<F: RuntimeFactory>(
         .value
         .as_value_id()
         .ok_or_else(|| invalid_params("session config option requires a value id"))?;
-    match params.config_id.0.as_ref() {
-        MODEL_CONFIG_ID => session.model.select_model_id(value.0.as_ref()).await,
-        REASONING_EFFORT_CONFIG_ID => {
+    set_config_value(&session, params.config_id.0.as_ref(), value.0.as_ref()).await?;
+    Ok(SetSessionConfigOptionResponse::new(
+        session_config_options(&session).await,
+    ))
+}
+
+/// Apply one select option; shared by both protocol versions.
+async fn set_config_value(
+    session: &Session,
+    config_id: &str,
+    value: &str,
+) -> std::result::Result<(), agent_client_protocol::Error> {
+    match config_id {
+        MODEL_CONFIG_ID => session.model.select_model_id(value).await,
+        REASONING_EFFORT_CONFIG_ID => session.model.select_reasoning_effort(value).await,
+        MODE_CONFIG_ID => {
+            let mode = modes::approval_mode_from_id(value)
+                .ok_or_else(|| invalid_params(format!("unknown session mode `{value}`")))?;
             session
-                .model
-                .select_reasoning_effort(value.0.as_ref())
-                .await
+                .settings
+                .set_approval_mode(mode)
+                .map_err(|e| internal_error(format!("set approval mode: {e}")))?;
+            *session.last_mode.lock().unwrap() = mode;
+            Ok(())
         }
         other => Err(anyhow::anyhow!("unknown session config option `{other}`")),
     }
-    .map_err(|err| invalid_params(err.to_string()))?;
-
-    Ok(SetSessionConfigOptionResponse::new(
-        session_config_options(&session.model).await,
-    ))
+    .map_err(|err| invalid_params(err.to_string()))
 }
 
 async fn handle_prompt<F: RuntimeFactory>(
@@ -1094,19 +1264,34 @@ async fn handle_prompt<F: RuntimeFactory>(
     peer: Arc<Peer>,
     params: PromptParams,
 ) -> std::result::Result<PromptResult, agent_client_protocol::Error> {
-    let session_id = params.session_id.to_string();
     let session = server
-        .session(&session_id)
+        .session(&params.session_id.to_string())
         .ok_or_else(|| invalid_params("unknown session id"))?;
-    let mut prompt = protocol::prompt_text(&params.prompt);
     let input = prompt_input(&session.model, &params.prompt)
         .map_err(|err| invalid_params(format!("invalid prompt image: {err}")))?;
+    let stop_reason = run_client_turn(server, peer, session, &params.prompt, input).await;
+    Ok(PromptResult::new(stop_reason))
+}
+
+/// Run one accepted client prompt to its stop reason. Shared by v1, where the
+/// stop reason answers `session/prompt`, and v2, where it ends in `idle`.
+async fn run_client_turn<F: RuntimeFactory>(
+    server: &Arc<Server<F>>,
+    peer: Arc<Peer>,
+    session: Arc<Session>,
+    blocks: &[protocol::ContentBlock],
+    input: InputMessage,
+) -> StopReason {
+    let mut prompt = protocol::prompt_text(blocks);
 
     // Serialize with any proactive background wake turn (and any other in-flight
     // prompt) so two turns never run for one session at once. Held for the whole
     // dispatch; `run_prompt` does not take the lock itself, so the poller can
     // reuse it under its own guard.
     let _turn = session.turn_lock.lock().await;
+    if session.closed.load(Ordering::Acquire) {
+        return StopReason::Cancelled;
+    }
     // Backstop for completions that finished without a wake announcement
     // (missed wake, notice-only opt-out, session gap): surface each once as a
     // deterministic chunk and give the model the same facts.
@@ -1120,15 +1305,14 @@ async fn handle_prompt<F: RuntimeFactory>(
     }
     let mode_peer = peer.clone();
     let parsed_command = parse_command_prompt(&prompt);
-    let model_before = if parsed_command.is_none() {
-        Some((
+    // Slash commands refresh options themselves when they change the model.
+    let model_before = parsed_command.is_none().then(|| {
+        (
             session.model.provider_name(),
             session.model.model_id(),
             session.model.reasoning_effort(),
-        ))
-    } else {
-        None
-    };
+        )
+    });
     if parsed_command.is_none() {
         session.completion.lock().await.reset();
     }
@@ -1138,18 +1322,19 @@ async fn handle_prompt<F: RuntimeFactory>(
     };
     // A level changed mid-turn (the `set_approval_mode` tool, `/setup approval`)
     // must reach the client's mode picker, not just the settings file.
-    emit_mode_change_if_needed(&mode_peer, &session);
-    if let Some(before) = model_before {
-        let after = (
-            session.model.provider_name(),
-            session.model.model_id(),
-            session.model.reasoning_effort(),
-        );
-        if after != before {
-            emit_config_options(&mode_peer, &session).await;
-        }
+    let mode_changed = emit_mode_change_if_needed(&mode_peer, &session);
+    let model_changed = model_before.is_some_and(|before| {
+        before
+            != (
+                session.model.provider_name(),
+                session.model.model_id(),
+                session.model.reasoning_effort(),
+            )
+    });
+    if mode_changed || model_changed {
+        emit_config_options(&mode_peer, &session).await;
     }
-    Ok(PromptResult::new(stop_reason))
+    stop_reason
 }
 
 /// Persist a client `session/set_mode` by mapping the mode id to an approval
@@ -1174,8 +1359,9 @@ fn apply_set_mode<F: RuntimeFactory>(
 
 /// Push a `current_mode_update` when the approval level changed out of band
 /// since it was last reported (the `set_approval_mode` tool, `/setup approval`),
-/// so the client's mode picker stays in sync with the setting.
-fn emit_mode_change_if_needed(peer: &Peer, session: &Session) {
+/// so the client's mode picker stays in sync with the setting. Returns whether
+/// it changed, since the `mode` config option then needs a refresh too.
+fn emit_mode_change_if_needed(peer: &Peer, session: &Session) -> bool {
     let current = session.settings.snapshot().approval_mode();
     let changed = {
         let mut last = session.last_mode.lock().unwrap();
@@ -1189,10 +1375,11 @@ fn emit_mode_change_if_needed(peer: &Peer, session: &Session) {
             SessionUpdate::CurrentModeUpdate(CurrentModeUpdate::new(modes::mode_id(current))),
         );
     }
+    changed
 }
 
 async fn emit_config_options(peer: &Peer, session: &Session) {
-    let options = session_config_options(&session.model).await;
+    let options = session_config_options(session).await;
     *session.last_config_options.lock().unwrap() = Some(options.clone());
     peer.session_update(
         &session.acp_id,
@@ -1694,7 +1881,7 @@ fn maybe_spawn_settings_watcher<F: RuntimeFactory>(server: &Arc<Server<F>>, peer
                     break;
                 }
                 for session in server.sessions() {
-                    let current = session_config_options(&session.model).await;
+                    let current = session_config_options(&session).await;
                     let mut previous = session.last_config_options.lock().unwrap();
                     if previous.as_ref().is_some_and(|options| options != &current) {
                         *previous = Some(current.clone());
@@ -1873,9 +2060,7 @@ async fn run_prompt_once(
             recv = live.recv() => match recv {
                 Ok(event) => {
                     if event.session_id == session_id && scope.accepts(&handles.session, &event).await {
-                        for update in translator.on_event(&event) {
-                            peer.session_update(&acp_id, update);
-                        }
+                        forward_event(&peer, &acp_id, &mut translator, &event);
                     }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
@@ -2111,10 +2296,27 @@ async fn drain_events(
         if event.session_id != handles.session_id || !scope.accepts(&handles.session, event).await {
             continue;
         }
-        for update in translator.on_event(event) {
-            peer.session_update(acp_id, update);
-        }
+        forward_event(peer, acp_id, translator, event);
     }
+}
+
+/// Send one runtime event's updates. A v2 link also sees the raw event on
+/// either side of them, for what v1 has no update for (terminal output,
+/// diffs, usage, message replacement).
+fn forward_event(
+    peer: &Peer,
+    acp_id: &str,
+    translator: &mut Translator,
+    event: &everruns_core::events::Event,
+) {
+    if translator.has_seen(event) {
+        return;
+    }
+    peer.before_event(acp_id, event);
+    for update in translator.on_event(event) {
+        peer.session_update(acp_id, update);
+    }
+    peer.after_event(acp_id, event);
 }
 
 /// Deterministic credit watcher: fixed 60s probes of the key endpoint (no
