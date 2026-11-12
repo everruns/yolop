@@ -20,7 +20,8 @@ use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::time::Duration;
 
-use agent_client_protocol::{Agent, Client, ConnectionTo, Lines, Responder};
+use agent_client_protocol::v1::{ConnectionTo, Responder};
+use agent_client_protocol::{Agent, Client, Lines};
 use anyhow::Result;
 use async_trait::async_trait;
 use everruns_contracts::tool_types::{
@@ -441,7 +442,7 @@ where
     let transport = Lines::new(outgoing, incoming);
 
     let result = Agent
-        .builder()
+        .v1()
         .name("yolop")
         .on_receive_request(
             {
@@ -653,7 +654,7 @@ fn internal_error(message: impl Into<String>) -> agent_client_protocol::Error {
 }
 
 fn is_client_disconnect_error(err: &agent_client_protocol::Error) -> bool {
-    err.code == agent_client_protocol::ErrorCode::InternalError
+    err.code == agent_client_protocol::ErrorCode::INTERNAL_ERROR
         && err.data.as_ref().is_some_and(value_mentions_broken_pipe)
 }
 
@@ -2463,6 +2464,6 @@ mod tests {
 
         let error =
             scoped_mcp_servers_from_acp(&servers).expect_err("sse transport must be rejected");
-        assert_eq!(error.code, agent_client_protocol::ErrorCode::InvalidParams);
+        assert_eq!(error.code, agent_client_protocol::ErrorCode::INVALID_PARAMS);
     }
 }

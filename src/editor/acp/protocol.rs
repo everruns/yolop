@@ -5,8 +5,8 @@
 
 pub use agent_client_protocol::schema::ProtocolVersion;
 #[cfg(test)]
-pub(crate) use agent_client_protocol::schema::v1::ImageContent;
-pub use agent_client_protocol::schema::v1::{
+pub(crate) use agent_client_protocol::v1::schema::ImageContent;
+pub use agent_client_protocol::v1::schema::{
     AgentCapabilities, AuthMethod, AuthenticateRequest as AuthenticateParams,
     AuthenticateResponse as AuthenticateResult, AvailableCommand, AvailableCommandInput,
     AvailableCommandsUpdate, CancelNotification, ConfigOptionUpdate, Content, ContentBlock,
@@ -121,7 +121,7 @@ fn resource_link_text(link: &ResourceLink) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agent_client_protocol::schema::v1::ImageContent;
+    use agent_client_protocol::v1::schema::ImageContent;
 
     #[test]
     fn sdk_initialize_result_serializes_camel_case() {
@@ -161,7 +161,7 @@ mod tests {
 
     #[test]
     fn prompt_model_text_folds_embedded_text_resource() {
-        use agent_client_protocol::schema::v1::{
+        use agent_client_protocol::v1::schema::{
             EmbeddedResource, EmbeddedResourceResource, TextResourceContents,
         };
         let blocks = vec![
@@ -184,7 +184,7 @@ mod tests {
 
     #[test]
     fn prompt_model_text_references_blob_and_link_without_inlining_bytes() {
-        use agent_client_protocol::schema::v1::{
+        use agent_client_protocol::v1::schema::{
             BlobResourceContents, EmbeddedResource, EmbeddedResourceResource, ResourceLink,
         };
         let blocks = vec![
