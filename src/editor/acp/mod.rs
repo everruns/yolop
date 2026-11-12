@@ -31,7 +31,7 @@ use crate::capabilities::host::EditorClientIdentity;
 use crate::config::{SandboxMode, SettingsStore};
 use crate::runtime::session_log::session_dir_path;
 use crate::runtime::{BuildOptions, BuiltRuntime, ProviderChoice, build_with_options};
-use agent_client_protocol::schema::v1::{AuthMethod, AuthMethodAgent};
+use agent_client_protocol::v1::schema::{AuthMethod, AuthMethodAgent};
 use everruns_contracts::typed_id::SessionId as RuntimeSessionId;
 use everruns_core::ScopedMcpServers;
 
@@ -226,13 +226,12 @@ pub async fn run_stdio(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agent_client_protocol::schema::v1::{
+    use agent_client_protocol::v1::schema::{
         InitializeRequest, InitializeResponse, NewSessionRequest, PromptRequest, SessionId,
         SessionModeId, SessionNotification, SessionUpdate, SetSessionModeRequest, StopReason,
     };
-    use agent_client_protocol::{
-        Agent, ByteStreams, Client, ConnectionTo, JsonRpcRequest, SessionMessage,
-    };
+    use agent_client_protocol::v1::{ConnectionTo, SessionMessage};
+    use agent_client_protocol::{Agent, ByteStreams, Client, JsonRpcRequest};
     use everruns_llmsim::{LlmSimConfig, SimToolCall, SimTurn};
     use futures::Future;
     use serde::{Deserialize, Serialize};
@@ -398,7 +397,7 @@ mod tests {
     impl SdkClient {
         async fn new_session(
             &self,
-        ) -> agent_client_protocol::Result<agent_client_protocol::ActiveSession<'static, Agent>>
+        ) -> agent_client_protocol::Result<agent_client_protocol::v1::ActiveSession<'static, Agent>>
         {
             let cwd = tempfile::tempdir().expect("cwd tempdir").keep();
             self.new_session_at(cwd).await
@@ -407,17 +406,18 @@ mod tests {
         async fn new_session_at(
             &self,
             cwd: PathBuf,
-        ) -> agent_client_protocol::Result<agent_client_protocol::ActiveSession<'static, Agent>>
+        ) -> agent_client_protocol::Result<agent_client_protocol::v1::ActiveSession<'static, Agent>>
         {
             self.cx
                 .build_session_from(NewSessionRequest::new(cwd))
                 .block_task()
                 .start_session()
                 .await
+                .map(|setup| setup.session)
         }
 
         async fn prompt(
-            session: &mut agent_client_protocol::ActiveSession<'static, Agent>,
+            session: &mut agent_client_protocol::v1::ActiveSession<'static, Agent>,
             prompt: &str,
         ) -> agent_client_protocol::Result<PromptRun> {
             session.send_prompt(prompt)?;
@@ -493,7 +493,7 @@ mod tests {
         let transport = ByteStreams::new(client_w.compat_write(), client_r.compat());
 
         Client
-            .builder()
+            .v1()
             .name("test-client")
             .connect_with(transport, async move |cx| {
                 let init = cx
@@ -507,12 +507,12 @@ mod tests {
     }
 
     async fn collect_prompt_run(
-        session: &mut agent_client_protocol::ActiveSession<'static, Agent>,
+        session: &mut agent_client_protocol::v1::ActiveSession<'static, Agent>,
     ) -> agent_client_protocol::Result<PromptRun> {
         let mut updates = Vec::new();
         loop {
             match tokio::time::timeout(Duration::from_secs(15), session.read_update()).await {
-                Ok(Ok(SessionMessage::SessionMessage(dispatch))) => {
+                Ok(Ok(SessionMessage::Message(dispatch))) => {
                     let message = dispatch.to_untyped_message()?;
                     if message.method() == "session/update" {
                         let notification: SessionNotification =
@@ -520,9 +520,9 @@ mod tests {
                         updates.push(serde_json::to_value(notification.update)?);
                     }
                 }
-                Ok(Ok(SessionMessage::StopReason(stop_reason))) => {
+                Ok(Ok(SessionMessage::PromptResponse(response))) => {
                     return Ok(PromptRun {
-                        stop_reason,
+                        stop_reason: response?.stop_reason,
                         updates,
                     });
                 }
@@ -539,13 +539,13 @@ mod tests {
     /// Whether the session emits the no-provider setup link. Returns as soon as
     /// the link arrives, or once the stream goes quiet.
     async fn collect_setup_hint(
-        session: &mut agent_client_protocol::ActiveSession<'static, Agent>,
+        session: &mut agent_client_protocol::v1::ActiveSession<'static, Agent>,
         url: &str,
     ) -> bool {
         let deadline = Duration::from_secs(3);
         loop {
             let update = match tokio::time::timeout(deadline, session.read_update()).await {
-                Ok(Ok(SessionMessage::SessionMessage(dispatch))) => {
+                Ok(Ok(SessionMessage::Message(dispatch))) => {
                     let Ok(message) = dispatch.to_untyped_message() else {
                         continue;
                     };
@@ -573,12 +573,12 @@ mod tests {
     }
 
     async fn collect_available_commands(
-        session: &mut agent_client_protocol::ActiveSession<'static, Agent>,
+        session: &mut agent_client_protocol::v1::ActiveSession<'static, Agent>,
     ) -> agent_client_protocol::Result<Vec<Value>> {
         tokio::time::timeout(Duration::from_secs(15), async {
             loop {
                 let update = match session.read_update().await {
-                    Ok(SessionMessage::SessionMessage(dispatch)) => {
+                    Ok(SessionMessage::Message(dispatch)) => {
                         let message = dispatch.to_untyped_message()?;
                         if message.method() != "session/update" {
                             continue;
@@ -587,7 +587,6 @@ mod tests {
                             serde_json::from_value(message.params().clone())?;
                         notification.update
                     }
-                    Ok(SessionMessage::StopReason(_)) => continue,
                     Ok(_) => continue,
                     Err(err) => return Err(err),
                 };
@@ -904,7 +903,7 @@ mod tests {
             Ok(result.expect_err("unknown mode must be rejected"))
         })
         .await;
-        assert_eq!(err.code, agent_client_protocol::ErrorCode::InvalidParams);
+        assert_eq!(err.code, agent_client_protocol::ErrorCode::INVALID_PARAMS);
     }
 
     /// Collect the tool-call statuses (from `tool_call` and `tool_call_update`)
@@ -2041,7 +2040,7 @@ mod tests {
             }
         })
         .await;
-        assert_eq!(err.code, agent_client_protocol::ErrorCode::MethodNotFound);
+        assert_eq!(err.code, agent_client_protocol::ErrorCode::METHOD_NOT_FOUND);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2057,7 +2056,7 @@ mod tests {
             }
         })
         .await;
-        assert_eq!(err.code, agent_client_protocol::ErrorCode::InvalidParams);
+        assert_eq!(err.code, agent_client_protocol::ErrorCode::INVALID_PARAMS);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

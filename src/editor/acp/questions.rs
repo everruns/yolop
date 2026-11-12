@@ -13,12 +13,13 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use agent_client_protocol::schema::v1::{
+use agent_client_protocol::Client;
+use agent_client_protocol::v1::ConnectionTo;
+use agent_client_protocol::v1::schema::{
     CreateElicitationRequest, ElicitationAction, ElicitationContentValue, ElicitationFormMode,
     ElicitationSchema, ElicitationSessionScope, EnumOption, MultiSelectPropertySchema,
     StringPropertySchema,
 };
-use agent_client_protocol::{Client, ConnectionTo};
 use async_trait::async_trait;
 use everruns_core::builtins::ask_user::{
     AskContext, AskUser, AskUserAnswer, AskUserAnsweredBy, AskUserQuestion, AskUserQuestionKind,
@@ -54,7 +55,7 @@ impl AskUser for AcpQuestioner {
             return stopped(AskUserStatus::Declined, AskUserAnsweredBy::Unattended);
         }
         let scope = ElicitationSessionScope::new(context.session_id().to_string()).tool_call_id(
-            agent_client_protocol::schema::v1::ToolCallId::new(context.tool_call_id().to_string()),
+            agent_client_protocol::v1::schema::ToolCallId::new(context.tool_call_id().to_string()),
         );
         let request = CreateElicitationRequest::new(
             ElicitationFormMode::new(scope, form_schema(questions)),
@@ -238,7 +239,7 @@ fn stopped(status: AskUserStatus, answered_by: AskUserAnsweredBy) -> AskUserResu
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agent_client_protocol::schema::v1::ElicitationAcceptAction;
+    use agent_client_protocol::v1::schema::ElicitationAcceptAction;
 
     fn question(value: serde_json::Value) -> AskUserQuestion {
         serde_json::from_value(value).unwrap()
