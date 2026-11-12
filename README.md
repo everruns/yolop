@@ -124,6 +124,8 @@ yolop into buzz    # wire up Buzz Desktop
 yolop --acp        # speak ACP over stdio, for any other ACP client
 ```
 
+`yolop --acp` speaks ACP v1 and the draft v2, picking whichever the client asks for, so clients that only accept v2 agents, such as Zed's Delta, can run it too.
+
 The same agent, hosted where your code already is.
 
 ### Interactive TUI

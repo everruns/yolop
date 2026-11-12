@@ -13,8 +13,6 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use agent_client_protocol::Client;
-use agent_client_protocol::v1::ConnectionTo;
 use agent_client_protocol::v1::schema::{
     CreateElicitationRequest, ElicitationAction, ElicitationContentValue, ElicitationFormMode,
     ElicitationSchema, ElicitationSessionScope, EnumOption, MultiSelectPropertySchema,
@@ -32,7 +30,7 @@ const OTHER_SUFFIX: &str = "_other";
 
 /// Asks the editor through form elicitation when it supports it.
 pub(super) struct AcpQuestioner {
-    pub(super) cx: ConnectionTo<Client>,
+    pub(super) link: super::server::PeerLink,
     /// Set from `initialize`; shared with the server so a later handshake
     /// detail never leaves sessions with a stale answer.
     pub(super) forms: Arc<AtomicBool>,
@@ -61,8 +59,16 @@ impl AskUser for AcpQuestioner {
             ElicitationFormMode::new(scope, form_schema(questions)),
             form_message(questions),
         );
-        match self.cx.send_request(request).block_task().await {
-            Ok(response) => answers_from(questions, response.action),
+        let response = match &self.link {
+            super::server::PeerLink::V1(cx) => cx
+                .send_request(request)
+                .block_task()
+                .await
+                .map(|response| response.action),
+            super::server::PeerLink::V2(link) => link.create_elicitation(request).await,
+        };
+        match response {
+            Ok(action) => answers_from(questions, action),
             Err(error) => {
                 tracing::warn!(%error, "acp: elicitation failed; declining questions");
                 stopped(AskUserStatus::Declined, AskUserAnsweredBy::Unattended)

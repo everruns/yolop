@@ -1,5 +1,10 @@
 # Knowledge Log
 
+## 2026-11-12, ACP protocol v2
+
+- [ACP](specs/acp.md): serve draft ACP v2 beside v1 through the SDK protocol router, as a translation layer over the shared session core. Delta accepts only v2 agents.
+- The approval level is also a `mode` config option, for v2 (no modes) and for v1 clients that prefer config options.
+
 ## 2026-11-10, One session folder and one event authority
 
 - [Engine execution](specs/engine-execution.md): colocate SQLite with session metadata and transfer the previous directory layout under family leases.

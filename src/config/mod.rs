@@ -1507,7 +1507,6 @@ impl SettingsStore {
     }
 
     /// Returns whether a Codex login was actually present before removal.
-    #[cfg(test)]
     pub fn clear_codex_auth(&self) -> Result<bool> {
         let _lease = oauth_store::rotation_lock(&self.path)?;
         self.clear_codex_auth_under_lease()
