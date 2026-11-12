@@ -232,8 +232,11 @@ impl Link {
             };
             let mut exit = json!({});
             if cancelled {
-                // The command's process group was killed.
-                exit["signal"] = json!("SIGKILL");
+                // Unix kills the command's process group; elsewhere the exit
+                // is only known to have happened.
+                if cfg!(unix) {
+                    exit["signal"] = json!("SIGKILL");
+                }
             } else if let Some(code) = exit_code {
                 exit["exitCode"] = json!(code);
             } else if !data.success {

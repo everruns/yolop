@@ -685,7 +685,7 @@ impl BackgroundExecutableTool for BashTool {
     async fn execute_background(
         &self,
         arguments: Value,
-        _context: ToolContext,
+        context: ToolContext,
         sink: Arc<dyn BackgroundEventSink>,
     ) -> Result<BackgroundOutcome, ToolExecutionResult> {
         let command = match arguments.get("command").and_then(Value::as_str) {
@@ -699,15 +699,24 @@ impl BackgroundExecutableTool for BashTool {
         let request_full_access = arguments.get("sandbox_permissions").and_then(Value::as_str)
             == Some("require_escalated");
         let justification = arguments.get("justification").and_then(Value::as_str);
+        // A detached call stays cancellable by its id, like a foreground one.
+        // TODO(everruns#5384): upstream registers only inline calls; keep this
+        // registration (through the upstream registry) after the switch.
+        let registration = context.tool_call_id.as_deref().map(|tool_call_id| {
+            crate::runtime::tool_cancel::shared().register(context.session_id, tool_call_id)
+        });
         let output = self
             .execute_with_policy(
                 &command,
                 Some(sink.clone()),
                 request_full_access,
                 justification,
-                None,
+                registration
+                    .as_ref()
+                    .map(|registration| registration.token()),
             )
             .await?;
+        drop(registration);
         let payload = bounded_exec_payload(&output, output_mode);
         let ExecToolResultPayload {
             stdout,
@@ -718,6 +727,13 @@ impl BackgroundExecutableTool for BashTool {
             total_lines,
             raw_output,
         } = payload;
+        if output.cancelled {
+            return Err(ToolExecutionResult::tool_error(format!(
+                "{} Output before it stopped:\n{}",
+                crate::runtime::tool_cancel::CANCELLED_MESSAGE,
+                json!({ "stdout": stdout, "stderr": stderr })
+            )));
+        }
         let output_limited = output.out_truncated || output.err_truncated;
         let sandbox_denial =
             likely_sandbox_denial(output.sandbox_mode, exit_code, &output.stderr_text);
@@ -1443,6 +1459,36 @@ mod tests {
             }
             other => panic!("expected ToolError, got: {other:?}"),
         }
+
+        // A detached command stays cancellable by its call id.
+        let session_id = SessionId::new();
+        let mut context = ToolContext::new(session_id);
+        context.tool_call_id = Some("call_bg".into());
+        let canceller = tokio::spawn(async move {
+            for _ in 0..500 {
+                if crate::runtime::tool_cancel::shared().cancel(session_id, "call_bg") {
+                    return true;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            false
+        });
+        let err = tool
+            .as_background_executable()
+            .expect("background executor")
+            .execute_background(
+                json!({ "command": "sleep 30" }),
+                context,
+                Arc::new(NoopSink),
+            )
+            .await
+            .expect_err("a cancelled background command fails");
+        assert!(canceller.await.unwrap());
+        assert!(matches!(
+            err,
+            ToolExecutionResult::ToolError(message)
+                if message.starts_with(crate::runtime::tool_cancel::CANCELLED_MESSAGE)
+        ));
     }
 
     #[tokio::test]
