@@ -367,13 +367,29 @@ const WORKTREE_GATED_TOOLS: &[&str] = &[
 ];
 
 impl WorktreeGateHook {
+    /// Shell metacharacters that chain, redirect, or substitute commands.
+    /// Any of these means a Bash call is not *only* a worktree decision
+    /// command, so the gate keeps blocking instead of letting a smuggled
+    /// mutation through (e.g. `yolop worktree status; rm -rf repo`).
+    const FORBIDDEN: &[char] = &[';', '&', '|', '`', '$', '>', '<', '(', ')', '\n', '\r'];
+
+    /// True only for a bare `yolop worktree ...` invocation, so the decision
+    /// commands themselves pass through (avoiding deadlock) while chained
+    /// commands stay blocked.
     fn is_worktree_command(tool_call: &ToolCall) -> bool {
-        tool_call
+        let Some(command) = tool_call
             .arguments
             .get("command")
             .and_then(serde_json::Value::as_str)
-            .map(|command| command.contains("yolop worktree"))
-            .unwrap_or(false)
+        else {
+            return false;
+        };
+        let command = command.trim_start();
+        let bare = command == "yolop worktree"
+            || command
+                .strip_prefix("yolop worktree")
+                .is_some_and(|rest| rest.starts_with([' ', '\t']));
+        bare && !command.contains(Self::FORBIDDEN)
     }
 
     fn block_message(manager: &WorktreeManager) -> (String, String) {
@@ -521,6 +537,35 @@ mod gate_tests {
             )
             .await;
         assert!(matches!(decision, PreToolUseDecision::Block { .. }));
+    }
+
+    #[tokio::test]
+    async fn chained_worktree_mentions_stay_blocked() {
+        let manager = test_manager();
+        let hook = WorktreeGateHook { manager };
+        let context = test_context();
+
+        // A smuggled mutation that merely mentions the worktree command must
+        // not slip through the Bash passthrough, in either order.
+        for command in [
+            "yolop worktree status; rm -rf repo",
+            "yolop worktree init && cargo test",
+            "echo hi; yolop worktree stay",
+            "yolop worktree status | tee out.txt",
+            "sudo yolop worktree init",
+        ] {
+            let decision = hook
+                .before_exec(
+                    tool_call("bash", serde_json::json!({ "command": command })),
+                    &tool_def(),
+                    &context,
+                )
+                .await;
+            assert!(
+                matches!(decision, PreToolUseDecision::Block { .. }),
+                "chained command passed the gate: {command}"
+            );
+        }
     }
 
     #[test]
