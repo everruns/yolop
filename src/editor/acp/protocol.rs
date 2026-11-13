@@ -4,14 +4,12 @@
 //! comes from `agent-client-protocol` so schema changes are not mirrored by hand.
 
 pub use agent_client_protocol::schema::ProtocolVersion;
-#[cfg(test)]
-pub(crate) use agent_client_protocol::schema::v1::ImageContent;
-pub use agent_client_protocol::schema::v1::{
+pub use agent_client_protocol::v1::schema::{
     AgentCapabilities, AuthMethod, AuthenticateRequest as AuthenticateParams,
     AuthenticateResponse as AuthenticateResult, AvailableCommand, AvailableCommandInput,
     AvailableCommandsUpdate, CancelNotification, ConfigOptionUpdate, Content, ContentBlock,
-    ContentChunk, CurrentModeUpdate, EmbeddedResource, EmbeddedResourceResource, Implementation,
-    InitializeRequest as InitializeParams, InitializeResponse as InitializeResult,
+    ContentChunk, CurrentModeUpdate, EmbeddedResource, EmbeddedResourceResource, ImageContent,
+    Implementation, InitializeRequest as InitializeParams, InitializeResponse as InitializeResult,
     LoadSessionRequest as LoadSessionParams, LoadSessionResponse as LoadSessionResult,
     McpCapabilities, McpServer, Meta, NewSessionRequest as NewSessionParams,
     NewSessionResponse as NewSessionResult, PermissionOption, PermissionOptionKind, Plan,
@@ -121,7 +119,7 @@ fn resource_link_text(link: &ResourceLink) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agent_client_protocol::schema::v1::ImageContent;
+    use agent_client_protocol::v1::schema::ImageContent;
 
     #[test]
     fn sdk_initialize_result_serializes_camel_case() {
@@ -153,7 +151,7 @@ mod tests {
     fn prompt_text_concatenates_text_blocks_only() {
         let blocks = vec![
             text_block("hello"),
-            ContentBlock::Image(ImageContent::new("image/png", "...")),
+            ContentBlock::Image(ImageContent::new("...", "image/png")),
             text_block("world"),
         ];
         assert_eq!(prompt_text(&blocks), "hello\nworld");
@@ -161,7 +159,7 @@ mod tests {
 
     #[test]
     fn prompt_model_text_folds_embedded_text_resource() {
-        use agent_client_protocol::schema::v1::{
+        use agent_client_protocol::v1::schema::{
             EmbeddedResource, EmbeddedResourceResource, TextResourceContents,
         };
         let blocks = vec![
@@ -184,7 +182,7 @@ mod tests {
 
     #[test]
     fn prompt_model_text_references_blob_and_link_without_inlining_bytes() {
-        use agent_client_protocol::schema::v1::{
+        use agent_client_protocol::v1::schema::{
             BlobResourceContents, EmbeddedResource, EmbeddedResourceResource, ResourceLink,
         };
         let blocks = vec![

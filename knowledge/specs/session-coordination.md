@@ -44,7 +44,7 @@ messages from the thread's session log, and reports status from presence.
 
 A session becomes a thread the first time its coordinator messages it: the
 coordinator has an `assignment` task linking the child. The relationship is
-recorded in `yolop_threads`, because the local session store keeps
+recorded in a coordinator-owned thread file, because the local session store keeps
 `parent_session_id` in memory only. The thread host sets its own
 `parent_session_id` from that record, which is what makes upstream inject the
 worker tools.
@@ -62,7 +62,7 @@ with a worktree, its path and branch, and tells it to name the branch in
 
 ## Messages and wakes
 
-Every cross-process message is an inbox row, acknowledged only when the turn
+Every cross-process message is an inbox file in the target's folder, acknowledged only when the turn
 it woke finishes:
 
 - a brief or relay for a thread (raw text);
@@ -119,14 +119,30 @@ entry prunes the ones with nothing left to stop.
 
 A headless host exits after ten idle minutes unless background work is
 pending. A coordinator that restarts keeps its threads, assignments, and
-missed updates, all in the private WAL-mode `everruns-local` database under
-the sessions directory.
+missed updates. Each coordinator keeps its own state in its own session
+folder (a registry of the child sessions it owns, their approvals, a lease
+and an inbox like any session); each child session carries a backlink to its
+coordinator. A sender only creates files in the target's folder and delivery
+claims are atomic renames, so coordinators never contend on a shared
+database lock and never scan each other's state. Sending to a session that
+was never onboarded is rejected instead of conjuring a session shell. A
+legacy `everruns-local` database (and the interim `coordination/` files) are
+imported once into this layout. This first import requires all older source
+hosts to stop; exclusive source leases prevent copying an inbox while an old
+host can still write it. An owned source refuses import without publishing the
+completion marker. Use the updated binary for every host after handoff.
+The original database remains at its existing
+path for legacy session cutover and to preserve SQLite WAL ownership for older
+open handles. New hosts use only the per-session coordination files. On Unix, directories and records
+are owner-only from first publication, including a child's initial inbox before
+its workspace metadata exists. Publishers sync records before acknowledging
+durable transport writes; on Unix they also sync directory entries.
 
 ## Escalations from headless threads
 
 A headless thread has no prompt surface, so its sandbox escalations are put to
-its coordinator. The thread's gate writes the request to `yolop_thread_approvals`
-and waits; the coordinator's host, on each supervision pass, asks the person
+its coordinator. The thread's gate files the request under the
+coordinator's `approvals/` folder and waits; the coordinator's host, on each supervision pass, asks the person
 through its own approval prompt, labelled with the thread, and writes the
 answer back. The thread's gate applies the answer, so approving "for this
 session" approves the thread's session, never the coordinator's. A coordinator
@@ -147,7 +163,7 @@ approvals. An old host cannot obtain an approval through a new coordinator.
 
 Only one process may write a session log. A person opening a session held by a
 headless host (`yolop --session <id>`) sets a release request on the host's
-presence row. The host stops taking deliveries, finishes its current turn, and
+presence lease. The host stops taking deliveries, finishes its current turn, and
 exits; the opener waits for the lease to end (up to two minutes) and holds off
 the coordinator's restart of that thread meanwhile. An interactive host never
 yields.
@@ -171,7 +187,7 @@ supports it (see [ACP](acp.md)).
 ## Isolation
 
 Upstream scopes every coordinator tool by parent session, so several
-coordinators can run against one sessions database without seeing or steering
+coordinators can run against one sessions directory without seeing or steering
 each other's threads. Supervision only touches threads recorded under the
 supervising coordinator.
 
@@ -183,7 +199,7 @@ supervising coordinator.
   and denied where that host cannot ask; other headless hosts deny them, as in
   `--print`.
 - Message text is bounded (32 KiB) before storage or prompt construction.
-- Everything is local to one user-owned database; there is no network
+- Everything is local to one user-owned directory; there is no network
   listener.
 - Background `proactive_wake` controls background-task convenience only;
   coordination wakes always wake an idle target.
@@ -206,6 +222,7 @@ exception, the coordinator not waking itself, yield-on-open, the
 (and never a live host's or a reused pid's), background work that outlived its
 command (and never members outside the leader's session), a thread's
 escalation asked and answered by its coordinator (denied without a prompt
-surface, on opening the thread, and never asked for a dead host), a thread's
+surface, on opening the thread, and never asked for a dead host), legacy
+records failing closed, the one-time legacy database import, a thread's
 own worktree, the `THREADS` board and opening a thread from it, and a decision
 answered through an ACP form end to end.

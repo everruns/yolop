@@ -127,9 +127,19 @@ impl SandboxChild {
 }
 
 pub(crate) fn provider(mode: SandboxMode) -> std::sync::Arc<dyn SandboxProvider> {
+    provider_with_roots(mode, Vec::new())
+}
+
+/// A provider that also treats `extra_roots` as workspace: writable under
+/// `workspace-write`, like the working directory. They are the session's
+/// additional workspace folders (ACP `additionalDirectories`).
+pub(crate) fn provider_with_roots(
+    mode: SandboxMode,
+    extra_roots: Vec<PathBuf>,
+) -> std::sync::Arc<dyn SandboxProvider> {
     match mode {
         SandboxMode::ReadOnly | SandboxMode::WorkspaceWrite => {
-            std::sync::Arc::new(NativeSandbox { mode })
+            std::sync::Arc::new(NativeSandbox { mode, extra_roots })
         }
         SandboxMode::DangerFullAccess => std::sync::Arc::new(UnsafeHost),
     }
@@ -233,6 +243,7 @@ impl SandboxProvider for UnsafeHost {
 
 struct NativeSandbox {
     mode: SandboxMode,
+    extra_roots: Vec<PathBuf>,
 }
 
 impl SandboxProvider for NativeSandbox {
@@ -248,12 +259,19 @@ impl SandboxProvider for NativeSandbox {
     ) -> Result<SandboxCommand> {
         #[cfg(windows)]
         {
-            crate::exec::sandbox_windows::command(cwd, script, self.mode, control)
-                .map(SandboxCommand::Windows)
+            crate::exec::sandbox_windows::command(
+                cwd,
+                script,
+                self.mode,
+                &self.extra_roots,
+                control,
+            )
+            .map(SandboxCommand::Windows)
         }
         #[cfg(not(windows))]
         {
-            native_command(cwd, script, self.mode, control).map(SandboxCommand::Host)
+            native_command(cwd, script, self.mode, &self.extra_roots, control)
+                .map(SandboxCommand::Host)
         }
     }
 }
@@ -263,6 +281,7 @@ fn native_command(
     cwd: &Path,
     script: &str,
     mode: SandboxMode,
+    extra_roots: &[PathBuf],
     control: Option<&ControlEndpoint>,
 ) -> Result<Command> {
     let executable = Path::new("/usr/bin/sandbox-exec");
@@ -286,7 +305,8 @@ fn native_command(
         None
     };
     let cwd = std::fs::canonicalize(cwd).context("canonicalize sandbox workspace")?;
-    let write_roots = macos_write_roots(&cwd, &temp, mode, skills.as_deref());
+    let extra_roots = canonical_roots(extra_roots)?;
+    let write_roots = macos_write_roots(&cwd, &temp, mode, skills.as_deref(), &extra_roots);
     let parser_target = match control {
         Some(control) => control.reexec_target().to_path_buf(),
         None => crate::exec::self_exe::control_reexec_path()?,
@@ -313,6 +333,7 @@ fn native_command(
     cwd: &Path,
     script: &str,
     mode: SandboxMode,
+    extra_roots: &[PathBuf],
     _control: Option<&ControlEndpoint>,
 ) -> Result<Command> {
     let temp = sandbox_temp_dir()?;
@@ -327,10 +348,11 @@ fn native_command(
         .arg("--temp")
         .arg(&temp)
         .arg("--mode")
-        .arg(mode.as_str())
-        .arg("--script")
-        .arg(script)
-        .current_dir(cwd);
+        .arg(mode.as_str());
+    for root in extra_roots {
+        command.arg("--root").arg(root);
+    }
+    command.arg("--script").arg(script).current_dir(cwd);
     apply_native_environment(&mut command, &home, &temp);
     Ok(command)
 }
@@ -343,6 +365,7 @@ pub(crate) fn run_linux_worker(
     cwd: &Path,
     temp: &Path,
     mode: SandboxMode,
+    extra_roots: &[PathBuf],
     script: &str,
 ) -> Result<()> {
     use landlock::{
@@ -373,6 +396,14 @@ pub(crate) fn run_linux_worker(
             AccessFs::from_all(abi),
         ))?;
     let ruleset = if mode == SandboxMode::WorkspaceWrite {
+        let mut ruleset = ruleset;
+        for root in extra_roots {
+            ruleset = ruleset.add_rule(PathBeneath::new(
+                PathFd::new(root)
+                    .with_context(|| format!("open workspace folder: {}", root.display()))?,
+                AccessFs::from_all(abi),
+            ))?;
+        }
         let ruleset = ruleset
             .add_rule(PathBeneath::new(PathFd::new(cwd)?, AccessFs::from_all(abi)))?
             .add_rule(PathBeneath::new(
@@ -451,6 +482,7 @@ fn native_command(
     _cwd: &Path,
     _script: &str,
     _mode: SandboxMode,
+    _extra_roots: &[PathBuf],
     _control: Option<&ControlEndpoint>,
 ) -> Result<Command> {
     anyhow::bail!(
@@ -553,6 +585,7 @@ fn macos_write_roots(
     temp: &Path,
     mode: SandboxMode,
     skills: Option<&Path>,
+    extra_roots: &[PathBuf],
 ) -> Vec<PathBuf> {
     let mut roots = vec![temp.to_path_buf()];
     if mode == SandboxMode::WorkspaceWrite {
@@ -562,8 +595,22 @@ fn macos_write_roots(
             PathBuf::from("/private/tmp"),
         ]);
         roots.extend(skills.map(Path::to_path_buf));
+        roots.extend(extra_roots.iter().cloned());
     }
     roots
+}
+
+/// Seatbelt matches canonical paths, so a folder reached through a symlink
+/// must be granted under its real path.
+#[cfg(target_os = "macos")]
+fn canonical_roots(roots: &[PathBuf]) -> Result<Vec<PathBuf>> {
+    roots
+        .iter()
+        .map(|root| {
+            std::fs::canonicalize(root)
+                .with_context(|| format!("canonicalize workspace folder: {}", root.display()))
+        })
+        .collect()
 }
 
 #[cfg(any(target_os = "macos", all(test, unix)))]
@@ -640,7 +687,7 @@ mod tests {
         let skills = global_skills_dir();
         macos_profile(
             cwd,
-            &macos_write_roots(cwd, temp, mode, skills.as_deref()),
+            &macos_write_roots(cwd, temp, mode, skills.as_deref(), &[]),
             socket,
         )
     }
@@ -650,9 +697,11 @@ mod tests {
         let cwd = Path::new("/workspace");
         let temp = Path::new("/private/sandbox");
         let skills = Path::new("/skills");
-        let roots = macos_write_roots(cwd, temp, SandboxMode::WorkspaceWrite, Some(skills));
+        let extra = [PathBuf::from("/other")];
+        let roots = macos_write_roots(cwd, temp, SandboxMode::WorkspaceWrite, Some(skills), &extra);
         for image in [
             "/workspace/target/yolop",
+            "/other/yolop",
             "/tmp/yolop",
             "/private/tmp/yolop",
             "/private/sandbox/yolop",
@@ -668,7 +717,7 @@ mod tests {
                 .is_ok()
         );
 
-        let roots = macos_write_roots(cwd, temp, SandboxMode::ReadOnly, Some(skills));
+        let roots = macos_write_roots(cwd, temp, SandboxMode::ReadOnly, Some(skills), &extra);
         assert_eq!(roots, vec![temp.to_path_buf()]);
         assert!(
             super::super::self_exe::admit_control_location(
@@ -700,7 +749,7 @@ mod tests {
         let image = trusted.join("image.data");
         std::fs::write(&image, b"ordinary data").unwrap();
         let socket = private_temp.join("unused.sock");
-        let writes = macos_write_roots(&root, &private_temp, SandboxMode::ReadOnly, None);
+        let writes = macos_write_roots(&root, &private_temp, SandboxMode::ReadOnly, None, &[]);
         let profile = macos_control_profile(&root, &writes, Some(&socket), &image).unwrap();
         assert!(profile.contains(&format!("(subpath \"{}\")", seatbelt_escape(&private_temp))));
         assert!(profile.contains(&format!("(path-literal \"{}\")", seatbelt_escape(&socket))));
@@ -721,7 +770,13 @@ mod tests {
     fn macos_native_command_rejects_writable_parser_location() {
         let image = crate::exec::self_exe::control_reexec_path().unwrap();
         let cwd = image.parent().unwrap();
-        let result = native_command(cwd, "printf ordinary", SandboxMode::WorkspaceWrite, None);
+        let result = native_command(
+            cwd,
+            "printf ordinary",
+            SandboxMode::WorkspaceWrite,
+            &[],
+            None,
+        );
         if !Path::new("/usr/bin/sandbox-exec").is_file() {
             assert!(
                 result
@@ -738,7 +793,7 @@ mod tests {
                 .contains("outside every sandbox write root")
         );
         let read_only =
-            native_command(cwd, "printf ordinary", SandboxMode::ReadOnly, None).unwrap();
+            native_command(cwd, "printf ordinary", SandboxMode::ReadOnly, &[], None).unwrap();
         assert_eq!(read_only.as_std().get_program(), "/usr/bin/sandbox-exec");
         // Inspect the real launch entry point without starting a process.
     }

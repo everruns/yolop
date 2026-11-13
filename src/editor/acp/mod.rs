@@ -29,13 +29,13 @@ use async_trait::async_trait;
 use crate::capabilities::ClientUiContext;
 use crate::capabilities::host::EditorClientIdentity;
 use crate::config::{SandboxMode, SettingsStore};
-use crate::runtime::session_log::{legacy_session_log_path, session_dir_path, session_log_path};
+use crate::runtime::session_log::session_dir_path;
 use crate::runtime::{BuildOptions, BuiltRuntime, ProviderChoice, build_with_options};
-use agent_client_protocol::schema::v1::{AuthMethod, AuthMethodAgent};
+use agent_client_protocol::v1::schema::{AuthMethod, AuthMethodAgent};
 use everruns_contracts::typed_id::SessionId as RuntimeSessionId;
 use everruns_core::ScopedMcpServers;
 
-pub use server::{RuntimeFactory, serve};
+pub use server::{RuntimeFactory, SessionExtras, serve};
 
 /// Id of the agent-handled method that opens the loopback setup page.
 /// Advertised only when the page is enabled; `server` then treats it as the
@@ -90,10 +90,9 @@ struct ConfigRuntimeFactory {
 
 #[async_trait]
 impl RuntimeFactory for ConfigRuntimeFactory {
-    fn session_exists(&self, session_id: RuntimeSessionId) -> bool {
+    async fn session_exists(&self, session_id: RuntimeSessionId) -> bool {
         let session_dir = session_dir_path(&self.sessions_dir, session_id);
-        session_log_path(&session_dir).exists()
-            || legacy_session_log_path(&self.sessions_dir, session_id).exists()
+        crate::runtime::saved_sessions::exists(&session_dir, session_id).await
     }
 
     fn auth_methods(&self) -> Vec<AuthMethod> {
@@ -119,6 +118,29 @@ impl RuntimeFactory for ConfigRuntimeFactory {
                 .map(|_| ()),
             _ => anyhow::bail!("unknown authentication method `{method_id}`"),
         }
+    }
+
+    async fn logout(&self) -> Result<()> {
+        // The two browser logins store a Codex OAuth grant and an OpenRouter
+        // key; logging out forgets both. Keys from the environment stay, since
+        // yolop never stored them.
+        self.settings.clear_codex_auth()?;
+        self.settings.clear_token("openrouter")?;
+        Ok(())
+    }
+
+    async fn delete_session(&self, session_id: RuntimeSessionId) -> Result<()> {
+        server::v2::delete_saved_session(&self.sessions_dir, session_id).await
+    }
+
+    async fn list_sessions(&self, cwd: Option<&std::path::Path>) -> Vec<server::v2::SavedSession> {
+        let sessions_dir = self.sessions_dir.clone();
+        let cwd = cwd.map(std::path::Path::to_path_buf);
+        tokio::task::spawn_blocking(move || {
+            server::v2::list_saved_sessions(&sessions_dir, cwd.as_deref())
+        })
+        .await
+        .unwrap_or_default()
     }
 
     async fn setup_page_url(&self) -> Option<String> {
@@ -154,6 +176,7 @@ impl RuntimeFactory for ConfigRuntimeFactory {
         client_mcp_servers: ScopedMcpServers,
         tool_approver: Option<Arc<dyn crate::capabilities::ToolApprover>>,
         ask_user: Arc<dyn everruns_core::builtins::ask_user::AskUser>,
+        extras: SessionExtras,
     ) -> Result<BuiltRuntime> {
         // ACP sessions always carry the editor entry: detected identity, or
         // `unknown` when the client never identified itself. It wins over a
@@ -178,6 +201,9 @@ impl RuntimeFactory for ConfigRuntimeFactory {
                 acp_allow_hosted_provider_fallback: !self.provider_was_explicit,
                 client_mcp_servers,
                 tool_approver,
+                tool_observer: extras.tool_observer,
+                client_system_prompt: extras.system_prompt,
+                additional_directories: extras.additional_directories,
                 sandbox_mode_override: self.sandbox_mode_override,
                 extra_environment_context: self.extra_environment_context.clone(),
                 editor_context_value,
@@ -227,13 +253,12 @@ pub async fn run_stdio(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agent_client_protocol::schema::v1::{
+    use agent_client_protocol::v1::schema::{
         InitializeRequest, InitializeResponse, NewSessionRequest, PromptRequest, SessionId,
         SessionModeId, SessionNotification, SessionUpdate, SetSessionModeRequest, StopReason,
     };
-    use agent_client_protocol::{
-        Agent, ByteStreams, Client, ConnectionTo, JsonRpcRequest, SessionMessage,
-    };
+    use agent_client_protocol::v1::{ConnectionTo, SessionMessage};
+    use agent_client_protocol::{Agent, ByteStreams, Client, JsonRpcRequest};
     use everruns_llmsim::{LlmSimConfig, SimToolCall, SimTurn};
     use futures::Future;
     use serde::{Deserialize, Serialize};
@@ -254,10 +279,20 @@ mod tests {
 
     #[async_trait]
     impl RuntimeFactory for ScriptedFactory {
-        fn session_exists(&self, session_id: RuntimeSessionId) -> bool {
+        async fn session_exists(&self, session_id: RuntimeSessionId) -> bool {
             let session_dir = session_dir_path(&self.sessions_dir, session_id);
-            session_log_path(&session_dir).exists()
-                || legacy_session_log_path(&self.sessions_dir, session_id).exists()
+            crate::runtime::saved_sessions::exists(&session_dir, session_id).await
+        }
+
+        async fn list_sessions(
+            &self,
+            cwd: Option<&std::path::Path>,
+        ) -> Vec<server::v2::SavedSession> {
+            server::v2::list_saved_sessions(&self.sessions_dir, cwd)
+        }
+
+        async fn delete_session(&self, session_id: RuntimeSessionId) -> Result<()> {
+            server::v2::delete_saved_session(&self.sessions_dir, session_id).await
         }
 
         fn auth_methods(&self) -> Vec<AuthMethod> {
@@ -283,6 +318,7 @@ mod tests {
             client_mcp_servers: ScopedMcpServers,
             tool_approver: Option<Arc<dyn crate::capabilities::ToolApprover>>,
             ask_user: Arc<dyn everruns_core::builtins::ask_user::AskUser>,
+            extras: SessionExtras,
         ) -> Result<BuiltRuntime> {
             build_with_options(
                 cwd,
@@ -296,6 +332,9 @@ mod tests {
                     ask_user_responder: Some(ask_user),
                     client_mcp_servers,
                     tool_approver,
+                    tool_observer: extras.tool_observer,
+                    client_system_prompt: extras.system_prompt,
+                    additional_directories: extras.additional_directories,
                     ..BuildOptions::default()
                 },
             )
@@ -315,10 +354,9 @@ mod tests {
 
     #[async_trait]
     impl RuntimeFactory for RecordingFactory {
-        fn session_exists(&self, session_id: RuntimeSessionId) -> bool {
+        async fn session_exists(&self, session_id: RuntimeSessionId) -> bool {
             let session_dir = session_dir_path(&self.sessions_dir, session_id);
-            session_log_path(&session_dir).exists()
-                || legacy_session_log_path(&self.sessions_dir, session_id).exists()
+            crate::runtime::saved_sessions::exists(&session_dir, session_id).await
         }
 
         async fn build(
@@ -328,6 +366,7 @@ mod tests {
             client_mcp_servers: ScopedMcpServers,
             tool_approver: Option<Arc<dyn crate::capabilities::ToolApprover>>,
             ask_user: Arc<dyn everruns_core::builtins::ask_user::AskUser>,
+            extras: SessionExtras,
         ) -> Result<BuiltRuntime> {
             let built = build_with_options(
                 cwd,
@@ -341,6 +380,9 @@ mod tests {
                     ask_user_responder: Some(ask_user),
                     client_mcp_servers,
                     tool_approver,
+                    tool_observer: extras.tool_observer,
+                    client_system_prompt: extras.system_prompt,
+                    additional_directories: extras.additional_directories,
                     ..BuildOptions::default()
                 },
             )
@@ -365,8 +407,8 @@ mod tests {
 
     #[async_trait]
     impl RuntimeFactory for SetupHintFactory {
-        fn session_exists(&self, session_id: RuntimeSessionId) -> bool {
-            self.inner.session_exists(session_id)
+        async fn session_exists(&self, session_id: RuntimeSessionId) -> bool {
+            self.inner.session_exists(session_id).await
         }
 
         async fn setup_page_url(&self) -> Option<String> {
@@ -380,6 +422,7 @@ mod tests {
             client_mcp_servers: ScopedMcpServers,
             tool_approver: Option<Arc<dyn crate::capabilities::ToolApprover>>,
             ask_user: Arc<dyn everruns_core::builtins::ask_user::AskUser>,
+            extras: SessionExtras,
         ) -> Result<BuiltRuntime> {
             self.inner
                 .build(
@@ -388,6 +431,7 @@ mod tests {
                     client_mcp_servers,
                     tool_approver,
                     ask_user,
+                    extras,
                 )
                 .await
         }
@@ -401,7 +445,7 @@ mod tests {
     impl SdkClient {
         async fn new_session(
             &self,
-        ) -> agent_client_protocol::Result<agent_client_protocol::ActiveSession<'static, Agent>>
+        ) -> agent_client_protocol::Result<agent_client_protocol::v1::ActiveSession<'static, Agent>>
         {
             let cwd = tempfile::tempdir().expect("cwd tempdir").keep();
             self.new_session_at(cwd).await
@@ -410,17 +454,18 @@ mod tests {
         async fn new_session_at(
             &self,
             cwd: PathBuf,
-        ) -> agent_client_protocol::Result<agent_client_protocol::ActiveSession<'static, Agent>>
+        ) -> agent_client_protocol::Result<agent_client_protocol::v1::ActiveSession<'static, Agent>>
         {
             self.cx
                 .build_session_from(NewSessionRequest::new(cwd))
                 .block_task()
                 .start_session()
                 .await
+                .map(|setup| setup.session)
         }
 
         async fn prompt(
-            session: &mut agent_client_protocol::ActiveSession<'static, Agent>,
+            session: &mut agent_client_protocol::v1::ActiveSession<'static, Agent>,
             prompt: &str,
         ) -> agent_client_protocol::Result<PromptRun> {
             session.send_prompt(prompt)?;
@@ -496,7 +541,7 @@ mod tests {
         let transport = ByteStreams::new(client_w.compat_write(), client_r.compat());
 
         Client
-            .builder()
+            .v1()
             .name("test-client")
             .connect_with(transport, async move |cx| {
                 let init = cx
@@ -510,12 +555,12 @@ mod tests {
     }
 
     async fn collect_prompt_run(
-        session: &mut agent_client_protocol::ActiveSession<'static, Agent>,
+        session: &mut agent_client_protocol::v1::ActiveSession<'static, Agent>,
     ) -> agent_client_protocol::Result<PromptRun> {
         let mut updates = Vec::new();
         loop {
             match tokio::time::timeout(Duration::from_secs(15), session.read_update()).await {
-                Ok(Ok(SessionMessage::SessionMessage(dispatch))) => {
+                Ok(Ok(SessionMessage::Message(dispatch))) => {
                     let message = dispatch.to_untyped_message()?;
                     if message.method() == "session/update" {
                         let notification: SessionNotification =
@@ -523,9 +568,9 @@ mod tests {
                         updates.push(serde_json::to_value(notification.update)?);
                     }
                 }
-                Ok(Ok(SessionMessage::StopReason(stop_reason))) => {
+                Ok(Ok(SessionMessage::PromptResponse(response))) => {
                     return Ok(PromptRun {
-                        stop_reason,
+                        stop_reason: response?.stop_reason,
                         updates,
                     });
                 }
@@ -542,13 +587,13 @@ mod tests {
     /// Whether the session emits the no-provider setup link. Returns as soon as
     /// the link arrives, or once the stream goes quiet.
     async fn collect_setup_hint(
-        session: &mut agent_client_protocol::ActiveSession<'static, Agent>,
+        session: &mut agent_client_protocol::v1::ActiveSession<'static, Agent>,
         url: &str,
     ) -> bool {
         let deadline = Duration::from_secs(3);
         loop {
             let update = match tokio::time::timeout(deadline, session.read_update()).await {
-                Ok(Ok(SessionMessage::SessionMessage(dispatch))) => {
+                Ok(Ok(SessionMessage::Message(dispatch))) => {
                     let Ok(message) = dispatch.to_untyped_message() else {
                         continue;
                     };
@@ -576,12 +621,12 @@ mod tests {
     }
 
     async fn collect_available_commands(
-        session: &mut agent_client_protocol::ActiveSession<'static, Agent>,
+        session: &mut agent_client_protocol::v1::ActiveSession<'static, Agent>,
     ) -> agent_client_protocol::Result<Vec<Value>> {
         tokio::time::timeout(Duration::from_secs(15), async {
             loop {
                 let update = match session.read_update().await {
-                    Ok(SessionMessage::SessionMessage(dispatch)) => {
+                    Ok(SessionMessage::Message(dispatch)) => {
                         let message = dispatch.to_untyped_message()?;
                         if message.method() != "session/update" {
                             continue;
@@ -590,7 +635,6 @@ mod tests {
                             serde_json::from_value(message.params().clone())?;
                         notification.update
                     }
-                    Ok(SessionMessage::StopReason(_)) => continue,
                     Ok(_) => continue,
                     Err(err) => return Err(err),
                 };
@@ -907,7 +951,7 @@ mod tests {
             Ok(result.expect_err("unknown mode must be rejected"))
         })
         .await;
-        assert_eq!(err.code, agent_client_protocol::ErrorCode::InvalidParams);
+        assert_eq!(err.code, agent_client_protocol::ErrorCode::INVALID_PARAMS);
     }
 
     /// Collect the tool-call statuses (from `tool_call` and `tool_call_update`)
@@ -1074,11 +1118,15 @@ mod tests {
                     elicitation = Some(msg["params"].clone());
                 }
                 _ if msg.get("id").and_then(Value::as_i64) == Some(2) => {
-                    // What the model was handed is in the session log.
                     let id = session_id.parse().expect("session id");
-                    let log = session_log_path(&session_dir_path(sessions.path(), id));
-                    let log = std::fs::read_to_string(log).expect("session log");
-                    return (elicitation, log);
+                    let mut records = Vec::new();
+                    crate::runtime::saved_sessions::visit_records(
+                        &session_dir_path(sessions.path(), id),
+                        id,
+                        |record| records.push(record.to_string()),
+                    )
+                    .unwrap();
+                    return (elicitation, records.join("\n"));
                 }
                 _ => {}
             }
@@ -2040,7 +2088,7 @@ mod tests {
             }
         })
         .await;
-        assert_eq!(err.code, agent_client_protocol::ErrorCode::MethodNotFound);
+        assert_eq!(err.code, agent_client_protocol::ErrorCode::METHOD_NOT_FOUND);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2056,7 +2104,7 @@ mod tests {
             }
         })
         .await;
-        assert_eq!(err.code, agent_client_protocol::ErrorCode::InvalidParams);
+        assert_eq!(err.code, agent_client_protocol::ErrorCode::INVALID_PARAMS);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2555,7 +2603,12 @@ mod tests {
         })
         .await;
 
-        assert!(run.assistant_text().contains("budget exhausted"));
+        assert!(
+            run.assistant_text().contains("budget exhausted"),
+            "stop={:?}, updates={:?}",
+            run.stop_reason,
+            run.updates
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2808,15 +2861,15 @@ mod tests {
             "expected a proactive wake turn after spawn_background finished (via the wake seam)"
         );
         assert!(
-            sessions.join(&session_id).join(".background").is_dir(),
+            sessions.join(&session_id).join("background").is_dir(),
             "background artifacts should live in the session directory"
         );
         assert!(
-            !cwd.join(".background").exists(),
+            !cwd.join("background").exists(),
             "background execution must not create .background in the workspace"
         );
         let session_dir = sessions.join(&session_id);
-        let run_dir = std::fs::read_dir(session_dir.join(".background"))
+        let run_dir = std::fs::read_dir(session_dir.join("background"))
             .expect("list durable background artifacts")
             .next()
             .expect("one background run")
@@ -2862,8 +2915,15 @@ mod tests {
                 .join("\n")
         );
 
-        let durable_events = std::fs::read_to_string(session_dir.join("events.jsonl"))
-            .expect("read durable parent history");
+        let mut records = Vec::new();
+        crate::runtime::saved_sessions::visit_records(
+            &session_dir,
+            session_id.parse().unwrap(),
+            |record| records.push(record),
+        )
+        .unwrap();
+        let durable_events = serde_json::to_string(&records).unwrap();
+        assert!(!session_dir.join("events.jsonl").exists());
         assert!(
             durable_events.contains("LONG_PARENT_HISTORY_MARKER"),
             "compaction must not rewrite durable parent history"
@@ -3160,14 +3220,16 @@ mod tests {
             5,
             "one completion review is allowed; a consumed task must not create another agent generation"
         );
-        let events = std::fs::read_to_string(sessions.join(session_id).join("events.jsonl"))
-            .expect("read events");
+        let mut events = Vec::new();
+        crate::runtime::saved_sessions::visit_records(
+            &sessions.join(&session_id),
+            session_id.parse().unwrap(),
+            |record| events.push(record),
+        )
+        .unwrap();
         let started = events
-            .lines()
-            .filter(|line| {
-                serde_json::from_str::<everruns_core::Event>(line)
-                    .is_ok_and(|event| event.event_type == "turn.started")
-            })
+            .iter()
+            .filter(|event| event["type"] == "turn.started")
             .count();
         assert_eq!(
             started, 1,
@@ -3285,5 +3347,509 @@ mod tests {
             messages.contains("scheduled run completed"),
             "expected the scheduled run completion to wake the session, got: {messages:?}"
         );
+    }
+
+    // ACP protocol v2: what Zed's Delta requires of external agents.
+
+    /// Read messages until the response for `id`, answering any permission
+    /// request with `option_id`. Returns the response and every notification.
+    async fn v2_until_response(
+        w: &mut DuplexStream,
+        reader: &mut Lines<BufReader<DuplexStream>>,
+        id: i64,
+        option_id: &str,
+    ) -> (Value, Vec<Value>) {
+        let mut seen = Vec::new();
+        loop {
+            let msg = next_json(reader).await;
+            if msg.get("method").and_then(Value::as_str) == Some("session/request_permission") {
+                send_json(
+                    w,
+                    json!({ "jsonrpc": "2.0", "id": msg["id"],
+                            "result": { "outcome": { "outcome": "selected", "optionId": option_id } } }),
+                )
+                .await;
+                seen.push(msg);
+                continue;
+            }
+            if msg.get("method").is_some() {
+                seen.push(msg);
+                continue;
+            }
+            if msg.get("id").and_then(Value::as_i64) == Some(id) {
+                return (msg, seen);
+            }
+        }
+    }
+
+    /// Read updates until the session reports `idle`, answering permission
+    /// requests with `option_id`.
+    async fn v2_until_idle(
+        w: &mut DuplexStream,
+        reader: &mut Lines<BufReader<DuplexStream>>,
+        option_id: &str,
+    ) -> Vec<Value> {
+        let mut seen = Vec::new();
+        loop {
+            let msg = next_json(reader).await;
+            if msg.get("method").and_then(Value::as_str) == Some("session/request_permission") {
+                send_json(
+                    w,
+                    json!({ "jsonrpc": "2.0", "id": msg["id"],
+                            "result": { "outcome": { "outcome": "selected", "optionId": option_id } } }),
+                )
+                .await;
+            }
+            let idle = msg["params"]["update"]["sessionUpdate"] == "state_update"
+                && msg["params"]["update"]["state"] == "idle";
+            seen.push(msg);
+            if idle {
+                return seen;
+            }
+        }
+    }
+
+    fn v2_updates<'a>(seen: &'a [Value], kind: &str) -> Vec<&'a Value> {
+        seen.iter()
+            .filter(|msg| msg["method"] == "session/update")
+            .map(|msg| &msg["params"]["update"])
+            .filter(|update| update["sessionUpdate"] == kind)
+            .collect()
+    }
+
+    fn v2_states(seen: &[Value]) -> Vec<String> {
+        v2_updates(seen, "state_update")
+            .into_iter()
+            .filter_map(|update| update["state"].as_str().map(str::to_string))
+            .collect()
+    }
+
+    async fn v2_initialize(
+        w: &mut DuplexStream,
+        reader: &mut Lines<BufReader<DuplexStream>>,
+    ) -> Value {
+        send_json(
+            w,
+            json!({ "jsonrpc": "2.0", "id": 0, "method": "initialize",
+                    "params": { "protocolVersion": 2, "info": { "name": "delta", "version": "0.1.0" },
+                                "capabilities": {} } }),
+        )
+        .await;
+        v2_until_response(w, reader, 0, "").await.0
+    }
+
+    async fn v2_new_session(
+        w: &mut DuplexStream,
+        reader: &mut Lines<BufReader<DuplexStream>>,
+        cwd: &std::path::Path,
+    ) -> Value {
+        send_json(
+            w,
+            json!({ "jsonrpc": "2.0", "id": 1, "method": "session/new", "params": { "cwd": cwd } }),
+        )
+        .await;
+        v2_until_response(w, reader, 1, "").await.0
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn v2_initialize_negotiates_protocol_two() {
+        let sessions = tempfile::tempdir().expect("sessions tempdir");
+        let (mut w, mut reader, _server) =
+            start_raw_server(fixed("hi"), sessions.path().to_path_buf());
+        let init = v2_initialize(&mut w, &mut reader).await;
+        let result = &init["result"];
+        assert_eq!(result["protocolVersion"], 2, "{init}");
+        assert_eq!(result["info"]["name"], "yolop");
+        let session = &result["capabilities"]["session"];
+        assert!(session["prompt"]["image"].is_object(), "{init}");
+        assert!(session["prompt"]["embeddedContext"].is_object(), "{init}");
+        assert!(session["mcp"]["http"].is_object(), "{init}");
+        assert!(session["mcp"]["stdio"].is_object(), "{init}");
+        assert!(session["additionalDirectories"].is_object(), "{init}");
+        for method in result["authMethods"].as_array().expect("auth methods") {
+            assert_eq!(method["type"], "agent", "{method}");
+            assert!(method["methodId"].is_string(), "{method}");
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn v2_sessions_take_additional_folders_and_refuse_unknown_cancels() {
+        let sessions = tempfile::tempdir().expect("sessions tempdir");
+        let cwd = tempfile::tempdir().expect("cwd tempdir");
+        let other = tempfile::tempdir().expect("other folder");
+        let (mut w, mut reader, _server) =
+            start_raw_server(fixed("hi"), sessions.path().to_path_buf());
+        v2_initialize(&mut w, &mut reader).await;
+
+        send_json(
+            &mut w,
+            json!({ "jsonrpc": "2.0", "id": 1, "method": "session/new",
+                    "params": { "cwd": cwd.path(),
+                                "additionalDirectories": [other.path().join("missing")] } }),
+        )
+        .await;
+        let (missing, _) = v2_until_response(&mut w, &mut reader, 1, "").await;
+        assert_eq!(missing["error"]["code"], -32602, "{missing}");
+
+        send_json(
+            &mut w,
+            json!({ "jsonrpc": "2.0", "id": 2, "method": "session/new",
+                    "params": { "cwd": cwd.path(), "additionalDirectories": [other.path()] } }),
+        )
+        .await;
+        let (created, _) = v2_until_response(&mut w, &mut reader, 2, "").await;
+        let session_id = created["result"]["sessionId"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{created}"))
+            .to_string();
+
+        send_json(
+            &mut w,
+            json!({ "jsonrpc": "2.0", "id": 3, "method": "tool_call/cancel",
+                    "params": { "sessionId": session_id, "toolCallId": "nope" } }),
+        )
+        .await;
+        let (unknown, _) = v2_until_response(&mut w, &mut reader, 3, "").await;
+        assert_eq!(unknown["error"]["code"], -32602, "{unknown}");
+        send_json(
+            &mut w,
+            json!({ "jsonrpc": "2.0", "id": 4, "method": "terminal/cancel",
+                    "params": { "sessionId": session_id, "terminalId": "nope" } }),
+        )
+        .await;
+        let (unknown, _) = v2_until_response(&mut w, &mut reader, 4, "").await;
+        assert_eq!(unknown["error"]["code"], -32602, "{unknown}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn v2_prompt_answers_with_a_message_id_then_reports_state() {
+        let sessions = tempfile::tempdir().expect("sessions tempdir");
+        let cwd = tempfile::tempdir().expect("cwd tempdir");
+        let (mut w, mut reader, _server) =
+            start_raw_server(fixed("hello from yolop"), sessions.path().to_path_buf());
+        v2_initialize(&mut w, &mut reader).await;
+        let created = v2_new_session(&mut w, &mut reader, cwd.path()).await;
+        let session_id = created["result"]["sessionId"]
+            .as_str()
+            .expect("id")
+            .to_string();
+        let options = created["result"]["configOptions"]
+            .as_array()
+            .expect("options");
+        let mode = options
+            .iter()
+            .find(|option| option["configId"] == "mode")
+            .expect("approval level is a mode config option");
+        assert_eq!(mode["category"], "mode");
+        assert!(created["result"].get("modes").is_none(), "v2 has no modes");
+
+        send_json(
+            &mut w,
+            json!({ "jsonrpc": "2.0", "id": 2, "method": "session/prompt",
+                    "params": { "sessionId": session_id, "prompt": [{ "type": "text", "text": "hi" }] } }),
+        )
+        .await;
+        let (response, mut seen) = v2_until_response(&mut w, &mut reader, 2, "").await;
+        let message_id = response["result"]["messageId"]
+            .as_str()
+            .expect("prompt answers with a message id")
+            .to_string();
+        seen.extend(v2_until_idle(&mut w, &mut reader, "").await);
+
+        let echo = v2_updates(&seen, "user_message");
+        assert_eq!(echo.len(), 1, "{seen:#?}");
+        assert_eq!(echo[0]["messageId"], message_id);
+        assert_eq!(echo[0]["content"][0]["text"], "hi");
+
+        let chunks = v2_updates(&seen, "agent_message_chunk");
+        let text: String = chunks
+            .iter()
+            .filter_map(|chunk| chunk["content"]["text"].as_str())
+            .collect();
+        assert!(text.contains("hello from yolop"), "{seen:#?}");
+        assert!(chunks.iter().all(|chunk| chunk["messageId"].is_string()));
+
+        assert_eq!(v2_states(&seen), vec!["running", "idle"], "{seen:#?}");
+        let idle = v2_updates(&seen, "state_update").pop().unwrap().clone();
+        assert_eq!(idle["stopReason"], "end_turn", "{idle}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn v2_gated_tool_requires_action_then_runs() {
+        let sessions = tempfile::tempdir().expect("sessions tempdir");
+        let cwd = tempfile::tempdir().expect("cwd tempdir");
+        let (mut w, mut reader, _server) =
+            start_raw_server(one_bash_call(), sessions.path().to_path_buf());
+        v2_initialize(&mut w, &mut reader).await;
+        let created = v2_new_session(&mut w, &mut reader, cwd.path()).await;
+        let session_id = created["result"]["sessionId"]
+            .as_str()
+            .expect("id")
+            .to_string();
+
+        send_json(
+            &mut w,
+            json!({ "jsonrpc": "2.0", "id": 2, "method": "session/set_config_option",
+                    "params": { "sessionId": session_id, "configId": "mode",
+                                "type": "id", "value": "protective" } }),
+        )
+        .await;
+        let (set, _) = v2_until_response(&mut w, &mut reader, 2, "").await;
+        let mode = set["result"]["configOptions"]
+            .as_array()
+            .expect("options")
+            .iter()
+            .find(|option| option["configId"] == "mode")
+            .cloned()
+            .expect("mode option");
+        assert_eq!(mode["currentValue"], "protective", "{set}");
+
+        send_json(
+            &mut w,
+            json!({ "jsonrpc": "2.0", "id": 3, "method": "session/prompt",
+                    "params": { "sessionId": session_id, "prompt": [{ "type": "text", "text": "go" }] } }),
+        )
+        .await;
+        let (_, mut seen) = v2_until_response(&mut w, &mut reader, 3, "allow_once").await;
+        seen.extend(v2_until_idle(&mut w, &mut reader, "allow_once").await);
+
+        let asked = seen
+            .iter()
+            .find(|msg| msg["method"] == "session/request_permission")
+            .expect("the gated tool asks");
+        // A shell command is asked about as the command, in the workspace.
+        assert_eq!(asked["params"]["subject"]["type"], "command", "{asked}");
+        assert_eq!(asked["params"]["subject"]["command"], "printf gated");
+        assert_eq!(asked["params"]["subject"]["toolCallId"], "call_1");
+        assert!(asked["params"]["title"].is_string(), "{asked}");
+
+        // The command runs as an agent-owned terminal: announced with its
+        // command, then settled with its output and exit status.
+        let terminals = v2_updates(&seen, "terminal_update");
+        assert_eq!(
+            terminals.first().map(|t| &t["command"]),
+            Some(&json!("printf gated")),
+            "{seen:#?}"
+        );
+        let last = terminals.last().expect("terminal updates");
+        assert_eq!(last["exitStatus"]["exitCode"], 0, "{last}");
+        use base64::Engine as _;
+        let output = base64::engine::general_purpose::STANDARD
+            .decode(last["output"]["data"].as_str().expect("output"))
+            .unwrap();
+        assert!(String::from_utf8_lossy(&output).contains("gated"), "{last}");
+        assert!(
+            v2_updates(&seen, "tool_call_update").iter().any(|update| {
+                update["toolCallId"] == "call_1" && update["content"][0]["type"] == "terminal"
+            }),
+            "{seen:#?}"
+        );
+
+        assert_eq!(
+            v2_states(&seen),
+            vec!["running", "requires_action", "running", "idle"],
+            "{seen:#?}"
+        );
+        let statuses: Vec<&str> = v2_updates(&seen, "tool_call_update")
+            .into_iter()
+            .filter(|update| update["toolCallId"] == "call_1")
+            .filter_map(|update| update["status"].as_str())
+            .collect();
+        assert_eq!(statuses.last(), Some(&"completed"), "{seen:#?}");
+        assert!(
+            v2_updates(&seen, "tool_call").is_empty(),
+            "v2 has no tool_call"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn v2_file_edits_report_a_structured_diff() {
+        let sessions = tempfile::tempdir().expect("sessions tempdir");
+        let cwd = tempfile::tempdir().expect("cwd tempdir");
+        let cwd_path = cwd.path().canonicalize().expect("canonical cwd");
+        std::fs::write(cwd_path.join("notes.txt"), "one\ntwo\n").unwrap();
+        let script = LlmSimConfig::scripted(vec![
+            SimTurn::ToolCalls(vec![SimToolCall {
+                name: "write_file".to_string(),
+                arguments: json!({ "path": "notes.txt", "content": "one\nTWO\n" }),
+                id: Some("call_1".to_string()),
+            }]),
+            SimTurn::Assistant("done".to_string()),
+        ]);
+        let (mut w, mut reader, _server) = start_raw_server(script, sessions.path().to_path_buf());
+        v2_initialize(&mut w, &mut reader).await;
+        let created = v2_new_session(&mut w, &mut reader, &cwd_path).await;
+        let session_id = created["result"]["sessionId"]
+            .as_str()
+            .expect("id")
+            .to_string();
+        send_json(
+            &mut w,
+            json!({ "jsonrpc": "2.0", "id": 2, "method": "session/prompt",
+                    "params": { "sessionId": session_id, "prompt": [{ "type": "text", "text": "edit" }] } }),
+        )
+        .await;
+        let (_, mut seen) = v2_until_response(&mut w, &mut reader, 2, "allow_once").await;
+        seen.extend(v2_until_idle(&mut w, &mut reader, "allow_once").await);
+        assert_eq!(
+            std::fs::read_to_string(cwd_path.join("notes.txt")).unwrap(),
+            "one\nTWO\n"
+        );
+        let diff = v2_updates(&seen, "tool_call_update")
+            .into_iter()
+            .filter(|update| update["toolCallId"] == "call_1")
+            .find_map(|update| {
+                update["content"]
+                    .as_array()?
+                    .iter()
+                    .find(|content| content["type"] == "diff")
+                    .cloned()
+            })
+            .unwrap_or_else(|| panic!("a diff for the edit: {seen:#?}"));
+        assert_eq!(diff["changes"][0]["operation"], "modify", "{diff}");
+        assert_eq!(
+            diff["changes"][0]["path"],
+            json!(cwd_path.join("notes.txt")),
+            "{diff}"
+        );
+        let patch = diff["patch"]["text"].as_str().expect("patch");
+        assert!(patch.contains("-two\n+TWO"), "{patch}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn v2_list_and_resume_replay_a_saved_session() {
+        let sessions = tempfile::tempdir().expect("sessions tempdir");
+        let cwd = tempfile::tempdir().expect("cwd tempdir");
+        let cwd_path = cwd.path().canonicalize().expect("canonical cwd");
+        let session_id = {
+            let (mut w, mut reader, server) =
+                start_raw_server(fixed("first answer"), sessions.path().to_path_buf());
+            v2_initialize(&mut w, &mut reader).await;
+            let created = v2_new_session(&mut w, &mut reader, &cwd_path).await;
+            let session_id = created["result"]["sessionId"]
+                .as_str()
+                .expect("id")
+                .to_string();
+            send_json(
+                &mut w,
+                json!({ "jsonrpc": "2.0", "id": 2, "method": "session/prompt",
+                        "params": { "sessionId": session_id,
+                                    "prompt": [{ "type": "text", "text": "remember me" }] } }),
+            )
+            .await;
+            v2_until_response(&mut w, &mut reader, 2, "").await;
+            v2_until_idle(&mut w, &mut reader, "").await;
+            send_json(
+                &mut w,
+                json!({ "jsonrpc": "2.0", "id": 3, "method": "session/close",
+                        "params": { "sessionId": session_id } }),
+            )
+            .await;
+            let (closed, _) = v2_until_response(&mut w, &mut reader, 3, "").await;
+            assert!(closed.get("result").is_some(), "{closed}");
+            send_json(
+                &mut w,
+                json!({ "jsonrpc": "2.0", "id": 4, "method": "session/prompt",
+                        "params": { "sessionId": session_id,
+                                    "prompt": [{ "type": "text", "text": "again" }] } }),
+            )
+            .await;
+            let (after_close, _) = v2_until_response(&mut w, &mut reader, 4, "").await;
+            assert_eq!(after_close["error"]["code"], -32002, "{after_close}");
+            drop(w);
+            drop(reader);
+            let _ = server.await;
+            session_id
+        };
+
+        let (mut w, mut reader, _server) =
+            start_raw_server(fixed("second answer"), sessions.path().to_path_buf());
+        v2_initialize(&mut w, &mut reader).await;
+        send_json(
+            &mut w,
+            json!({ "jsonrpc": "2.0", "id": 1, "method": "session/list",
+                    "params": { "cwd": cwd_path } }),
+        )
+        .await;
+        let (listed, _) = v2_until_response(&mut w, &mut reader, 1, "").await;
+        let listed = listed["result"]["sessions"]
+            .as_array()
+            .expect("sessions")
+            .clone();
+        assert!(
+            listed.iter().any(|info| info["sessionId"] == session_id),
+            "{listed:#?}"
+        );
+
+        send_json(
+            &mut w,
+            json!({ "jsonrpc": "2.0", "id": 2, "method": "session/resume",
+                    "params": { "sessionId": session_id, "cwd": cwd_path,
+                                "replayFrom": { "type": "start" } } }),
+        )
+        .await;
+        let (resumed, seen) = v2_until_response(&mut w, &mut reader, 2, "").await;
+        assert!(resumed.get("result").is_some(), "{resumed}");
+        let replayed: String = v2_updates(&seen, "user_message_chunk")
+            .iter()
+            .filter_map(|chunk| chunk["content"]["text"].as_str())
+            .collect();
+        assert!(replayed.contains("remember me"), "{seen:#?}");
+        // Replayed chunked messages open with an empty whole message.
+        let first_chunk = &v2_updates(&seen, "user_message_chunk")[0];
+        assert!(
+            v2_updates(&seen, "user_message")
+                .iter()
+                .any(|marker| marker["messageId"] == first_chunk["messageId"]),
+            "{seen:#?}"
+        );
+        assert_eq!(
+            v2_states(&seen),
+            vec!["idle"],
+            "a current-state snapshot: {seen:#?}"
+        );
+        assert!(
+            resumed["result"]["configOptions"]
+                .as_array()
+                .is_some_and(|options| options.iter().any(|o| o["configId"] == "mode")),
+            "{resumed}"
+        );
+
+        send_json(
+            &mut w,
+            json!({ "jsonrpc": "2.0", "id": 3, "method": "session/delete",
+                    "params": { "sessionId": session_id } }),
+        )
+        .await;
+        let (deleted, _) = v2_until_response(&mut w, &mut reader, 3, "").await;
+        assert!(deleted.get("result").is_some(), "{deleted}");
+        send_json(
+            &mut w,
+            json!({ "jsonrpc": "2.0", "id": 4, "method": "session/list", "params": {} }),
+        )
+        .await;
+        let (listed, _) = v2_until_response(&mut w, &mut reader, 4, "").await;
+        assert!(
+            !listed["result"]["sessions"]
+                .as_array()
+                .is_some_and(|list| list.iter().any(|info| info["sessionId"] == session_id)),
+            "{listed}"
+        );
+        send_json(
+            &mut w,
+            json!({ "jsonrpc": "2.0", "id": 5, "method": "session/delete",
+                    "params": { "sessionId": session_id } }),
+        )
+        .await;
+        let (again, _) = v2_until_response(&mut w, &mut reader, 5, "").await;
+        assert_eq!(again["error"]["code"], -32002, "{again}");
+        send_json(
+            &mut w,
+            json!({ "jsonrpc": "2.0", "id": 6, "method": "session/resume",
+                    "params": { "sessionId": session_id, "cwd": cwd_path } }),
+        )
+        .await;
+        let (gone, _) = v2_until_response(&mut w, &mut reader, 6, "").await;
+        assert_eq!(gone["error"]["code"], -32002, "{gone}");
     }
 }

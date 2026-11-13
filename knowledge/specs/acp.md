@@ -6,7 +6,7 @@ description: Defines the acp, agent client protocol support contract for Yolop.
 
 # ACP, Agent Client Protocol support
 
-Status: v1 implemented (agent side, stdio transport).
+Status: v1 and draft v2 implemented (agent side, stdio transport).
 
 ## Why
 
@@ -29,7 +29,10 @@ newlines). Tracing still goes to stderr as plain text without terminal color
 escapes, so stdout stays a clean protocol channel and clients can retain
 diagnostics without rendering ANSI control sequences.
 
-ACP protocol version: **1** (integer).
+ACP protocol versions: **1** and **2** (integers). The SDK protocol router
+reads the first `initialize` and selects the implementation: a request for v2
+or newer gets v2, everything else gets v1 unchanged. The tables below describe
+v1; [Protocol v2](#protocol-v2) lists what differs.
 
 ### Lifecycle
 
@@ -194,6 +197,11 @@ vocabulary across every front end instead of an ACP-only taxonomy.
 - When the level changes out of band (the `set_approval_mode` tool, `/setup
   approval`), yolop emits a `current_mode_update` after the turn so the picker
   stays in sync.
+- The level is also a `mode`-category config option (`configId: "mode"`),
+  settable with `session/set_config_option` and refreshed by
+  `config_option_update`. ACP v1 tells clients that understand config options
+  to prefer them over `modes`, and v2 removed modes, so this is the one surface
+  that works for both.
 
 The level drives both the soft-approval prompt block
 (`src/capabilities/approval.rs`) and the hard permission gate (see Permissions
@@ -319,6 +327,97 @@ the connection is closing), the gate falls back to allowing so an editor without
 `session/request_permission` keeps working, the write blocklist on filesystem
 writes (see `knowledge/specs/maintenance.md`) remains the standing guardrail either way.
 
+## Protocol v2
+
+ACP v2 is a draft. It is what Zed's Delta requires of external agents, and the
+reason yolop speaks it before it is stable. Everything is in
+`src/editor/acp/server/v2.rs` (activity reporting in `v2/activity.rs`), as a translation layer over the v1 session core:
+the same runtime, turn loop, approvals, and slash commands, with v2 handlers
+mapping requests onto the shared helpers and a `Link` translating each v1
+`session/update` the core emits. A second turn loop would drift.
+
+| Area | v2 behaviour |
+|------|-------------|
+| `initialize` | Returns `protocolVersion: 2`, `info`, and `capabilities.session` (prompt `image` and `embeddedContext`; MCP `stdio` and `http`; `delete`; `systemPrompt` with `override`). Auth methods carry `methodId` and `type: "agent"`. The client's `info.name` feeds editor detection. |
+| `auth/login`, `auth/logout` | Login runs the same browser flows as v1 `authenticate`. Logout forgets the Codex grant and the stored OpenRouter key; keys from the environment stay. |
+| `session/new` | Returns the session id, `configOptions` (model, reasoning effort, `mode`) and `availableCommands`. No `modes`. An optional `systemPrompt` (text only) is appended to yolop's prompt as "Client instructions", or replaces it in `override` mode; profile instructions, tools, approvals and workspace context stay either way. |
+| `session/list` | Saved sessions with a recorded absolute workspace, newest first, filtered by `cwd` when given. No paging. |
+| `session/resume` | Rehydrates like v1 `session/load`. `replayFrom: {type: "start"}` replays history first; any other cursor is `-32602`. A current-state `state_update` precedes the response, which carries `configOptions` and `availableCommands`. `systemPrompt` applies as on `session/new`; yolop does not store it, so a client resends it. |
+| `session/close` | Cancels running work, waits for its final updates, then forgets the session. Later requests for it get `-32002`. |
+| `session/delete` | Closes the session if it is active, then removes its saved directory, so it leaves `session/list` and cannot be resumed. An unknown id is `-32002`. |
+| `session/prompt` | Validates, then answers `{messageId}` at once: the message is inserted, not finished. A `user_message` echo with that id follows, then the turn. Prompts for a busy session queue in order. An error response means nothing was inserted. |
+| `session/cancel` | Cancels the running turn, which ends in `idle` with `stopReason: cancelled`. |
+| `session/set_config_option` | `{configId, type: "id", value}` for `model`, `reasoning_effort`, and `mode`; returns every option. |
+
+Session state is reported with `state_update`: `running` when foreground work
+starts (a client prompt or a background wake turn), `requires_action` while a
+permission request or form elicitation waits on the person, and `idle` with the
+stop reason and the foreground work's token `usage` once no queued work
+remains. Background wake turns therefore show up in the client as work the
+agent started on its own, which v1 could not express.
+
+Every state update lists running background tasks (subagents, background
+tools, monitors) in `background`, as tool calls with id `task_<id>`: each is
+announced with a `tool_call_update` (name `background_task`) when first
+listed, and settled with its status and summary when it ends. A task that ends
+while the session is idle triggers a fresh `idle` with the shorter list.
+
+Update translation:
+
+- Message and thought chunks carry a `messageId`. A message stays open until
+  any other kind of update, so text before and after a tool call is two
+  messages, in order.
+- `tool_call` and `tool_call_update` both become the `tool_call_update` upsert.
+- `plan` becomes `plan_update` with one items plan, id `todos`.
+- Commands and their input gain `type` discriminators; config options use
+  `configId`.
+- `current_mode_update` has no v2 form; the `mode` option carries the level.
+- `session/request_permission` gets a `title`. A shell command's subject is
+  `command` (the command, the workspace as `cwd`, and its `toolCallId`, which
+  an upsert announces first); any other gated tool's subject is the tool call.
+- A guardrail replacement of the agent's text revises the message with a
+  whole `agent_message` under the same id. In a `replayFrom: start` replay,
+  each chunked message opens with an empty whole-message update.
+
+Tool activity v1 had no update for:
+
+- **Terminals.** Each `bash` call is an agent-owned terminal with the tool
+  call's id: `terminal_update` with the command and workspace `cwd` when it
+  starts, `terminal_output_chunk` for streamed output (base64), and a final
+  `terminal_update` with the full output and `exitStatus`. The tool call's
+  content leads with the terminal reference.
+- **Diffs.** `write_file`, `edit_file`, `delete_file` and `apply_patch` end
+  with a `diff` content item: per-file `operation` and `fileType`, plus a
+  `git_patch`. Decision: the diff compares file snapshots, not tool
+  arguments. The approval hook's observer runs before every tool call, so the
+  link reads each named file before the tool and again on completion; a
+  failed or no-op edit reports nothing, only files inside the workspace are
+  read, and files over 1 MiB or not UTF-8 are
+  listed as `binary` without a patch.
+- **Other streamed output** (a tool other than `bash` that streams) arrives as
+  `tool_call_content_chunk`.
+
+- **Cancelling one command.** A `bash` call and its terminal advertise
+  `capabilities.cancel`. `tool_call/cancel` or `terminal/cancel` kills the
+  command's process group; the model reads that the user cancelled it, with
+  the output so far, and the turn goes on. The call ends `cancelled`, the
+  terminal with `exitStatus.signal` `SIGKILL`, and both drop their controls.
+  An unknown, finished or non-shell call gets `-32602`. Decision: until the
+  aligned everruns release cancels any inline call in its act loop
+  (everruns#5384), only `bash` registers, through a local registry with the
+  same API (`src/runtime/tool_cancel.rs`, TODO markers name the switch).
+
+**Additional folders.** `session/new` and `session/resume` take
+`additionalDirectories`, existing absolute directories (else `-32602`). They
+are workspace beside `cwd`: file tools and search reach them by absolute path
+(policy sees `/workspace/roots/<n>`), shell commands may write them under
+`workspace-write` on every platform sandbox, and the environment context
+names them. A resume's list is the session's complete list, so a live session
+opened with another list is rebuilt. `session/list` does not report them.
+
+Not implemented, and not advertised: replay cursors other than `start` (the
+spec defines no other).
+
 ## Architecture
 
 ```
@@ -327,6 +426,7 @@ src/editor/acp/
   protocol.rs   # SDK-backed ACP schema shim plus yolop helpers
   bridge.rs     # pure runtime-event → session/update translation (Translator)
   server.rs     # SDK transport/dispatch wiring, session map, turn streaming
+  server/v2.rs  # protocol v2 handlers and v1 → v2 update translation
   setup_page.rs # loopback provider form (opt-in, see above)
 ```
 
@@ -336,8 +436,9 @@ Concurrency model in `server::serve`:
   request dispatch, and response correlation.
 - `session/prompt` runs in its own Tokio task so SDK dispatch keeps processing
   `session/cancel` notifications during a turn.
-- `serve` uses the SDK `Lines` transport with an EOF signal so a client
-  disconnect still winds the agent process down even mid-turn.
+- `serve` hands the SDK `Lines` transport to `Agent.protocol_router()`, which
+  runs until the client closes its input, so a disconnect still winds the agent
+  process down even mid-turn.
 
 `serve` is generic over the byte streams and a `RuntimeFactory`, so the binary
 wires it to real stdin/stdout with a provider-backed factory while tests drive

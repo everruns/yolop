@@ -1,0 +1,251 @@
+// Local PlatformStore.
+//
+// Scope (EVE-594): implement the subagent-critical core honestly, backed by a
+// caller-supplied `LocalSessionRunner` (the embedder wires this to its
+// `InProcessRuntime` so `create_session_with_options` / `send_message` /
+// `wait_for_idle` actually create and drive real local sessions, and
+// `get_messages` / `get_session_by_id` read real local state).
+//
+// The platform-management-only operations this file used to reject one by one
+// were removed from `PlatformStore` itself with the `platform_management`
+// retirement (EVE-953), so there is nothing left to stub out. `get_harness`
+// stays an explicit unsupported error: it is still on the trait for hosted
+// delegation, and a local embedder has no stored harness catalog to answer
+// from.
+
+use async_trait::async_trait;
+use everruns_capabilities::{PlatformCreateSessionRequest, PlatformMessage, PlatformStore};
+use everruns_contracts::error::{AgentLoopError, Result};
+use everruns_contracts::typed_id::SessionParticipantId;
+use everruns_contracts::typed_id::{AgentId, HarnessId, SessionId};
+use everruns_core::session::ExecutionSession;
+use everruns_core::{AgentDefinition, HarnessDefinition};
+use std::sync::Arc;
+
+/// Drives real local sessions for the platform store. An embedder implements
+/// this over its `InProcessRuntime` (or a thin wrapper) so subagent spawning
+/// can create child sessions, run turns, and read back session state. This is
+/// the seam that keeps the platform store honest without it owning the runtime.
+#[async_trait]
+pub trait LocalSessionRunner: Send + Sync {
+    /// Sessions this host can currently route messages to.
+    ///
+    /// `None` means every session in the organization is routable. Embedded
+    /// hosts with a narrower or dynamic route set must return `Some`, including
+    /// an empty vector when no session is active, so schedule claims stay scoped
+    /// to work the host can deliver.
+    async fn routable_session_ids(&self) -> Result<Option<Vec<SessionId>>> {
+        Ok(None)
+    }
+
+    /// Create a child/local session and persist it in the session catalog.
+    ///
+    /// Returns the portable execution view (EVE-882): embedded runners carry
+    /// no stored Session persistence records.
+    async fn create_session(
+        &self,
+        harness_id: HarnessId,
+        agent_id: Option<AgentId>,
+        title: Option<&str>,
+        locale: Option<&str>,
+        parent_session_id: Option<SessionId>,
+    ) -> Result<ExecutionSession>;
+
+    /// Create a session from the portable request when it uses local-supported
+    /// fresh-session semantics.
+    async fn create_session_with_options(
+        &self,
+        request: PlatformCreateSessionRequest,
+    ) -> Result<ExecutionSession> {
+        if request.forked_from_session_id.is_some()
+            || request.budget_root_session_id.is_some()
+            || request.seed != everruns_core::session::SessionSeedMode::Fresh
+        {
+            return Err(unsupported("create_session(seed)"));
+        }
+        let mut session = self
+            .create_session(
+                request.harness_id,
+                request.agent_id,
+                request.title.as_deref(),
+                request.locale.as_deref(),
+                request.parent_session_id,
+            )
+            .await?;
+        session.goal = request.goal;
+        Ok(session)
+    }
+
+    /// Deliver a user message and run a turn to completion.
+    async fn send_message(&self, session_id: SessionId, content: &str) -> Result<()>;
+
+    /// Deliver a message with durable causal metadata when supported.
+    async fn send_message_with_causal_context(
+        &self,
+        session_id: SessionId,
+        content: &str,
+        _causes: &crate::CausalContext,
+    ) -> Result<()> {
+        self.send_message(session_id, content).await
+    }
+
+    /// Deliver one schedule occurrence under its stable admission identity.
+    ///
+    /// The schedule runner retries an occurrence until it acknowledges the
+    /// claim, including after process loss between the turn's commit and that
+    /// acknowledgement. Runners with durable admissions admit `occurrence`
+    /// through the session's `send_with_id`, so a retry
+    /// reopens the original receipt and outcome instead of running the turn
+    /// again, and return `Ok` once that admission has a committed outcome.
+    /// Runners without them deliver it as an ordinary message.
+    async fn deliver_occurrence(
+        &self,
+        session_id: SessionId,
+        content: &str,
+        _occurrence: everruns_contracts::typed_id::MessageId,
+    ) -> Result<()> {
+        self.send_message(session_id, content).await
+    }
+
+    /// List sessions known to the runner. Optionally filtered by agent.
+    async fn list_sessions(
+        &self,
+        limit: Option<usize>,
+        agent_id: Option<AgentId>,
+    ) -> Result<Vec<ExecutionSession>>;
+
+    /// Look up a single session by id.
+    async fn get_session(&self, session_id: SessionId) -> Result<Option<ExecutionSession>>;
+
+    /// Read recent messages (most recent first) as platform messages.
+    async fn get_messages(
+        &self,
+        session_id: SessionId,
+        limit: Option<usize>,
+    ) -> Result<Vec<PlatformMessage>>;
+
+    /// Current session status string, or `None` if the session is unknown.
+    async fn get_session_status(&self, session_id: SessionId) -> Result<Option<String>>;
+
+    /// Outcome of the session's latest finished turn (`completed`, `failed`,
+    /// `cancelled` or `sealed`), or `None` when no turn has finished since the
+    /// last one started. An idle session only says it can take another turn,
+    /// so [`LocalPlatformStore::wait_for_idle`] reports this outcome instead
+    /// and delegation can settle the child's task with the matching state.
+    /// Runners that cannot tell return `None` and keep reporting `idle`.
+    async fn latest_terminal_turn_status(&self, _session_id: SessionId) -> Result<Option<String>> {
+        Ok(None)
+    }
+}
+
+fn unsupported(op: &str) -> AgentLoopError {
+    AgentLoopError::tool(format!(
+        "operation '{op}' is not supported by the local platform store; \
+         manage this entity in embedder code"
+    ))
+}
+
+/// Local platform store for one (org, session) scope, backed by a
+/// [`LocalSessionRunner`].
+#[derive(Clone)]
+pub struct LocalPlatformStore {
+    runner: Arc<dyn LocalSessionRunner>,
+}
+
+impl LocalPlatformStore {
+    /// Bind a platform-store adapter to an embedder's session runner.
+    ///
+    /// No longer takes a base URL: it existed only to build UI links for the
+    /// retired `platform_management` tool results (EVE-953).
+    pub fn new(runner: Arc<dyn LocalSessionRunner>) -> Self {
+        Self { runner }
+    }
+}
+
+#[async_trait]
+impl PlatformStore for LocalPlatformStore {
+    // ---- Honestly implemented: subagent-critical core -----------------------
+
+    async fn create_session_with_options(
+        &self,
+        request: PlatformCreateSessionRequest,
+    ) -> Result<ExecutionSession> {
+        if request.blueprint_id.is_some() {
+            return Err(unsupported("create_session(blueprint)"));
+        }
+        self.runner.create_session_with_options(request).await
+    }
+
+    async fn get_session_by_id(&self, id: SessionId) -> Result<Option<ExecutionSession>> {
+        self.runner.get_session(id).await
+    }
+
+    async fn add_agent_session_participant(
+        &self,
+        _session_id: SessionId,
+        _agent_id: AgentId,
+        _reason: &str,
+    ) -> Result<SessionParticipantId> {
+        Err(unsupported("add_agent_session_participant"))
+    }
+
+    async fn send_message(&self, session_id: SessionId, content: &str) -> Result<()> {
+        self.runner.send_message(session_id, content).await
+    }
+    async fn send_message_with_causal_context(
+        &self,
+        session_id: SessionId,
+        content: &str,
+        causes: &crate::CausalContext,
+    ) -> Result<()> {
+        self.runner
+            .send_message_with_causal_context(session_id, content, causes)
+            .await
+    }
+
+    async fn get_messages(
+        &self,
+        session_id: SessionId,
+        limit: Option<usize>,
+    ) -> Result<Vec<PlatformMessage>> {
+        self.runner.get_messages(session_id, limit).await
+    }
+
+    async fn wait_for_idle(
+        &self,
+        session_id: SessionId,
+        _timeout_secs: Option<u64>,
+    ) -> Result<String> {
+        // `send_message` runs the turn synchronously to completion in the local
+        // host, so by the time a caller polls, the session is already idle.
+        let status = self
+            .runner
+            .get_session_status(session_id)
+            .await?
+            .ok_or_else(|| AgentLoopError::session_not_found(session_id))?;
+        // Idle follows success, failure and cancellation alike. Report the
+        // finished turn's outcome so a foreground subagent settles its task
+        // (EVE-1310); a never-started child stays a nonterminal `idle`.
+        if status == "idle"
+            && let Some(outcome) = self.runner.latest_terminal_turn_status(session_id).await?
+        {
+            return Ok(outcome);
+        }
+        Ok(status)
+    }
+
+    // ---- Platform-management-only: explicit unsupported ---------------------
+
+    async fn get_harness(&self, _id: HarnessId) -> Result<Option<HarnessDefinition>> {
+        Err(unsupported("get_harness"))
+    }
+    // Framework members (`AgentBuilder::member`) build their harness from their
+    // own Agent value, so this id only labels the child session's record. An
+    // agent id that is not a member is refused when the child is created.
+    async fn get_agent_harness_id(&self, _id: AgentId) -> Result<Option<HarnessId>> {
+        Ok(Some(HarnessId::new()))
+    }
+    async fn get_agent_by_id(&self, _id: AgentId) -> Result<Option<AgentDefinition>> {
+        Err(unsupported("get_agent_by_id"))
+    }
+}

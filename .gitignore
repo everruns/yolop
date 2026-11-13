@@ -38,3 +38,6 @@ Thumbs.db
 # Claude Code agent worktrees
 .claude/worktrees/
 .claude/*.local.json
+
+# Local validation lockfile for the vendored facade backport.
+/vendor/everruns/Cargo.lock

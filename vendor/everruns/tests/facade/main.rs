@@ -1,0 +1,40 @@
+//! Single integration-test binary for the `everruns` facade crate.
+//!
+//! Each `tests/*.rs` file is its own binary, and every binary links the whole
+//! `everruns` crate from scratch (see `knowledge/project/ci-build-time.md`).
+//! Merging these modules into one target pays that link cost once instead of
+//! once per file. `trybuild.rs` (a compile-fail harness over `tests/ui/`),
+//! `tls_startup.rs` (asserts concurrent process-global TLS provider install),
+//! and the `local`-feature suites (`tests/local/main.rs`, declared via
+//! `[[test]]` in Cargo.toml) stay separate binaries.
+//!
+//! Run with: `cargo test -p everruns --all-features --test facade`
+//! Run one module: `cargo test -p everruns --all-features --test facade <module>::`
+
+mod advanced_capabilities;
+mod ag_ui;
+mod ag_ui_handler;
+mod ag_ui_threads;
+mod agent_builder;
+mod application_parity;
+mod ask_user;
+mod capability_configuration;
+mod custom_provider;
+mod engine_sessions;
+mod explicit_communication;
+mod function_tools;
+mod harness;
+mod host_services;
+mod lifecycle_hooks;
+mod model_catalog;
+mod request_metadata;
+mod session_completions;
+mod session_controls;
+mod session_events;
+mod session_history;
+mod session_identity;
+mod session_overlays;
+mod session_work;
+
+#[cfg(feature = "agent-package-fs")]
+mod package;

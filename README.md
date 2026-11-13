@@ -124,6 +124,8 @@ yolop into buzz    # wire up Buzz Desktop
 yolop --acp        # speak ACP over stdio, for any other ACP client
 ```
 
+`yolop --acp` speaks ACP v1 and the draft v2, picking whichever the client asks for, so clients that only accept v2 agents, such as Zed's Delta, can run it too.
+
 The same agent, hosted where your code already is.
 
 ### Interactive TUI
@@ -173,7 +175,7 @@ Inside the TUI:
 
 A coordinator session can hand work to threads that run as their own Yolop processes, and any session can message another with `yolop sessions send`: see [docs/session-coordination.md](docs/session-coordination.md).
 
-Sessions run on the Everruns Engine with a local SQLite authority. Reopening an older session imports its full history, branches and rewind state automatically. Back up `engine.sqlite` and its private `engine.key` together with the session directories. `events.jsonl` remains a readable export.
+Sessions run on the Everruns Engine with a local SQLite authority. Reopening an older session imports its full history, branches and rewind state automatically. Every session, including a child, has its own database at `sessions/<session-id>/engine.sqlite`. Back up the session directories and the private root `engine.key` together. History, search and resume read SQLite directly; no `events.jsonl` copy is maintained. Background artifacts live under `<session-id>/background/`. Stop older Yolop hosts before the first upgrade import, then use the updated binary for all resumed sessions.
 
 `yolop sessions migration-check <session-id>` checks a closed session's saved history, branches, and compaction records. It reports a source fingerprint and counts without printing conversation content or transferring ownership.
 
@@ -419,6 +421,13 @@ Yolop is a free, open-source hobby project. There are many ways to help:
 - Help with the docs by asking questions or sending PRs
 - Contribute code (see [CONTRIBUTING.md](CONTRIBUTING.md), and say hi on [Discord](https://everruns.com/discord/yolop))
 - Talk about Yolop around you
+
+## Ecosystem
+
+Yolop is part of [Everruns](https://everruns.com/projects/), a free, non-commercial
+community ecosystem of open-source AI projects by
+[Mykhailo Chalyi](https://chaliy.name) and contributors. Questions, ideas and
+research discussion are welcome on [Discord](https://everruns.com/discord).
 
 ## Contributing, evals, releases, license
 

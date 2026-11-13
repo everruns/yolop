@@ -1,4 +1,5 @@
 [workspace]
+exclude = ["vendor/everruns"]
 members = [
     "crates/yolop-yep",
     "extensions/yolop-extension-logfire",
@@ -50,7 +51,9 @@ metal = ["local-inference"]
 cuda = ["local-inference"]
 
 [dependencies]
-agent-client-protocol = "3.3.0"
+tempfile = "3"
+similar = "3"
+agent-client-protocol = { version = "5.0.0", features = ["unstable_protocol_v2", "unstable_end_turn_token_usage"] }
 anyhow = "1.0"
 ast-grep-core = "0.45"
 ast-grep-language = { version = "0.45", default-features = false, features = [
@@ -184,7 +187,6 @@ rustix = { version = "1", features = ["fs"] }
 inventory = "0.3"
 portable-pty = "0.9.0"
 proptest = "1"
-tempfile = "3"
 tiny_http = "0.12"
 vt100 = "0.18"
 
@@ -220,3 +222,9 @@ debug = false
 [profile.dev-debuginfo]
 inherits = "dev"
 debug = true
+
+# TODO(everruns#5345): remove this exact backport when an aligned release
+# includes session-directory transfer, read-only journal inspection and
+# the visible background runtime-artifact root. See vendor/everruns/BACKPORT.md.
+[patch.crates-io]
+everruns = { path = "vendor/everruns" }
