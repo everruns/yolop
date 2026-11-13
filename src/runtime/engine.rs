@@ -13,6 +13,7 @@ use everruns_contracts::{CapabilityRef, typed_id::SessionId};
 #[cfg(test)]
 use everruns_core::InputMessage;
 use everruns_core::{Event, RuntimeMessage, SessionFileSystem};
+#[cfg(test)]
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -32,7 +33,6 @@ pub struct SessionHost {
     selection: Arc<std::sync::RwLock<super::ProviderChoice>>,
     default_model: everruns_contracts::model_spec::ModelSpec,
     events: Arc<JsonlEventEmitter>,
-    export_path: PathBuf,
     refresh: tokio::sync::Mutex<()>,
     registered: std::sync::RwLock<std::collections::HashSet<String>>,
     shutdown: everruns::CancellationToken,
@@ -65,7 +65,6 @@ impl SessionHost {
             selection,
             default_model,
             events,
-            export_path: super::session_log::session_log_path(&profile.platform.session_dir),
             profile,
             refresh: tokio::sync::Mutex::new(()),
             registered: std::sync::RwLock::new(registered),
@@ -202,7 +201,7 @@ impl SessionHost {
         self.events.replace_collected_events(events.clone()).await;
         if let Some(title) = super::latest_session_title(&events) {
             super::session_log::update_session_workspace_title(
-                self.export_path.parent().expect("session directory"),
+                &self.profile.platform.session_dir,
                 &title,
             )?;
         }
@@ -213,11 +212,6 @@ impl SessionHost {
                 .max()
                 .unwrap_or(0),
         );
-        if !events.is_empty() || self.export_path.exists() {
-            self.profile
-                .native
-                .rebuild_jsonl_export(self.profile.root, &self.export_path)?;
-        }
         Ok(())
     }
 
@@ -552,8 +546,60 @@ mod tests {
     use crate::config::SettingsStore;
     use crate::session_state::checkpoint::RestoreMode;
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn an_unrelated_session_can_run_while_another_database_is_write_locked() {
+        let workspace = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let settings = Arc::new(SettingsStore::open(data.path().join("settings.toml")));
+        let build = || {
+            build_with_options(
+                workspace.path().into(),
+                ProviderChoice::Sim,
+                None,
+                data.path().into(),
+                settings.clone(),
+                BuildOptions::default(),
+            )
+        };
+        let a = build().await.unwrap();
+        let b = build().await.unwrap();
+        let a_path = SqliteHosting::session_db_path(data.path(), a.handles.session_id);
+        let b_path = SqliteHosting::session_db_path(data.path(), b.handles.session_id);
+        assert_ne!(a_path, b_path);
+        assert!(
+            a_path.exists(),
+            "the database belongs in the session folder"
+        );
+        assert!(b_path.exists());
+        assert!(!data.path().join(".engine").exists());
+        assert!(!data.path().join("engine.sqlite").exists());
+        let blocker = rusqlite::Connection::open(&a_path).unwrap();
+        blocker.execute_batch("BEGIN IMMEDIATE").unwrap();
+        let result = b
+            .handles
+            .run_checkpointed_turn(b.model.input_message("hello from session B"))
+            .await;
+        blocker.execute_batch("ROLLBACK").unwrap();
+        let turn = result.unwrap();
+        assert!(turn.success, "{turn:?}");
+        for (path, owner) in [
+            (a_path, a.handles.session_id),
+            (b_path, b.handles.session_id),
+        ] {
+            let db = rusqlite::Connection::open(path).unwrap();
+            let foreign: i64 = db
+                .query_row(
+                    "SELECT count(*) FROM framework_authority WHERE session<>?",
+                    [owner.to_string()],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(foreign, 0);
+        }
+    }
+
     #[tokio::test]
-    async fn native_resume_bootstraps_transcript_when_jsonl_export_is_stale() {
+    async fn native_resume_bootstraps_transcript_without_jsonl_export() {
         let workspace = tempfile::tempdir().unwrap();
         let data = tempfile::tempdir().unwrap();
         let settings = Arc::new(SettingsStore::open(data.path().join("settings.toml")));
@@ -575,10 +621,12 @@ mod tests {
             .await
             .unwrap();
         assert!(turn.success, "{turn:?}");
-        let export = built.handles.host.export_path.clone();
+        let export = super::super::session_log::session_log_path(&built.startup.session_dir);
         drop(built);
-        // A crash can leave the presentation export behind the committed turn.
-        std::fs::write(export, b"").unwrap();
+        assert!(
+            !export.exists(),
+            "native sessions do not write an event export"
+        );
         let resumed = build(Some(id)).await.unwrap();
         assert!(resumed.startup.replayed_events > 0);
         let session =
@@ -1526,7 +1574,15 @@ mod tests {
             texts(built.handles.host.events().await.unwrap()),
             ["alpha", "gamma"]
         );
-        let raw = std::fs::read_to_string(&built.startup.session_log_path).unwrap();
+        let mut journal = Vec::new();
+        built
+            .handles
+            .host
+            .profile
+            .native
+            .export_jsonl(id, &mut journal)
+            .unwrap();
+        let raw = String::from_utf8(journal).unwrap();
         assert!(raw.contains("beta"), "raw audit keeps the abandoned branch");
         drop(built);
         let reopened = build_with_options(

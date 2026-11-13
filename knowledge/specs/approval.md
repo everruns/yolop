@@ -103,8 +103,8 @@ effect on the very next turn without a restart.
 
 Approvals are auditable through the existing per-session event log. The
 `record_approval` tool is called right after the user consents; because every
-tool call already persists a `tool.completed` line to the session's
-`events.jsonl`, the approval lands in that durable, owner-only log for free. It
+tool call already persists a `tool.completed` event to the session's
+`engine.sqlite` journal, the approval lands in that durable, owner-only authority. It
 records a specific `action` description plus optional detail when provided, and
 uses a conservative fallback instead of failing if a model emits an empty audit
 call after spoken consent. No separate audit store is introduced.
@@ -150,7 +150,7 @@ Three seams carry the difference:
 - **The audit trail.** Upstream's tools stamp the turn and input message a
   consent was spoken in, and leave naming the approver to the host, which is
   the only party holding an authenticated record of who spoke. Yolop is
-  single-user and local, so the owner of the `events.jsonl` line is the
+  single-user and local, so the owner of the local session journal is the
   approver and nothing further is needed; the extra fields ride along harmless.
 
 The prompt text is now upstream's, which is the generalized wording rather

@@ -3,7 +3,7 @@
 //! A [Mira](https://github.com/everruns/mira) eval study, written against the
 //! `mira-eval` Rust SDK (no Python plumbing). The subject spawns yolop's
 //! headless one-shot mode (`yolop -p`, the runtime path — no TUI) in a fresh
-//! seeded workdir per case, and mines the session `events.jsonl` for metrics.
+//! seeded workdir per case, and mines the session event journal for metrics.
 //!
 //! The matrix is samples × four axes:
 //!   * **target** — provider models (Anthropic, OpenAI, OpenRouter)
@@ -2870,8 +2870,19 @@ fn sessions_search_result_sessions(data: &Value) -> Option<Vec<Value>> {
         return Some(sessions.clone());
     }
     let stdout = value.get("stdout")?.as_str()?;
-    let parsed: Value = serde_json::from_str(stdout).ok()?;
-    parsed.get("sessions")?.as_array().cloned()
+    // Models often chain `yolop sessions --help && yolop sessions search ...`
+    // in one call, so the JSON report can follow other text. Take the first
+    // object that starts a line and carries `sessions`.
+    std::iter::once(0)
+        .chain(stdout.match_indices("\n{").map(|(index, _)| index + 1))
+        .filter(|&start| stdout[start..].starts_with('{'))
+        .find_map(|start| {
+            let parsed = serde_json::Deserializer::from_str(&stdout[start..])
+                .into_iter::<Value>()
+                .next()?
+                .ok()?;
+            parsed.get("sessions")?.as_array().cloned()
+        })
 }
 
 fn classify_tool(data: &Value) -> ToolKind {
@@ -3500,12 +3511,60 @@ fn sanitize(s: &str) -> String {
 /// Keep the raw session log for debugging: events.jsonl files land under the
 /// study's gitignored `.cache/sessions/`, and the transcript metadata records
 /// the path. Best-effort — a copy failure never fails the case.
-fn preserve_session_log(events_path: &Path, slug: &str) -> Option<String> {
+fn preserve_session_log(journal: Option<&str>, slug: &str) -> Option<String> {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join(".cache/sessions");
     std::fs::create_dir_all(&dir).ok()?;
     let dest = dir.join(format!("{slug}.events.jsonl"));
-    std::fs::copy(events_path, &dest).ok()?;
+    std::fs::write(&dest, journal?).ok()?;
     Some(format!(".cache/sessions/{slug}.events.jsonl"))
+}
+
+/// Read a session's event journal as JSONL. Current yolop keeps the canonical
+/// journal only in `<session>/engine.sqlite` (no `events.jsonl` export since
+/// #934); preserved baselines from before that still write `events.jsonl`, so
+/// both layouts must mine identically. Reads stop at the authority's committed
+/// `head`, the same watermark yolop's own reader uses.
+fn read_session_journal(session_dir: &Path, session_id: &str) -> Option<String> {
+    let database = session_dir.join("engine.sqlite");
+    if database.is_file()
+        && let Some(body) = read_sqlite_journal(&database, session_id)
+    {
+        return Some(body);
+    }
+    std::fs::read_to_string(session_dir.join("events.jsonl")).ok()
+}
+
+fn read_sqlite_journal(database: &Path, session_id: &str) -> Option<String> {
+    let mut connection =
+        rusqlite::Connection::open_with_flags(database, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .ok()?;
+    connection.busy_timeout(Duration::from_secs(5)).ok()?;
+    let snapshot = connection.transaction().ok()?;
+    let control: String = snapshot
+        .query_row(
+            "SELECT control FROM framework_authority WHERE session=?",
+            [session_id],
+            |row| row.get(0),
+        )
+        .ok()?;
+    let head = serde_json::from_str::<Value>(&control)
+        .ok()?
+        .get("head")?
+        .as_i64()?;
+    let mut query = snapshot
+        .prepare("SELECT value FROM framework_events WHERE session=? AND seq<=? ORDER BY seq")
+        .ok()?;
+    let rows = query
+        .query_map(rusqlite::params![session_id, head], |row| {
+            row.get::<_, String>(0)
+        })
+        .ok()?;
+    let mut body = String::new();
+    for row in rows {
+        body.push_str(&row.ok()?);
+        body.push('\n');
+    }
+    Some(body)
 }
 
 fn seed_prior_sessions(sample: &Sample, sessions_dir: &Path) -> Result<(), String> {
@@ -3761,10 +3820,10 @@ async fn run_yolop(sample: Sample, cx: RunCx) -> Transcript {
         match acp {
             Ok(id) => {
                 session_id = id;
-                let events = sessions.join(&session_id).join("events.jsonl");
+                let session_path = sessions.join(&session_id);
                 let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout_s());
                 while tokio::time::Instant::now() < deadline {
-                    if std::fs::read_to_string(&events).ok().is_some_and(|body| {
+                    if read_session_journal(&session_path, &session_id).is_some_and(|body| {
                         let mined = parse_events(&body);
                         mined.automatic_background_wakes >= 1
                             && mined.background_wake_responses >= 1
@@ -3818,12 +3877,11 @@ async fn run_yolop(sample: Sample, cx: RunCx) -> Transcript {
         }
     }
 
-    let events_path = sessions.join(&session_id).join("events.jsonl");
-    let mined = std::fs::read_to_string(&events_path)
-        .map(|text| parse_events(&text))
-        .unwrap_or_default();
+    let session_path = sessions.join(&session_id);
+    let journal = read_session_journal(&session_path, &session_id);
+    let mined = journal.as_deref().map(parse_events).unwrap_or_default();
     if mined.llm_calls == 0 && t.error.is_none() {
-        t.error = Some(format!("no events at {}", events_path.display()));
+        t.error = Some(format!("no events in {}", session_path.display()));
         stop_reason = "error";
     }
     let task_tool_calls = task_tool_calls(&mined);
@@ -4186,7 +4244,7 @@ async fn run_yolop(sample: Sample, cx: RunCx) -> Transcript {
         effort,
         &session_id["session_".len()..]
     ));
-    if let Some(kept) = preserve_session_log(&events_path, &slug) {
+    if let Some(kept) = preserve_session_log(journal.as_deref(), &slug) {
         t.metadata.insert("session_log".into(), json!(kept));
     }
     t
@@ -5308,6 +5366,19 @@ mod tests {
         // The subject passes this straight to `yolop --model`.
         assert_eq!(target.model, "Qwen/Qwen3-8B");
         unsafe { std::env::remove_var("YOLOP_LOCAL_MODEL") };
+    }
+
+    #[test]
+    fn sessions_search_report_is_found_after_chained_help_output() {
+        let report = json!({"sessions": [{"session_id": OVERLAP_EVAL_SESSION_ID}]});
+        let stdout = format!("Usage: yolop sessions <COMMAND>\n\n--- search ---\n{report:#}\n");
+        let data = json!({
+            "tool_name": "bash",
+            "arguments": {"command": "yolop sessions --help && yolop sessions search QUASAR-9182"},
+            "result": {"stdout": stdout, "exit_code": 0}
+        });
+        let sessions = sessions_search_result_sessions(&data).expect("report parsed");
+        assert_eq!(sessions[0]["session_id"], json!(OVERLAP_EVAL_SESSION_ID));
     }
 
     /// Drives the subject end-to-end: spawns the real yolop binary against its

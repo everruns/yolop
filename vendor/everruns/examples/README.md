@@ -1,0 +1,48 @@
+# `everruns` examples
+
+These examples use the [`everruns`](../README.md) crate.
+Every example runs against a real model, `gpt-6.1-sol` unless it says
+otherwise, and requires `OPENAI_API_KEY`. `agent_decisions` also requires
+`TYPESAFE_API_KEY`.
+
+| Example | What it demonstrates | Run |
+|---|---|---|
+| [`capability_configuration.rs`](capability_configuration.rs) | One open entrypoint for typed Compaction and ToolSearch, a code-defined Definition, and a dynamic vendor reference | `cargo run -p everruns --features openai --example capability_configuration` |
+| [`workspace_policy.rs`](workspace_policy.rs) | Safe read/write scopes, default restrictions, and trusted starter files | `cargo run -p everruns --features openai --example workspace_policy` |
+| [`direct_llm.rs`](direct_llm.rs) | One prompt and one answer with no agent: `Model::complete`, the completion builder, and streaming | `cargo run -p everruns --features openai --example direct_llm` |
+| [`model_catalog.rs`](model_catalog.rs) | Listing a provider's models, reading their metadata, and running the selection | `cargo run -p everruns --features openai --example model_catalog` |
+| [`live_session.rs`](live_session.rs) | Non-blocking send, iteration-boundary corrections, and transcript | `cargo run -p everruns --features openai --example live_session` |
+| [`hello.rs`](hello.rs) | Minimal agent, typed tool, turn result, and event observation | `cargo run -p everruns --features openai --example hello` |
+| [`production_agent.rs`](production_agent.rs) | Tool safety boundary and production-shaped multi-turn use | `cargo run -p everruns --features openai --example production_agent` |
+| [`github_monitor.rs`](github_monitor.rs) | Host-owned background work that wakes an agent when it finishes | `cargo run -p everruns --features openai --example github_monitor -- --simulate` |
+| [`session_work.rs`](session_work.rs) | Session-owned work, leased delivery, and completion wakes | `cargo run -p everruns --features openai --example session_work` |
+| [`ask_user.rs`](ask_user.rs) | Structured questions answered by a host responder, and the unattended defaults path | `cargo run -p everruns --features openai --example ask_user` |
+| [`mcp_resources.rs`](mcp_resources.rs) | An agent that lists and reads an MCP server's resources (the MCP reference server over stdio, needs Node.js) | `cargo run -p everruns --features openai,mcp-stdio --example mcp_resources` |
+| [`session_history.rs`](session_history.rs) | Durable local resume and bounded, event-derived history pages | `cargo run -p everruns --features local,openai --example session_history` |
+| [`engine_sessions.rs`](engine_sessions.rs) | Concrete Engine ownership, isolated sessions, and engine-scoped resume | `cargo run -p everruns --features openai --example engine_sessions` |
+| [`workspace_heads.rs`](workspace_heads.rs) | Isolated Git-worktree heads, Environments, and durable session binding | `cargo run -p everruns --features local,openai --example workspace_heads -- /path/to/repo /path/to/state` |
+| [`canonical_events.rs`](canonical_events.rs) | Lossless recording and typed rendering of live canonical events | `cargo run -p everruns --features openai --example canonical_events` |
+| [`explicit_communication.rs`](explicit_communication.rs) | An agent whose text is private notes and that talks only through `send_message`, with sent messages read from the event stream | `cargo run -p everruns --features openai --example explicit_communication` |
+| [`subagents.rs`](subagents.rs) | Concurrent child agents managed by an application-owned task registry | `cargo run -p everruns --features openai --example subagents` |
+| [`observe_and_cancel.rs`](observe_and_cancel.rs) | Live event streaming and cooperative cancellation | `cargo run -p everruns --features openai --example observe_and_cancel` |
+| [`advanced_capability.rs`](advanced_capability.rs) | Curated capability SPI with typed protocol, metadata, progress, and structured errors | `cargo run -p everruns --features openai --example advanced_capability` |
+| [`lifecycle_hooks.rs`](lifecycle_hooks.rs) | Awaited agent, turn, tool, and completion handlers | `cargo run -p everruns --features openai --example lifecycle_hooks` |
+
+The GitHub monitor's default `--simulate` mode skips GitHub access but still
+uses the configured model. Its explicit live mode requires an authenticated
+GitHub CLI:
+
+```text
+cargo run -p everruns --features openai --example github_monitor -- --live OWNER/REPO PR_NUMBER
+```
+
+## Provider-native batches
+
+These examples call real native provider batch APIs and can incur charges. Set `BATCH_PROVIDER=anthropic|openai|gemini|mistral|groq|fireworks`, enable its Cargo feature and configure its API key. Fireworks also requires `FIREWORKS_ACCOUNT_ID` and `FIREWORKS_ARTIFACT_ORIGIN`. Job duration and cancellation support vary by provider.
+
+| Example | What it demonstrates | Run |
+|---|---|---|
+| [`batch_classification.rs`](batch_classification.rs) | Submit, persist intent and ticket, resume, collect validated classifications or cancel | `cargo run -p everruns --features anthropic --example batch_classification -- submit /tmp/reviews-001` |
+| [`batch_eval.rs`](batch_eval.rs) | Submit typed message lists, poll and score three eval cases by ID | `cargo run -p everruns --features anthropic --example batch_eval` |
+
+See [Batch Model Requests](https://everruns.com/docs/framework/batch-model-requests/) for recovery, tenant isolation, provider and hosting limitations.

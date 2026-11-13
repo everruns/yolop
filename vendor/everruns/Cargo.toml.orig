@@ -1,0 +1,455 @@
+# The application-facing `everruns` library and concrete Engine/session owner.
+# It curates value-first APIs over neutral core/provider contracts and the
+# canonical in-process host without exposing host construction or platform
+# records.
+# Default features stay offline — session filesystem and package disk I/O are included,
+# while provider, shell, web, Lua, MCP, SQLx, server, and worker integrations
+# remain opt-in. Engine hosting adapters use the public `hosting::spi`;
+# separately composed low-level runtimes use `everruns-core/host`.
+
+[package]
+name = "everruns"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/everruns"
+description = "Build and run durable AI agents in Rust — the application-facing entrypoint to the Everruns agentic framework"
+readme = "README.md"
+keywords = ["agent", "agentic", "coding-agent", "llm", "ai"]
+categories = ["development-tools", "asynchronous"]
+# The out-of-workspace downstream-consumer fixtures are a CI harness, and the
+# bench baseline is maintainer history; neither is part of the library, so keep
+# them out of the published package.
+exclude = ["tests/fixtures/external-consumer/", "benches/turn_backends_baseline.jsonl"]
+
+[[example]]
+name = "lifecycle_hooks"
+required-features = ["macros", "openai"]
+
+[[test]]
+name = "tls_startup"
+required-features = ["openai"]
+
+# `workspace_environment` and the `local_*` suites exercise the SQLite-backed
+# platform `local` turns on. Without the declaration they build under any
+# feature set and fail to resolve `everruns_capabilities`, so `--all-targets` on
+# the default build is red. Merged into one `tests/local/main.rs` target
+# (knowledge/project/ci-build-time.md) so the crate links once instead of once
+# per file.
+[[test]]
+name = "local"
+path = "tests/local/main.rs"
+required-features = ["local"]
+
+# The backend conformance suite: the scenarios every turn backend must pass.
+# Needs AG-UI to park and resume on client-side tool calls.
+[[test]]
+name = "backend_conformance"
+path = "tests/backend_conformance/main.rs"
+required-features = ["ag-ui"]
+
+# Per-turn latency and throughput of an engine's sessions
+# (`benches/turn_backends.rs`). `test = true` lets the facade's single
+# `cargo test --all-features` CI invocation run it as a smoke, at the cost of
+# one more link and no extra cargo pass; `cargo bench` runs the full scale.
+[[bench]]
+name = "turn_backends"
+harness = false
+test = true
+
+[features]
+# Opt-in, native test harness for downstream SessionHosting implementations.
+hosting-conformance = ["builtins"]
+# Default features stay offline: the facade includes the contained session
+# filesystem and package disk loading, but activates no provider, shell, web,
+# Lua, MCP, SQLx, server, or worker integrations. Macro and typed capability
+# authoring add only async adaptation and schema generation.
+default = ["macros", "capabilities", "builtins", "filesystem", "agent-package-fs"]
+# Re-export `#[everruns::tool]` (EVE-829) and the hidden `__macro_support`
+# runtime helpers it expands into. Pulls in `everruns-macros`, `schemars` (JSON
+# Schema generation), and `serde` (derive). Kept out of `everruns-core`.
+macros = ["dep:everruns-macros", "dep:schemars"]
+# Curated service-provider interface for code-defined capabilities. The
+# authoring types live in the neutral `everruns-contracts` crate
+# (EVE-873); this feature turns on its `definition` surface plus the runtime
+# adapters here. It shares serde/schemars with `macros` but remains
+# independently gateable so the bare facade still compiles with
+# `--no-default-features`.
+utility-llm = ["everruns-contracts/http", "dep:everruns-drivers", "everruns-drivers/openrouter"]
+utility-openai = ["utility-llm"]
+openai-agents-api = ["everruns-core/openai-agents-api"]
+capabilities = ["everruns-contracts/definition", "dep:schemars"]
+# Curated typed values plus the backend-neutral implementation bundle. Kept
+# optional so `default-features = false` Framework consumers compile no built-in
+# implementation package.
+builtins = ["everruns-core/builtins"]
+# 0.17 feature-name compatibility. Writable message JSONL was retired in favor
+# of canonical event logs; retaining the no-op name keeps dependent feature
+# lists compiling without exposing a writable message store.
+jsonl = []
+filesystem = ["dep:everruns-integrations", "everruns-integrations/filesystem"]
+# Agent definition disk I/O; independent of the session filesystem integration.
+agent-package-fs = ["everruns-core/agent-package-fs"]
+# Environment-backed execution integrations. Filesystem is default and stays
+# inside the host-provided session filesystem; the others are explicit opt-ins.
+bashkit = ["filesystem", "everruns-core/direct-egress", "everruns-integrations/bashkit"]
+# The `bash` tool over real host processes, bounded by a kernel policy. Implies
+# `host-compute`: both are ways of running commands on this machine, and this
+# one is the model-facing half.
+host-shell = ["host-compute", "filesystem", "everruns-core/host-shell"]
+web-fetch = ["everruns-core/direct-egress", "dep:everruns-integrations", "everruns-integrations/web-fetch"]
+duckduckgo = ["everruns-core/direct-egress", "dep:everruns-integrations", "everruns-integrations/duckduckgo"]
+# The provider-neutral `web_search` capability (free search, Brave from
+# `BRAVE_SEARCH_API_KEY`). Configure it with `everruns::WebSearch`.
+web-search = ["everruns-core/direct-egress", "dep:everruns-integrations", "everruns-integrations/web-search"]
+lua = ["everruns-core/direct-egress", "dep:everruns-integrations", "everruns-integrations/lua"]
+# The `image_generation` capability: stills, animated GIFs and SVGs from GPT
+# Image, Muse Image or Gemini, with provider keys from the environment
+# (`everruns::images`).
+images = ["everruns-core/direct-egress", "dep:everruns-integrations", "everruns-integrations/image-generation"]
+# Run commands on the machine this process is already running on, with nothing
+# between the command and the filesystem. Opt-in because it is the one target
+# that contains nothing; the contract types compile without it.
+host-compute = ["everruns-core/process"]
+mcp = ["everruns-core/mcp", "everruns-core/direct-egress", "dep:anyhow"]
+# Enable local-process (stdio) MCP servers, using `everruns-core/mcp-stdio`.
+mcp-stdio = ["mcp", "everruns-core/mcp-stdio"]
+# Enable a crash-durable canonical event log, SQLite-backed session catalog and
+# task/schedule state, and real workspaces through `LocalConfig`. Conversation
+# history is derived from canonical events rather than selecting a writable
+# message store here.
+local = [
+    "dep:aes-gcm",
+    "dep:rand",
+    "dep:anyhow",
+    "dep:everruns-capabilities",
+    "dep:rusqlite",
+    "dep:libc",
+    "dep:chrono",
+    "dep:chrono-tz",
+    "dep:cron",
+    "dep:futures",
+    "dep:parking_lot",
+    "dep:thiserror",
+    "tokio/process",
+    "tokio/time",
+]
+# Outbound A2A delegation. Off by default: `a2a-client` drags a full second
+# HTTP/TLS stack (its own reqwest major) into any consumer that only wants the
+# local runtime, so hosts that delegate to remote A2A agents opt in explicitly.
+# Requires `local`, since the delegation capability ships in `everruns-capabilities`.
+a2a = ["local", "everruns-capabilities/a2a"]
+# The app as a Poppy personal agent (`everruns::poppy`). Requires `local`, since
+# the protocol client ships in `everruns-capabilities`; it signs with ES256 and
+# sends requests directly.
+poppy = ["local", "everruns-capabilities/poppy-client"]
+# Configure real OpenAI-backed models via `everruns::providers::openai`. Off by
+# default so the standard facade build pulls in no provider or Reqwest edge; the
+# `OpenAI` config type and its driver wiring compile only with this feature.
+chatgpt = ["dep:everruns-drivers", "everruns-drivers/chatgpt"]
+codex = ["dep:everruns-drivers", "everruns-drivers/codex"]
+openai = ["dep:everruns-drivers", "everruns-drivers/openai"]
+openrouter = ["dep:everruns-drivers", "everruns-drivers/openrouter"]
+# Anthropic Messages and Google Gemini, the same shape as `openai`:
+# `providers::anthropic::Anthropic` and `providers::gemini::Gemini`.
+anthropic = ["dep:everruns-drivers", "everruns-drivers/anthropic"]
+gemini = ["dep:everruns-drivers", "everruns-drivers/gemini"]
+mistral = ["dep:everruns-drivers", "everruns-drivers/mistral"]
+fireworks = ["dep:everruns-drivers", "everruns-drivers/fireworks"]
+groq = ["dep:everruns-drivers", "everruns-drivers/groq"]
+meta = ["dep:everruns-drivers", "everruns-drivers/meta"]
+mai = ["dep:everruns-drivers", "everruns-drivers/mai"]
+vercel = ["dep:everruns-drivers", "everruns-drivers/vercel"]
+cloudflare = ["dep:everruns-drivers", "everruns-drivers/cloudflare"]
+
+# AWS Bedrock (`providers::bedrock::Bedrock`): static keys or the AWS default
+# credential chain (IAM roles: ECS/AgentCore container credentials, instance
+# profile, SSO/profile, env). Pulls in the AWS SDK and aws-config, so it is its
+# own opt-in rather than part of any default.
+bedrock = ["dep:everruns-drivers", "everruns-drivers/bedrock-default-credentials"]
+# Typed decision: the TypeSafe-backed `DecisionsService` behind
+# `Decisions`, re-exported so one import reaches both halves.
+typesafe = ["dep:everruns-integrations", "everruns-integrations/typesafe", "dep:everruns-drivers", "everruns-drivers/typesafe"]
+# Serve an AG-UI 1.0 run from any session (`everruns::ag_ui`): the protocol
+# types, the shared runtime-event projection, and an interrupt gate for
+# `ask_user` and tool approvals. Off by default; it enables core's
+# transport-free AG-UI types and projection without an HTTP server.
+ag-ui = ["builtins", "everruns-core/ag-ui", "everruns-core/ag-ui-projection", "dep:futures"]
+# A ready-made axum handler for `ag-ui` (`everruns::ag_ui::AgUiHandler`):
+# authorizer, thread resolution, SSE framing and keepalive. A separate opt-in
+# so `ag-ui` alone stays free of an HTTP server dependency.
+ag-ui-axum = ["ag-ui", "dep:axum"]
+# Credential verification for agent endpoints (`everruns::channel_auth`):
+# OIDC/JWKS, OAuth 2.0 introspection and claim requirements, the verifier the
+# everruns server's channels use. It fetches identity-provider documents.
+channel-auth = ["everruns-core/channel-auth"]
+# Messaging channels (`everruns::channels`): put an agent on a platform with
+# the shared core channel host (session binding, duplicate check, reply
+# delivery, recovery). Brings the webhook and Slack drivers; no HTTP server.
+channels = [
+    "everruns-core/channels",
+    "dep:futures",
+    "dep:everruns-integrations",
+    "everruns-integrations/webhook-channel",
+    "everruns-integrations/slack-channel",
+]
+# Voice channels (`everruns::voice`): talk to a session through a
+# speech-to-speech provider and hear its answers, on the shared core voice
+# loop. Pair with `openai` for `OpenAI::realtime`.
+voice = ["everruns-core/voice", "dep:thiserror"]
+# Framework observability is opt-in. Each feature enables only its host
+# exporter and leaves default and no-default builds offline.
+otel = ["everruns-core/otel"]
+braintrust = ["everruns-core/braintrust"]
+
+[dependencies]
+everruns-integrations = { workspace = true, optional = true, default-features = false }
+
+# Neutral capability contract (EVE-873): `CapabilityId`/`CapabilityRef`,
+# `CapabilitySpec`/`IntoCapability`, and (behind `capabilities`) the
+# code-defined authoring surface. The facade re-exports this contract as its
+# application capability API.
+everruns-contracts = { workspace = true, default-features = false }
+# Production-safe deterministic in-process simulator backing
+# `Model::simulated`; no dependency on testing/demo helpers.
+
+everruns-capabilities = { workspace = true, optional = true, features = ["portable-builtins"] }
+# Optional real-provider edge: one crate, with the vendor features above turning
+# on the matching `everruns-drivers` features. Re-exported as `everruns::drivers`.
+everruns-drivers = { workspace = true, optional = true }
+# Client + framework surface only: the workspace dependency leaves the crate's
+# `hosted` feature off, so enabling `typesafe` on the facade does not drag in
+# everruns-capabilities. Guarded by scripts/lib/check-portable-builtins-isolation.sh.
+# The `AgUiHandler` route and SSE response. Activated by `ag-ui-axum`.
+axum = { workspace = true, optional = true }
+async-trait.workspace = true
+uuid.workspace = true
+base64.workspace = true
+serde_json.workspace = true
+# Session event streaming, observer queues, deadline-bounded shutdown, and
+# cancellation use Tokio synchronization, runtime, and timing primitives.
+tokio = { version = "1.50", default-features = false, features = ["sync", "macros", "rt", "time"] }
+# `CancellationToken` backs the facade's public cancellation handle without
+# leaking the tokio-util type onto the public surface. Matches the pin used by
+# everruns-core.
+tokio-util = { version = "0.7", default-features = false }
+# Activated by `macros` and/or `capabilities`. `everruns-macros` provides the
+# `#[everruns::tool]` attribute; `schemars` and `serde` back generated and
+# advanced typed protocol schemas.
+everruns-macros = { workspace = true, optional = true }
+schemars = { workspace = true, optional = true }
+serde.workspace = true
+# SQLite for the `local` feature. `everruns::sqlite` owns connection opening
+# for the facade and serve hosts.
+rusqlite = { version = "0.39", features = ["bundled", "backup"], optional = true }
+# Envelope encryption of session secrets in the native SQLite authority
+# (EVE-1298), the same AES-256-GCM scheme and key format the platform uses.
+aes-gcm = { workspace = true, optional = true }
+rand = { workspace = true, optional = true }
+anyhow = { workspace = true, optional = true }
+libc = { version = "0.2", optional = true }
+chrono = { workspace = true, optional = true }
+chrono-tz = { version = "0.10", optional = true }
+cron = { version = "0.17", optional = true }
+futures = { workspace = true, optional = true }
+parking_lot = { workspace = true, optional = true }
+thiserror = { workspace = true, optional = true }
+tracing.workspace = true
+
+everruns-core = { workspace = true, default-features = false, features = ["actor-runtime", "agent-package"] }
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+everruns-core = { workspace = true, default-features = false, features = ["host"] }
+everruns-llmsim.workspace = true
+
+[dev-dependencies]
+chrono.workspace = true
+# Verifies existing embedding callbacks keep their SQLite query type identity.
+rusqlite = { version = "0.39", features = ["bundled"] }
+# Version-less path dev-dependencies: stripped on publish, so these test-only
+# edges do not force the facade to package before same-cycle sibling releases
+# (e.g. everruns-test-support) reach crates.io.
+everruns-llmsim = { path = "../drivers/llmsim", features = ["host"] }
+# Gateway drivers live outside the facade's provider features; the Vercel
+# example reaches them directly, which is also how an embedding host would.
+everruns-drivers = { path = "../drivers/drivers", features = ["cloudflare", "vercel"] }
+everruns-test-support = { path = "../test-support", features = ["fixtures"] }
+everruns-integrations = { path = "../integrations", default-features = false, features = ["brave-search"] }
+tokio = { workspace = true, features = ["macros", "net", "process", "rt-multi-thread", "time", "test-util"] }
+# `ServiceExt::oneshot` drives the `ag-ui-axum` router in tests.
+tower = { workspace = true, features = ["util"] }
+serde = { workspace = true }
+# Stream consumption in the direct-completion tests and example.
+futures = { workspace = true }
+trybuild = { workspace = true }
+# Temporary workspaces and plugin fixtures used by facade acceptance tests.
+tempfile = { workspace = true }
+wiremock = "0.6"
+
+[[example]]
+name = "mcp_resources"
+required-features = ["openai", "mcp-stdio"]
+
+[[example]]
+name = "ask_user"
+required-features = ["openai"]
+
+[[example]]
+name = "ag_ui_axum"
+required-features = ["ag-ui-axum", "openai"]
+
+[[example]]
+name = "workspace_policy"
+required-features = ["openai"]
+
+[[example]]
+name = "direct_llm"
+required-features = ["openai"]
+
+[[example]]
+name = "production_agent"
+required-features = ["openai"]
+
+[[example]]
+name = "github_monitor"
+required-features = ["openai"]
+
+[[example]]
+name = "hello"
+required-features = ["openai"]
+
+[[example]]
+name = "image_generation"
+required-features = ["openai", "images", "local"]
+
+[[example]]
+name = "explicit_communication"
+required-features = ["openai"]
+
+[[example]]
+name = "vercel_gateway"
+required-features = ["macros", "vercel"]
+
+[[example]]
+name = "cloudflare_direct_llm"
+required-features = ["cloudflare"]
+
+[[example]]
+name = "mistral_responses"
+required-features = ["mistral"]
+
+[[example]]
+name = "observe_and_cancel"
+required-features = ["openai"]
+
+[[example]]
+name = "session_history"
+required-features = ["local", "openai"]
+
+[[example]]
+name = "workspace_heads"
+required-features = ["local", "openai"]
+
+[[example]]
+name = "subagents"
+required-features = ["openai"]
+
+[[example]]
+name = "advanced_capability"
+required-features = ["capabilities", "openai"]
+
+[[example]]
+name = "capability_configuration"
+required-features = ["capabilities", "openai"]
+
+# Uses the TypeSafe-backed decisions tool, which `typesafe` re-exports, with an
+# OpenAI model driving the agent.
+[[example]]
+name = "agent_decisions"
+required-features = ["typesafe", "openai"]
+
+[[example]]
+name = "framework_observability"
+required-features = ["openai", "otel", "braintrust"]
+
+[[example]]
+name = "canonical_events"
+required-features = ["openai"]
+
+[[example]]
+name = "session_work"
+required-features = ["openai"]
+
+[[example]]
+name = "engine_sessions"
+required-features = ["openai"]
+
+[[example]]
+name = "live_session"
+required-features = ["openai"]
+
+[[example]]
+name = "direct_decisions"
+required-features = ["openai"]
+
+[[example]]
+name = "model_catalog"
+required-features = ["openai"]
+
+# Host orchestration tests run under the facade's explicit batteries.
+[[test]]
+name = "host"
+path = "tests/host/main.rs"
+
+# This helper forwards to core's audited containment implementation.
+
+[[example]]
+name = "real_disk_file_system_tools"
+path = "examples/advanced/real_disk_file_system_tools.rs"
+required-features = ["filesystem", "openai"]
+
+[[example]]
+name = "lua_code_mode_agent"
+path = "examples/advanced/lua_code_mode_agent.rs"
+required-features = ["lua", "openai"]
+
+[[example]]
+name = "in_process_runtime"
+path = "examples/advanced/in_process_runtime.rs"
+required-features = ["openai"]
+
+[[example]]
+name = "inspect_context"
+path = "examples/advanced/inspect_context.rs"
+required-features = ["openai"]
+
+[[example]]
+name = "mount_fs_workspace"
+path = "examples/advanced/mount_fs_workspace.rs"
+
+[[example]]
+name = "plugin_from_dir"
+path = "examples/advanced/plugin_from_dir.rs"
+required-features = ["openai"]
+
+[[example]]
+name = "real_disk_agent_instructions"
+path = "examples/advanced/real_disk_agent_instructions.rs"
+required-features = ["openai"]
+
+[[example]]
+name = "file_agent"
+required-features = ["agent-package-fs", "openai"]
+
+[[example]]
+name = "dreaming"
+required-features = ["openai", "builtins", "filesystem"]
+
+[[example]]
+name = "batch_classification"
+
+[[example]]
+name = "batch_eval"

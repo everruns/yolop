@@ -15,10 +15,11 @@ Foreground TUI, inline, print, ACP, automatic inputs and linked subagents use
 this authority. Runtime construction supplies Agent, Harness, HostServices and
 a reopenable Environment. It does not construct or drive a Core runtime.
 
-The Everruns family consumes git `main`, locked together at
-[`2206d44e16c2eb5f4de8792c8b4c63dee00246cd`](https://github.com/everruns/everruns/tree/2206d44e16c2eb5f4de8792c8b4c63dee00246cd).
-This source exception is authorized for Engine adoption. A crates.io release
-must return all family dependencies to aligned published versions first.
+The Everruns family uses aligned published 0.51.0 crates. The facade has an
+exact upstream session-database backport in `vendor/everruns`, so Yolop and
+Everruns share the same routing and transfer implementation. Remove that
+backport and its Cargo patch once an aligned release includes the new API,
+before publishing Yolop to crates.io.
 
 ## Ownership
 
@@ -57,10 +58,24 @@ display paths remain separate filesystem contracts.
 
 ## Local authority and process lifetime
 
-`sessions/engine.sqlite` is the shared native authority. `engine.key` is its
-stable private encryption key; losing it refuses startup rather than replacing
-keys for an existing database. Concurrent first opens serialize key creation.
-Back up both files together. Credentials stay in the existing host stores.
+Every session owns `sessions/<session-id>/engine.sqlite`, including
+linked subagents and separately hosted coordination threads. Commands, events,
+receipts, epochs, tasks, schedules and sealed secrets route by session identity.
+Each parent's database retains only its child registry, never child journals.
+There is no global execution database or global SQLite recovery scan.
+
+`engine.key` remains the stable private encryption key at the sessions root.
+Losing it refuses startup rather than replacing keys for existing authorities.
+Concurrent first opens serialize key creation. Back up the key and the session directories together. Credentials stay in host stores.
+
+The former `.engine/<session-id>/` layout and shared `engine.sqlite` are read-only transfer sources. Directory snapshots include committed WAL state and child registrations. Ordered source selection prefers the previous owned database over the shared source. Opening a
+session first acquires the complete source family's exclusive leases, including
+ancestors and siblings when a worker opens first. It then copies each member's
+complete canonical state into a private temporary database and publishes it
+atomically. This preserves late child reports written before handoff. Live execution epochs
+refuse transfer. Failed transfers never replace a destination and retry from
+the original source. Completed transfers do not reopen the source. Do not
+resume a transferred session with an older Yolop binary.
 
 A retained native supervisor discovers runnable work independently of frontend
 requests. The hosting adapter delegates consistency ports to SqliteHosting and
@@ -70,12 +85,13 @@ Unknown builds and unavailable capabilities fail visibly, without fallback.
 The root binding retains its behavior descriptor and compatibility build ID;
 a descendant resolves that descriptor through its parent bindings.
 
-`events.jsonl` is a rebuildable raw authority export, including abandoned
-branches. It is not a second canonical writer. Resume bootstraps its transcript
-from active canonical history, even if the export is stale or empty. Frontend
-event observation is lossy and catches up with bounded authority reads. Product budget diagnostics
-live separately in `host-events.jsonl` without canonical sequence numbers and
-are filtered against active turn lineage after rewind.
+Canonical events stay in `engine.sqlite`; no continuous `events.jsonl` export
+is written. Search and offline replay stream the full raw journal from a
+read-only snapshot. Resume bootstraps its transcript from active canonical
+history. Frontend event observation is lossy and catches up with bounded
+authority reads. Product budget diagnostics live separately in
+`host-events.jsonl` without canonical sequence numbers and are filtered against
+active turn lineage after rewind.
 
 Frontend streams correlate inputs with proven Engine turn assignments. Cancel
 waits for the selected run or admission's cancellation outcome before the next
@@ -101,7 +117,7 @@ ranges over unrelated events or repairs a partially retained conversation turn.
 Older subagent events can share the root JSONL and sequence allocator. Retained
 task links or successful subagent tool results establish their parentage. Import
 separates registered child histories. Every imported journal retains its exact
-source bytes in private `legacy-events.jsonl` before rebuilding the root export. Child imports are
+source bytes in private `legacy-events.jsonl` before cutover. Child imports are
 retryable; the root moves after its children. Original compaction-attempt and
 workspace files remain local product metadata.
 

@@ -1,5 +1,28 @@
 # Knowledge Log
 
+## 2026-11-12, ACP v2 tool cancel and additional folders
+
+- [ACP](specs/acp.md): `tool_call/cancel` and `terminal/cancel` stop a running shell command and let the turn go on; `additionalDirectories` adds writable workspace folders to file tools, search and the sandbox.
+- Cancel uses a local registry shaped like everruns#5384's until an aligned release; then every tool call becomes cancellable.
+
+## 2026-11-12, ACP protocol v2
+
+- [ACP](specs/acp.md): serve draft ACP v2 beside v1 through the SDK protocol router, as a translation layer over the shared session core. Delta accepts only v2 agents.
+- The approval level is also a `mode` config option, for v2 (no modes) and for v1 clients that prefer config options.
+- v2 also reports bash calls as terminals, edits as snapshot-based diffs, background tasks on every state update, and turn usage on `idle`; adds `session/delete`, client `systemPrompt` (append or override) and `command` permission subjects. Per-tool cancel and extra directories stay unsupported.
+
+## 2026-11-10, One session folder and one event authority
+
+- [Engine execution](specs/engine-execution.md): colocate SQLite with session metadata and transfer the previous directory layout under family leases.
+- [Session history](specs/session-history.md): read native events directly, stop continuous JSONL exports and omit empty authorities from discovery.
+- [Background execution](specs/background.md): use visible `background/`, migrate existing artifacts and retain aliases for saved task paths.
+
+## 2026-11-10, Session-owned Engine databases
+
+- [Engine execution](specs/engine-execution.md): route every session and child to its own authority, retain parent-owned child registries and transfer shared canonical state under exclusive session leases.
+- Quiesce complete source families before native snapshots and stop older source hosts before the one-time coordination import.
+- Use the same upstream implementation through a temporary facade backport, removed after the next aligned Everruns release.
+
 ## 2026-11-09, Sliding repair-clock window
 
 Continuation time budget is now sliding: each productive continuation turn

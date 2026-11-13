@@ -231,7 +231,10 @@ impl WakeMessage {
         if let Some(handoff) = self.handoff.as_mut() {
             for task in &mut handoff.tasks {
                 for path in &mut task.changed_state_references {
-                    if path.starts_with("/.background/") || path.starts_with("/outputs/") {
+                    if path.starts_with("/background/")
+                        || path.starts_with("/.background/")
+                        || path.starts_with("/outputs/")
+                    {
                         let displayed = file_store.display_path(path);
                         self.raw = self.raw.replace(path.as_str(), &displayed);
                         *path = displayed;

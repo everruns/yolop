@@ -24,12 +24,18 @@ use crate::exec::shell_policy::requires_destructive_approval;
 pub(crate) use everruns_core::builtins::TOOL_APPROVAL_CAPABILITY_ID;
 pub(crate) use everruns_core::builtins::{ApprovalDecision, ToolApprover};
 
+/// Sees every tool call just before the gate decides on it, so a host can
+/// capture state the call is about to change (ACP v2 snapshots the files an
+/// edit touches to report a diff).
+pub(crate) type ToolObserver = Arc<dyn Fn(SessionId, &ToolCall) + Send + Sync>;
+
 /// Delegates approval policy to everruns-core while resolving Yolop's live mode.
 pub struct ToolApprovalCapability {
     upstream: Arc<UpstreamToolApprovalCapability>,
     approver: Arc<dyn ToolApprover>,
     config: Arc<dyn ConfigService>,
     critical_remembered: Arc<Mutex<HashMap<(SessionId, String), bool>>>,
+    observer: Option<ToolObserver>,
 }
 
 impl ToolApprovalCapability {
@@ -39,7 +45,13 @@ impl ToolApprovalCapability {
             approver,
             config,
             critical_remembered: Arc::new(Mutex::new(HashMap::new())),
+            observer: None,
         }
+    }
+
+    pub(crate) fn with_observer(mut self, observer: Option<ToolObserver>) -> Self {
+        self.observer = observer;
+        self
     }
 }
 
@@ -75,6 +87,7 @@ impl Capability for ToolApprovalCapability {
             approver: self.approver.clone(),
             config: self.config.clone(),
             critical_remembered: self.critical_remembered.clone(),
+            observer: self.observer.clone(),
         })]
     }
 }
@@ -84,6 +97,7 @@ struct LiveApprovalHook {
     approver: Arc<dyn ToolApprover>,
     config: Arc<dyn ConfigService>,
     critical_remembered: Arc<Mutex<HashMap<(SessionId, String), bool>>>,
+    observer: Option<ToolObserver>,
 }
 
 impl LiveApprovalHook {
@@ -104,6 +118,9 @@ impl PreToolUseHook for LiveApprovalHook {
         tool_def: &ToolDefinition,
         context: &ToolContext,
     ) -> PreToolUseDecision {
+        if let Some(observer) = &self.observer {
+            observer(context.session_id, &tool_call);
+        }
         let mode = self.config.approval_mode();
         let critical_command = if tool_call.name == "bash" {
             tool_call

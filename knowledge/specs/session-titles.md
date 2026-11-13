@@ -22,7 +22,7 @@ Every effective title mutation emits Everruns' typed
 `session.title.updated` event. Yolop treats that event as the durable semantic
 record and:
 
-- persists it in the session `events.jsonl` log;
+- persists it in the session `engine.sqlite` journal;
 - projects its latest title into `workspace.json` for local session discovery;
 - sends ACP clients a `session_info_update` so their session label changes;
 - restores the latest event-projected title when resuming a session.

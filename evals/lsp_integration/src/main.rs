@@ -3,7 +3,7 @@
 //!
 //! A [Mira](https://github.com/everruns/mira) eval study on the `mira-eval`
 //! Rust SDK, structured like `harness_basic/` (the subject spawns headless
-//! `yolop -p` per case and mines the session `events.jsonl`) but deliberately
+//! `yolop -p` per case and mines the session event journal) but deliberately
 //! separate: every sample here is a **semantic-navigation trap** where lexical
 //! search (grep/ast-grep) is wrong or wasteful and a language server is
 //! precise — decoy same-name symbols that must survive a rename, re-export
@@ -625,12 +625,60 @@ fn sanitize(s: &str) -> String {
 /// Keep the raw session log for debugging: events.jsonl files land under the
 /// study's gitignored `.cache/sessions/`, and the transcript metadata records
 /// the path. Best-effort — a copy failure never fails the case.
-fn preserve_session_log(events_path: &Path, slug: &str) -> Option<String> {
+fn preserve_session_log(journal: Option<&str>, slug: &str) -> Option<String> {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join(".cache/sessions");
     std::fs::create_dir_all(&dir).ok()?;
     let dest = dir.join(format!("{slug}.events.jsonl"));
-    std::fs::copy(events_path, &dest).ok()?;
+    std::fs::write(&dest, journal?).ok()?;
     Some(format!(".cache/sessions/{slug}.events.jsonl"))
+}
+
+/// Read a session's event journal as JSONL. Current yolop keeps the canonical
+/// journal only in `<session>/engine.sqlite` (no `events.jsonl` export since
+/// #934); preserved baselines from before that still write `events.jsonl`, so
+/// both layouts must mine identically. Reads stop at the authority's committed
+/// `head`, the same watermark yolop's own reader uses.
+fn read_session_journal(session_dir: &Path, session_id: &str) -> Option<String> {
+    let database = session_dir.join("engine.sqlite");
+    if database.is_file()
+        && let Some(body) = read_sqlite_journal(&database, session_id)
+    {
+        return Some(body);
+    }
+    std::fs::read_to_string(session_dir.join("events.jsonl")).ok()
+}
+
+fn read_sqlite_journal(database: &Path, session_id: &str) -> Option<String> {
+    let mut connection =
+        rusqlite::Connection::open_with_flags(database, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .ok()?;
+    connection.busy_timeout(Duration::from_secs(5)).ok()?;
+    let snapshot = connection.transaction().ok()?;
+    let control: String = snapshot
+        .query_row(
+            "SELECT control FROM framework_authority WHERE session=?",
+            [session_id],
+            |row| row.get(0),
+        )
+        .ok()?;
+    let head = serde_json::from_str::<Value>(&control)
+        .ok()?
+        .get("head")?
+        .as_i64()?;
+    let mut query = snapshot
+        .prepare("SELECT value FROM framework_events WHERE session=? AND seq<=? ORDER BY seq")
+        .ok()?;
+    let rows = query
+        .query_map(rusqlite::params![session_id, head], |row| {
+            row.get::<_, String>(0)
+        })
+        .ok()?;
+    let mut body = String::new();
+    for row in rows {
+        body.push_str(&row.ok()?);
+        body.push('\n');
+    }
+    Some(body)
 }
 
 async fn run_yolop(sample: Sample, cx: RunCx) -> Transcript {
@@ -756,12 +804,11 @@ async fn run_yolop(sample: Sample, cx: RunCx) -> Transcript {
         }
     }
 
-    let events_path = sessions.join(&session_id).join("events.jsonl");
-    let mined = std::fs::read_to_string(&events_path)
-        .map(|text| parse_events(&text))
-        .unwrap_or_default();
+    let session_path = sessions.join(&session_id);
+    let journal = read_session_journal(&session_path, &session_id);
+    let mined = journal.as_deref().map(parse_events).unwrap_or_default();
     if mined.llm_calls == 0 && t.error.is_none() {
-        t.error = Some(format!("no events at {}", events_path.display()));
+        t.error = Some(format!("no events in {}", session_path.display()));
         stop_reason = "error";
     }
 
@@ -814,7 +861,7 @@ async fn run_yolop(sample: Sample, cx: RunCx) -> Transcript {
         harness,
         &session_id["session_".len()..]
     ));
-    if let Some(kept) = preserve_session_log(&events_path, &slug) {
+    if let Some(kept) = preserve_session_log(journal.as_deref(), &slug) {
         t.metadata.insert("session_log".into(), json!(kept));
     }
     t

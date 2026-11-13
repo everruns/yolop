@@ -255,12 +255,15 @@ jobs:
           cargo llvm-cov report --lcov --output-path lcov.info
           cargo llvm-cov report --summary-only
 
+      # Codecov is an external reporting service: an outage or a deactivated
+      # repository there (as on 2026-11-11) must not turn main red. Coverage
+      # still runs above, and the lcov artifact below is the source of truth.
       - name: Upload coverage to Codecov
         if: always()
         uses: codecov/codecov-action@v7
         with:
           files: lcov.info
-          fail_ci_if_error: ${{ github.event_name == 'push' }}
+          fail_ci_if_error: false
           token: ${{ secrets.CODECOV_TOKEN }}
 
       - name: Upload coverage artifact
@@ -365,6 +368,9 @@ jobs:
       # fixtures contend for MXC's path mutexes; keep every assertion, in sequence.
       - name: Sandbox + shell tests
         run: cargo test --locked -p yolop sandbox -- --nocapture --test-threads=1
+
+      - name: Resume from the previous SQLite layout
+        run: cargo test --locked -p yolop --test integration llmsim_resume_moves_old_database_and_reads_history_without_event_export -- --exact --nocapture
 
       - name: Offline smoke (PowerShell shell)
         run: cargo run -p yolop -- --provider llmsim -p "hi"

@@ -1,0 +1,1110 @@
+//! Observable and cancellable turns.
+//!
+//! This module promotes two capabilities onto the [`Session`](crate::Session)
+//! surface without leaking host/runtime internals or core event/store types:
+//!
+//! - **Observation.** [`Session::events`](crate::Session::events) returns an
+//!   [`EventStream`] — a live feed of [`SessionEvent`]s projected from the
+//!   host's canonical event emitter. Each event carries a reviewed typed
+//!   projection, and the full canonical envelope stays available through
+//!   [`SessionEvent::canonical_json`]. The stream is bounded, so a slow or
+//!   dropped consumer can never stall the turn that produces the events; lag is
+//!   reported explicitly to the consumer.
+//! - **Cancellation.** [`Session::run_with`](crate::Session::run_with) accepts a
+//!   [`RunOptions`] carrying an optional [`CancellationToken`]. Cancelling the
+//!   token stops the in-flight turn by dropping its future — the same
+//!   cooperative, drop-based cancellation the runtime already uses to tear down
+//!   tool work — and the turn resolves to a stable [`Turn`](crate::Turn) with
+//!   [`TurnStopReason::Cancelled`](crate::TurnStopReason::Cancelled).
+//!
+//! Only facade types appear on the public surface: no `EventBus`,
+//! `EventEmitter`, `EventRequest`, or core event/store types.
+//!
+//! The live subscriber is not persistence. Everruns' host `EventLog` commits
+//! durable canonical events; its `EventHistory` is a read-only projection built
+//! by replay. The host `EventSink` and this facade's [`EventStream`] observe
+//! post-commit durable events plus live-only ephemeral events. Sink absence,
+//! lag, or failure cannot create, roll back, or replace conversation history.
+
+use std::collections::VecDeque;
+use std::sync::{Mutex, OnceLock};
+
+use everruns_contracts::typed_id::{SessionId, TurnId};
+use everruns_core::events::{
+    self, Event, EventContext, EventData, EventRequest, InputMessageData,
+    OutputMessageCompletedData, OutputMessageDeltaData, OutputMessageReplacedData,
+    OutputMessageStartedData, ReasonCompletedData, ToolCompletedData, ToolOutputDeltaData,
+    ToolProgressData, ToolStartedData, TurnCancelledData, TurnFailedData,
+};
+use everruns_core::host::{EventSink, EventSinkError};
+use serde_json::Value;
+use tokio::sync::broadcast;
+
+/// Capacity of the per-session broadcast channel that backs [`EventStream`].
+///
+/// A turn normally emits well under this many events. If a consumer falls
+/// behind, the channel evicts its oldest unread events and reports the exact
+/// gap through [`EventStreamError::Lagged`] rather than applying backpressure to
+/// the turn — the runner must never block on an observer.
+pub const EVENT_STREAM_CAPACITY: usize = 4096;
+
+/// A validated, session-scoped continuation for canonical event replay.
+pub use everruns_core::host::EventCursor as SessionEventCursor;
+
+/// One bounded snapshot of canonical session events.
+pub struct SessionEventPage {
+    /// Persisted envelopes in sequence order.
+    pub events: Vec<SessionEvent>,
+    /// Continue this snapshot; absent once its watermark is reached.
+    pub next_cursor: Option<SessionEventCursor>,
+    /// Sequence that fixed this snapshot.
+    pub high_watermark: i32,
+}
+
+/// A single observed event from a running [`Session`](crate::Session).
+///
+/// Two surfaces, deliberately separated:
+///
+/// - **Reviewed** — [`kind`](SessionEvent::kind) and the matching
+///   [`data`](SessionEvent::data)/[`as_json`](SessionEvent::as_json). Carries
+///   only fields someone chose to promote, so a new internal field cannot
+///   silently become this crate's public API or reach wherever an application
+///   forwards these envelopes.
+/// - **Canonical** — [`canonical_json`](SessionEvent::canonical_json). The
+///   complete envelope, nothing withheld, for auditing and replay. It follows
+///   the runtime's internal shape, may contain prompts and tool results, and is
+///   not covered by this crate's stability guarantees.
+///
+/// Envelope fields — timestamp, optional persisted sequence, correlation
+/// context and tags — are complete on both; reviewed metadata contains only public provenance. For
+/// streaming delta events, the redundant `data.accumulated` prefix is
+/// omitted from both to keep buffered stream memory proportional to output size
+/// rather than quadratic in it. Incremental text and reasoning remain in the
+/// corresponding typed delta variants.
+///
+/// The correlation ids (`event_id`, `session_id`, and the optional `turn_id`)
+/// are also promoted as strings for common logging and matching tasks.
+#[derive(Clone, Debug)]
+#[non_exhaustive]
+pub struct SessionEvent {
+    /// Opaque id uniquely identifying this event.
+    pub event_id: String,
+    /// Opaque id of the session that produced the event.
+    pub session_id: String,
+    /// Opaque id of the turn this event belongs to, when turn-scoped.
+    pub turn_id: Option<String>,
+    /// The event-specific projection.
+    pub kind: SessionEventKind,
+    event_type: String,
+    timestamp: String,
+    data: Value,
+    raw: Value,
+    canonical: Value,
+}
+
+/// The event-specific payload of a [`SessionEvent`].
+///
+/// Non-exhaustive on purpose: event kinds useful to an application renderer are
+/// promoted here, while every other event is identified through
+/// [`Other`](SessionEventKind::Other). No event is ever dropped — the complete
+/// payload of every variant, including event types this version of the crate
+/// does not recognize, stays available through
+/// [`SessionEvent::canonical_json`].
+#[derive(Clone, Debug)]
+#[non_exhaustive]
+pub enum SessionEventKind {
+    /// A user input message was committed to the canonical event history.
+    InputMessage {
+        /// Stable id of the user message.
+        message_id: String,
+    },
+    /// Assistant output began streaming.
+    OutputStarted {
+        /// Stable id shared by the output's deltas and completion.
+        message_id: String,
+    },
+    /// A turn began executing.
+    TurnStarted,
+    /// A turn finished successfully.
+    TurnCompleted,
+    /// A turn ended with an unrecoverable failure.
+    TurnFailed {
+        /// Human-readable failure message.
+        error: String,
+    },
+    /// A turn was cancelled before completing.
+    TurnCancelled,
+    /// An incremental chunk of assistant output text.
+    TextDelta {
+        /// The new text appended by this delta.
+        delta: String,
+    },
+    /// Streaming output was replaced, for example by an output guardrail.
+    OutputReplaced {
+        /// Stable id of the assistant message being replaced.
+        message_id: String,
+        /// Replacement text that is safe to render.
+        replacement: String,
+    },
+    /// An assistant output message completed.
+    OutputCompleted {
+        /// Stable id shared by the output's start and deltas.
+        message_id: String,
+    },
+    /// The agent sent a message to the conversation with `send_message`
+    /// (explicit communication). Its output messages are then working notes;
+    /// this is what it said.
+    MessageSent {
+        /// Stable id of the sent message.
+        message_id: String,
+        /// The message, as the agent wrote it.
+        text: String,
+    },
+    /// A tool call started executing.
+    ToolStarted {
+        /// Opaque id of the tool call.
+        tool_call_id: String,
+        /// Name of the tool being invoked.
+        tool_name: String,
+    },
+    /// A tool call finished executing.
+    ToolCompleted {
+        /// Opaque id of the tool call.
+        tool_call_id: String,
+        /// Name of the tool that was invoked.
+        tool_name: String,
+        /// Whether the tool call succeeded.
+        success: bool,
+    },
+    /// A running tool reported human-readable progress.
+    ToolProgress {
+        /// Opaque id of the tool call.
+        tool_call_id: String,
+        /// Name of the tool being invoked.
+        tool_name: String,
+        /// Progress message suitable for a timeline or terminal.
+        message: String,
+    },
+    /// A running tool produced an incremental output chunk.
+    ToolOutputDelta {
+        /// Opaque id of the tool call.
+        tool_call_id: String,
+        /// Name of the tool being invoked.
+        tool_name: String,
+        /// Output stream identifier, such as `"stdout"` or `"stderr"`.
+        stream: String,
+        /// New output appended to that stream.
+        delta: String,
+    },
+    /// An LLM inference step began.
+    ///
+    /// This is the reason half of the reason/act loop, not model reasoning: it
+    /// says an inference call started, nothing about whether the model reasoned.
+    /// For that, match [`Self::ReasoningDelta`] and [`Self::ReasoningItem`].
+    ReasonStarted,
+    /// An LLM inference step completed. See [`Self::ReasonStarted`].
+    ReasonCompleted {
+        /// Whether the model call succeeded.
+        success: bool,
+        /// Provider/model failure detail, when the step failed.
+        error: Option<String>,
+    },
+    /// Incremental model reasoning. Belongs to the reasoning channel and must
+    /// never be rendered as assistant text.
+    ReasoningDelta {
+        /// New reasoning text since the last event.
+        delta: String,
+        /// Reasoning so far, for convenience.
+        accumulated: String,
+    },
+    /// Model reasoning finished for this turn.
+    ReasoningCompleted {
+        /// The complete reasoning text.
+        text: String,
+    },
+    /// One provider reasoning artifact completed.
+    ///
+    /// Carries identity and provider-curated summary text only; opaque replay
+    /// state never reaches this surface.
+    ReasoningItem {
+        /// Provider that produced it (`anthropic`, `openai`, `google`).
+        provider: String,
+        /// Provider-assigned identifier, when one was issued.
+        item_id: Option<String>,
+        /// Provider-curated summary segments. Never raw chain-of-thought.
+        summary: Vec<String>,
+    },
+    /// A complete model-generation record was emitted.
+    ///
+    /// The accounting fields are promoted here because tracking spend and
+    /// latency is a first-class reason to observe a session, and none of them
+    /// carry conversation content. The generation's messages, tool requests,
+    /// and output text stay off the reviewed surface; reach them with
+    /// [`SessionEvent::canonical_json`] when you actually need them.
+    ModelGeneration {
+        /// Model identifier used for the generation.
+        model: String,
+        /// Provider that served the generation, when recorded.
+        provider: Option<String>,
+        /// Prompt tokens billed for this generation.
+        input_tokens: Option<u32>,
+        /// Completion tokens billed for this generation.
+        output_tokens: Option<u32>,
+        /// Best-effort USD cost: the provider's actual cost when it reported
+        /// one, otherwise the price-table estimate.
+        cost_usd: Option<f64>,
+        /// Wall-clock duration of the generation.
+        duration_ms: Option<u64>,
+        /// Whether the generation completed successfully.
+        success: bool,
+    },
+    /// Any other canonical event, identified but not projected.
+    ///
+    /// `event_type` is the stable dot-notation type string (e.g.
+    /// `"act.started"`). This is the forward-compatibility fallback — match it
+    /// with a wildcard arm. The event's payload is deliberately absent from the
+    /// reviewed surface, because a type this version does not recognize has by
+    /// definition not been reviewed for what it exposes; read it from
+    /// [`SessionEvent::canonical_json`] if you need it.
+    Other {
+        /// Stable dot-notation event type string.
+        event_type: String,
+    },
+}
+
+impl SessionEventKind {
+    /// Whether this event ends its associated turn.
+    pub fn is_terminal(&self) -> bool {
+        matches!(
+            self,
+            Self::TurnCompleted | Self::TurnFailed { .. } | Self::TurnCancelled
+        )
+    }
+}
+
+impl SessionEvent {
+    /// The stable dot-notation type string for this event (e.g.
+    /// `"turn.started"`), matching the canonical event protocol.
+    pub fn event_type(&self) -> &str {
+        &self.event_type
+    }
+
+    /// Persisted replay sequence within this session.
+    ///
+    /// Durable events return `Some(sequence)` with a monotonically increasing
+    /// per-session position. Ephemeral live-only events such as output deltas
+    /// return `None`. [`EventStream`] preserves live channel arrival order; this
+    /// canonical field must not be treated as a delivery counter.
+    pub fn sequence(&self) -> Option<i32> {
+        self.raw
+            .get("sequence")
+            .and_then(Value::as_i64)
+            .and_then(|value| i32::try_from(value).ok())
+    }
+
+    /// RFC 3339 timestamp from the canonical event envelope.
+    pub fn timestamp(&self) -> &str {
+        &self.timestamp
+    }
+
+    /// The event envelope as JSON, carrying the reviewed `data` projection.
+    ///
+    /// Timestamp, sequence, correlation context and tags are complete;
+    /// metadata contains only reviewed public provenance. `data` holds the same reviewed projection as
+    /// [`data`](Self::data) rather than the raw internal payload, so a new
+    /// internal field cannot become part of this crate's public surface, or
+    /// reach whatever an application forwards these envelopes to, without
+    /// someone choosing to promote it.
+    ///
+    /// Use [`canonical_json`](Self::canonical_json) for the untouched payload.
+    pub fn as_json(&self) -> &Value {
+        &self.raw
+    }
+
+    /// Consume the event and return its envelope with the reviewed `data`
+    /// projection. See [`as_json`](Self::as_json).
+    pub fn into_json(self) -> Value {
+        self.raw
+    }
+
+    /// The complete canonical event envelope, including the raw internal
+    /// payload.
+    ///
+    /// Nothing is withheld, so nothing observable is lost: this is the escape
+    /// hatch for auditing, recording, and replay. `data.accumulated` on
+    /// streaming delta events is the one exception — that redundant growing
+    /// prefix is dropped at ingest so a slow subscriber cannot retain quadratic
+    /// memory. Consumers can reconstruct it from the ordered incremental deltas.
+    ///
+    /// The payload here follows the runtime's internal shape rather than this
+    /// crate's reviewed surface. It can contain prompts, tool arguments, and
+    /// tool results, and it can gain or change fields in a patch release. Treat
+    /// what you read from it as unstable, and do not forward it anywhere the
+    /// conversation itself should not go.
+    pub fn canonical_json(&self) -> &Value {
+        &self.canonical
+    }
+
+    /// The reviewed event-specific `data` payload.
+    ///
+    /// Contains the fields promoted onto [`SessionEventKind`] for this event and
+    /// nothing else, so it is safe to log or forward. A renderer needing a field
+    /// that is not promoted should ask for it to be promoted; a consumer that
+    /// genuinely needs the internal payload should call
+    /// [`canonical_json`](Self::canonical_json) and accept its instability.
+    pub fn data(&self) -> &Value {
+        &self.data
+    }
+
+    /// Human-readable tool narration, when the event carries it.
+    pub fn narration(&self) -> Option<&str> {
+        self.data().get("narration").and_then(Value::as_str)
+    }
+
+    /// Project a core [`Event`] into a facade [`SessionEvent`].
+    ///
+    /// Known event types map to typed [`SessionEventKind`] variants; every other
+    /// type is carried through the [`Other`](SessionEventKind::Other) fallback,
+    /// so no event is ever dropped.
+    pub(crate) fn from_core_event(event: &Event) -> Self {
+        let mut raw = serde_json::to_value(event).expect("canonical events are JSON serializable");
+        let mut data = serde_json::to_value(&event.data)
+            .expect("canonical event payloads are JSON serializable");
+        if matches!(
+            event.event_type.as_str(),
+            events::OUTPUT_MESSAGE_DELTA | events::REASON_THINKING_DELTA
+        ) {
+            // THREAT[TM-DOS-040]: accumulated repeats the entire streamed prefix
+            // in every delta. Retaining those prefixes in the broadcast ring
+            // would turn an n-byte streamed response into O(n^2) memory.
+            data.as_object_mut()
+                .and_then(|data| data.remove("accumulated"));
+            raw.get_mut("data")
+                .and_then(Value::as_object_mut)
+                .and_then(|data| data.remove("accumulated"));
+        }
+        // Kept whole before `raw` is narrowed to the reviewed projection, so
+        // `canonical_json` can still hand back everything the runtime emitted.
+        let canonical = raw.clone();
+        if let Some(metadata) = raw.get_mut("metadata") {
+            *metadata = everruns_contracts::public_metadata::event(metadata);
+        }
+        let turn_id = event.context.turn_id.map(|id| id.to_string());
+        let kind = match event.event_type.as_str() {
+            events::INPUT_MESSAGE => match &event.data {
+                EventData::InputMessage(InputMessageData { message }) => {
+                    SessionEventKind::InputMessage {
+                        message_id: message.id.to_string(),
+                    }
+                }
+                _ => Self::other_kind(event),
+            },
+            events::OUTPUT_MESSAGE_STARTED => match &event.data {
+                EventData::OutputMessageStarted(OutputMessageStartedData {
+                    message_id, ..
+                }) => SessionEventKind::OutputStarted {
+                    message_id: message_id.to_string(),
+                },
+                _ => Self::other_kind(event),
+            },
+            events::TURN_STARTED => SessionEventKind::TurnStarted,
+            events::TURN_COMPLETED => SessionEventKind::TurnCompleted,
+            events::TURN_CANCELLED => SessionEventKind::TurnCancelled,
+            events::TURN_FAILED => match &event.data {
+                EventData::TurnFailed(TurnFailedData { error, .. }) => {
+                    SessionEventKind::TurnFailed {
+                        error: error.clone(),
+                    }
+                }
+                _ => Self::other_kind(event),
+            },
+            events::OUTPUT_MESSAGE_DELTA => match &event.data {
+                EventData::OutputMessageDelta(OutputMessageDeltaData { delta, .. }) => {
+                    SessionEventKind::TextDelta {
+                        delta: delta.clone(),
+                    }
+                }
+                _ => Self::other_kind(event),
+            },
+            events::OUTPUT_MESSAGE_REPLACED => match &event.data {
+                EventData::OutputMessageReplaced(OutputMessageReplacedData {
+                    message_id,
+                    replacement,
+                    ..
+                }) => SessionEventKind::OutputReplaced {
+                    message_id: message_id.to_string(),
+                    replacement: replacement.clone(),
+                },
+                _ => Self::other_kind(event),
+            },
+            events::OUTPUT_MESSAGE_COMPLETED => match &event.data {
+                EventData::OutputMessageCompleted(OutputMessageCompletedData {
+                    message, ..
+                }) => SessionEventKind::OutputCompleted {
+                    message_id: message.id.to_string(),
+                },
+                _ => Self::other_kind(event),
+            },
+            events::CONVERSATION_MESSAGE => match &event.data {
+                EventData::ConversationMessage(data) => SessionEventKind::MessageSent {
+                    message_id: data.message_id.to_string(),
+                    text: data.text.clone(),
+                },
+                _ => Self::other_kind(event),
+            },
+            events::TOOL_STARTED => match &event.data {
+                EventData::ToolStarted(ToolStartedData { tool_call, .. }) => {
+                    SessionEventKind::ToolStarted {
+                        tool_call_id: tool_call.id.clone(),
+                        tool_name: tool_call.name.clone(),
+                    }
+                }
+                _ => Self::other_kind(event),
+            },
+            events::TOOL_COMPLETED => match &event.data {
+                EventData::ToolCompleted(ToolCompletedData {
+                    tool_call_id,
+                    tool_name,
+                    success,
+                    ..
+                }) => SessionEventKind::ToolCompleted {
+                    tool_call_id: tool_call_id.clone(),
+                    tool_name: tool_name.clone(),
+                    success: *success,
+                },
+                _ => Self::other_kind(event),
+            },
+            events::TOOL_PROGRESS => match &event.data {
+                EventData::ToolProgress(ToolProgressData {
+                    tool_call_id,
+                    tool_name,
+                    message,
+                    ..
+                }) => SessionEventKind::ToolProgress {
+                    tool_call_id: tool_call_id.clone(),
+                    tool_name: tool_name.clone(),
+                    message: message.clone(),
+                },
+                _ => Self::other_kind(event),
+            },
+            events::TOOL_OUTPUT_DELTA => match &event.data {
+                EventData::ToolOutputDelta(ToolOutputDeltaData {
+                    tool_call_id,
+                    tool_name,
+                    stream,
+                    delta,
+                }) => SessionEventKind::ToolOutputDelta {
+                    tool_call_id: tool_call_id.clone(),
+                    tool_name: tool_name.clone(),
+                    stream: stream.clone(),
+                    delta: delta.clone(),
+                },
+                _ => Self::other_kind(event),
+            },
+            events::REASON_STARTED => SessionEventKind::ReasonStarted,
+            events::REASON_COMPLETED => match &event.data {
+                EventData::ReasonCompleted(ReasonCompletedData { success, error, .. }) => {
+                    SessionEventKind::ReasonCompleted {
+                        success: *success,
+                        error: error.clone(),
+                    }
+                }
+                _ => Self::other_kind(event),
+            },
+            events::REASON_THINKING_DELTA => match &event.data {
+                EventData::ReasonThinkingDelta(data) => SessionEventKind::ReasoningDelta {
+                    delta: data.delta.clone(),
+                    // Consumers can reconstruct this from the ordered deltas. Keeping every
+                    // prefix would make a slow event consumer retain quadratic memory.
+                    accumulated: String::new(),
+                },
+                _ => Self::other_kind(event),
+            },
+            events::REASON_THINKING_COMPLETED => match &event.data {
+                EventData::ReasonThinkingCompleted(data) => SessionEventKind::ReasoningCompleted {
+                    text: data.thinking.clone(),
+                },
+                _ => Self::other_kind(event),
+            },
+            events::REASON_ITEM => match &event.data {
+                EventData::ReasonItem(data) => SessionEventKind::ReasoningItem {
+                    provider: data.provider.clone(),
+                    item_id: (!data.item_id.is_empty()).then(|| data.item_id.clone()),
+                    summary: data.summary.clone(),
+                },
+                _ => Self::other_kind(event),
+            },
+            events::LLM_GENERATION => match &event.data {
+                EventData::LlmGeneration(data) => {
+                    let usage = data.metadata.usage.as_ref();
+                    SessionEventKind::ModelGeneration {
+                        model: data.metadata.model.clone(),
+                        provider: data.metadata.provider.clone(),
+                        input_tokens: usage.map(|usage| usage.input_tokens),
+                        output_tokens: usage.map(|usage| usage.output_tokens),
+                        cost_usd: usage.and_then(|usage| usage.effective_cost_usd()),
+                        duration_ms: data.metadata.duration_ms,
+                        success: data.metadata.success,
+                    }
+                }
+                _ => Self::other_kind(event),
+            },
+            _ => Self::other_kind(event),
+        };
+        // Narrow `data` to what `kind` promotes. Everything the runtime emitted
+        // stays reachable through `canonical`; this is what makes an unreviewed
+        // internal field a deliberate promotion rather than an accident.
+        let data = Self::reviewed_data(&kind, &data);
+        raw["data"] = data.clone();
+        Self {
+            event_id: event.id.to_string(),
+            session_id: event.session_id.to_string(),
+            turn_id,
+            kind,
+            event_type: event.event_type.clone(),
+            timestamp: event.ts.to_rfc3339(),
+            data,
+            raw,
+            canonical,
+        }
+    }
+
+    /// Build the reviewed `data` payload for a projected event.
+    ///
+    /// Every arm names the fields it promotes — mirroring the variant's own
+    /// fields where it has them, an explicit list where it does not. Adding a
+    /// field means adding it here; an event that promotes nothing gets an empty
+    /// object rather than its internal payload. No arm clones `data`, so no
+    /// event type gains public surface without someone deciding it should.
+    fn reviewed_data(kind: &SessionEventKind, data: &Value) -> Value {
+        // Operator-authored display text, reviewed as safe wherever it appears:
+        // a human wrote it for a timeline, so it carries no model or tool
+        // content. `narration()` reads the first of these back.
+        const DISPLAY_FIELDS: [&str; 2] = ["narration", "display_name"];
+        let mut reviewed = match kind {
+            SessionEventKind::InputMessage { message_id }
+            | SessionEventKind::OutputStarted { message_id } => {
+                serde_json::json!({ "message_id": message_id })
+            }
+            SessionEventKind::OutputCompleted { message_id } => {
+                serde_json::json!({ "message_id": message_id })
+            }
+            SessionEventKind::MessageSent { message_id, text } => {
+                serde_json::json!({ "message_id": message_id, "text": text })
+            }
+            SessionEventKind::OutputReplaced {
+                message_id,
+                replacement,
+            } => serde_json::json!({ "message_id": message_id, "replacement": replacement }),
+            SessionEventKind::TurnFailed { error } => serde_json::json!({ "error": error }),
+            SessionEventKind::TextDelta { delta } => serde_json::json!({ "delta": delta }),
+            SessionEventKind::ToolStarted {
+                tool_call_id,
+                tool_name,
+            } => serde_json::json!({ "tool_call_id": tool_call_id, "tool_name": tool_name }),
+            SessionEventKind::ToolCompleted {
+                tool_call_id,
+                tool_name,
+                success,
+            } => {
+                let mut completed = serde_json::json!({
+                    "tool_call_id": tool_call_id,
+                    "tool_name": tool_name,
+                    "success": success,
+                });
+                // Outcome, not content: whether the failure stopped work.
+                if let Some(severity) = data.get("severity") {
+                    completed["severity"] = severity.clone();
+                }
+                completed
+            }
+            SessionEventKind::ToolProgress {
+                tool_call_id,
+                tool_name,
+                message,
+            } => serde_json::json!({
+                "tool_call_id": tool_call_id,
+                "tool_name": tool_name,
+                "message": message,
+            }),
+            SessionEventKind::ToolOutputDelta {
+                tool_call_id,
+                tool_name,
+                stream,
+                delta,
+            } => serde_json::json!({
+                "tool_call_id": tool_call_id,
+                "tool_name": tool_name,
+                "stream": stream,
+                "delta": delta,
+            }),
+            SessionEventKind::ReasoningDelta { delta, .. } => serde_json::json!({ "delta": delta }),
+            SessionEventKind::ReasonCompleted { success, error } => {
+                serde_json::json!({ "success": success, "error": error })
+            }
+            SessionEventKind::ReasoningCompleted { text } => serde_json::json!({ "text": text }),
+            SessionEventKind::ReasoningItem {
+                provider,
+                item_id,
+                summary,
+            } => serde_json::json!({
+                "provider": provider,
+                "item_id": item_id,
+                "summary": summary,
+            }),
+            SessionEventKind::ModelGeneration {
+                model,
+                provider,
+                input_tokens,
+                output_tokens,
+                cost_usd,
+                duration_ms,
+                success,
+            } => serde_json::json!({
+                "model": model,
+                "provider": provider,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "cost_usd": cost_usd,
+                "duration_ms": duration_ms,
+                "success": success,
+            }),
+            // Turn id, cancellation reason and usage totals are reviewed safe —
+            // none carries conversation content. Named explicitly rather than
+            // cloned wholesale: `TurnCancelled` promotes no variant fields, so a
+            // clone would make this the one event where a field added inside the
+            // runtime joins the public surface on its own, which is exactly what
+            // the reviewed/canonical split exists to prevent.
+            SessionEventKind::TurnCancelled => {
+                let mut cancelled = serde_json::Map::new();
+                for field in ["turn_id", "reason", "usage"] {
+                    if let Some(value) = data.get(field) {
+                        cancelled.insert(field.to_string(), value.clone());
+                    }
+                }
+                Value::Object(cancelled)
+            }
+            // Issue count is an outcome tally with no conversation content.
+            SessionEventKind::TurnCompleted => {
+                let mut completed = serde_json::Map::new();
+                if let Some(value) = data.get("issue_count") {
+                    completed.insert("issue_count".to_string(), value.clone());
+                }
+                Value::Object(completed)
+            }
+            SessionEventKind::Other { .. }
+            | SessionEventKind::TurnStarted
+            | SessionEventKind::ReasonStarted => serde_json::json!({}),
+        };
+        if let Some(object) = reviewed.as_object_mut() {
+            for field in DISPLAY_FIELDS {
+                if let Some(value) = data.get(field) {
+                    object.insert(field.to_string(), value.clone());
+                }
+            }
+        }
+        reviewed
+    }
+
+    fn other_kind(event: &Event) -> SessionEventKind {
+        SessionEventKind::Other {
+            event_type: event.event_type.clone(),
+        }
+    }
+}
+
+/// A live feed of [`SessionEvent`]s for one [`Session`](crate::Session).
+///
+/// Obtain one from [`Session::events`](crate::Session::events) before running a
+/// turn. Consume it with [`recv`](Self::recv) in a loop. Backed by a bounded
+/// broadcast channel: dropping the stream never affects a running turn, and a
+/// consumer that falls behind receives [`EventStreamError::Lagged`] rather than
+/// blocking the runner or silently losing events.
+pub struct EventStream {
+    rx: broadcast::Receiver<SessionEvent>,
+    /// Durable events read from the log, delivered before any live event.
+    backlog: VecDeque<SessionEvent>,
+    /// Highest durable sequence already delivered from `backlog` (or skipped
+    /// by the caller). Live durable events at or below it are duplicates of
+    /// the replay and are dropped; sequence-less ephemeral events pass.
+    replayed_through: Option<i32>,
+    authority: Option<(
+        std::sync::Arc<dyn crate::hosting::SessionHosting>,
+        SessionId,
+        i32,
+    )>,
+}
+
+/// Why an [`EventStream`] could not deliver the next event losslessly.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum EventStreamError {
+    /// The authority could not provide a replay page. Retry from the last cursor.
+    Unavailable,
+    /// The consumer fell behind the bounded stream buffer.
+    ///
+    /// The next call can continue from the oldest retained event, but the
+    /// consumer must treat its live projection as incomplete. Durable terminal
+    /// events remain authoritative, and services that require replay should use
+    /// a durable event transport rather than this in-process live stream.
+    Lagged {
+        /// Number of events evicted before this consumer could read them.
+        missed: u64,
+    },
+}
+
+impl std::fmt::Display for EventStreamError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unavailable => f.write_str("session event authority unavailable"),
+            Self::Lagged { missed } => write!(f, "event stream lagged by {missed} events"),
+        }
+    }
+}
+
+impl std::error::Error for EventStreamError {}
+
+impl EventStream {
+    fn new(rx: broadcast::Receiver<SessionEvent>) -> Self {
+        Self {
+            rx,
+            backlog: VecDeque::new(),
+            replayed_through: None,
+            authority: None,
+        }
+    }
+
+    pub(crate) fn with_authority(
+        mut self,
+        hosting: std::sync::Arc<dyn crate::hosting::SessionHosting>,
+        session: SessionId,
+        after: i32,
+    ) -> Self {
+        self.authority = Some((hosting, session, after.max(0)));
+        self
+    }
+
+    /// Put `backlog` ahead of the live feed and suppress live duplicates of
+    /// every durable sequence up to the later of `after` and the backlog's
+    /// last sequence.
+    ///
+    /// The receiver must already be subscribed when the backlog is read, so an
+    /// event committed between the read and this call arrives live and is
+    /// either delivered once from the backlog or once from the live feed.
+    pub(crate) fn with_replay(mut self, after: i32, backlog: Vec<SessionEvent>) -> Self {
+        let last = backlog
+            .iter()
+            .filter_map(SessionEvent::sequence)
+            .max()
+            .unwrap_or(after)
+            .max(after);
+        self.replayed_through = Some(last);
+        self.backlog = backlog.into();
+        self
+    }
+
+    fn is_replayed(&self, event: &SessionEvent) -> bool {
+        matches!(
+            (event.sequence(), self.replayed_through),
+            (Some(sequence), Some(through)) if sequence <= through
+        )
+    }
+
+    /// Await the next event.
+    ///
+    /// Returns `Ok(None)` once the session is dropped and no further events can
+    /// arrive. Returns [`EventStreamError::Lagged`] if the consumer fell behind
+    /// and events were evicted from the bounded buffer; no loss is hidden.
+    pub async fn recv(&mut self) -> Result<Option<SessionEvent>, EventStreamError> {
+        if let Some(event) = self.backlog.pop_front() {
+            return Ok(Some(event));
+        }
+        loop {
+            if let Some((hosting, session, after)) = &mut self.authority {
+                use everruns_core::host::{EventCursor, EventReadLimit, EventReadRequest};
+                let cursor = EventCursor::after(*session, *after)
+                    .map_err(|_| EventStreamError::Unavailable)?;
+                let page = hosting
+                    .reader(*session)
+                    .event_log
+                    .read_page(EventReadRequest::from_cursor(
+                        cursor,
+                        EventReadLimit::default(),
+                    ))
+                    .await
+                    .map_err(|_| EventStreamError::Unavailable)?;
+                if let Some(last) = page.events.last().and_then(|event| event.sequence) {
+                    *after = last;
+                    self.replayed_through = Some(last);
+                    self.backlog
+                        .extend(page.events.iter().map(SessionEvent::from_core_event));
+                    return Ok(self.backlog.pop_front());
+                }
+                tokio::select! {
+                    _ = everruns_contracts::rt::sleep(std::time::Duration::from_millis(50)) => continue,
+                    event = self.rx.recv() => match event {
+                        // Canonical events use the cursor reader, so a local
+                        // notification cannot skip an unseen journal gap.
+                        Ok(event) if event.sequence().is_none() => return Ok(Some(event)),
+                        Err(broadcast::error::RecvError::Closed) => return Ok(None),
+                        Err(broadcast::error::RecvError::Lagged(missed)) => return Err(EventStreamError::Lagged { missed }),
+                        // A canonical event landed: read the journal now.
+                        // If it is not visible yet, the next pass waits on
+                        // the feed or the poll above, so this cannot spin;
+                        // sleeping here delayed every live event by 50 ms.
+                        Ok(_) => continue,
+                    }
+                }
+            }
+            match self.rx.recv().await {
+                Ok(event) if self.is_replayed(&event) => continue,
+                Ok(event) => return Ok(Some(event)),
+                Err(broadcast::error::RecvError::Lagged(missed)) => {
+                    return Err(EventStreamError::Lagged { missed });
+                }
+                Err(broadcast::error::RecvError::Closed) => return Ok(None),
+            }
+        }
+    }
+
+    /// Return the next already-available event without waiting.
+    ///
+    /// Returns `Ok(None)` when no event is currently buffered (or the session
+    /// has ended). Returns [`EventStreamError::Lagged`] rather than hiding a
+    /// gap.
+    pub fn try_recv(&mut self) -> Result<Option<SessionEvent>, EventStreamError> {
+        if let Some(event) = self.backlog.pop_front() {
+            return Ok(Some(event));
+        }
+        loop {
+            match self.rx.try_recv() {
+                // Canonical delivery for hosted streams must follow the
+                // authority cursor. Local notifications can arrive out of order.
+                Ok(event) if self.authority.is_some() && event.sequence().is_some() => continue,
+                Ok(event) if self.is_replayed(&event) => continue,
+                Ok(event) => return Ok(Some(event)),
+                Err(broadcast::error::TryRecvError::Lagged(missed)) => {
+                    return Err(EventStreamError::Lagged { missed });
+                }
+                Err(broadcast::error::TryRecvError::Empty)
+                | Err(broadcast::error::TryRecvError::Closed) => return Ok(None),
+            }
+        }
+    }
+}
+
+/// Options controlling a single [`Session::run_with`](crate::Session::run_with).
+///
+/// Cheap to construct and clone; extend it over time without breaking callers.
+#[derive(Clone, Default)]
+pub struct RunOptions {
+    pub(crate) cancel: Option<CancellationToken>,
+    pub(crate) timeout: Option<std::time::Duration>,
+}
+
+impl RunOptions {
+    /// Default options: no cancellation.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Attach a cancellation token. Cancelling it stops the turn in flight.
+    pub fn cancel_token(mut self, token: CancellationToken) -> Self {
+        self.cancel = Some(token);
+        self
+    }
+
+    /// Bound how long [`run_with`](crate::Session::run_with) waits for the
+    /// turn. On expiry the turn is cancelled (like [`cancel_token`](Self::cancel_token))
+    /// and the cancelled [`Turn`](crate::Turn) is returned. This mirrors the
+    /// server `POST /v1/sessions/{id}/messages` `timeout_ms` query, except the
+    /// in-process turn is stopped rather than left running.
+    pub fn timeout(mut self, timeout: std::time::Duration) -> Self {
+        self.timeout = Some(timeout);
+        self
+    }
+}
+
+/// A handle for cancelling an in-flight turn.
+///
+/// Clone it to hold cancellation from another task; every clone shares one
+/// signal. Pass it into a run via [`RunOptions::cancel_token`], then call
+/// [`cancel`](Self::cancel) to stop the turn. Cancellation is cooperative and
+/// drop-based: the turn's future is dropped at the next await point, which tears
+/// down any in-flight tool work, and the run resolves to a cancelled
+/// [`Turn`](crate::Turn).
+#[derive(Clone, Default)]
+pub struct CancellationToken {
+    inner: tokio_util::sync::CancellationToken,
+}
+
+impl CancellationToken {
+    /// Create a fresh, un-cancelled token.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Request cancellation. Idempotent; safe to call from any task.
+    pub fn cancel(&self) {
+        self.inner.cancel();
+    }
+
+    /// Whether cancellation has been requested.
+    pub fn is_cancelled(&self) -> bool {
+        self.inner.is_cancelled()
+    }
+
+    /// Resolve once cancellation has been requested. Facade-internal: the run
+    /// loop selects on this against the turn future.
+    pub(crate) async fn cancelled(&self) {
+        self.inner.cancelled().await;
+    }
+}
+
+/// Facade event bus: the post-commit event sink handed to the host.
+///
+/// The host assigns ids and persisted sequence numbers, commits durable events,
+/// then calls this sink. It fans each finalized event out to every live
+/// [`EventStream`] as a projected [`SessionEvent`]. Sending never blocks, so an
+/// observer can never stall or fail a turn.
+pub(crate) struct FacadeEventBus {
+    /// Created on first subscribe, not with the session. A broadcast channel
+    /// preallocates all `capacity` slots up front (~1.5 MB at 4096), which is
+    /// the single largest cost of creating a session. Deferring it is
+    /// observationally identical: a subscriber only receives events sent after
+    /// it subscribed, so events emitted while no channel exists were
+    /// unobservable either way.
+    sender: OnceLock<broadcast::Sender<SessionEvent>>,
+    capacity: usize,
+    session_id: SessionId,
+    observers: std::sync::Arc<crate::observers::ObserverDispatcher>,
+    active_turn: Mutex<Option<EventContext>>,
+}
+
+impl FacadeEventBus {
+    pub(crate) fn new(
+        session_id: SessionId,
+        observers: std::sync::Arc<crate::observers::ObserverDispatcher>,
+    ) -> Self {
+        Self::with_capacity(session_id, observers, EVENT_STREAM_CAPACITY)
+    }
+
+    fn with_capacity(
+        session_id: SessionId,
+        observers: std::sync::Arc<crate::observers::ObserverDispatcher>,
+        capacity: usize,
+    ) -> Self {
+        Self {
+            sender: OnceLock::new(),
+            capacity,
+            session_id,
+            observers,
+            active_turn: Mutex::new(None),
+        }
+    }
+
+    /// Subscribe a new [`EventStream`] to this bus, allocating the broadcast
+    /// channel on the first subscribe.
+    pub(crate) fn subscribe(&self) -> EventStream {
+        let sender = self
+            .sender
+            .get_or_init(|| broadcast::channel(self.capacity).0);
+        EventStream::new(sender.subscribe())
+    }
+
+    /// Build a correlated terminal request after the facade drops a cancelled
+    /// turn future. The host emitter commits it before live delivery.
+    #[cfg(test)]
+    pub(crate) fn cancellation_request(&self, session_id: SessionId) -> (TurnId, EventRequest) {
+        self.cancellation_request_for_turn(session_id, TurnId::new())
+    }
+
+    /// Build a cancellation request with a caller-assigned turn id when the
+    /// runtime has not emitted `turn.started` yet.
+    pub(crate) fn cancellation_request_for_turn(
+        &self,
+        session_id: SessionId,
+        fallback_turn_id: TurnId,
+    ) -> (TurnId, EventRequest) {
+        let context = self
+            .active_turn
+            .lock()
+            .expect("active-turn lock poisoned")
+            .take()
+            .unwrap_or_else(|| EventContext {
+                turn_id: Some(fallback_turn_id),
+                ..EventContext::default()
+            });
+        let turn_id = context.turn_id.unwrap_or(fallback_turn_id);
+        let request = EventRequest::new(
+            session_id,
+            EventContext {
+                turn_id: Some(turn_id),
+                ..context
+            },
+            TurnCancelledData {
+                turn_id,
+                reason: Some("cancelled by application".to_string()),
+                usage: None,
+            },
+        );
+        (turn_id, request)
+    }
+
+    fn observe(&self, event: &Event) -> Result<(), EventSinkError> {
+        let projected = SessionEvent::from_core_event(event);
+        self.observers.dispatch(event, &projected);
+        if event.session_id == self.session_id {
+            match event.event_type.as_str() {
+                events::TURN_STARTED => {
+                    *self.active_turn.lock().expect("active-turn lock poisoned") =
+                        Some(event.context.clone());
+                }
+                events::TURN_COMPLETED
+                | events::TURN_FAILED
+                | events::TURN_CANCELLED
+                | events::TURN_SEALED => {
+                    self.active_turn
+                        .lock()
+                        .expect("active-turn lock poisoned")
+                        .take();
+                }
+                _ => {}
+            }
+            if let Some(sender) = self.sender.get() {
+                let _ = sender.send(projected);
+            }
+        }
+        Ok(())
+    }
+}
+
+impl EventSink for FacadeEventBus {
+    fn prepare_causal_context(
+        &self,
+        request: &everruns_core::events::EventRequest,
+    ) -> Option<String> {
+        self.observers.prepare_causal_context(request)
+    }
+    fn turn_causal_context(
+        &self,
+        context: &everruns_core::events::EventContext,
+    ) -> crate::CausalContext {
+        self.observers.turn_causal_context(context)
+    }
+    fn restore_turn_context(
+        &self,
+        context: &everruns_core::events::EventContext,
+        metadata: Option<&serde_json::Value>,
+    ) {
+        self.observers.restore_turn_context(context, metadata);
+    }
+
+    fn try_send(&self, event: Event) -> Result<(), EventSinkError> {
+        self.observe(&event)
+    }
+}
+
+#[cfg(test)]
+#[path = "events_tests.rs"]
+mod tests;

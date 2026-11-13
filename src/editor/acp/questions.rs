@@ -13,12 +13,11 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use agent_client_protocol::schema::v1::{
+use agent_client_protocol::v1::schema::{
     CreateElicitationRequest, ElicitationAction, ElicitationContentValue, ElicitationFormMode,
     ElicitationSchema, ElicitationSessionScope, EnumOption, MultiSelectPropertySchema,
     StringPropertySchema,
 };
-use agent_client_protocol::{Client, ConnectionTo};
 use async_trait::async_trait;
 use everruns_core::builtins::ask_user::{
     AskContext, AskUser, AskUserAnswer, AskUserAnsweredBy, AskUserQuestion, AskUserQuestionKind,
@@ -31,7 +30,7 @@ const OTHER_SUFFIX: &str = "_other";
 
 /// Asks the editor through form elicitation when it supports it.
 pub(super) struct AcpQuestioner {
-    pub(super) cx: ConnectionTo<Client>,
+    pub(super) link: super::server::PeerLink,
     /// Set from `initialize`; shared with the server so a later handshake
     /// detail never leaves sessions with a stale answer.
     pub(super) forms: Arc<AtomicBool>,
@@ -54,14 +53,22 @@ impl AskUser for AcpQuestioner {
             return stopped(AskUserStatus::Declined, AskUserAnsweredBy::Unattended);
         }
         let scope = ElicitationSessionScope::new(context.session_id().to_string()).tool_call_id(
-            agent_client_protocol::schema::v1::ToolCallId::new(context.tool_call_id().to_string()),
+            agent_client_protocol::v1::schema::ToolCallId::new(context.tool_call_id().to_string()),
         );
         let request = CreateElicitationRequest::new(
             ElicitationFormMode::new(scope, form_schema(questions)),
             form_message(questions),
         );
-        match self.cx.send_request(request).block_task().await {
-            Ok(response) => answers_from(questions, response.action),
+        let response = match &self.link {
+            super::server::PeerLink::V1(cx) => cx
+                .send_request(request)
+                .block_task()
+                .await
+                .map(|response| response.action),
+            super::server::PeerLink::V2(link) => link.create_elicitation(request).await,
+        };
+        match response {
+            Ok(action) => answers_from(questions, action),
             Err(error) => {
                 tracing::warn!(%error, "acp: elicitation failed; declining questions");
                 stopped(AskUserStatus::Declined, AskUserAnsweredBy::Unattended)
@@ -238,7 +245,7 @@ fn stopped(status: AskUserStatus, answered_by: AskUserAnsweredBy) -> AskUserResu
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agent_client_protocol::schema::v1::ElicitationAcceptAction;
+    use agent_client_protocol::v1::schema::ElicitationAcceptAction;
 
     fn question(value: serde_json::Value) -> AskUserQuestion {
         serde_json::from_value(value).unwrap()
