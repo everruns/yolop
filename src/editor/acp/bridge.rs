@@ -16,11 +16,10 @@ use everruns_core::{EventData, ToolCompletedData};
 use serde_json::Value;
 
 use super::protocol::{
-    self, ContentBlock, Plan, PlanEntry, PlanEntryPriority, PlanEntryStatus, SessionInfoUpdate,
-    SessionUpdate, ToolCall, ToolCallContent, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields,
-    ToolKind,
+    self, ContentBlock, ImageContent, Plan, PlanEntry, PlanEntryPriority, PlanEntryStatus,
+    SessionInfoUpdate, SessionUpdate, ToolCall, ToolCallContent, ToolCallStatus, ToolCallUpdate,
+    ToolCallUpdateFields, ToolKind,
 };
-use agent_client_protocol::schema::v1::ImageContent;
 
 /// The runtime's todo tool. write_todos updates are surfaced as ACP plans
 /// rather than opaque tool calls so editors render them in their plan UI.

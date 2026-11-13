@@ -4,14 +4,12 @@
 //! comes from `agent-client-protocol` so schema changes are not mirrored by hand.
 
 pub use agent_client_protocol::schema::ProtocolVersion;
-#[cfg(test)]
-pub(crate) use agent_client_protocol::v1::schema::ImageContent;
 pub use agent_client_protocol::v1::schema::{
     AgentCapabilities, AuthMethod, AuthenticateRequest as AuthenticateParams,
     AuthenticateResponse as AuthenticateResult, AvailableCommand, AvailableCommandInput,
     AvailableCommandsUpdate, CancelNotification, ConfigOptionUpdate, Content, ContentBlock,
-    ContentChunk, CurrentModeUpdate, EmbeddedResource, EmbeddedResourceResource, Implementation,
-    InitializeRequest as InitializeParams, InitializeResponse as InitializeResult,
+    ContentChunk, CurrentModeUpdate, EmbeddedResource, EmbeddedResourceResource, ImageContent,
+    Implementation, InitializeRequest as InitializeParams, InitializeResponse as InitializeResult,
     LoadSessionRequest as LoadSessionParams, LoadSessionResponse as LoadSessionResult,
     McpCapabilities, McpServer, Meta, NewSessionRequest as NewSessionParams,
     NewSessionResponse as NewSessionResult, PermissionOption, PermissionOptionKind, Plan,
