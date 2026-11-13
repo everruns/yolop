@@ -15,7 +15,10 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{
+    Arc, Mutex, RwLock,
+    atomic::{AtomicBool, Ordering},
+};
 
 /// Patterns naming git-ignored paths to copy into freshly-created worktrees,
 /// `.gitignore`-style. Lives at the repo root.
@@ -48,6 +51,8 @@ pub struct WorktreeManager {
     initialize_lock: Mutex<()>,
     session_id: SessionId,
     session_dir: PathBuf,
+    /// Explicit model decision to keep working in `repo_root` without isolation.
+    dismissed: AtomicBool,
 }
 
 impl WorktreeManager {
@@ -71,6 +76,7 @@ impl WorktreeManager {
             initialize_lock: Mutex::new(()),
             session_id,
             session_dir,
+            dismissed: AtomicBool::new(false),
         }
     }
 
@@ -127,6 +133,7 @@ impl WorktreeManager {
             anyhow::bail!("session worktrees are unavailable for this checkout");
         }
         self.activate(slug_hint)?;
+        self.dismissed.store(false, Ordering::SeqCst);
         Ok(true)
     }
 
@@ -136,12 +143,18 @@ impl WorktreeManager {
 
     pub fn needs_explicit_init(&self) -> bool {
         self.mode == WorktreesMode::Auto
+            && !self.dismissed.load(Ordering::SeqCst)
             && self
                 .worktree
                 .read()
                 .expect("worktree lock poisoned")
                 .is_none()
             && self.can_use_worktrees()
+    }
+
+    /// Record an explicit decision to stay in `repo_root` without a worktree.
+    pub fn dismiss(&self) {
+        self.dismissed.store(true, Ordering::SeqCst);
     }
 
     fn can_use_worktrees(&self) -> bool {

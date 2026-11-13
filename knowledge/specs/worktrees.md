@@ -60,9 +60,13 @@ config/secrets.json
 - `repo_root` is the git toplevel of the user's checkout; git identity/remote context comes from there.
 - Sub-agents inherit the parent session's active worktree.
 - Resume reattaches to a saved worktree or recreates it when tmp was cleared.
-- In `auto`, the system prompt instructs the model to run `yolop worktree init`
-  before its first repository mutation. Read-only investigation does not create
-  a worktree. The host does not infer intent from prompt keywords.
+- In `auto`, the model must decide before its first repository mutation: run
+  `yolop worktree init` to move into an isolated worktree, or
+  `yolop worktree stay` to deliberately keep editing the current checkout.
+  A host gate blocks file edits and shell commands while the decision is
+  pending; Bash that only runs `yolop worktree ...` passes through.
+  Read-only investigation does not create a worktree. The host does not infer
+  intent from prompt keywords.
 - Initialization is idempotent and serialized. The attached command asks the
   running session to create or reuse its owned worktree, then updates the shared
   active root. A standalone process never creates a disconnected worktree.
@@ -73,8 +77,10 @@ config/secrets.json
 ### Commands
 
 - `/worktree` and `/worktree init`, initialize the running session worktree
+- `/worktree stay`, record an explicit decision to keep working in the current checkout
 - `/worktree status`, show mode, state, branch, and active root
 - `yolop worktree init`, attach to the running session and initialize its worktree
+- `yolop worktree stay`, attach to the running session and dismiss the pending decision
 - `yolop worktree status`, inspect the running session's worktree state
 - Worktree mode changes use the config subsystem. `init` refuses when mode is
   `off`; it does not silently change persistent configuration.

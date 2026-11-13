@@ -234,6 +234,51 @@ async fn scripted_tool_call_executes_bash_then_assistant_completes() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn auto_worktree_gate_blocks_mutation_until_stay_in_the_agent_loop() {
+    let (runtime, workspace) = build_scripted_runtime_with_workspace(
+        LlmSimConfig::scripted(vec![
+            SimTurn::ToolCalls(vec![SimToolCall {
+                name: "write_file".to_string(),
+                arguments: json!({ "path": "before.txt", "content": "blocked" }),
+                id: None,
+            }]),
+            SimTurn::ToolCalls(vec![SimToolCall {
+                name: "run_command".to_string(),
+                arguments: json!({ "command": "worktree", "args": ["stay"] }),
+                id: None,
+            }]),
+            SimTurn::ToolCalls(vec![SimToolCall {
+                name: "write_file".to_string(),
+                arguments: json!({ "path": "after.txt", "content": "allowed" }),
+                id: None,
+            }]),
+            SimTurn::Assistant("made the isolation decision".to_string()),
+        ]),
+        |workspace| {
+            assert!(
+                std::process::Command::new("git")
+                    .args(["init", "-q"])
+                    .current_dir(workspace)
+                    .status()
+                    .expect("initialize repository")
+                    .success()
+            );
+        },
+    )
+    .await;
+
+    assert!(runtime.worktree.needs_explicit_init());
+    let result = run_single_turn(&runtime, "make the change in this checkout").await;
+    assert!(result.success, "scripted worktree decision: {result:?}");
+    assert!(!workspace.join("before.txt").exists());
+    assert_eq!(
+        std::fs::read_to_string(workspace.join("after.txt")).expect("allowed write"),
+        "allowed"
+    );
+    assert!(!runtime.worktree.needs_explicit_init());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn repeated_read_reuse_runs_through_real_file_tools_and_invalidates_on_write() {
     use everruns_core::EventData;
 

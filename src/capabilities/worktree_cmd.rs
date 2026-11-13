@@ -6,15 +6,20 @@ use crate::control::{
 use crate::exec::worktree::WorktreeManager;
 use async_trait::async_trait;
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
+use everruns_contracts::{ToolCall, ToolDefinition};
+use everruns_core::ToolContext;
 use everruns_core::capabilities::{Capability, CapabilityStatus, SystemPromptContext};
 use everruns_core::command::{
     CommandArg, CommandDescriptor, CommandExecutionContext, CommandResult, CommandSource,
     ExecuteCommandRequest,
 };
+use everruns_core::tool_hooks::{PreToolUseDecision, PreToolUseHook};
 use everruns_core::tools::ToolExecutionResult;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::sync::Arc;
+
+pub(crate) const WORKTREE_CAPABILITY_ID: &str = "worktree";
 
 pub(crate) const WORKTREE_CONTROL_ROUTE: ControlRoute = ControlRoute {
     resource: "worktree",
@@ -46,6 +51,11 @@ enum WorktreeCliCommand {
         after_help = "Examples:\n  Check which directory this session edits:\n    yolop worktree status"
     )]
     Status,
+    /// Stay in the current checkout without worktree isolation.
+    #[command(
+        after_help = "Examples:\n  Stay in the current checkout without isolation:\n    yolop worktree stay"
+    )]
+    Stay,
     /// List Yolop worktree directories on disk.
     #[command(
         after_help = "Examples:\n  See every worktree yolop created:\n    yolop worktree list"
@@ -69,6 +79,7 @@ enum WorktreeCliCommand {
 #[serde(tag = "command", rename_all = "snake_case")]
 enum WorktreeAction {
     Init,
+    Stay,
     Status,
     List,
     Prune {
@@ -81,6 +92,7 @@ impl From<WorktreeCliCommand> for WorktreeAction {
     fn from(value: WorktreeCliCommand) -> Self {
         match value {
             WorktreeCliCommand::Init => Self::Init,
+            WorktreeCliCommand::Stay => Self::Stay,
             WorktreeCliCommand::Status => Self::Status,
             WorktreeCliCommand::List => Self::List,
             WorktreeCliCommand::Prune {
@@ -132,6 +144,7 @@ impl WorktreeCommandCapability {
             "active_root": manager.active_root(),
             "branch": info.as_ref().map(|value| value.branch.as_str()),
             "checkpointing_available": info.is_some(),
+            "needs_init": manager.needs_explicit_init(),
         })
     }
 
@@ -145,6 +158,12 @@ impl WorktreeCommandCapability {
                 Ok(created) => ToolExecutionResult::success(self.status_value(Some(created))),
                 Err(error) => ToolExecutionResult::tool_error(error.to_string()),
             },
+            WorktreeAction::Stay => {
+                manager.dismiss();
+                let mut value = self.status_value(Some(false));
+                value["stayed"] = json!(true);
+                ToolExecutionResult::success(value)
+            }
             WorktreeAction::Status => ToolExecutionResult::success(self.status_value(None)),
             WorktreeAction::List | WorktreeAction::Prune { .. } => ToolExecutionResult::tool_error(
                 "list and prune are standalone maintenance commands",
@@ -156,7 +175,7 @@ impl WorktreeCommandCapability {
 #[async_trait]
 impl Capability for WorktreeCommandCapability {
     fn id(&self) -> &str {
-        "worktree"
+        WORKTREE_CAPABILITY_ID
     }
     fn name(&self) -> &str {
         "Session Worktree"
@@ -178,9 +197,9 @@ impl Capability for WorktreeCommandCapability {
             source: CommandSource::System,
             args: vec![CommandArg {
                 name: "action".to_string(),
-                description: "init (default) or status".to_string(),
+                description: "init (default), stay, or status".to_string(),
                 required: false,
-                suggestions: vec!["init".to_string(), "status".to_string()],
+                suggestions: vec!["init".to_string(), "stay".to_string(), "status".to_string()],
             }],
         }]
     }
@@ -192,11 +211,12 @@ impl Capability for WorktreeCommandCapability {
     ) -> everruns_contracts::error::Result<CommandResult> {
         let action = match request.arguments.as_deref().map(str::trim) {
             None | Some("") | Some("init") => WorktreeAction::Init,
+            Some("stay") => WorktreeAction::Stay,
             Some("status") => WorktreeAction::Status,
             Some(_) => {
                 return Ok(CommandResult {
                     success: false,
-                    message: "usage: /worktree [init|status]".to_string(),
+                    message: "usage: /worktree [init|stay|status]".to_string(),
                     error_code: None,
                     error_fields: None,
                 });
@@ -214,6 +234,13 @@ impl Capability for WorktreeCommandCapability {
         })
     }
 
+    fn pre_tool_use_hooks(&self) -> Vec<Arc<dyn PreToolUseHook>> {
+        match self.manager.clone() {
+            Some(manager) => vec![Arc::new(WorktreeGateHook { manager })],
+            None => Vec::new(),
+        }
+    }
+
     async fn system_prompt_contribution(&self, _ctx: &SystemPromptContext) -> Option<String> {
         let manager = self.manager.as_deref()?;
         if !manager.needs_explicit_init() {
@@ -221,7 +248,9 @@ impl Capability for WorktreeCommandCapability {
         }
         Some(
             "<capability id=\"session_worktree\">\n\
-Before the first repository mutation, run `yolop worktree init` in Bash. \
+Before the first repository mutation, decide: run `yolop worktree init` in Bash to work isolated, \
+or `yolop worktree stay` to deliberately keep working in the current checkout. \
+A host gate blocks file edits and shell commands until one of the two runs. \
 Do not initialize for read-only investigation, explanation, review, or planning. \
 After initialization, continue in the active workspace reported by the command. \
 Do not create, switch, move, or remove the session worktree with raw `git worktree` commands.\n\
@@ -251,6 +280,9 @@ impl ControlCapability for WorktreeCommandCapability {
             return response.render_default();
         }
         let value = response.value.as_ref().unwrap_or(&Value::Null);
+        if value.get("stayed").and_then(serde_json::Value::as_bool) == Some(true) {
+            return "staying in the current checkout without worktree isolation".to_string();
+        }
         let state = value["state"].as_str().unwrap_or("unknown");
         let root = value["active_root"].as_str().unwrap_or("unknown");
         match value["created"].as_bool() {
@@ -309,11 +341,283 @@ impl CliCapability for WorktreeCommandCapability {
                     anyhow::bail!("{} worktree removal(s) failed", report.errors.len())
                 }
             }
-            WorktreeAction::Init | WorktreeAction::Status => {
-                anyhow::bail!("worktree init and status require a running Yolop session")
+            WorktreeAction::Init | WorktreeAction::Stay | WorktreeAction::Status => {
+                anyhow::bail!("worktree init, stay, and status require a running Yolop session")
             }
         }
     }
 }
 
+/// Deterministic first-mutation gate for `auto` mode.
+///
+/// Owned by the worktree capability so no new registration is needed: the same
+/// capability that runs `init`/`stay` also blocks file edits and shell commands
+/// while `needs_explicit_init` holds. Bash that only drives the worktree
+/// decision itself (`yolop worktree ...`) passes through to avoid deadlock.
+struct WorktreeGateHook {
+    manager: Arc<WorktreeManager>,
+}
+
+/// Tools that count as a first repository mutation in `auto` mode.
+const WORKTREE_GATED_TOOLS: &[&str] = &[
+    "edit_file",
+    "write_file",
+    "delete_file",
+    "apply_patch",
+    "ast_edit",
+    "bash",
+];
+
+impl WorktreeGateHook {
+    /// Shell metacharacters that chain, redirect, or substitute commands.
+    /// Any of these means a Bash call is not *only* a worktree decision
+    /// command, so the gate keeps blocking instead of letting a smuggled
+    /// mutation through (e.g. `yolop worktree status; rm -rf repo`).
+    const FORBIDDEN: &[char] = &[';', '&', '|', '`', '$', '>', '<', '(', ')', '\n', '\r'];
+
+    /// True only for a bare `yolop worktree ...` invocation, so the decision
+    /// commands themselves pass through (avoiding deadlock) while chained
+    /// commands stay blocked.
+    fn is_worktree_command(tool_call: &ToolCall) -> bool {
+        let Some(command) = tool_call
+            .arguments
+            .get("command")
+            .and_then(serde_json::Value::as_str)
+        else {
+            return false;
+        };
+        let command = command.trim();
+        let bare = command == "yolop worktree"
+            || command
+                .strip_prefix("yolop worktree")
+                .is_some_and(|rest| rest.starts_with([' ', '\t']));
+        bare && !command.contains(Self::FORBIDDEN)
+    }
+
+    fn block_message(manager: &WorktreeManager) -> (String, String) {
+        let repo = manager.active_root().display().to_string();
+        let reason = format!(
+            "session is in repo_root {repo} without worktree isolation; decide init vs stay before the first mutation"
+        );
+        let user_message = format!(
+            "You are working directly in the repository checkout at {repo} with no worktree yet. Before the first file edit or shell command, make the isolation decision: run `yolop worktree init` in Bash to move into an isolated worktree, or `yolop worktree stay` to deliberately keep editing {repo} directly. If the request is read-only (investigation, explanation, review, planning), use read-only tools instead and skip both."
+        );
+        (reason, user_message)
+    }
+}
+
+#[async_trait::async_trait]
+impl PreToolUseHook for WorktreeGateHook {
+    async fn before_exec(
+        &self,
+        tool_call: ToolCall,
+        _tool_def: &ToolDefinition,
+        _context: &ToolContext,
+    ) -> PreToolUseDecision {
+        if !self.manager.needs_explicit_init() {
+            return PreToolUseDecision::Continue(tool_call);
+        }
+        if !WORKTREE_GATED_TOOLS.contains(&tool_call.name.as_str()) {
+            return PreToolUseDecision::Continue(tool_call);
+        }
+        if tool_call.name == "bash" && Self::is_worktree_command(&tool_call) {
+            return PreToolUseDecision::Continue(tool_call);
+        }
+        let (reason, user_message) = Self::block_message(&self.manager);
+        PreToolUseDecision::Block {
+            reason,
+            tool_call,
+            user_message: Some(user_message),
+        }
+    }
+}
+
 pub(crate) type WorktreeCapability = WorktreeCommandCapability;
+
+#[cfg(test)]
+mod gate_tests {
+    use super::*;
+    use crate::capabilities::apply_patch::ApplyPatchTool;
+    use crate::config::WorktreesMode;
+    use everruns_contracts::typed_id::SessionId;
+    use everruns_core::Tool as _;
+
+    fn test_manager() -> Arc<WorktreeManager> {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(&repo).expect("repo dir");
+        let session_dir = dir.path().join("session");
+        std::fs::create_dir_all(&session_dir).expect("session dir");
+        Arc::new(WorktreeManager::new(
+            WorktreesMode::Auto,
+            Some(repo.clone()),
+            repo,
+            SessionId::new(),
+            session_dir,
+            None,
+        ))
+    }
+
+    fn tool_call(name: &str, arguments: serde_json::Value) -> ToolCall {
+        ToolCall {
+            id: format!("call-{name}"),
+            name: name.to_string(),
+            arguments,
+        }
+    }
+
+    fn tool_def() -> ToolDefinition {
+        ApplyPatchTool.to_definition()
+    }
+
+    fn test_context() -> ToolContext {
+        ToolContext::new(SessionId::new())
+    }
+
+    #[tokio::test]
+    async fn blocks_first_edit_until_init_or_stay() {
+        let manager = test_manager();
+        let hook = WorktreeGateHook {
+            manager: manager.clone(),
+        };
+        let context = test_context();
+
+        assert!(manager.needs_explicit_init());
+        let decision = hook
+            .before_exec(
+                tool_call("edit_file", serde_json::json!({"path": "a.rs"})),
+                &tool_def(),
+                &context,
+            )
+            .await;
+        assert!(matches!(decision, PreToolUseDecision::Block { .. }));
+
+        manager.dismiss();
+        assert!(!manager.needs_explicit_init());
+        let decision = hook
+            .before_exec(
+                tool_call("edit_file", serde_json::json!({"path": "a.rs"})),
+                &tool_def(),
+                &context,
+            )
+            .await;
+        assert!(matches!(decision, PreToolUseDecision::Continue(..)));
+    }
+
+    #[tokio::test]
+    async fn allows_reads_and_worktree_command_bash() {
+        let manager = test_manager();
+        let hook = WorktreeGateHook { manager };
+        let context = test_context();
+
+        let decision = hook
+            .before_exec(
+                tool_call("read_file", serde_json::json!({"path": "a.rs"})),
+                &tool_def(),
+                &context,
+            )
+            .await;
+        assert!(matches!(decision, PreToolUseDecision::Continue(..)));
+
+        let decision = hook
+            .before_exec(
+                tool_call(
+                    "bash",
+                    serde_json::json!({"command": "yolop worktree init"}),
+                ),
+                &tool_def(),
+                &context,
+            )
+            .await;
+        assert!(matches!(decision, PreToolUseDecision::Continue(..)));
+
+        let decision = hook
+            .before_exec(
+                tool_call("bash", serde_json::json!({"command": "cargo test"})),
+                &tool_def(),
+                &context,
+            )
+            .await;
+        assert!(matches!(decision, PreToolUseDecision::Block { .. }));
+    }
+
+    #[tokio::test]
+    async fn decision_commands_allow_surrounding_whitespace() {
+        let manager = test_manager();
+        let hook = WorktreeGateHook { manager };
+        let context = test_context();
+
+        for command in [
+            "yolop worktree init\n",
+            "yolop worktree stay\r\n",
+            " \t\nyolop worktree status\n\t ",
+            "yolop worktree\n",
+        ] {
+            let decision = hook
+                .before_exec(
+                    tool_call("bash", serde_json::json!({ "command": command })),
+                    &tool_def(),
+                    &context,
+                )
+                .await;
+            assert!(
+                matches!(decision, PreToolUseDecision::Continue(..)),
+                "bare command was blocked: {command:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn chained_worktree_mentions_stay_blocked() {
+        let manager = test_manager();
+        let hook = WorktreeGateHook { manager };
+        let context = test_context();
+
+        // A smuggled mutation that merely mentions the worktree command must
+        // not slip through the Bash passthrough, in either order.
+        for command in [
+            "yolop worktree status; rm -rf repo",
+            "yolop worktree init && cargo test",
+            "echo hi; yolop worktree stay",
+            "yolop worktree status | tee out.txt",
+            "sudo yolop worktree init",
+            "yolop worktree init\ncargo test",
+            " \nyolop worktree stay\r\nrm -rf repo\n ",
+        ] {
+            let decision = hook
+                .before_exec(
+                    tool_call("bash", serde_json::json!({ "command": command })),
+                    &tool_def(),
+                    &context,
+                )
+                .await;
+            assert!(
+                matches!(decision, PreToolUseDecision::Block { .. }),
+                "chained command passed the gate: {command}"
+            );
+        }
+    }
+
+    #[test]
+    fn capability_registers_gate_hook_when_attached() {
+        let manager = test_manager();
+        let attached = WorktreeCommandCapability::new(manager);
+        assert_eq!(attached.pre_tool_use_hooks().len(), 1);
+        assert!(
+            WorktreeCommandCapability::detached()
+                .pre_tool_use_hooks()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn cli_surface_offers_init_and_stay() {
+        use clap::CommandFactory;
+        let names: Vec<String> = WorktreeCommandLine::command()
+            .get_subcommands()
+            .map(|sub| sub.get_name().to_string())
+            .collect();
+        assert!(names.contains(&"init".to_string()), "{names:?}");
+        assert!(names.contains(&"stay".to_string()), "{names:?}");
+    }
+}
