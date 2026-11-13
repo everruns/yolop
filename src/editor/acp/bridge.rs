@@ -16,9 +16,9 @@ use everruns_core::{EventData, ToolCompletedData};
 use serde_json::Value;
 
 use super::protocol::{
-    self, ContentBlock, Plan, PlanEntry, PlanEntryPriority, PlanEntryStatus, SessionInfoUpdate,
-    SessionUpdate, ToolCall, ToolCallContent, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields,
-    ToolKind,
+    self, ContentBlock, ImageContent, Plan, PlanEntry, PlanEntryPriority, PlanEntryStatus,
+    SessionInfoUpdate, SessionUpdate, ToolCall, ToolCallContent, ToolCallStatus, ToolCallUpdate,
+    ToolCallUpdateFields, ToolKind,
 };
 
 /// The runtime's todo tool. write_todos updates are surfaced as ACP plans
@@ -216,8 +216,9 @@ impl Translator {
                     ToolCallStatus::Failed
                 };
                 let content = tool_result_content(data)
-                    .map(|block| vec![ToolCallContent::Content(protocol::Content::new(block))])
-                    .unwrap_or_default();
+                    .into_iter()
+                    .map(|block| ToolCallContent::Content(protocol::Content::new(block)))
+                    .collect::<Vec<_>>();
                 let title = data
                     .narration
                     .as_deref()
@@ -315,16 +316,34 @@ pub(super) fn tool_kind(name: &str) -> ToolKind {
     }
 }
 
-/// One concise text block summarising a finished tool call, or `None` when
-/// there is nothing worth surfacing.
-fn tool_result_content(data: &ToolCompletedData) -> Option<ContentBlock> {
+/// Text summary plus any image parts from a finished tool call, so
+/// screenshots stay viewable instead of surfacing as
+/// `No additional details available`.
+///
+/// Images over `MAX_TOOL_IMAGE_BASE64_LEN` are skipped: the engine already
+/// drops images over ~5 MiB per tool result, and forwarding a larger payload
+/// stalls the turn until the transcript repairs it as interrupted.
+const MAX_TOOL_IMAGE_BASE64_LEN: usize = 6_000_000;
+
+fn tool_result_content(data: &ToolCompletedData) -> Vec<ContentBlock> {
+    let mut blocks = Vec::new();
     let summary = crate::tui::transcript::summarize_tool_result(data);
     let trimmed = summary.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(protocol::text_block(trimmed))
+    if !trimmed.is_empty() {
+        blocks.push(protocol::text_block(trimmed));
     }
+    if let Some(parts) = data.result.as_ref() {
+        for part in parts {
+            if let ContentPart::Image(image) = part
+                && let (Some(base64), Some(media_type)) =
+                    (image.base64.clone(), image.media_type.clone())
+                && base64.len() <= MAX_TOOL_IMAGE_BASE64_LEN
+            {
+                blocks.push(ContentBlock::Image(ImageContent::new(base64, media_type)));
+            }
+        }
+    }
+    blocks
 }
 
 /// Parse the runtime's `{ "todos": [...] }` shape (used by both the
@@ -375,6 +394,7 @@ mod tests {
     use everruns_contracts::ExecutionPhase;
     use everruns_contracts::ToolCall;
     use everruns_contracts::typed_id::{EventId, MessageId, SessionId, TurnId};
+    use everruns_core::ImageContentPart;
     use everruns_core::RuntimeMessage;
     use everruns_core::{
         Event, EventContext, OutputMessageCompletedData, OutputMessageDeltaData, ReasonItemData,
@@ -968,5 +988,48 @@ mod tests {
             everruns_core::events::InputMessageData::new(RuntimeMessage::user("current prompt")),
         )));
         assert!(updates.is_empty());
+    }
+
+    #[test]
+    fn tool_completed_image_is_forwarded_to_editor() {
+        let mut t = Translator::new();
+        let updates = t.on_event(&event(EventData::ToolCompleted(
+            ToolCompletedData::success(
+                "call_img".into(),
+                "read_file".into(),
+                vec![
+                    ContentPart::text(
+                        json!({
+                            "path": "/tmp/shot.png",
+                            "size_bytes": 12,
+                            "mime_type": "image/png",
+                            "kind": "image",
+                        })
+                        .to_string(),
+                    ),
+                    ContentPart::Image(ImageContentPart::from_base64(
+                        "ZmFrZQ==".to_owned(),
+                        "image/png".to_owned(),
+                    )),
+                ],
+                None,
+            ),
+        )));
+        assert_eq!(updates.len(), 1);
+        match &updates[0] {
+            SessionUpdate::ToolCallUpdate(update) => {
+                let content = update.fields.content.as_ref().expect("content");
+                assert!(content.len() >= 2, "text plus image, got {content:?}");
+                assert!(matches!(
+                    &content[1],
+                    ToolCallContent::Content(protocol_content)
+                        if matches!(
+                            protocol_content.content,
+                            ContentBlock::Image(_)
+                        )
+                ));
+            }
+            other => panic!("expected tool_call_update, got {other:?}"),
+        }
     }
 }
