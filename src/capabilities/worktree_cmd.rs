@@ -384,7 +384,7 @@ impl WorktreeGateHook {
         else {
             return false;
         };
-        let command = command.trim_start();
+        let command = command.trim();
         let bare = command == "yolop worktree"
             || command
                 .strip_prefix("yolop worktree")
@@ -540,6 +540,32 @@ mod gate_tests {
     }
 
     #[tokio::test]
+    async fn decision_commands_allow_surrounding_whitespace() {
+        let manager = test_manager();
+        let hook = WorktreeGateHook { manager };
+        let context = test_context();
+
+        for command in [
+            "yolop worktree init\n",
+            "yolop worktree stay\r\n",
+            " \t\nyolop worktree status\n\t ",
+            "yolop worktree\n",
+        ] {
+            let decision = hook
+                .before_exec(
+                    tool_call("bash", serde_json::json!({ "command": command })),
+                    &tool_def(),
+                    &context,
+                )
+                .await;
+            assert!(
+                matches!(decision, PreToolUseDecision::Continue(..)),
+                "bare command was blocked: {command:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn chained_worktree_mentions_stay_blocked() {
         let manager = test_manager();
         let hook = WorktreeGateHook { manager };
@@ -553,6 +579,8 @@ mod gate_tests {
             "echo hi; yolop worktree stay",
             "yolop worktree status | tee out.txt",
             "sudo yolop worktree init",
+            "yolop worktree init\ncargo test",
+            " \nyolop worktree stay\r\nrm -rf repo\n ",
         ] {
             let decision = hook
                 .before_exec(
