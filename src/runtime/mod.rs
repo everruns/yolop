@@ -46,7 +46,8 @@ use crate::capabilities::{
     REX_CAPABILITY_ID, RepoMapCapability, RexCapability, SESSIONS_CAPABILITY_ID,
     SOFT_APPROVAL_CAPABILITY_ID, SessionsCapability, SetupCliCapability,
     TOOL_ARGUMENT_VALIDATION_CAPABILITY_ID, ThreadRouting, ToolArgumentValidationCapability,
-    WorktreeCapability, coordination_project_id, inherited_launch_args, process_thread_launcher,
+    WORKTREE_CAPABILITY_ID, WorktreeCapability, coordination_project_id, inherited_launch_args,
+    process_thread_launcher,
 };
 use crate::config::capability_settings::{CapabilityCatalog, apply_capability_settings};
 use crate::config::mcp::McpConfigStore;
@@ -3221,6 +3222,7 @@ fn default_coding_harness_capabilities(client_commands: bool) -> Vec<CapabilityR
         CapabilityRef::new(REX_CAPABILITY_ID),
         CapabilityRef::new(SESSIONS_CAPABILITY_ID),
         CapabilityRef::new(CHECKPOINT_CAPABILITY_ID),
+        CapabilityRef::new(WORKTREE_CAPABILITY_ID),
         CapabilityRef::new(AST_GREP_CAPABILITY_ID),
         // Raw history stays searchable while the runtime persists a canonical
         // provider-native replacement plus the uncompacted suffix. Auto keeps

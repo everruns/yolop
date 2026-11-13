@@ -94,7 +94,7 @@ pub(crate) use tool_approval::{
 pub(crate) use tool_argument_validation::{
     TOOL_ARGUMENT_VALIDATION_CAPABILITY_ID, ToolArgumentValidationCapability,
 };
-pub(crate) use worktree_cmd::WorktreeCapability;
+pub(crate) use worktree_cmd::{WORKTREE_CAPABILITY_ID, WorktreeCapability};
 
 #[cfg(test)]
 mod tests {

@@ -19,6 +19,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
+pub(crate) const WORKTREE_CAPABILITY_ID: &str = "worktree";
+
 pub(crate) const WORKTREE_CONTROL_ROUTE: ControlRoute = ControlRoute {
     resource: "worktree",
     cli_subcommand: "worktree",
@@ -173,7 +175,7 @@ impl WorktreeCommandCapability {
 #[async_trait]
 impl Capability for WorktreeCommandCapability {
     fn id(&self) -> &str {
-        "worktree"
+        WORKTREE_CAPABILITY_ID
     }
     fn name(&self) -> &str {
         "Session Worktree"
