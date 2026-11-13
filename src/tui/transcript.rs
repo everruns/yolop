@@ -694,18 +694,29 @@ pub fn summarize_tool_result(data: &ToolCompletedData) -> String {
         }
         "read_file" => {
             let path = v.get("path").and_then(Value::as_str).unwrap_or("");
-            let total = v.get("total_lines").and_then(Value::as_u64).unwrap_or(0);
-            let shown = v.get("lines_shown");
-            let start = shown
-                .and_then(|s| s.get("start"))
-                .and_then(Value::as_u64)
-                .unwrap_or(0);
-            let end = shown
-                .and_then(|s| s.get("end"))
-                .and_then(Value::as_u64)
-                .unwrap_or(0);
-            let count = end.saturating_sub(start.saturating_sub(1));
-            format!("{path} ({count}/{total} lines)")
+            let kind = v.get("kind").and_then(Value::as_str).unwrap_or("");
+            let mime = v.get("mime_type").and_then(Value::as_str).unwrap_or("");
+            if kind == "image" || (!mime.is_empty() && v.get("total_lines").is_none()) {
+                let bytes = v.get("size_bytes").and_then(Value::as_u64).unwrap_or(0);
+                if bytes > 0 {
+                    format!("{path} (image, {bytes} bytes)")
+                } else {
+                    format!("{path} (image)")
+                }
+            } else {
+                let total = v.get("total_lines").and_then(Value::as_u64).unwrap_or(0);
+                let shown = v.get("lines_shown");
+                let start = shown
+                    .and_then(|s| s.get("start"))
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                let end = shown
+                    .and_then(|s| s.get("end"))
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                let count = end.saturating_sub(start.saturating_sub(1));
+                format!("{path} ({count}/{total} lines)")
+            }
         }
         "write_file" => {
             let path = v.get("path").and_then(Value::as_str).unwrap_or("");
@@ -1259,5 +1270,32 @@ mod tests {
         assert_eq!(format_duration_ms(120), "120ms");
         assert_eq!(format_duration_ms(2_400), "2.4s");
         assert_eq!(format_duration_ms(63_000), "1m03s");
+    }
+
+    #[test]
+    fn read_file_image_summary_reports_bytes_not_lines() {
+        let data = ToolCompletedData::success(
+            "call-1".into(),
+            "read_file".into(),
+            vec![ContentPart::text(
+                json!({
+                    "path": "/tmp/shot.png",
+                    "size_bytes": 2_327_832,
+                    "mime_type": "image/png",
+                    "kind": "image",
+                })
+                .to_string(),
+            )],
+            None,
+        );
+        let summary = summarize_tool_result(&data);
+        assert!(
+            summary.contains("/tmp/shot.png") && summary.contains("image"),
+            "expected image summary, got {summary:?}"
+        );
+        assert!(
+            !summary.contains("0/0 lines"),
+            "image must not render as lines: {summary:?}"
+        );
     }
 }

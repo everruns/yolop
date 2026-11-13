@@ -153,7 +153,7 @@ mod tests {
     fn prompt_text_concatenates_text_blocks_only() {
         let blocks = vec![
             text_block("hello"),
-            ContentBlock::Image(ImageContent::new("image/png", "...")),
+            ContentBlock::Image(ImageContent::new("...", "image/png")),
             text_block("world"),
         ];
         assert_eq!(prompt_text(&blocks), "hello\nworld");
