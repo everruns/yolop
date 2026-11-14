@@ -1304,6 +1304,12 @@ const YOLOP_NEVER_DEFER_TOOLS: &[&str] = &[
     "repo_symbols",
     "ast_grep",
     "write_todos",
+    // The todo prompt asks for `report_done` once tracked work is finished,
+    // so every tracked turn calls it. Deferred, its stub named no parameters
+    // and models guessed `checks`/`outcome: passed`; validation rejected the
+    // call and the turn spent a second report (nightly 2026-11-14,
+    // expected-diagnostic-failure-control: every todo trajectory).
+    "report_done",
     "write_session_title",
     // Only present when `native_edit_tools` is enabled for an OpenAI model.
     // The point of that capability is a shape the model already knows; a
@@ -11986,6 +11992,8 @@ mod tests {
             "repo_symbols",
             "ast_grep",
             "write_todos",
+            // Every tracked turn ends with it; a stub made models guess fields.
+            "report_done",
             "write_session_title",
             "list_skills",
             "activate_skill",

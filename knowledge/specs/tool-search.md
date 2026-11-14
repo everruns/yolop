@@ -43,7 +43,7 @@ vendor was deleted and yolop now consumes upstream directly:
 2. **Static host-shaped eager profile.** Yolop passes first-turn repository
    discovery (`read_file`, `list_directory`, `grep_files`, `repo_map`,
    `repo_symbols`, `ast_grep`), bookkeeping (`write_todos`,
-   `write_session_title`), the shell (`bash`), background execution
+   `report_done`, `write_session_title`), the shell (`bash`), background execution
    (`spawn_background`), and the mandatory progress-guard transition
    (`progress_checkpoint`) to
    `ToolSearchCapability::new().with_never_defer([...])`. Mutation, other
@@ -59,7 +59,10 @@ vendor was deleted and yolop now consumes upstream directly:
    `spawn_background` is eager for the same reason: its deferred stub names no
    parameters while allowing extras, so the model fills the gap from other
    harnesses' background schemas and spends the turn on a validation correction
-   instead of starting the work. `repo_map`,
+   instead of starting the work. `report_done` is eager because the todo prompt
+   asks for it at the end of every tracked turn; its stub named no parameters,
+   so models guessed `checks` or `outcome: passed`, validation rejected the
+   call, and every tracked turn reported twice. `repo_map`,
    `repo_symbols`, and `ast_grep` are eager so code work can move from broad
    orientation to symbol or structural navigation without a schema-reveal round
    trip. `repo_map` also stays eager for a contract reason: its deferred stub
