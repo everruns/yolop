@@ -12360,7 +12360,10 @@ mod tests {
         // spawn_background: ends_at, max_runs, stop_when, budget_usd and
         // wake_when. Reserve 800 bytes for these controls; retain the existing
         // budget for the rest of the surface (measured total: 15,938 bytes).
-        const BASELINE_SCHEMA_BYTES: usize = 14_500 + 710 + 800;
+        // Eager `report_done` adds 650 bytes (measured total: 16,647): every
+        // tracked turn calls it, and its stub cost a rejected call plus a full
+        // context resend each time.
+        const BASELINE_SCHEMA_BYTES: usize = 14_500 + 710 + 800 + 650;
         let workspace = tempfile::tempdir().expect("workspace");
         let sessions = tempfile::tempdir().expect("sessions");
         let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
