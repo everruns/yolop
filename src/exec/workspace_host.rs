@@ -88,7 +88,7 @@ impl WorkspaceHost {
 ///
 /// The only way to obtain one from model-supplied input is [`resolve_host_scope`],
 /// which resolves repository-relative or real absolute paths and enforces containment.
-/// Yolop's own disk-scanning tools (`grep_files`) resolve model paths through it, so a
+/// Yolop's own disk-scanning tools (`rg`) resolve model paths through it, so a
 /// resolved scope is a *distinct type* from a bare `PathBuf` a tool might build by
 /// hand — a new tool that skips normalization can't produce a `HostPath` without going
 /// through the resolver. The code navigation tools (`repo_map`, `repo_symbols`,
