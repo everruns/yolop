@@ -49,11 +49,13 @@ impl CreditExhaustion {
             || lower.contains("balance covers")
             || lower.contains("fewer max_tokens")
             || lower.contains("fewer max tokens");
-        let in_flight = lower.contains("still in flight")
+        // The in-flight shape counts only with its credit context: a bare
+        // "still in flight" is also how transport concurrency errors read.
+        let in_flight = (lower.contains("still in flight")
             || lower.contains("still in-flight")
-            || lower.contains("in flight")
-                && lower.contains("exceed")
-                && lower.contains("available credits");
+            || lower.contains("in flight"))
+            && lower.contains("exceed")
+            && lower.contains("available credits");
         // Upstream rewrites sometimes omit the status code but keep the credit
         // phrasing plus token counts. Accept those too, and the distinctive
         // in-flight shape on its own.
@@ -302,6 +304,10 @@ mod tests {
     #[test]
     fn ignores_unrelated_errors() {
         assert!(CreditExhaustion::detect("boom: connection reset").is_none());
+        assert!(
+            CreditExhaustion::detect("request rejected: 8 requests still in flight").is_none(),
+            "in flight without credit context is not a credit error"
+        );
         assert!(CreditExhaustion::detect("OpenRouter (500 Internal Error): overloaded").is_none());
     }
 

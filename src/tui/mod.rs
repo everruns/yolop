@@ -4155,7 +4155,14 @@ impl App {
                 return;
             }
         };
-        if crate::session_state::task_completion::ended_blocked(&events, &result) {
+        let background = self
+            .task_registry
+            .list(self.session.handles().session_id, None)
+            .await
+            .is_ok_and(|tasks| {
+                crate::session_state::task_completion::has_pending_execution(&tasks)
+            });
+        if crate::session_state::task_completion::ended_blocked(&events, &result, background) {
             if let Some(status) = self.program_status.as_mut() {
                 status.blocked_question();
             }

@@ -2178,7 +2178,12 @@ async fn report_completion_check(session: &Arc<Session>, result: &everruns::Turn
             return;
         }
     };
-    if crate::session_state::task_completion::ended_blocked(&events, result) {
+    let background = session
+        .task_registry
+        .list(session.handles.session_id, None)
+        .await
+        .is_ok_and(|tasks| crate::session_state::task_completion::has_pending_execution(&tasks));
+    if crate::session_state::task_completion::ended_blocked(&events, result, background) {
         session
             .handles
             .report_herdr_state(crate::capabilities::herdr::HerdrState::Blocked);

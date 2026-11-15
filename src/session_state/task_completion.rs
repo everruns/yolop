@@ -57,13 +57,15 @@ pub(crate) fn is_blocked(check: &TurnCompletionCheckedData) -> bool {
 
 /// Whether the finished turn waits on the person: the engine's review said
 /// so, or (no review ran) the engine's own gate saw the answer end on a
-/// question, which it settles without a review or an event.
-pub(crate) fn ended_blocked(events: &[Event], turn: &everruns::Turn) -> bool {
+/// question, which it settles without a review or an event. A turn whose
+/// detached work is still running waits on that work, not on the person.
+pub(crate) fn ended_blocked(events: &[Event], turn: &everruns::Turn, background: bool) -> bool {
     use everruns_core::turn_completion::{CompletionState, GateDecision, TurnSummary, gate_turn};
     match last_check(events, &turn.turn_id) {
         Some(check) => is_blocked(check),
         None => {
-            turn.success
+            !background
+                && turn.success
                 && gate_turn(&TurnSummary {
                     success: turn.success,
                     stop_reason: turn.stop_reason,
@@ -167,5 +169,21 @@ mod tests {
         );
         assert!(is_blocked(&blocked));
         assert_eq!(notice(&blocked), None);
+    }
+
+    #[test]
+    fn a_question_blocks_only_when_no_detached_work_runs() {
+        let turn: everruns::Turn = everruns_core::host::TurnResult {
+            response: "Which file should I edit?".into(),
+            iterations: 1,
+            tool_calls_count: 1,
+            success: true,
+            error: None,
+            stop_reason: everruns_contracts::turn::TurnStopReason::EndTurn,
+            turn_id: everruns_contracts::typed_id::TurnId::new(),
+        }
+        .into();
+        assert!(ended_blocked(&[], &turn, false));
+        assert!(!ended_blocked(&[], &turn, true));
     }
 }
