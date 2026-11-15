@@ -2594,7 +2594,6 @@ async fn run_print_mode(
     let prompt = prompt.trim().to_string();
     let mut input = model.input_message_with_images(&prompt, images);
     let mut background_deadline = None;
-    let mut completion = session_state::task_completion::CompletionController::default();
     loop {
         let turn = tokio::select! {
             biased;
@@ -2605,82 +2604,71 @@ async fn run_print_mode(
             }
             turn = collect_print_turn(&handles, &model, input) => turn?,
         };
-        let background = session_state::task_completion::has_pending_execution(
-            &task_registry
-                .list(handles.session_id, None)
-                .await
-                .context("cannot inspect pending background work")?,
-        );
-        let decision = tokio::select! {
-            biased;
-            _ = tokio::signal::ctrl_c() => {
-                print_final_output(&turn.output);
-                write_trajectory_if_requested(&handles, &model, trajectory_out.as_deref()).await;
-                handles.flush_trace_exporters().await;
-                anyhow::bail!("completion review canceled");
-            }
-            decision = completion.after_turn(&handles, &turn.result, background, settings.as_ref()) => decision,
-        };
-        let mut completion_error = None;
-        match decision {
-            Ok(decision) => {
-                if let Some(notice) = decision.notice {
-                    eprintln!("{notice}");
-                    completion_error = Some(anyhow::anyhow!(notice));
+        // The engine already reviewed the turn and continued it in place
+        // while work remained; what is left is to wait out background work
+        // the turn started and to turn the verdict into an exit status.
+        let background = turn.result.success
+            && (session_state::task_completion::has_pending_execution(
+                &task_registry
+                    .list(handles.session_id, None)
+                    .await
+                    .context("cannot inspect pending background work")?,
+            ) || handles
+                .host
+                .has_owed_work(turn.result.turn_id.parse()?)
+                .await?);
+        if background {
+            let deadline = *background_deadline.get_or_insert_with(|| {
+                tokio::time::Instant::now() + std::time::Duration::from_secs(600)
+            });
+            let next = if settings.snapshot().proactive_wake_enabled() {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => Err(anyhow::anyhow!("background wait canceled")),
+                    next = tokio::time::timeout_at(deadline, wait_for_print_background(
+                        &handles, task_registry.as_ref(), &mut background_wake,
+                    )) => match next {
+                        Ok(next) => next,
+                        Err(_) => Err(print_background_deadline_error(
+                            task_registry.as_ref(), handles.session_id,
+                        ).await),
+                    },
                 }
-                if decision.state
-                    == session_state::task_completion::CompletionState::WaitingOnBackground
-                {
-                    let deadline = *background_deadline.get_or_insert_with(|| {
-                        tokio::time::Instant::now() + std::time::Duration::from_secs(600)
-                    });
-                    let next = if settings.snapshot().proactive_wake_enabled() {
-                        tokio::select! {
-                            _ = tokio::signal::ctrl_c() => Err(anyhow::anyhow!("background wait canceled")),
-                            next = tokio::time::timeout_at(deadline, wait_for_print_background(
-                                &handles, task_registry.as_ref(), &mut background_wake,
-                            )) => match next {
-                                Ok(next) => next,
-                                Err(_) => Err(print_background_deadline_error(
-                                    task_registry.as_ref(), handles.session_id,
-                                ).await),
-                            },
-                        }
-                    } else {
-                        Err(anyhow::anyhow!(
-                            "background work is pending and proactive wake is disabled"
-                        ))
-                    };
-                    match next {
-                        Ok(next) => {
-                            input = next;
-                            continue;
-                        }
-                        Err(error) => {
-                            print_final_output(&turn.output);
-                            write_trajectory_if_requested(
-                                &handles,
-                                &model,
-                                trajectory_out.as_deref(),
-                            )
-                            .await;
-                            handles.flush_trace_exporters().await;
-                            return Err(error);
-                        }
-                    }
-                }
-                if let Some(next) = decision.followup {
-                    input =
-                        session_state::task_completion::tag_continuation(model.input_message(next));
+            } else {
+                Err(anyhow::anyhow!(
+                    "background work is pending and proactive wake is disabled"
+                ))
+            };
+            match next {
+                Ok(next) => {
+                    input = next;
                     continue;
                 }
-                if decision.state == session_state::task_completion::CompletionState::Blocked {
-                    completion_error = Some(anyhow::anyhow!(
-                        "work needs required outside input before it can finish"
-                    ));
+                Err(error) => {
+                    print_final_output(&turn.output);
+                    write_trajectory_if_requested(&handles, &model, trajectory_out.as_deref())
+                        .await;
+                    handles.flush_trace_exporters().await;
+                    return Err(error);
                 }
             }
-            Err(err) => eprintln!("Completion review unavailable: {err}"),
+        }
+        let mut completion_error = None;
+        if let Some(check) = &turn.completion_check {
+            if let Some(notice) = session_state::task_completion::notice(check)
+                && check.action != everruns_core::events::CompletionCheckAction::Continued
+            {
+                eprintln!("{notice}");
+                if check.action == everruns_core::events::CompletionCheckAction::BudgetExhausted {
+                    completion_error = Some(anyhow::anyhow!(notice));
+                }
+            }
+            // Only a review's verdict fails a scripted run: an answer that
+            // merely ends on a question is still an answer.
+            if session_state::task_completion::is_blocked(check) {
+                completion_error = Some(anyhow::anyhow!(
+                    "work needs required outside input before it can finish"
+                ));
+            }
         }
         print_final_output(&turn.output);
         if let Some(error) = completion_error {
@@ -2855,6 +2843,8 @@ async fn wait_for_print_background(
 struct PrintTurn {
     result: everruns::Turn,
     output: Vec<String>,
+    /// The engine's last completion check for the turn, if it ran one.
+    completion_check: Option<everruns_core::events::TurnCompletionCheckedData>,
 }
 
 async fn collect_print_turn(
@@ -2881,7 +2871,18 @@ async fn collect_print_turn(
             scoped_events.push(event);
         }
     }
-    let messages = runtime::session_log::messages_from_events(&scoped_events);
+    let completion_check =
+        session_state::task_completion::last_check(&scoped_events, &result.turn_id).cloned();
+    // Continuations stay inside one turn; the final answer is what the agent
+    // wrote after the last of them, not the announcement that triggered it.
+    let answer_events = scoped_events
+        .iter()
+        .rposition(|event| {
+            matches!(&event.data, everruns_core::EventData::TurnCompletionChecked(check)
+                if check.action == everruns_core::events::CompletionCheckAction::Continued)
+        })
+        .map_or(&scoped_events[..], |index| &scoped_events[index + 1..]);
+    let messages = runtime::session_log::messages_from_events(answer_events);
     let mut output = Vec::new();
     for msg in messages
         .iter()
@@ -2908,7 +2909,11 @@ async fn collect_print_turn(
             eprintln!("{hint}");
         }
     }
-    Ok(PrintTurn { result, output })
+    Ok(PrintTurn {
+        result,
+        output,
+        completion_check,
+    })
 }
 
 fn print_final_output(output: &[String]) {

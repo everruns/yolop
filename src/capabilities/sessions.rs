@@ -566,19 +566,16 @@ fn scan_session(
             }
             return;
         }
-        if event_type.is_some_and(|kind| kind.starts_with("budget."))
-            && let Some(diagnostic) = event
-                .get("metadata")
-                .and_then(|metadata| metadata.get("yolop.task_completion"))
-            && let (Some(action), Some(reason)) =
-                (diagnostic["action"].as_str(), diagnostic["reason"].as_str())
+        // The engine's completion check: a continuation, an exhausted
+        // budget, or a review that failed is worth finding again.
+        if event_type == Some("turn.completion_checked")
+            && let Some(data) = data
+            && let (Some(action), Some(reason)) = (data["action"].as_str(), data["reason"].as_str())
+            && action != "finished"
         {
-            let mut text = format!("continuation {action}: {reason}");
-            if let Some(limit) = diagnostic["exhausted_limit"].as_str() {
-                text.push_str(&format!(" (limit: {limit})"));
-            }
+            let text = format!("completion check {action}: {reason}");
             has_discoverable_content = true;
-            let review_failed = diagnostic["state"].as_str() == Some("failed");
+            let review_failed = action == "review_failed";
             reason_failed |= review_failed;
             failed |= review_failed;
             if query_lower.is_some_and(|query| text.to_lowercase().contains(query)) {
@@ -761,16 +758,15 @@ mod tests {
             dir.path(),
             "session_00000000000000000000000000000004",
             &[json!({
-                "type":"budget.exhausted", "ts":"2026-10-16T00:00:00Z",
-                "metadata":{"yolop.task_completion":{
-                    "action":"exhausted", "reason":"verification remains", "exhausted_limit":"turns"
-                }}
+                "type":"turn.completion_checked", "ts":"2026-10-16T00:00:00Z",
+                "data":{"action":"budget_exhausted", "verdict":"in_progress",
+                    "reason":"verification remains", "continuations_used":5}
             })],
         );
         let result = search_sessions(
             dir.path(),
             SessionId::new(),
-            &json!({"query":"continuation exhausted"}),
+            &json!({"query":"budget_exhausted"}),
         )
         .unwrap();
         assert_eq!(result["count"], 1);
@@ -780,7 +776,7 @@ mod tests {
             result["sessions"][0]["snippet"]
                 .as_str()
                 .unwrap()
-                .contains("verification remains (limit: turns)")
+                .contains("budget_exhausted: verification remains")
         );
     }
 
@@ -791,9 +787,8 @@ mod tests {
             dir.path(),
             "session_00000000000000000000000000000005",
             &[json!({
-                "type":"budget.paused", "metadata":{"yolop.task_completion":{
-                    "action":"review_failed", "state":"failed", "reason":"invalid completion review"
-                }}
+                "type":"turn.completion_checked",
+                "data":{"action":"review_failed", "reason":"invalid completion review"}
             })],
         );
         let result = search_sessions(

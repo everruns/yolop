@@ -59,7 +59,6 @@ struct Parsed<'a> {
     ts: SystemTime,
     context: &'a Value,
     data: &'a Value,
-    metadata: &'a Value,
     event_type: &'a str,
     event_id: &'a str,
     session_id: &'a str,
@@ -119,7 +118,10 @@ impl TraceExporter {
             // `llm.generation` is a point event under the turn, carrying
             // model/token attributes. Its span covers `metadata.duration_ms`
             // when the host reports one, so Logfire can derive tok/s.
-            ("llm" | "budget", _) => self.point_span(&parsed),
+            // The engine's completion check is a point under its turn: its
+            // verdict, action, reason and continuation usage export as the
+            // event's `yolop.*` data attributes.
+            ("llm" | "budget", _) | ("turn", "completion_checked") => self.point_span(&parsed),
             _ => {}
         }
     }
@@ -233,7 +235,8 @@ impl TraceExporter {
     /// child attached when its parent's `started` was missed, and a turn (or
     /// an event whose parent is unknown) roots a new trace.
     fn parent_cx(&self, parsed: &Parsed) -> Context {
-        if parsed.family == "turn" {
+        // A turn is a trace root; its completion check is a point under it.
+        if parsed.family == "turn" && parsed.phase != "completion_checked" {
             return Context::new();
         }
         parsed
@@ -279,7 +282,6 @@ fn parse(params: &yolop_yep::TraceEventParams) -> Option<Parsed<'_>> {
         ts,
         context: &params.context,
         data: &params.data,
-        metadata: &params.metadata,
         event_type: &params.event_type,
         event_id: &params.id,
         session_id: &params.session_id,
@@ -461,26 +463,6 @@ fn gen_ai_attributes(parsed: &Parsed) -> Vec<KeyValue> {
 /// scalar `data` fields (tool name, exit code, …) namespaced under `yolop.`.
 fn attributes(parsed: &Parsed) -> Vec<KeyValue> {
     let mut attrs = gen_ai_attributes(parsed);
-    if let Some(diagnostic) = parsed
-        .metadata
-        .get("yolop.task_completion")
-        .and_then(Value::as_object)
-    {
-        for (key, value) in diagnostic {
-            let name = format!("yolop.completion.{key}");
-            match value {
-                Value::String(value) => attrs.push(KeyValue::new(name, value.clone())),
-                Value::Number(value) => {
-                    if let Some(value) = value.as_i64() {
-                        attrs.push(KeyValue::new(name, value));
-                    } else {
-                        attrs.push(KeyValue::new(name, value.to_string()));
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
     attrs.push(KeyValue::new(
         "yolop.event_type",
         parsed.event_type.to_string(),
@@ -559,7 +541,7 @@ mod tests {
     }
 
     #[test]
-    fn completion_budget_spans_export_metadata_after_the_turn_closes() {
+    fn completion_check_spans_export_after_the_turn_closes() {
         let (mut exp, mem) = exporter();
         exp.handle(&ev(
             "turn.started",
@@ -573,23 +555,17 @@ mod tests {
             serde_json::json!({"turn_id":"t1"}),
             serde_json::json!({}),
         ));
-        for event_type in [
-            "budget.warning",
-            "budget.paused",
-            "budget.exhausted",
-            "budget.resumed",
-        ] {
-            let mut event = ev(
-                event_type,
+        for action in ["continued", "continued", "continued", "budget_exhausted"] {
+            exp.handle(&ev(
+                "turn.completion_checked",
                 "2024-01-01T00:00:02Z",
                 serde_json::json!({"turn_id":"t1", "parent_span_id":"t1"}),
-                serde_json::json!({"budget_id":"yolop.automatic_continuation"}),
-            );
-            event.metadata = serde_json::json!({"yolop.task_completion": {
-                "action":"exhausted", "reason":"verification remains", "used_turns":5,
-                "used_tokens":u64::MAX, "max_turns":5, "exhausted_limit":"turns"
-            }});
-            exp.handle(&event);
+                serde_json::json!({
+                    "turn_id":"t1", "verdict":"in_progress", "action":action,
+                    "reason":"verification remains", "continuations_used":5,
+                    "max_continuations":5, "tokens_used":300_000, "elapsed_ms":10
+                }),
+            ));
         }
         let spans = mem.get_finished_spans().unwrap();
         assert_eq!(spans.len(), 5);
@@ -600,20 +576,20 @@ mod tests {
             assert!(
                 span.attributes
                     .iter()
-                    .any(|attr| attr.key.as_str() == "yolop.completion.reason"
+                    .any(|attr| attr.key.as_str() == "yolop.reason"
                         && attr.value.to_string() == "verification remains")
             );
             assert!(
                 span.attributes
                     .iter()
-                    .any(|attr| attr.key.as_str() == "yolop.completion.used_turns"
+                    .any(|attr| attr.key.as_str() == "yolop.continuations_used"
                         && attr.value.to_string() == "5")
             );
             assert!(
                 span.attributes
                     .iter()
-                    .any(|attr| attr.key.as_str() == "yolop.completion.used_tokens"
-                        && attr.value.to_string() == u64::MAX.to_string())
+                    .any(|attr| attr.key.as_str() == "yolop.tokens_used"
+                        && attr.value.to_string() == "300000")
             );
         }
         assert!(exp.open.is_empty());

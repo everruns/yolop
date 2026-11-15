@@ -215,17 +215,17 @@ mod tests {
                 serde_json::json!({ "tool_name": "bash" }),
             ),
             metadata: Some(
-                serde_json::json!({"yolop.task_completion":{"action":"continue","used_turns":2}}),
+                serde_json::json!({"example.annotation":{"action":"continue","used_turns":2}}),
             ),
             tags: None,
         };
         let event = request.into_event(everruns_contracts::typed_id::EventId::new(), 1);
         let params = trace_event_params(&event);
         assert_eq!(
-            params["metadata"]["yolop.task_completion"]["action"],
+            params["metadata"]["example.annotation"]["action"],
             "continue"
         );
-        assert_eq!(params["metadata"]["yolop.task_completion"]["used_turns"], 2);
+        assert_eq!(params["metadata"]["example.annotation"]["used_turns"], 2);
         assert_eq!(params["event_type"], "tool.completed");
         assert_eq!(params["session_id"], session.to_string());
         assert_eq!(params["id"], event.id.to_string());

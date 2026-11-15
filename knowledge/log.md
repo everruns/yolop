@@ -1,5 +1,10 @@
 # Knowledge Log
 
+## 2026-11-15, Engine completion check
+
+- [Task completion](specs/task-completion.md): the agent runs the everruns completion check with `Always`; the engine reviews and continues turns in place, and yolop's host review loop, budget events and controller are gone. Hosts read `turn.completion_checked`; continuation limits apply when a session starts.
+- [Task completion](specs/task-completion.md): the engine's credit wait replaces yolop's OpenRouter credit watcher; local schedule fires get their `Schedule` origin so the engine recognizes its checks.
+
 ## 2026-11-15, Code navigation shared with the hosted coding harness
 
 - [LSP](specs/lsp.md) and [ast_edit](specs/ast_edit.md): language servers, structural search and edit, and the repository map now come from `everruns-coding`; Yolop keeps only the registration over the local disk.

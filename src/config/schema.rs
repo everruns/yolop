@@ -186,9 +186,9 @@ pub fn schema() -> &'static [ConfigField] {
             key: "continuation_max_turns",
             aliases: &[],
             title: "Automatic continuation turns",
-            description: "Maximum automatic turns after the original turn. Positive integer, read live \
-                          before each continuation. Use yolop config set or clear; profile overrides \
-                          are supported.",
+            description: "Most automatic continuations the completion check adds to one turn. Positive \
+                          integer, applied when a session starts. Use yolop config set or clear; \
+                          profile overrides are supported.",
             kind: ValueKind::Integer,
             default: Some("5"),
             examples: &["5", "10"],
@@ -199,8 +199,8 @@ pub fn schema() -> &'static [ConfigField] {
             aliases: &[],
             title: "Automatic continuation tokens",
             description: "Provider-reported token budget across automatic continuations, excluding the \
-                          original turn. Positive integer, read live before each continuation. \
-                          Use yolop config set or clear; profile overrides are supported.",
+                          original turn and cache reads. Positive integer, applied when a session \
+                          starts. Use yolop config set or clear; profile overrides are supported.",
             kind: ValueKind::Integer,
             default: Some("256000"),
             examples: &["256000", "512000"],
@@ -210,9 +210,9 @@ pub fn schema() -> &'static [ConfigField] {
             key: "continuation_max_seconds",
             aliases: &[],
             title: "Automatic continuation time (seconds)",
-            description: "Elapsed seconds from the first automatic continuation. Positive integer, read \
-                          live before each continuation. Use yolop config set or clear; profile \
-                          overrides are supported.",
+            description: "Seconds a continuation may run without tool work; a continuation that runs \
+                          tools restarts the window. Positive integer, applied when a session starts. \
+                          Use yolop config set or clear; profile overrides are supported.",
             kind: ValueKind::Integer,
             default: Some("600"),
             examples: &["600", "1200"],

@@ -79,7 +79,9 @@ impl Translator {
                 if !self.replay_history {
                     return Vec::new();
                 }
-                if data.message.role != RuntimeMessageRole::User {
+                if data.message.role != RuntimeMessageRole::User
+                    || data.message.is_turn_continuation()
+                {
                     return Vec::new();
                 }
                 match data.message.text().map(str::trim) {
@@ -88,6 +90,26 @@ impl Translator {
                     }
                     _ => Vec::new(),
                 }
+            }
+            // The engine's completion check: say when it continued the turn,
+            // ran out of continuations, or could not review.
+            EventData::TurnCompletionChecked(data) => {
+                crate::session_state::task_completion::notice(data)
+                    .map(|text| {
+                        vec![SessionUpdate::AgentMessageChunk(protocol::text_chunk(
+                            format!("\n\n{text}\n\n"),
+                        ))]
+                    })
+                    .unwrap_or_default()
+            }
+            EventData::TurnCreditShortfall(data) => {
+                crate::runtime::credit_exhaustion::shortfall_notice(data)
+                    .map(|text| {
+                        vec![SessionUpdate::AgentMessageChunk(protocol::text_chunk(
+                            format!("\n\n{text}\n\n"),
+                        ))]
+                    })
+                    .unwrap_or_default()
             }
             EventData::OutputMessageStarted(_) => {
                 self.current_message_streamed = false;

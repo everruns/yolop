@@ -695,7 +695,7 @@ fn failed_turn_transcript(
     // Credit exhaustion gets one markdown block with blank-line separated
     // paragraphs and clickable links, so ACP/TUI render it readably instead
     // of gluing the raw provider text to the key URL and hint.
-    if let Some(exhaustion) = crate::runtime::credit_watcher::CreditExhaustion::detect(error) {
+    if let Some(exhaustion) = crate::runtime::credit_exhaustion::CreditExhaustion::detect(error) {
         let mut lines = assistant;
         lines.retain(|line| !attestation::is_generic_provider_apology(&line.text));
         let summary = turn_failure_message(error);

@@ -472,9 +472,11 @@ impl everruns_core::SessionStore for AuthorityCatalog {
 }
 
 impl SessionHost {
-    /// Completion review must not race an independently admitted Engine turn
-    /// or spend the simulator/provider's next call before a just-finished task
-    /// has delivered its result. Task facts and receipts remain authoritative.
+    /// Whether the session still owes work after `completed`: an admitted
+    /// input not yet run, or a background tool this turn started that finished
+    /// without the model seeing its result. Print waits for and hands off that
+    /// work instead of exiting on a turn that only started it. Task facts and
+    /// receipts remain authoritative.
     pub async fn has_owed_work(
         &self,
         completed: everruns_contracts::typed_id::TurnId,

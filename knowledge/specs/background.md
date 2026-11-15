@@ -152,7 +152,7 @@ presentation with client prompts and reconciles terminal tasks on each later
 user request. Startup and lifecycle reads recover pending admission observation
 when a lossy event listener misses it. Ordinary user text cannot forge host
 handoff provenance. Automatic inputs retain the parent's conversation context
-and use the shared [completion controller](task-completion.md).
+and get the same [engine completion check](task-completion.md) as any turn.
 
 The `proactive_wake` opt-out prevents automatic task admission and sends a notice.
 The next user turn reconciles unreported terminal work. Print mode waits for

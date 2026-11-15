@@ -46,7 +46,6 @@ use crate::runtime::background_wake::{
     WakeHandoff, WakeMessage, WakeReceiver, coalesce_pending_wakes,
 };
 use crate::runtime::{BuiltRuntime, ModelState, RuntimeHandles};
-use crate::session_state::task_completion::CompletionController;
 use crate::tui::input::image_input::{MAX_IMAGE_BYTES, image_part_from_base64};
 
 pub(super) mod v2;
@@ -430,12 +429,9 @@ struct Session {
     last_config_options: StdMutex<Option<Vec<SessionConfigOption>>>,
     /// Retained for the ACP session lifetime so due local schedules keep polling.
     task_registry: Arc<dyn everruns_core::session_task::SessionTaskRegistry>,
-    completion: tokio::sync::Mutex<CompletionController>,
     /// Serializes turns for this session. Both a client prompt and a background
     /// wake turn take it, so two `run_turn`s never overlap.
     turn_lock: tokio::sync::Mutex<()>,
-    /// Counts started turns; a credit watcher retries only when no newer turn began.
-    turn_seq: std::sync::atomic::AtomicU64,
     /// Background task ids already surfaced to the client (wake notice, wake
     /// turn, or next-turn reconcile), so the reconcile backstop never repeats
     /// them. Only touched while `turn_lock` is held.
@@ -922,9 +918,7 @@ fn register_session<F: RuntimeFactory>(
         last_config_options: StdMutex::new(None),
         settings: built.settings,
         task_registry,
-        completion: tokio::sync::Mutex::new(CompletionController::default()),
         turn_lock: tokio::sync::Mutex::new(()),
-        turn_seq: std::sync::atomic::AtomicU64::new(0),
         reported_background_tasks: StdMutex::new(HashSet::new()),
         closed: AtomicBool::new(false),
     });
@@ -1314,9 +1308,6 @@ async fn run_client_turn<F: RuntimeFactory>(
             session.model.reasoning_effort(),
         )
     });
-    if parsed_command.is_none() {
-        session.completion.lock().await.reset();
-    }
     let stop_reason = match parsed_command {
         Some(command) => run_slash_command(server, peer, session.clone(), command).await,
         None => run_prompt(peer, session.clone(), input).await,
@@ -1960,7 +1951,7 @@ async fn run_prompt(peer: Arc<Peer>, session: Arc<Session>, mut input: InputMess
     let mut cancel_rx = session.arm_cancel();
     loop {
         let (stop, result) =
-            run_prompt_once(peer.clone(), session.clone(), input, &mut cancel_rx, true).await;
+            run_prompt_once(peer.clone(), session.clone(), input, &mut cancel_rx).await;
         if stop == StopReason::Cancelled {
             return stop;
         }
@@ -1973,13 +1964,10 @@ async fn run_prompt(peer: Arc<Peer>, session: Arc<Session>, mut input: InputMess
             provider_interruption_followups = provider_interruption_followups.saturating_add(1);
             next
         } else {
-            let followup = tokio::select! {
-                biased;
-                _ = &mut cancel_rx => return StopReason::Cancelled,
-                followup = completion_followup(&peer, &session, &result) => followup,
-            };
-            let Some(next) = followup else { return stop };
-            next
+            // The engine already reviewed the turn and continued it in place;
+            // its notices streamed with the turn's events.
+            report_completion_check(&session, &result).await;
+            return stop;
         };
         input = crate::session_state::task_completion::tag_continuation(
             session.model.input_message(next),
@@ -1992,7 +1980,6 @@ async fn run_prompt_once(
     session: Arc<Session>,
     mut input: InputMessage,
     cancel_rx: &mut oneshot::Receiver<()>,
-    spawn_watcher: bool,
 ) -> (StopReason, Option<everruns::Turn>) {
     let mut scope = crate::runtime::turn_scope::TurnScope::new(&mut input);
     let handles = session.handles.clone();
@@ -2025,13 +2012,6 @@ async fn run_prompt_once(
     let turn_peer = peer.clone();
     let turn_acp_id = acp_id.clone();
     let cancellation = scope.cancellation();
-    // Every started turn takes a sequence number; the credit watcher retries
-    // only when no newer turn began after the failed one.
-    let failed_turn_seq = session.turn_seq.fetch_add(1, Ordering::SeqCst) + 1;
-    // Clone for the credit watcher: the turn below moves `input`, but a
-    // credit-exhausted turn needs the same message to retry once when the
-    // background probe sees balance again.
-    let watcher_input = input.clone();
     let turn = tokio::spawn(async move {
         let notice = move |text: String| {
             turn_recovered.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -2114,54 +2094,20 @@ async fn run_prompt_once(
         Ok(Ok(result)) => {
             if let Some(error) = &result.error {
                 if let Some(exhaustion) =
-                    crate::runtime::credit_watcher::CreditExhaustion::detect(error)
+                    crate::runtime::credit_exhaustion::CreditExhaustion::detect(error)
                 {
                     // One markdown block with blank-line separated paragraphs so
                     // Paseo renders clickable links instead of gluing the raw
                     // provider text, the key URL, and the hint into one run.
+                    // The engine's credit wait reports itself through its own
+                    // `turn.credit_shortfall` notice.
                     let summary = crate::runtime::session::turn_failure_message(error);
-                    let mut message = exhaustion.markdown_block(&summary);
-                    // Only advertise the checker when one actually starts: the
-                    // probe needs the same OpenRouter key the turn used.
-                    let api_key = std::env::var("OPENROUTER_API_KEY")
-                        .ok()
-                        .filter(|key| !key.trim().is_empty());
-                    message.push_str("\n\n");
-                    match api_key {
-                        Some(api_key) if spawn_watcher => {
-                            message
-                                .push_str(crate::runtime::credit_watcher::watcher_running_notice());
-                            peer.session_update(
-                                &acp_id,
-                                SessionUpdate::AgentMessageChunk(protocol::text_chunk(message)),
-                            );
-                            spawn_credit_watcher(
-                                peer.clone(),
-                                session.clone(),
-                                watcher_input.clone(),
-                                failed_turn_seq,
-                                api_key,
-                            );
-                        }
-                        Some(_) => {
-                            message.push_str(
-                                crate::runtime::credit_watcher::watcher_still_exhausted_notice(),
-                            );
-                            peer.session_update(
-                                &acp_id,
-                                SessionUpdate::AgentMessageChunk(protocol::text_chunk(message)),
-                            );
-                        }
-                        None => {
-                            message.push_str(
-                                crate::runtime::credit_watcher::watcher_unavailable_notice(),
-                            );
-                            peer.session_update(
-                                &acp_id,
-                                SessionUpdate::AgentMessageChunk(protocol::text_chunk(message)),
-                            );
-                        }
-                    }
+                    peer.session_update(
+                        &acp_id,
+                        SessionUpdate::AgentMessageChunk(protocol::text_chunk(
+                            exhaustion.markdown_block(&summary),
+                        )),
+                    );
                 } else {
                     peer.session_update(
                         &acp_id,
@@ -2222,62 +2168,20 @@ fn provider_interruption_followup(
     }
 }
 
-async fn completion_followup(
-    peer: &Arc<Peer>,
-    session: &Arc<Session>,
-    result: &everruns::Turn,
-) -> Option<String> {
-    let background = match session
-        .task_registry
-        .list(session.handles.session_id, None)
-        .await
-    {
-        Ok(tasks) => crate::session_state::task_completion::has_pending_execution(&tasks),
+/// A turn that ended on a question only the person can answer marks the
+/// session blocked for herdr.
+async fn report_completion_check(session: &Arc<Session>, result: &everruns::Turn) {
+    let events = match session.handles.host.events().await {
+        Ok(events) => events,
         Err(error) => {
-            peer.session_update(
-                &session.acp_id,
-                SessionUpdate::AgentMessageChunk(protocol::text_chunk(format!(
-                    "Task completion unavailable: cannot inspect background work: {error}"
-                ))),
-            );
-            return None;
+            tracing::warn!(%error, "acp: cannot read the completion check");
+            return;
         }
     };
-    match session
-        .completion
-        .lock()
-        .await
-        .after_turn(
-            &session.handles,
-            result,
-            background,
-            session.settings.as_ref(),
-        )
-        .await
-    {
-        Ok(decision) => {
-            if decision.state == crate::session_state::task_completion::CompletionState::Blocked {
-                session
-                    .handles
-                    .report_herdr_state(crate::capabilities::herdr::HerdrState::Blocked);
-            }
-            if let Some(notice) = decision.notice {
-                peer.session_update(
-                    &session.acp_id,
-                    SessionUpdate::AgentMessageChunk(protocol::text_chunk(notice)),
-                );
-            }
-            decision.followup
-        }
-        Err(err) => {
-            peer.session_update(
-                &session.acp_id,
-                SessionUpdate::AgentMessageChunk(protocol::text_chunk(format!(
-                    "Completion review unavailable: {err}"
-                ))),
-            );
-            None
-        }
+    if crate::session_state::task_completion::ended_blocked(&events, result) {
+        session
+            .handles
+            .report_herdr_state(crate::capabilities::herdr::HerdrState::Blocked);
     }
 }
 
@@ -2318,80 +2222,6 @@ fn forward_event(
         peer.session_update(acp_id, update);
     }
     peer.after_event(acp_id, event);
-}
-
-/// Deterministic credit watcher: fixed 60s probes of the key endpoint (no
-/// token spend), bounded so it cannot poll forever.
-///
-/// Retries the paused turn once when the probe sees balance again, and only
-/// when no newer turn started meanwhile. A watcher retry never spawns
-/// another watcher, so retries cannot chain.
-fn spawn_credit_watcher(
-    peer: Arc<Peer>,
-    session: Arc<Session>,
-    input: InputMessage,
-    failed_turn_seq: u64,
-    api_key: String,
-) {
-    use crate::runtime::credit_watcher::{
-        CreditWatcher, ProbeOutcome, probe_openrouter_key, watcher_auth_error_notice,
-    };
-
-    let acp_id = session.acp_id.clone();
-    tokio::spawn(async move {
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(15))
-            .build();
-        let Ok(client) = client else {
-            return;
-        };
-        let mut watcher = CreditWatcher::start();
-        loop {
-            tokio::time::sleep(watcher.poll_interval).await;
-            match probe_openrouter_key(&client, &api_key).await {
-                ProbeOutcome::Available => {
-                    if session.turn_seq.load(Ordering::SeqCst) != failed_turn_seq {
-                        peer.session_update(
-                            &acp_id,
-                            SessionUpdate::AgentMessageChunk(protocol::text_chunk(
-                                "Credits are back, but a newer turn has started since the paused one. Standing the watcher down; the latest turn continues.",
-                            )),
-                        );
-                        break;
-                    }
-                    peer.session_update(
-                        &acp_id,
-                        SessionUpdate::AgentMessageChunk(protocol::text_chunk(
-                            CreditWatcher::credits_back_message(),
-                        )),
-                    );
-                    let (_cancel_tx, mut cancel_rx) = oneshot::channel();
-                    run_prompt_once(peer, session, input, &mut cancel_rx, false).await;
-                    break;
-                }
-                ProbeOutcome::AuthError => {
-                    peer.session_update(
-                        &acp_id,
-                        SessionUpdate::AgentMessageChunk(protocol::text_chunk(
-                            watcher_auth_error_notice(),
-                        )),
-                    );
-                    break;
-                }
-                ProbeOutcome::Exhausted | ProbeOutcome::Unknown => {
-                    if !watcher.record_probe() {
-                        peer.session_update(
-                            &acp_id,
-                            SessionUpdate::AgentMessageChunk(protocol::text_chunk(
-                                "Credit watcher gave up after an hour of 60s probes. Add credits or lower max output tokens, then send your next message to retry.",
-                            )),
-                        );
-                        break;
-                    }
-                }
-            }
-        }
-    });
 }
 
 #[cfg(test)]

@@ -3,7 +3,7 @@
 
 pub mod background_wake;
 mod compaction_checkpoint;
-pub mod credit_watcher;
+pub mod credit_exhaustion;
 pub(crate) mod discovered_profiles;
 pub(crate) mod engine;
 mod engine_hosting;
@@ -3541,10 +3541,6 @@ pub(crate) type ExtensionFactory =
     Arc<dyn Fn(&str) -> Result<Arc<dyn everruns_core::Capability>, String> + Send + Sync>;
 
 impl RuntimeHandles {
-    /// Cache reads bill far below fresh input and repeat the same prefix each
-    /// turn, so the continuation budget discounts them instead of re-billing
-    /// full context every repair.
-    pub(crate) const CACHED_TOKEN_DIVISOR: u64 = 10;
     /// Stop trace forwarding and wait for each extension server to flush.
     ///
     /// Every host path that ends a session calls this before dropping the
@@ -3654,50 +3650,6 @@ impl RuntimeHandles {
             async move { self.execute_input(input, cancellation).await }
         })
         .await
-    }
-
-    /// Provider-reported tokens consumed by one agent turn. Completion gates
-    /// use the durable event stream so TUI, print, and ACP share one budget
-    /// accounting rule. Cache reads repeat the same prefix every turn and bill
-    /// near a tenth of fresh input, so they count discounted toward the budget.
-    pub(crate) async fn turn_tokens(&self, turn_id: everruns_contracts::typed_id::TurnId) -> u64 {
-        self.host
-            .events()
-            .await
-            .unwrap_or_default()
-            .iter()
-            .filter(|event| event.context.turn_id == Some(turn_id))
-            .filter_map(|event| match &event.data {
-                everruns_core::events::EventData::LlmGeneration(data) => {
-                    data.metadata.usage.as_ref()
-                }
-                _ => None,
-            })
-            .map(|usage| {
-                Self::budgeted_usage_tokens(
-                    usage.input_tokens,
-                    usage.output_tokens,
-                    usage.cache_read_tokens.unwrap_or(0),
-                    usage.cache_creation_tokens.unwrap_or(0),
-                )
-            })
-            .sum()
-    }
-
-    /// Budget charge for one LLM generation. Everruns buckets are disjoint
-    /// (input excludes cached prefix), so a naive sum re-bills the same cached
-    /// context every continuation turn and trips the token budget after a few
-    /// large-context turns. Cache writes stay full price; reads discount tenfold.
-    pub(crate) fn budgeted_usage_tokens(
-        input: u32,
-        output: u32,
-        cache_read: u32,
-        cache_creation: u32,
-    ) -> u64 {
-        u64::from(input)
-            + u64::from(output)
-            + u64::from(cache_creation)
-            + u64::from(cache_read) / Self::CACHED_TOKEN_DIVISOR
     }
 
     /// Re-read the merged MCP server config (global settings + workspace
@@ -5780,6 +5732,16 @@ pub async fn build_with_options(
         ))
         .parallel_tool_calls(true)
         .workspace_policy(everruns::WorkspacePolicy::read_write())
+        // Every finishing turn is reviewed by the engine, watched or not: a
+        // coding agent that stops on "running the tests now" has not done the
+        // work. Continuations happen inside the same turn, bounded by the
+        // user's `continuation_max_*` settings.
+        .completion_check(everruns::completion_check::CompletionCheck::Always)
+        .continuation_limits(everruns::completion_check::ContinuationLimits {
+            max_turns: u32::try_from(settings_snapshot.continuation_max_turns).unwrap_or(u32::MAX),
+            max_tokens: settings_snapshot.continuation_max_tokens,
+            max_elapsed_secs: settings_snapshot.continuation_max_seconds,
+        })
         .host_services(services)
         .on_turn_start_with_recovery(everruns::HookRecovery::Idempotent, {
             let runtime = runtime_cell.clone();
@@ -6002,21 +5964,6 @@ mod tests {
     use std::sync::Mutex;
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-    #[test]
-    fn continuation_budget_discounts_repeated_cache_reads() {
-        // A merge-resolution turn rereads a large cached prefix plus a little
-        // new work. Full weighting bills 53_500 and trips 256k in five turns;
-        // discounted reads bill 8_500, so the budget tracks new work.
-        let billed = RuntimeHandles::budgeted_usage_tokens(2_000, 1_000, 50_000, 500);
-        assert_eq!(billed, 2_000 + 1_000 + 500 + 5_000);
-        let naive = 2_000u64 + 1_000 + 50_000 + 500;
-        assert!(
-            billed < naive,
-            "cached prefix must discount, got {billed} vs {naive}"
-        );
-        assert_eq!(RuntimeHandles::budgeted_usage_tokens(100, 50, 0, 0), 150);
-    }
 
     // Guards the two properties that make the local default usable at all. A
     // safetensors default would download full-precision weights only to
@@ -7859,6 +7806,199 @@ mod tests {
                 .any(|narration| narration == "Launching Orbit Scout subagent"),
             "spawn_agent narration should name the agent: {narrations:?}"
         );
+    }
+
+    /// The engine's credit-shortfall wait (everruns-core
+    /// `engine::credit_shortfall`) only treats a fired check as a check when
+    /// its input carries `MessageOriginKind::Schedule` and the raw prompt.
+    /// The local schedule runner admits it as a plain user message, so without
+    /// `YolopHosting::stamp_schedule_origin` the check runs an ordinary turn,
+    /// sees its own row still queued, schedules nothing, and the wait ends
+    /// silently after one check.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn engine_credit_wait_check_is_recognized_when_it_fires() {
+        use everruns_contracts::message_origin::MessageOriginKind;
+        use everruns_core::EventData;
+        use everruns_core::engine::credit_shortfall::CREDIT_WAIT_PROMPT;
+        use everruns_core::events::CreditShortfallAction;
+        use everruns_llmsim::{SimError, SimTurn};
+
+        let workspace = tempfile::tempdir().expect("workspace");
+        let sessions = tempfile::tempdir().expect("sessions");
+        let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
+        let options = BuildOptions {
+            llmsim_override: Some(LlmSimConfig::scripted(vec![
+                SimTurn::Error(SimError::QuotaExhausted),
+                SimTurn::Error(SimError::QuotaExhausted),
+                SimTurn::Error(SimError::QuotaExhausted),
+            ])),
+            ..BuildOptions::default()
+        };
+        let built = build_with_options(
+            workspace.path().to_path_buf(),
+            ProviderChoice::Sim,
+            None,
+            sessions.path().to_path_buf(),
+            settings,
+            options,
+        )
+        .await
+        .expect("build runtime");
+        let session_id = built.handles.session_id;
+        let store = built
+            .handles
+            .host
+            .schedule_store(everruns_core::host::in_process_internal_org_id(
+                everruns_core::DEFAULT_ORG_PUBLIC_ID,
+            ))
+            .expect("schedule store");
+
+        let first = built
+            .handles
+            .run_checkpointed_turn(built.model.input_message("do the work"))
+            .await
+            .expect("run turn");
+        assert!(!first.success, "a quota refusal fails the turn: {first:?}");
+
+        // 1. The refusal scheduled one credit check.
+        let queued = |schedules: &[everruns_core::session_schedule::SessionSchedule]| {
+            schedules
+                .iter()
+                .filter(|s| s.enabled && s.trigger_count == 0)
+                .filter(|s| s.description.starts_with(CREDIT_WAIT_PROMPT))
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        let checks = queued(&store.list_schedules(session_id).await.expect("list"));
+        assert_eq!(checks.len(), 1, "one credit check scheduled: {checks:?}");
+        let check = checks[0].clone();
+        eprintln!(
+            "scheduled check: next_trigger_at={:?} description={:?}",
+            check.next_trigger_at, check.description
+        );
+
+        // 2. Bring the check due now instead of in 60 s: same prompt, one-shot.
+        //    Wait over a second first so a fresh wait would carry a visibly
+        //    different deadline (deadlines are whole seconds).
+        tokio::time::sleep(Duration::from_millis(1_500)).await;
+        store
+            .cancel_schedule(session_id, check.id)
+            .await
+            .expect("cancel");
+        store
+            .create_schedule(
+                session_id,
+                check.description.clone(),
+                None,
+                Some(chrono::Utc::now() + chrono::Duration::seconds(1)),
+                "UTC".into(),
+            )
+            .await
+            .expect("re-create check due now");
+
+        let refired = store
+            .list_schedules(session_id)
+            .await
+            .expect("list")
+            .into_iter()
+            .find(|s| s.enabled && s.trigger_count == 0)
+            .expect("re-created check");
+
+        // 3. Wait for the schedule runner to fire it and its turn to settle:
+        //    either the turn records a second credit decision, or the
+        //    delivery completes (trigger_count advances after the turn).
+        let shortfalls = |events: &[everruns_core::Event]| {
+            events
+                .iter()
+                .filter_map(|event| match &event.data {
+                    EventData::TurnCreditShortfall(data) => Some(data.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let delivered = tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                let schedules = store.list_schedules(session_id).await.expect("list");
+                let events = built.handles.host.events().await.expect("events");
+                if shortfalls(&events).len() >= 2
+                    || schedules
+                        .iter()
+                        .any(|s| s.id == refired.id && s.trigger_count >= 1)
+                {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+        })
+        .await;
+        let events = built.handles.host.events().await.expect("events");
+        eprintln!(
+            "fired check delivered: {}; schedules now: {:?}",
+            delivered.is_ok(),
+            store
+                .list_schedules(session_id)
+                .await
+                .expect("list")
+                .iter()
+                .map(|s| (
+                    &s.description,
+                    s.enabled,
+                    s.trigger_count,
+                    s.next_trigger_at
+                ))
+                .collect::<Vec<_>>()
+        );
+        delivered.expect("the fired check ran its turn");
+
+        let inputs: Vec<_> = events
+            .iter()
+            .filter_map(|event| match &event.data {
+                EventData::InputMessage(input) => Some(input.message.clone()),
+                _ => None,
+            })
+            .collect();
+        let fired = inputs.last().expect("fired input");
+        eprintln!(
+            "fired input: origin={:?} text={:?}",
+            fired.origin(),
+            fired.text()
+        );
+        let decisions = shortfalls(&events);
+        eprintln!(
+            "credit decisions: {:?}",
+            decisions
+                .iter()
+                .map(|d| (d.action, d.wait_until))
+                .collect::<Vec<_>>()
+        );
+        let after = queued(&store.list_schedules(session_id).await.expect("list"));
+        eprintln!(
+            "queued checks after the fired one: {:?}",
+            after
+                .iter()
+                .map(|s| (&s.description, s.next_trigger_at))
+                .collect::<Vec<_>>()
+        );
+
+        // The fired check reaches the engine as a schedule-origin message with
+        // the raw prompt, so it continues the same wait rather than opening a
+        // new one with a fresh deadline.
+        assert_eq!(
+            fired.origin().map(|origin| origin.kind),
+            Some(MessageOriginKind::Schedule),
+            "fired check must carry schedule origin"
+        );
+        assert_eq!(
+            fired.text().map(str::trim),
+            Some(check.description.as_str())
+        );
+        assert_eq!(
+            decisions.get(1).map(|d| (d.action, d.wait_until)),
+            Some((CreditShortfallAction::StillWaiting, decisions[0].wait_until)),
+            "the fired check continues the same wait"
+        );
+        assert_eq!(after.len(), 1, "one next check queued: {after:?}");
+        assert_eq!(after[0].description, check.description, "same deadline");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
