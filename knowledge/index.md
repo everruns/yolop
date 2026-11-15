@@ -10,7 +10,7 @@ and [`docs/`](../docs/); it must not link back into this internal bundle.
 
 ## Product direction and interaction
 
-- [Task completion](specs/task-completion.md), shared completion review and bounded recovery.
+- [Task completion](specs/task-completion.md), the engine completion check and its continuation budget.
 
 - [Conversational control](specs/conversational-control.md), steering and interruption behavior.
 - [Presentation](specs/presentation.md), terminal-independent presentation semantics.

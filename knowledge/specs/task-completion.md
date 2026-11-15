@@ -1,76 +1,69 @@
 ---
 type: Architecture Specification
 title: Task completion and bounded recovery
-description: Defines the shared turn-end policy for ACP, TUI, and print.
+description: How yolop uses the engine completion check across ACP, TUI, and print.
 ---
 
 # Task completion and bounded recovery
 
-ACP, TUI, and print use one host controller. A model finishing a generation is
-not proof that the user's work is done. The controller distinguishes achieved,
-recoverable work, background waiting, cancellation, provider failure, and a
-blocker requiring outside input. A failing command or test is recoverable
-evidence rather than a blocker by itself.
+A model finishing a generation is not proof that the user's work is done.
+Yolop builds its agent with the everruns engine completion check set to
+`Always`: every finishing turn is reviewed on the agent's own model, watched or
+not, and a turn that stopped on unfinished work ("running the tests now")
+gets an automatic continuation inside the same turn. The engine owns the
+review prompt, the verdicts (achieved, in progress, blocked), the budget, and
+the durable record; yolop's hosts only read the outcome. There is no yolop
+review loop, controller, or second budget.
 
 The conversation owns task context. User followups steer the ongoing work;
-automatic messages carry host provenance and do not replace its original scope.
-There is no separate ask file, goal command, or model-specific promise guard.
-Resumed sessions retain their conversation, without restoring a parallel task
-tracker. Queued steering takes precedence over completion review. The TUI runs reviews
-as cancellable background work so input stays responsive. A new human submission
-supersedes a TUI review and dispatches host commands normally. ACP keeps cancellation
-armed through the review and all repair turns.
+continuations carry the engine's `turn_continuation` origin and do not
+replace the original request. Hosts hide them from replayed transcripts and
+show the check's notice instead.
 
-Cancellation and provider failure stop automatic repairs. Queued or running detached
-execution means waiting, including a tool-free status response. Persistent monitors
-and tasks awaiting outside input proceed to review of the current request, rather
-than forcing a wait for future events. Other candidate final
-answers receive a tool-free review by the session model, even when no tools ran.
-The review sees the original request, recent steering, transcript outcomes, and
-candidate final. It must respect authorized scope and completed analysis work;
-it must not invent implementation or shipping requirements. Review errors or
-invalid responses stop recovery with a visible notice rather than retry blindly.
+What is settled without a review is the engine's call: cancellation and
+provider failure end the turn, a turn whose tools left detached work running
+waits for it, and a plain answer with no tool work is accepted (everruns
+releases after 0.52 also review tool-free promises under `Always`). An answer
+that ends on a question is blocked on the person.
 
-Recovery defaults to five automatic turns, 256,000 budget-weighted tokens,
-and ten minutes without a productive turn. Each continuation turn that ran
-tools without an unrecoverable failure restarts the time window, so long
-tasks that keep doing work are not cut while idle loops stay on the
-original clock. Cache reads repeat the same prefix
-every turn and bill far below fresh input, so they count tenfold discounted
-toward the token budget. The schema-backed settings
-`continuation_max_turns`, `continuation_max_tokens`, and
-`continuation_max_seconds` accept positive integers and support named profile
-overrides. The controller reads effective settings after each review, so an
-attached `yolop config set` changes the current recovery budget without resetting
-usage. Raising one limit leaves the other two in force. The original turn is
-not charged against that budget. The controller checks completion before reporting exhaustion, so a
-completed repair is accepted even if it used the remaining budget. Exhaustion
-names the reached limit and asks the user to approve resuming with a fresh
-budget. Approval is conversational, following the
-existing approval convention. A new human message resets recovery and can also
-redirect or cancel the task. Background execution retains its own task limits.
+Continuations default to five per turn, 256,000 tokens (cache reads excluded),
+and ten minutes without tool work: a continuation that runs tools restarts
+the window, so long tasks that keep working are bounded by turns and tokens.
+The schema-backed settings `continuation_max_turns`, `continuation_max_tokens`,
+and `continuation_max_seconds` accept positive integers and support named
+profile overrides. They become the agent definition's continuation limits
+when a session starts; a change applies to the next session. When the budget
+runs out the turn finishes with a notice naming how many continuations ran;
+any next message from the person starts a turn with a fresh budget.
+
+Each check is one `turn.completion_checked` event in the session log: verdict,
+action (finished, continued, budget exhausted, review failed), short reason,
+and continuation usage. The TUI and ACP render a notice for continued,
+exhausted, and failed checks as they stream; a blocked turn sets terminal and
+herdr status. `search_sessions` finds checks other than plain finishes as
+diagnostics, and trace extensions receive the event like any other: the
+bundled Logfire exporter emits it as a point span under its turn. See
+[extensions](extensions.md).
 
 Print waits for background completion, bounded by ten minutes from its first
-wait, and emits the accepted or terminal response. Interactive hosts stream candidate
-responses as they arrive and continue unfinished work in the same session.
-Limits and unavailable reviews are reported explicitly; they never claim that
-unfinished work succeeded. Print returns a failure exit status for exhausted
-recovery or required outside input. The same limits apply to all models.
+wait, and prints only what the agent wrote after the last continuation. It
+returns a failure exit status when the budget ran out or the review found the
+work blocked on outside input; an answer that merely ends on a question still
+succeeds. Unavailable reviews are reported on stderr; they never claim that
+unfinished work succeeded.
 
-Completion decisions use the existing budget event protocol in the private
-session event log. Metadata records the decision, short reason, turn stop
-reason, consumed turns/tokens/time, effective limits, and the exhausted limit.
-A continuation is a budget warning, a terminal or waiting decision pauses the
-recovery budget, and exhaustion has its own event. Human resets are recorded
-when the next turn is observed, with the original reset timestamp and previous
-usage. Review failures are also recorded. Native turn outcomes and provider
-recovery events remain durable, so stopping and retrying can be investigated
-after restart. These records do not become model conversation messages.
+## Out of credits
 
-Trace extensions receive the same metadata. The bundled Logfire exporter emits
-budget point spans with completion attributes and preserves correlation to the
-most recently completed turn. Exporting remains opt-in and does not block the
-agent loop. See [extensions](extensions.md).
+A provider refusal for lack of credits is the engine's too. When the balance
+still covers a useful answer the request is retried once with fewer output
+tokens; otherwise the turn fails and the engine schedules a check every
+minute for up to an hour, continuing the turn when credits are back
+(`turn.credit_shortfall` events, rendered as notices). Yolop keeps only the
+readable failure block (token counts, key and credits links). Local schedule
+fires reach the session through everruns' local schedule runner, which admits
+them without a `Schedule` origin; yolop's hosting adds it to the admission
+whose id is the runner's occurrence id, so the engine recognizes its own
+checks. Drop that once everruns writes the origin itself.
 
 See [background execution](background.md), [tool output](tool-output.md), and
 [progress guard](progress-guard.md).

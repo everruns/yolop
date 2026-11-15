@@ -231,25 +231,26 @@ mod otlp_tests {
         let tracer = provider.tracer("completion-test");
         let mut exporter = TraceExporter::new(tracer, provider);
         exporter.handle(&yolop_yep::TraceEventParams {
-            event_type: "budget.exhausted".into(),
+            event_type: "turn.completion_checked".into(),
             id: "event-completion-test".into(),
             ts: "2026-10-16T00:00:00Z".into(),
             session_id: "session-completion-test".into(),
             context: serde_json::json!({"turn_id":"turn-completion-test"}),
-            data: serde_json::json!({"budget_id":"yolop.automatic_continuation"}),
-            metadata: serde_json::json!({"yolop.task_completion":{
-                "action":"exhausted", "reason":"verification remains", "used_turns":5,
-                "exhausted_limit":"turns"
-            }}),
+            data: serde_json::json!({
+                "turn_id":"turn-completion-test", "verdict":"in_progress",
+                "action":"budget_exhausted", "reason":"verification remains",
+                "continuations_used":5, "max_continuations":5
+            }),
+            metadata: serde_json::json!({}),
         });
         let body = collector.join().unwrap();
         // OTLP protobuf strings are length-delimited. Exact attribute values
         // and parenting are asserted by the in-memory exporter tests.
         for expected in [
-            "budget.exhausted",
-            "yolop.completion.reason",
+            "turn.completion_checked",
+            "yolop.reason",
             "verification remains",
-            "yolop.completion.used_turns",
+            "yolop.continuations_used",
             "session-completion-test",
         ] {
             assert!(

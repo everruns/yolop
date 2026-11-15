@@ -71,18 +71,6 @@ pub(crate) struct CommandSuggestion {
     label: String,
 }
 
-struct CompletionReviewTask {
-    worker: tokio::task::JoinHandle<(
-        crate::session_state::task_completion::CompletionController,
-        Result<crate::session_state::task_completion::CompletionDecision>,
-    )>,
-}
-impl Drop for CompletionReviewTask {
-    fn drop(&mut self) {
-        self.worker.abort();
-    }
-}
-
 pub const COMPOSER_VIEWPORT_HEIGHT: u16 = 18;
 const SESSION_TASK_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 /// Consecutive failed event-loop iterations tolerated before the terminal is
@@ -336,8 +324,6 @@ pub struct App {
     /// The pause already announced, so a turn that ends without resolving it
     /// does not repeat the notice.
     awaiting_approval: Option<crate::capabilities::approval::PendingApproval>,
-    completion: crate::session_state::task_completion::CompletionController,
-    completion_review: Option<CompletionReviewTask>,
     worktree: Arc<WorktreeManager>,
     workspace_host: Arc<crate::exec::workspace_host::WorkspaceHost>,
     /// Images from `--image` / `-i` on the CLI, consumed on the first turn.
@@ -842,8 +828,6 @@ impl App {
             activity_scroll_metrics: (0, 0),
             pending_approval,
             awaiting_approval: None,
-            completion: Default::default(),
-            completion_review: None,
             worktree: runtime.worktree,
             workspace_host: runtime.workspace_host,
             pending_images,
@@ -1888,10 +1872,6 @@ impl App {
         self.trim_transcript();
         terminal.draw(|f| draw(f, self))?;
 
-        if self.poll_completion_review().await {
-            return Ok(());
-        }
-
         // 1) drain background turn events
         if let Some(rx) = self.rx.as_mut() {
             match rx.try_recv() {
@@ -1958,7 +1938,7 @@ impl App {
                     }
                     self.announce_pending_approval();
                     if !self.busy {
-                        self.start_completion_review(result);
+                        self.report_completion_check(result).await;
                     }
                     return Ok(());
                 }
@@ -3080,13 +3060,6 @@ impl App {
         // shell-style Up/Down recall. Uses the pre-expansion display text so
         // paste placeholders recall as the user saw them.
         self.history.record(&display_text);
-        if (!text.is_empty() || !self.pending_images.is_empty())
-            && self.completion_review.take().is_some()
-        {
-            // A human command or steering message supersedes this review.
-            // Dispatch it normally, including host slash and shell commands.
-            self.finish_busy();
-        }
         if !self.busy {
             if let Some(command) = parse_bang_shell_command(&text) {
                 if command.is_empty() {
@@ -3120,7 +3093,6 @@ impl App {
                 images,
             });
         } else {
-            self.begin_user_request(&text);
             self.start_turn_with_images(text, images);
         }
     }
@@ -4120,7 +4092,7 @@ impl App {
     fn handle_busy_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Esc if self.esc_pending_cancel => self.cancel_current_turn(),
-            KeyCode::Esc if self.turn_cancel.is_some() || self.completion_review.is_some() => {
+            KeyCode::Esc if self.turn_cancel.is_some() => {
                 self.esc_pending_cancel = true;
                 self.push_system("Press Esc again to cancel current turn".into());
             }
@@ -4132,12 +4104,6 @@ impl App {
 
     fn cancel_current_turn(&mut self) {
         self.esc_pending_cancel = false;
-        if self.completion_review.take().is_some() {
-            self.finish_busy();
-            self.push_system("Task completion review canceled".into());
-            self.start_next_queued_turn();
-            return;
-        }
         if let Some(cancel) = self.turn_cancel.take() {
             let _ = cancel.send(());
             self.turn_activity = Some("cancelling".into());
@@ -4169,86 +4135,40 @@ impl App {
         let Some(message) = self.queued_messages.pop_front() else {
             return false;
         };
-        self.begin_user_request(&message.prompt);
         self.start_turn_with_images(message.prompt, message.images);
         true
     }
 
-    fn begin_user_request(&mut self, _prompt: &str) {
-        self.completion.reset();
-    }
-    fn start_completion_review(&mut self, result: Option<everruns::Turn>) {
+    /// The engine reviewed the finished turn and continued it while work
+    /// remained; its notices already streamed into the transcript. A turn
+    /// that ended on a question only the person can answer marks the
+    /// session blocked for terminal and herdr status.
+    async fn report_completion_check(&mut self, result: Option<everruns::Turn>) {
         let Some(result) = result else { return };
         if result.stop_reason == everruns_contracts::turn::TurnStopReason::Cancelled {
             return;
         }
-        let handles = self.session.handles().clone();
-        let registry = self.task_registry.clone();
-        let mut controller = std::mem::take(&mut self.completion);
-        let settings = self.settings.clone();
-        self.busy = true;
-        self.turn_activity = Some("checking task completion".into());
-        self.turn_started_at = Some(Instant::now());
-        self.completion_review = Some(CompletionReviewTask {
-            worker: tokio::spawn(async move {
-                let outcome = async {
-                    let background = crate::session_state::task_completion::has_pending_execution(
-                        &registry.list(handles.session_id, None).await?,
-                    );
-                    controller
-                        .after_turn(&handles, &result, background, settings.as_ref())
-                        .await
-                }
-                .await;
-                (controller, outcome)
-            }),
-        });
-    }
-
-    async fn poll_completion_review(&mut self) -> bool {
-        if !self
-            .completion_review
-            .as_ref()
-            .is_some_and(|task| task.worker.is_finished())
-        {
-            return false;
-        }
-        let mut task = self.completion_review.take().expect("finished review");
-        let outcome = (&mut task.worker).await;
-        self.finish_busy();
-        let (controller, decision) = match outcome {
-            Ok(outcome) => outcome,
+        let events = match self.session.handles().host.events().await {
+            Ok(events) => events,
             Err(error) => {
-                self.push_system(format!("Completion review unavailable: {error}"));
-                self.start_next_queued_turn();
-                return true;
+                tracing::warn!(%error, "cannot read the completion check");
+                return;
             }
         };
-        self.completion = controller;
-        // Human steering received during review wins over a stale repair decision.
-        if self.start_next_queued_turn() {
-            return true;
-        }
-        match decision {
-            Ok(decision) => {
-                if decision.state == crate::session_state::task_completion::CompletionState::Blocked
-                {
-                    if let Some(status) = self.program_status.as_mut() {
-                        status.blocked_question();
-                    }
-                    self.session
-                        .report_herdr_state(crate::capabilities::herdr::HerdrState::Blocked);
-                }
-                if let Some(notice) = decision.notice {
-                    self.push_system(notice);
-                }
-                if let Some(prompt) = decision.followup {
-                    self.start_continuation_turn(prompt);
-                }
+        let background = self
+            .task_registry
+            .list(self.session.handles().session_id, None)
+            .await
+            .is_ok_and(|tasks| {
+                crate::session_state::task_completion::has_pending_execution(&tasks)
+            });
+        if crate::session_state::task_completion::ended_blocked(&events, &result, background) {
+            if let Some(status) = self.program_status.as_mut() {
+                status.blocked_question();
             }
-            Err(error) => self.push_system(format!("Completion review unavailable: {error}")),
+            self.session
+                .report_herdr_state(crate::capabilities::herdr::HerdrState::Blocked);
         }
-        true
     }
 
     /// Dispatch a capability-provided slash command.
@@ -4360,13 +4280,6 @@ impl App {
     fn start_turn(&mut self, prompt: String) {
         let images = std::mem::take(&mut self.pending_images);
         self.start_turn_with_images(prompt, images);
-    }
-
-    fn start_continuation_turn(&mut self, prompt: String) {
-        let input = crate::session_state::task_completion::tag_continuation(
-            self.model.input_message(prompt.clone()),
-        );
-        self.start_turn_input(prompt, input);
     }
 
     fn start_turn_with_images(&mut self, prompt: String, images: Vec<ContentPart>) {
@@ -8510,7 +8423,6 @@ flowchart TD
         app.work_display = WorkDisplayMode::Compact;
 
         app.push_user("hello turn".into());
-        app.begin_user_request("hello turn");
         app.start_turn("hello turn".into());
         app.pump_turn_until_idle_for_test().await;
 
@@ -10040,70 +9952,6 @@ flowchart TD
             "second Esc should notify the turn worker"
         );
         assert_eq!(app.turn_activity.as_deref(), Some("cancelling"));
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn completion_review_keeps_input_responsive_and_can_be_canceled() {
-        let mut fixture = app_with_llmsim().await;
-        let app = &mut fixture.app;
-        app.setup = None;
-        app.busy = true;
-        let worker = tokio::spawn(std::future::pending());
-        let aborted = worker.abort_handle();
-        app.completion_review = Some(CompletionReviewTask { worker });
-        tokio::time::timeout(
-            Duration::from_millis(100),
-            app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::empty())),
-        )
-        .await
-        .expect("review must not block typing");
-        assert_eq!(app.input_text(), "a");
-        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()))
-            .await;
-        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()))
-            .await;
-        assert!(app.completion_review.is_none());
-        assert!(!app.busy);
-        tokio::time::timeout(Duration::from_secs(1), async {
-            while !aborted.is_finished() {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("review worker canceled");
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn shell_command_during_review_runs_as_a_host_command() {
-        let mut fixture = app_with_llmsim().await;
-        let app = &mut fixture.app;
-        app.setup = None;
-        app.busy = true;
-        app.completion_review = Some(CompletionReviewTask {
-            worker: tokio::spawn(std::future::pending()),
-        });
-        app.set_input_text("!shell printf review-interrupted > review.marker".into());
-        app.submit_input().await;
-        app.pump_ui_commands_for_test().await;
-        assert!(app.completion_review.is_none());
-        assert!(
-            app.rx.is_some(),
-            "shell command must run instead of going to the model"
-        );
-        assert!(app.queued_messages.is_empty());
-        tokio::time::timeout(Duration::from_secs(3), async {
-            while !std::fs::read_to_string(fixture._workspace.path().join("review.marker"))
-                .is_ok_and(|content| content == "review-interrupted")
-            {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .expect("host shell command executed");
-        assert_eq!(
-            std::fs::read_to_string(fixture._workspace.path().join("review.marker")).unwrap(),
-            "review-interrupted"
-        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

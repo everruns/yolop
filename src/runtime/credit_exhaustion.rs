@@ -1,4 +1,5 @@
-//! Deterministic credit-exhaustion detection, readable formatting, and background probe.
+//! Credit-exhaustion detection and readable formatting, plus notices for the
+//! engine's credit wait.
 //!
 //! The screenshot that motivated this shows three texts merged into one
 //! paragraph: an upstream credit rewrite, the raw OpenRouter 402 message, and
@@ -8,42 +9,15 @@
 //! dropped: requested/affordable token counts, both URLs, retry guidance, and
 //! a short raw excerpt are all preserved.
 //!
-//! The watcher is deterministic on purpose: fixed poll interval, same probe,
-//! bounded attempts. Probing hits the OpenRouter key endpoint (no token spend)
-//! instead of retrying the turn, so waiting costs nothing.
+//!
+//! Waiting is the engine's: a refused turn schedules a check every minute for
+//! up to an hour (`turn.credit_shortfall` events) and continues the turn when
+//! credits are back. These notices say so.
 
-use std::time::Duration;
+use everruns_core::events::{CreditShortfallAction, TurnCreditShortfallData};
 
 /// Public OpenRouter credits page. Stable, safe to link always.
 pub const CREDITS_URL: &str = "https://openrouter.ai/settings/credits";
-/// Key info endpoint. Cheap GET, does not spend tokens.
-pub const KEY_INFO_URL: &str = "https://openrouter.ai/api/v1/auth/key";
-/// Default probe cadence. Fixed so behavior is deterministic.
-pub const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(60);
-/// Default bound: 60 probes at 60s covers one hour of waiting.
-pub const DEFAULT_MAX_PROBES: u32 = 60;
-
-/// User-facing notice appended to the error block when a probe loop started.
-pub fn watcher_running_notice() -> &'static str {
-    "Background checker: probing the key endpoint every 60s without spending tokens. It posts here when credits are back and retries the paused turn once."
-}
-
-/// User-facing notice when no probe loop starts. Never promise a checker.
-pub fn watcher_unavailable_notice() -> &'static str {
-    "No background checker is running for this turn: yolop could not find an OpenRouter key to probe with. Add credits or lower max output tokens above, then send your next message to retry."
-}
-
-/// User-facing notice when a watcher retry still hits empty credits.
-pub fn watcher_still_exhausted_notice() -> &'static str {
-    "Still out of credits after the retry; the checker is standing down. Add credits or lower max output tokens above, then send your next message to retry."
-}
-
-/// User-facing notice when the probe reports an invalid key rather than an
-/// empty balance.
-pub fn watcher_auth_error_notice() -> &'static str {
-    "The background probe got a 401 for this OpenRouter key: the key itself looks invalid or revoked, not just out of credits. Check the key, then send your next message to retry."
-}
-
 /// Parsed credit-exhaustion signal from a provider error string.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CreditExhaustion {
@@ -75,11 +49,13 @@ impl CreditExhaustion {
             || lower.contains("balance covers")
             || lower.contains("fewer max_tokens")
             || lower.contains("fewer max tokens");
-        let in_flight = lower.contains("still in flight")
+        // The in-flight shape counts only with its credit context: a bare
+        // "still in flight" is also how transport concurrency errors read.
+        let in_flight = (lower.contains("still in flight")
             || lower.contains("still in-flight")
-            || lower.contains("in flight")
-                && lower.contains("exceed")
-                && lower.contains("available credits");
+            || lower.contains("in flight"))
+            && lower.contains("exceed")
+            && lower.contains("available credits");
         // Upstream rewrites sometimes omit the status code but keep the credit
         // phrasing plus token counts. Accept those too, and the distinctive
         // in-flight shape on its own.
@@ -163,40 +139,29 @@ impl CreditExhaustion {
     }
 }
 
-/// Fixed-interval watcher state. No jitter, no backoff randomness.
-#[derive(Debug, Clone)]
-pub struct CreditWatcher {
-    /// How often to probe.
-    pub poll_interval: Duration,
-    /// How many probes before giving up.
-    pub max_probes: u32,
-    /// Probes already performed.
-    pub attempts: u32,
-}
-
-impl CreditWatcher {
-    /// Start watching with deterministic defaults.
-    pub fn start() -> Self {
-        Self {
-            poll_interval: DEFAULT_POLL_INTERVAL,
-            max_probes: DEFAULT_MAX_PROBES,
-            attempts: 0,
-        }
-    }
-
-    /// Record one probe. Returns true when the watcher should keep waiting.
-    pub fn record_probe(&mut self) -> bool {
-        self.attempts = self.attempts.saturating_add(1);
-        self.attempts < self.max_probes
-    }
-
-    /// Message posted when a probe shows credits are back.
-    pub fn credits_back_message() -> &'static str {
-        "Credits are back: the background checker sees available balance again. Retrying the paused turn once now."
+/// What to tell the person about one engine credit decision, if anything.
+pub fn shortfall_notice(data: &TurnCreditShortfallData) -> Option<String> {
+    let minutes = |at: Option<chrono::DateTime<chrono::Utc>>| {
+        at.map(|at| (at - chrono::Utc::now()).num_minutes().max(1))
+    };
+    match data.action {
+        CreditShortfallAction::Shrunk => data.max_tokens.map(|tokens| {
+            format!("Low on credits: retrying with at most {tokens} output tokens.")
+        }),
+        CreditShortfallAction::WaitStarted => Some(match minutes(data.wait_until) {
+            Some(minutes) => format!(
+                "Out of credits. Checking every minute for the next {minutes} minutes and continuing on its own when credits are back; add credits at [OpenRouter credits]({CREDITS_URL}) or send a message to retry now."
+            ),
+            None => "Out of credits. Checking every minute and continuing on its own when credits are back.".to_string(),
+        }),
+        CreditShortfallAction::StillWaiting => None,
+        CreditShortfallAction::Resumed => Some("Credits are back: continuing the paused work.".to_string()),
+        CreditShortfallAction::GaveUp => Some(
+            "Still out of credits after waiting; stopped checking. Add credits, then send a message to retry.".to_string(),
+        ),
     }
 }
 
-/// Parse "up to 65536" style requested token counts.
 fn parse_requested_tokens(error: &str) -> Option<u64> {
     for needle in ["up to ", "upto "] {
         let mut search = error;
@@ -289,64 +254,6 @@ fn parse_retry_after(error: &str) -> Option<u64> {
     find_number_after(error, &["retry after", "retry-after", "retry in"])
 }
 
-/// Probe outcome for the OpenRouter key endpoint.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProbeOutcome {
-    /// Balance looks usable again.
-    Available,
-    /// Still exhausted (402, or usage at limit).
-    Exhausted,
-    /// Transient network/parse failure. Keep waiting.
-    Unknown,
-    /// 401 from the key endpoint: the key itself is invalid or revoked,
-    /// distinct from an empty balance. Stop probing and say so.
-    AuthError,
-}
-
-/// Cheap probe: GET the OpenRouter key endpoint with the same bearer key.
-///
-/// This spends no tokens. `limit: null` means unlimited. Otherwise
-/// `usage < limit` means credits are back.
-pub async fn probe_openrouter_key(client: &reqwest::Client, api_key: &str) -> ProbeOutcome {
-    let response = client.get(KEY_INFO_URL).bearer_auth(api_key).send().await;
-    let response = match response {
-        Ok(response) => response,
-        Err(_) => return ProbeOutcome::Unknown,
-    };
-    if response.status().as_u16() == 401 {
-        return ProbeOutcome::AuthError;
-    }
-    if response.status().as_u16() == 402 {
-        return ProbeOutcome::Exhausted;
-    }
-    if !response.status().is_success() {
-        return ProbeOutcome::Unknown;
-    }
-    let body: serde_json::Value = match response.json().await {
-        Ok(body) => body,
-        Err(_) => return ProbeOutcome::Unknown,
-    };
-    let data = &body["data"];
-    // Some deployments return the shape flat instead of nested.
-    let limit = data["limit"].as_f64().or_else(|| body["limit"].as_f64());
-    let usage = data["usage"]
-        .as_f64()
-        .or_else(|| body["usage"].as_f64())
-        .unwrap_or(f64::NAN);
-    match limit {
-        None => ProbeOutcome::Available,
-        Some(limit) => {
-            if usage.is_nan() {
-                ProbeOutcome::Unknown
-            } else if usage < limit {
-                ProbeOutcome::Available
-            } else {
-                ProbeOutcome::Exhausted
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -395,31 +302,47 @@ mod tests {
     }
 
     #[test]
-    fn block_never_promises_a_checker() {
-        // The block carries facts and guidance; the running/not-running
-        // notice is appended by the caller that actually starts (or skips)
-        // the probe loop, so no frontend can promise a checker that never
-        // starts.
-        let exhaustion = CreditExhaustion::detect(SCREENSHOT_ERROR).expect("must detect");
-        let block = exhaustion.markdown_block("raw");
-        assert!(!block.contains("Background checker"));
-        assert!(watcher_running_notice().contains("60s"));
-        assert!(watcher_unavailable_notice().contains("No background checker"));
-    }
-
-    #[test]
     fn ignores_unrelated_errors() {
         assert!(CreditExhaustion::detect("boom: connection reset").is_none());
+        assert!(
+            CreditExhaustion::detect("request rejected: 8 requests still in flight").is_none(),
+            "in flight without credit context is not a credit error"
+        );
         assert!(CreditExhaustion::detect("OpenRouter (500 Internal Error): overloaded").is_none());
     }
 
     #[test]
-    fn watcher_is_bounded_and_deterministic() {
-        let mut watcher = CreditWatcher::start();
-        assert_eq!(watcher.poll_interval, Duration::from_secs(60));
-        for _ in 0..DEFAULT_MAX_PROBES - 1 {
-            assert!(watcher.record_probe());
-        }
-        assert!(!watcher.record_probe());
+    fn shortfall_notices_follow_the_engine_wait() {
+        let data = |action, wait_until| TurnCreditShortfallData {
+            turn_id: everruns_contracts::typed_id::TurnId::new(),
+            action,
+            requested_max_tokens: None,
+            affordable_tokens: None,
+            max_tokens: Some(4096),
+            wait_until,
+            next_check_at: None,
+            balance_checked: None,
+        };
+        let started = shortfall_notice(&data(
+            CreditShortfallAction::WaitStarted,
+            Some(chrono::Utc::now() + chrono::Duration::minutes(60)),
+        ))
+        .unwrap();
+        assert!(started.contains("Checking every minute"), "{started}");
+        assert!(started.contains(CREDITS_URL));
+        assert!(
+            shortfall_notice(&data(CreditShortfallAction::StillWaiting, None)).is_none(),
+            "each quiet check stays out of the transcript"
+        );
+        assert!(
+            shortfall_notice(&data(CreditShortfallAction::Shrunk, None))
+                .unwrap()
+                .contains("4096")
+        );
+        assert!(
+            shortfall_notice(&data(CreditShortfallAction::GaveUp, None))
+                .unwrap()
+                .contains("stopped checking")
+        );
     }
 }

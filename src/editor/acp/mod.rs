@@ -2209,41 +2209,13 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn completion_gate_continues_tool_only_stop_to_one_final() {
+    async fn text_only_final_keeps_the_exact_reply() {
         use everruns_llmsim::OnExhausted;
 
-        let config = LlmSimConfig::scripted(vec![
-            SimTurn::ToolCalls(vec![SimToolCall {
-                name: "bash".to_string(),
-                arguments: json!({ "command": "true" }),
-                id: None,
-            }]),
-            SimTurn::Assistant(String::new()),
-            SimTurn::Assistant("verified final".to_string()),
-            SimTurn::Assistant(r#"{"state":"achieved","reason":"verified"}"#.to_string()),
-        ])
-        .with_on_exhausted(OnExhausted::Error);
-        let run = with_sdk_client_completion(config, |client| async move {
-            let mut session = client.new_session().await?;
-            let _ = collect_available_commands(&mut session).await?;
-            SdkClient::prompt(&mut session, "run the check and report the result").await
-        })
-        .await;
-
-        assert_eq!(run.stop_reason, StopReason::EndTurn);
-        assert!(run.assistant_text().contains("verified final"));
-        assert_eq!(run.assistant_text().matches("verified final").count(), 1);
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn text_only_final_is_reviewed_without_changing_exact_reply() {
-        use everruns_llmsim::OnExhausted;
-
-        let config = LlmSimConfig::scripted(vec![
-            SimTurn::Assistant("exact".to_string()),
-            SimTurn::Assistant(r#"{"state":"achieved","reason":"exact reply"}"#.to_string()),
-        ])
-        .with_on_exhausted(OnExhausted::Error);
+        // A plain answer with no tool work is settled by the engine's gate
+        // without a review call: a second generation would exhaust the script.
+        let config = LlmSimConfig::scripted(vec![SimTurn::Assistant("exact".to_string())])
+            .with_on_exhausted(OnExhausted::Error);
         let run = with_sdk_client_completion(config, |client| async move {
             let mut session = client.new_session().await?;
             let _ = collect_available_commands(&mut session).await?;
@@ -2321,8 +2293,8 @@ mod tests {
         let messages = captured.lock().unwrap();
         assert_eq!(
             messages.len(),
-            4,
-            "one fresh continuation and one completion review, no retry loop"
+            3,
+            "one fresh continuation, no retry loop; its plain answer needs no review"
         );
         assert!(
             messages[2]
@@ -2385,10 +2357,9 @@ mod tests {
     async fn clarification_is_blocked_and_not_auto_continued() {
         use everruns_llmsim::OnExhausted;
 
-        let config = LlmSimConfig::scripted(vec![
-            SimTurn::Assistant("I need the target path. Which file should I edit?".to_string()),
-            SimTurn::Assistant(r#"{"state":"blocked","reason":"missing path"}"#.to_string()),
-        ])
+        let config = LlmSimConfig::scripted(vec![SimTurn::Assistant(
+            "I need the target path. Which file should I edit?".to_string(),
+        )])
         .with_on_exhausted(OnExhausted::Error);
         let run = with_sdk_client_completion(config, |client| async move {
             let mut session = client.new_session().await?;
@@ -2405,33 +2376,25 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn continuation_exhaustion_requests_approval_and_yes_resets_budget() {
+    async fn continuation_exhaustion_says_so_and_the_next_message_resumes() {
         use everruns_llmsim::OnExhausted;
         let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let mut turns: Vec<_> = (0..7)
-            .flat_map(|_| {
-                [
-                    SimTurn::Assistant("Work remains.".into()),
-                    SimTurn::Assistant(
-                        r#"{"state":"in_progress","reason":"verification remains"}"#.into(),
-                    ),
-                ]
-            })
-            .collect();
-        turns.extend([
-            SimTurn::Assistant("Verification complete.".into()),
-            SimTurn::Assistant(r#"{"state":"achieved","reason":"verified"}"#.into()),
-        ]);
+        let mut turns = vec![SimTurn::ToolCalls(vec![SimToolCall {
+            name: "bash".into(),
+            arguments: json!({"command":"true"}),
+            id: None,
+        }])];
+        for _ in 0..6 {
+            turns.push(SimTurn::Assistant("Work remains.".into()));
+            turns.push(SimTurn::Assistant(
+                r#"{"state":"in_progress","reason":"verification remains"}"#.into(),
+            ));
+        }
+        turns.push(SimTurn::Assistant("Verification complete.".into()));
         let config = LlmSimConfig::scripted(turns)
             .with_on_exhausted(OnExhausted::Error)
             .with_message_capture(captured.clone());
-        let sessions = tempfile::tempdir().unwrap();
-        let factory = Arc::new(ScriptedFactory {
-            config,
-            sessions_dir: sessions.path().to_path_buf(),
-            settings: Arc::new(SettingsStore::open(sessions.path().join("settings.toml"))),
-        });
-        let (paused, resumed) = with_factory(factory, |client| async move {
+        let (paused, resumed) = with_sdk_client_completion(config, |client| async move {
             let mut session = client.new_session().await?;
             let paused = SdkClient::prompt(&mut session, "Finish verification.").await?;
             let resumed = SdkClient::prompt(&mut session, "yes").await?;
@@ -2439,39 +2402,17 @@ mod tests {
         })
         .await;
         assert!(
-            paused
-                .assistant_text()
-                .contains("5 automatic continuations")
+            paused.assistant_text().contains("after 5 continuations"),
+            "{}",
+            paused.assistant_text()
         );
-        assert!(paused.assistant_text().contains("Approve to resume"));
+        assert!(paused.assistant_text().contains("Send a message to resume"));
         assert!(resumed.assistant_text().contains("Verification complete."));
         assert!(!resumed.assistant_text().contains("budget exhausted"));
-        let log_path = std::fs::read_dir(sessions.path())
-            .unwrap()
-            .filter_map(Result::ok)
-            .map(|entry| entry.path().join("host-events.jsonl"))
-            .find(|path| path.is_file())
-            .unwrap();
-        let events: Vec<everruns_core::Event> = std::fs::read_to_string(log_path)
-            .unwrap()
-            .lines()
-            .map(|line| serde_json::from_str(line).unwrap())
-            .collect();
-        let resets: Vec<_> = events
-            .iter()
-            .filter(|event| event.event_type == "budget.resumed")
-            .collect();
-        assert_eq!(resets.len(), 1);
-        let diagnostic = &resets[0].metadata.as_ref().unwrap()["yolop.task_completion"];
-        assert_eq!(diagnostic["action"], "reset");
-        assert_eq!(diagnostic["previous_used_turns"], 5);
-        assert_eq!(diagnostic["used_turns"], 0);
-        assert_eq!(diagnostic["used_tokens"], 0);
-        assert!(diagnostic["previous_turn_id"].is_string());
         assert_eq!(
             captured.lock().unwrap().len(),
-            16,
-            "initial plus five continuations, then approval plus one continuation, each reviewed"
+            14,
+            "tool step, six reviewed candidates, then the resumed answer"
         );
     }
 
@@ -2521,9 +2462,14 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn tool_free_idle_promise_is_repaired_by_common_policy() {
+    async fn idle_promise_after_tool_work_is_continued_by_the_engine() {
         use everruns_llmsim::OnExhausted;
         let config = LlmSimConfig::scripted(vec![
+            SimTurn::ToolCalls(vec![SimToolCall {
+                name: "bash".into(),
+                arguments: json!({"command":"true"}),
+                id: None,
+            }]),
             SimTurn::Assistant("I will run the check now.".into()),
             SimTurn::Assistant(
                 r#"{"state":"in_progress","reason":"promised check has not run"}"#.into(),
@@ -2543,7 +2489,13 @@ mod tests {
         })
         .await;
         assert!(run.assistant_text().contains("Check passed."));
-        assert_eq!(run.updates_of_kind("tool_call").len(), 1);
+        assert!(
+            run.assistant_text()
+                .contains("Continuing automatically (1/5)"),
+            "{}",
+            run.assistant_text()
+        );
+        assert_eq!(run.updates_of_kind("tool_call").len(), 2);
         assert!(
             !run.assistant_text()
                 .contains("Completion review unavailable")
@@ -2554,6 +2506,11 @@ mod tests {
     async fn cancel_during_completion_review_prevents_automatic_repair() {
         let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
         let config = LlmSimConfig::scripted(vec![
+            SimTurn::ToolCalls(vec![SimToolCall {
+                name: "bash".into(),
+                arguments: json!({"command":"true"}),
+                id: None,
+            }]),
             SimTurn::Assistant("I will run the check.".into()),
             SimTurn::Assistant(r#"{"state":"in_progress","reason":"check remains undone"}"#.into()),
             SimTurn::Assistant("SHOULD_NOT_RUN".into()),
@@ -2574,7 +2531,7 @@ mod tests {
         let id = session["result"]["sessionId"].as_str().unwrap();
         send_json(&mut w, json!({"jsonrpc":"2.0", "id":2, "method":"session/prompt", "params":{"sessionId":id, "prompt":[{"type":"text","text":"Run the check"}]}})).await;
         tokio::time::timeout(Duration::from_secs(5), async {
-            while captured.lock().unwrap().len() < 2 {
+            while captured.lock().unwrap().len() < 3 {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         })
@@ -2589,26 +2546,27 @@ mod tests {
         assert_eq!(response["result"]["stopReason"], "cancelled");
         assert_eq!(
             captured.lock().unwrap().len(),
-            2,
+            3,
             "cancel must prevent the repair generation"
         );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn empty_reply_loop_stops_at_host_budget() {
-        let run = with_sdk_client_completion(LlmSimConfig::fixed(""), |client| async move {
+    async fn empty_reply_ends_the_turn_without_a_loop() {
+        // The engine settles an empty final without a review or a
+        // continuation, so the host must not loop on it either.
+        let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let config = LlmSimConfig::fixed("").with_message_capture(captured.clone());
+        let run = with_sdk_client_completion(config, |client| async move {
             let mut session = client.new_session().await?;
             let _ = collect_available_commands(&mut session).await?;
             SdkClient::prompt(&mut session, "finish this").await
         })
         .await;
 
-        assert!(
-            run.assistant_text().contains("budget exhausted"),
-            "stop={:?}, updates={:?}",
-            run.stop_reason,
-            run.updates
-        );
+        assert_eq!(run.stop_reason, StopReason::EndTurn);
+        assert!(!run.assistant_text().contains("budget exhausted"));
+        assert_eq!(captured.lock().unwrap().len(), 1);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2760,7 +2718,6 @@ mod tests {
         let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
         let config = LlmSimConfig::scripted(vec![
             SimTurn::Assistant("recorded long parent context".to_string()),
-            SimTurn::Assistant(r#"{"state":"achieved","reason":"context recorded"}"#.to_string()),
             SimTurn::ToolCalls(vec![SimToolCall {
                 name: "spawn_background".to_string(),
                 arguments: json!({
@@ -2940,7 +2897,6 @@ mod tests {
         // so the client shows facts even when the wake model turn emits no text.
         let config = LlmSimConfig::scripted(vec![
             SimTurn::Assistant("recorded long parent context".to_string()),
-            SimTurn::Assistant(r#"{"state":"achieved","reason":"context recorded"}"#.to_string()),
             SimTurn::ToolCalls(vec![SimToolCall {
                 name: "spawn_background".to_string(),
                 arguments: json!({

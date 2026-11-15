@@ -239,6 +239,24 @@ pub fn lines_for_event(event: &RuntimeEvent) -> Vec<ChatLine> {
             })
             .collect(),
         EventData::OutputMessageCompleted(_) => Vec::new(),
+        EventData::TurnCreditShortfall(data) => {
+            crate::runtime::credit_exhaustion::shortfall_notice(data)
+                .map(|text| ChatLine {
+                    author: Author::System,
+                    text,
+                })
+                .into_iter()
+                .collect()
+        }
+        EventData::TurnCompletionChecked(data) => {
+            crate::session_state::task_completion::notice(data)
+                .map(|text| ChatLine {
+                    author: Author::System,
+                    text,
+                })
+                .into_iter()
+                .collect()
+        }
         EventData::ToolCompleted(data) => {
             if data.tool_name == "write_todos" {
                 return todo_lines_for_result(data);
@@ -335,6 +353,9 @@ fn append_bash_diagnostics(lines: &mut Vec<ChatLine>, result: &Value) {
 
 pub(crate) fn lines_for_replayed_event(event: &RuntimeEvent) -> Vec<ChatLine> {
     match &event.data {
+        // The engine's continuation is not the person's message; the
+        // completion check's notice line already says why the turn went on.
+        EventData::InputMessage(data) if data.message.is_turn_continuation() => Vec::new(),
         EventData::InputMessage(data) => message_line(Author::User, &data.message)
             .into_iter()
             .collect(),
