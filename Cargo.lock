@@ -230,6 +230,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
+name = "ar_archive_writer"
+version = "0.5.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "523e5e187fff36fcb8d1d19ccf0ca4ca43ec3d158316057f66dc6f72716bc5ec"
+dependencies = [
+ "object",
+]
+
+[[package]]
 name = "arbitrary"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -276,9 +285,9 @@ checksum = "d92bec98840b8f03a5ff5413de5293bfcd8bf96467cf5452609f939ec6f5de16"
 
 [[package]]
 name = "ast-grep-core"
-version = "0.45.2"
+version = "0.51.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "442c9ecc111490ac358901dea6baf854baab8b298b982126d4391ba283389d9d"
+checksum = "e303fcd5d5b3218864b6d20596549d89dc4410007e382288faee8707cb9b1439"
 dependencies = [
  "bit-set 0.11.1",
  "regex",
@@ -288,9 +297,9 @@ dependencies = [
 
 [[package]]
 name = "ast-grep-language"
-version = "0.45.2"
+version = "0.51.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fbb80a4bf9c4b4fb290e1085e69e6f726d70d30210e0b59b9e0fd5b5d6d7931c"
+checksum = "a691db01601b49e556b4a78b9612bce33e54c5f2a34cc10cfcbf8d0577b236bd"
 dependencies = [
  "ast-grep-core",
  "ignore",
@@ -455,9 +464,9 @@ checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
 
 [[package]]
 name = "bashkit"
-version = "0.20.2"
+version = "0.21.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f1b90af3743cfadbd07957b760b5bb91dc2137526e8d2b38aca902c23598891f"
+checksum = "75e2a19b3bae7c4efa43dd564e34f03acf9786b36814e2e7246f656379b9fd14"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -472,7 +481,7 @@ dependencies = [
  "chrono",
  "chrono-tz",
  "clap",
- "fancy-regex",
+ "fancy-regex 0.20.2",
  "flate2",
  "foldhash 0.2.0",
  "futures-core",
@@ -498,6 +507,7 @@ dependencies = [
  "serde_norway",
  "sha1",
  "sha2 0.11.1",
+ "stacker",
  "thiserror 2.0.21",
  "tokio",
  "tower",
@@ -508,9 +518,9 @@ dependencies = [
 
 [[package]]
 name = "bashkit-cpython-wasm"
-version = "0.20.2"
+version = "0.21.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5e02357a4589521a1ea6417d5f0f112b38dade2b85af5fe8ccb66efff48706bb"
+checksum = "44dcf10d606be7c3804dcac803365e8ae039146c711d28fb740a877b7f51e363"
 dependencies = [
  "lzma-rs",
  "wasmtime",
@@ -1873,7 +1883,9 @@ dependencies = [
 
 [[package]]
 name = "everruns"
-version = "0.51.0"
+version = "0.52.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0c9f629fb0ddda71d40be5a6c12af29462f3ee17ac84ce295801af30e408909b"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -1881,7 +1893,6 @@ dependencies = [
  "base64 0.23.1",
  "chrono",
  "chrono-tz",
- "cron",
  "everruns-capabilities",
  "everruns-contracts",
  "everruns-core",
@@ -1904,9 +1915,9 @@ dependencies = [
 
 [[package]]
 name = "everruns-ard"
-version = "0.51.0"
+version = "0.52.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e5068c7bfc665c6f141294c24ece67a9316f400aa35aa9add8f4affceac1d00a"
+checksum = "66ad673e2d55ebec6a1001f1047beb119ca986b8f858efc486d0eaf28f3d10c8"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1916,20 +1927,20 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
- "tracing",
  "url",
 ]
 
 [[package]]
 name = "everruns-capabilities"
-version = "0.51.0"
+version = "0.52.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1125302d67cabfbea333d4f081a17629fbe1bdfe12169b1e02279e646e654017"
+checksum = "5a723ed3a4dd5a0a289b81e6dc7aa371a9414a8e3d93c0f1d1d3c29dc40997c3"
 dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
  "everruns-ard",
+ "everruns-coding",
  "everruns-contracts",
  "everruns-core",
  "everruns-integrations",
@@ -1946,9 +1957,9 @@ dependencies = [
 
 [[package]]
 name = "everruns-cli-contract"
-version = "0.51.0"
+version = "0.52.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0c3c79848905ff2402ce905a91d9c0de411f19a018491559125c6e4b14ee601c"
+checksum = "80efd44400a915b446eebf79d601c2d10648613c54a1609816517a2a718bee11"
 dependencies = [
  "clap",
  "serde",
@@ -1956,10 +1967,51 @@ dependencies = [
 ]
 
 [[package]]
-name = "everruns-contracts"
-version = "0.51.0"
+name = "everruns-coding"
+version = "0.52.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b6e0a49330d44d974036d9ee43dbdf3c017d638b608d1eef48d87defb0c2b8f3"
+checksum = "7de60aa324fad6ea56c76a9fdc11e6e9c77e7939825ff0ff8771f53c70ec4b7a"
+dependencies = [
+ "anyhow",
+ "ast-grep-core",
+ "ast-grep-language",
+ "async-trait",
+ "base64 0.23.1",
+ "everruns-contracts",
+ "flate2",
+ "rustix",
+ "serde",
+ "serde_json",
+ "tar",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tree-sitter",
+ "tree-sitter-bash",
+ "tree-sitter-c",
+ "tree-sitter-c-sharp",
+ "tree-sitter-cpp",
+ "tree-sitter-css",
+ "tree-sitter-go",
+ "tree-sitter-html",
+ "tree-sitter-java",
+ "tree-sitter-javascript",
+ "tree-sitter-kotlin-ng",
+ "tree-sitter-php",
+ "tree-sitter-python",
+ "tree-sitter-ruby",
+ "tree-sitter-rust",
+ "tree-sitter-scala",
+ "tree-sitter-sequel",
+ "tree-sitter-typescript",
+ "tree-sitter-zig",
+]
+
+[[package]]
+name = "everruns-contracts"
+version = "0.52.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cb09c7263cb4598a5e29ee813fa008d39be567c42f46a0b5bb7113c015023b22"
 dependencies = [
  "aho-corasick",
  "anyhow",
@@ -2004,23 +2056,21 @@ dependencies = [
 
 [[package]]
 name = "everruns-core"
-version = "0.51.0"
+version = "0.52.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0b5ecd2411ce65a840c4eb0a90a6449bf1d1d44329e49f74be9ec6ab5221f12a"
+checksum = "63b2ba5b82ffe41685d16631bcee98a50cb36efded53b79d17c6f2eea2f401da"
 dependencies = [
  "anyhow",
  "async-trait",
  "base64 0.23.1",
  "chrono",
  "chrono-tz",
- "cron",
  "ed25519-dalek",
  "everruns-contracts",
  "fs2",
  "futures",
  "globset",
  "ignore",
- "inventory",
  "jsonschema",
  "libc",
  "rand 0.10.3",
@@ -2044,9 +2094,9 @@ dependencies = [
 
 [[package]]
 name = "everruns-drivers"
-version = "0.51.0"
+version = "0.52.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bfdbb10381d8f5669232cab26b3d7e6dd46bee974f524667c45aa876e59f3790"
+checksum = "2c55f66acbc53d90859e330497fc859eb166ac5a5d08b581f48b26b3e51e9c20"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2071,9 +2121,9 @@ dependencies = [
 
 [[package]]
 name = "everruns-integrations"
-version = "0.51.0"
+version = "0.52.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ed825c68bdb00b92c76f9e03ee3641f43df2ba2b3cba626e8690debaa7c6fe03"
+checksum = "658eec7e458f5f6e2a56ef20659189c276834f5b6f0d0c88f6cdfec840218a2f"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2112,7 +2162,6 @@ dependencies = [
  "sha2 0.11.1",
  "similar",
  "tar",
- "thiserror 2.0.21",
  "tokio",
  "tokio-tungstenite",
  "tonic",
@@ -2126,9 +2175,9 @@ dependencies = [
 
 [[package]]
 name = "everruns-integrations-experimental"
-version = "0.51.0"
+version = "0.52.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a1da4a4dda344fda9768ed777a6710459028cf8969c1283a5cc711e6d8bd51ea"
+checksum = "1a92b595ae595029208dd1c86dd775f8a37c02ac8749da530ecc18db82166dae"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2143,9 +2192,9 @@ dependencies = [
 
 [[package]]
 name = "everruns-llmsim"
-version = "0.51.0"
+version = "0.52.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1acf276873ca47aa723b29dd738cd0fa235be961ce6adbf7d14eb45a4029fcd5"
+checksum = "7a31f43b059461c6898f247a527e6a33d0b1b07d50604953c0dd049f5df95ddb"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2174,6 +2223,17 @@ name = "fancy-regex"
 version = "0.19.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d301f5bf187b3c295fce6468d3875037a0bccc5f6b151c63cac2f85babf21912"
+dependencies = [
+ "bit-set 0.8.0",
+ "regex-automata",
+ "regex-syntax",
+]
+
+[[package]]
+name = "fancy-regex"
+version = "0.20.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0a2e16b9a584b602f1e0e5e22c30ca0906786088c27500653e432d086def8b53"
 dependencies = [
  "bit-set 0.8.0",
  "regex-automata",
@@ -2668,11 +2728,11 @@ dependencies = [
 
 [[package]]
 name = "hashlink"
-version = "0.11.1"
+version = "0.12.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "824e001ac4f3012dd16a264bec811403a67ca9deb6c102fc5049b32c4574b35f"
+checksum = "a596f1b20ed2cc5ecac41a164aaebc7258057060f06c0cf7a2ba3991ee7990fb"
 dependencies = [
- "hashbrown 0.16.1",
+ "hashbrown 0.17.1",
 ]
 
 [[package]]
@@ -3371,7 +3431,7 @@ dependencies = [
  "bytecount",
  "data-encoding",
  "email_address",
- "fancy-regex",
+ "fancy-regex 0.19.2",
  "fraction",
  "getrandom 0.3.4",
  "itoa",
@@ -3485,9 +3545,9 @@ dependencies = [
 
 [[package]]
 name = "libsqlite3-sys"
-version = "0.37.0"
+version = "0.39.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b1f111c8c41e7c61a49cd34e44c7619462967221a6443b0ec299e0ac30cfb9b1"
+checksum = "14a5f01b87b92705d07b433c06f96cbc764637d81a0bffb5734ce17cf0f9a2b3"
 dependencies = [
  "cc",
  "pkg-config",
@@ -4632,18 +4692,18 @@ dependencies = [
 
 [[package]]
 name = "progenitor"
-version = "0.15.1"
+version = "0.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "15bd395aa613c6491be9233fae4a870a35cd611655c0ef1cbaae7aa9e1c4c0e6"
+checksum = "5f7d37bf1319f2c7abbb95eb340a4be8545b78be1a5d1acde2dcc90b4a04f21d"
 dependencies = [
  "progenitor-impl",
 ]
 
 [[package]]
 name = "progenitor-client"
-version = "0.15.1"
+version = "0.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6aa13eb6d9499a851512ec8fa3280f586be059682da4f05d953924be45d736f0"
+checksum = "4f4df47ce7fa035b40e92b2f23e3df1c6c7147c2412e6fccb5be886b26c47118"
 dependencies = [
  "bytes",
  "futures-core",
@@ -4656,9 +4716,9 @@ dependencies = [
 
 [[package]]
 name = "progenitor-impl"
-version = "0.15.1"
+version = "0.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3d9fbe5a1aa114c6c7c507a30ebeb0b12de383edab951ea27300210a3841917c"
+checksum = "8bb884f6f3c6e929084116b4745cedf49736240bf783a2f35e058df1f63032c8"
 dependencies = [
  "heck",
  "http",
@@ -4786,6 +4846,16 @@ dependencies = [
  "miette",
  "prost-types",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "psm"
+version = "0.1.32"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4dcd034599e63b970727f70d79e02d62390a4a84f7c6b827c27c46d5ac3fa622"
+dependencies = [
+ "ar_archive_writer",
+ "cc",
 ]
 
 [[package]]
@@ -5285,9 +5355,9 @@ dependencies = [
 
 [[package]]
 name = "rusqlite"
-version = "0.39.0"
+version = "0.41.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a0d2b0146dd9661bf67bb107c0bb2a55064d556eeb3fc314151b957f313bcd4e"
+checksum = "da9bba6f3506135e120a6586df05be18b48d18896600646a4bec8f993d91a594"
 dependencies = [
  "bitflags 2.13.2",
  "fallible-iterator",
@@ -5975,6 +6045,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
+name = "stacker"
+version = "0.1.25"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "707f49d46706bacf8a2b00d51dace3f9de527c13eec3778f570c411f89e69967"
+dependencies = [
+ "cc",
+ "cfg-if",
+ "libc",
+ "psm",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "streaming-iterator"
 version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6626,13 +6709,12 @@ dependencies = [
 
 [[package]]
 name = "tree-sitter"
-version = "0.26.13"
+version = "0.27.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "17ebdd3a5a7e28a1890b876fdbd0c3c0fe0a6336cffaa104f11b9f720c9daa29"
+checksum = "37b2bed8f39a73439f3b0b7ed8f452be5d2911b5e9da69d352ef113bb7448fb8"
 dependencies = [
  "cc",
  "regex",
- "regex-syntax",
  "serde_json",
  "streaming-iterator",
  "tree-sitter-language",
@@ -6700,9 +6782,9 @@ dependencies = [
 
 [[package]]
 name = "tree-sitter-highlight"
-version = "0.26.13"
+version = "0.27.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "662316ecd27166f79e18865429638c05194aee76a7bc374136d844f05d778f74"
+checksum = "3e307e63afde73bb842097e97725f1956a88b371f7d81517557a1949a2d02d9a"
 dependencies = [
  "regex",
  "streaming-iterator",
@@ -6755,16 +6837,6 @@ name = "tree-sitter-language"
 version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0af592be68c579aa78a16846bd19422978c3c52e438523d45ff5d1bff1f9d4a"
-
-[[package]]
-name = "tree-sitter-php"
-version = "0.24.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d8c17c3ab69052c5eeaa7ff5cd972dd1bc25d1b97ee779fec391ad3b5df5592"
-dependencies = [
- "cc",
- "tree-sitter-language",
-]
 
 [[package]]
 name = "tree-sitter-php"
@@ -6883,9 +6955,9 @@ dependencies = [
 
 [[package]]
 name = "tuika-codeformatters"
-version = "0.7.0"
+version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fe0a7f3ff4400f5543e73b9795f337f45b8f4de39a19e81b8c5ae710a4bbf9a6"
+checksum = "5b74b119c739d77bb1ee95391be7f689e754fb6e3a5f8db07c12227e202505ab"
 dependencies = [
  "tree-sitter",
  "tree-sitter-c-sharp",
@@ -6894,7 +6966,7 @@ dependencies = [
  "tree-sitter-highlight",
  "tree-sitter-html",
  "tree-sitter-java",
- "tree-sitter-php 0.24.2",
+ "tree-sitter-php",
  "tree-sitter-python",
  "tree-sitter-ruby",
  "tree-sitter-rust",
@@ -8212,8 +8284,6 @@ dependencies = [
  "agent-client-protocol",
  "anyhow",
  "arboard",
- "ast-grep-core",
- "ast-grep-language",
  "async-trait",
  "base64 0.23.1",
  "chrono",
@@ -8223,6 +8293,7 @@ dependencies = [
  "eventsource-stream",
  "everruns",
  "everruns-capabilities",
+ "everruns-coding",
  "everruns-contracts",
  "everruns-core",
  "everruns-drivers",
@@ -8263,23 +8334,6 @@ dependencies = [
  "tracing-subscriber",
  "tree-sitter",
  "tree-sitter-bash",
- "tree-sitter-c",
- "tree-sitter-c-sharp",
- "tree-sitter-cpp",
- "tree-sitter-css",
- "tree-sitter-go",
- "tree-sitter-html",
- "tree-sitter-java",
- "tree-sitter-javascript",
- "tree-sitter-kotlin-ng",
- "tree-sitter-php 0.25.1",
- "tree-sitter-python",
- "tree-sitter-ruby",
- "tree-sitter-rust",
- "tree-sitter-scala",
- "tree-sitter-sequel",
- "tree-sitter-typescript",
- "tree-sitter-zig",
  "tuika",
  "tuika-codeformatters",
  "tuika-html",

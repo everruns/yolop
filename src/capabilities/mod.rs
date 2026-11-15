@@ -9,7 +9,6 @@ pub(crate) mod apply_patch;
 // `pub` rather than `pub(crate)`: `BuiltRuntime` hands hosts the session's
 // pending soft-approval so a pause is visible in the UI.
 pub mod approval;
-pub(crate) mod ast_grep;
 pub(crate) mod attribution;
 pub(crate) mod background;
 pub(crate) mod checkpoint;
@@ -19,7 +18,6 @@ pub(crate) mod context_cost_control;
 pub(crate) mod herdr;
 pub(crate) mod hooks;
 pub(crate) mod host;
-pub(crate) mod lsp;
 pub(crate) mod mcp;
 pub(crate) mod memory;
 pub(crate) mod model_cli;
@@ -30,7 +28,6 @@ pub(crate) mod model_runtime_context;
 pub(crate) mod narration;
 pub(crate) mod profiles;
 pub(crate) mod progress_guard;
-pub(crate) mod repo_map;
 pub(crate) mod rex;
 pub(crate) mod rex_titles;
 pub(crate) mod rg;
@@ -51,7 +48,7 @@ pub(crate) use agent_commands::{
 };
 pub(crate) use apply_patch::NativeEditToolsCapability;
 pub(crate) use approval::{SOFT_APPROVAL_CAPABILITY_ID, soft_approval_capability};
-pub(crate) use ast_grep::{AST_GREP_CAPABILITY_ID, AstEditCapability, AstGrepCapability};
+// Code navigation is shared with the hosted coding harness (everruns-coding).
 pub(crate) use attribution::{ATTRIBUTION_CAPABILITY_ID, AttributionCapability};
 pub(crate) use background::{
     BACKGROUND_CAPABILITY_ID, BackgroundCapability, NarratedBackgroundExecutionCapability,
@@ -62,6 +59,10 @@ pub(crate) use config::{CONFIG_CAPABILITY_ID, ConfigCapability};
 pub(crate) use context_cost_control::{
     CONTEXT_COST_CONTROL_CAPABILITY_ID, ContextCostControlCapability,
 };
+pub(crate) use everruns_coding::{
+    AST_GREP_CAPABILITY_ID, AstEditCapability, AstGrepCapability, LspCapability,
+    REPO_MAP_CAPABILITY_ID, RepoMapCapability,
+};
 pub(crate) use herdr::{HERDR_CAPABILITY_ID, HerdrCapability};
 pub(crate) use hooks::{HOOKS_CAPABILITY_ID, HooksCapability};
 pub(crate) use host::{
@@ -69,7 +70,6 @@ pub(crate) use host::{
     CodingCliEnvironmentCapability, ENVIRONMENT_CONTEXT_CAPABILITY_ID, EnvironmentContextRegistry,
     MODELS_CAPABILITY_ID, ModelsCapability,
 };
-pub(crate) use lsp::LspCapability;
 pub(crate) use model_cli::ModelCliCapability;
 pub(crate) use model_list::{ModelListCapability, offered_models};
 pub(crate) use model_runtime_context::{
@@ -77,7 +77,6 @@ pub(crate) use model_runtime_context::{
 };
 pub(crate) use profiles::ProfilesCapability;
 pub(crate) use progress_guard::{PROGRESS_GUARD_CAPABILITY_ID, ProgressGuardCapability};
-pub(crate) use repo_map::{REPO_MAP_CAPABILITY_ID, RepoMapCapability};
 pub(crate) use rex::{REX_CAPABILITY_ID, RexCapability};
 pub(crate) use rex_titles::sync_rex_title;
 pub(crate) use rg::RgCapability;

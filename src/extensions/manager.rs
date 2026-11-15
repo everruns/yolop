@@ -1,7 +1,7 @@
 //! Persistent capability-server processes. One process per extension per
 //! yolop process, spawned lazily on first use, kept for the session,
 //! `kill_on_drop`, respawned with a fresh handshake on the call after a
-//! crash — the same lifecycle policy `capabilities/lsp/manager.rs` applies
+//! crash — the same lifecycle policy `everruns-coding` applies
 //! to language servers. Only this module knows about processes; everything
 //! else drives the transport-generic `YepConnection`.
 

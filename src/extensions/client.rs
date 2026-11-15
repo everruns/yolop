@@ -1,7 +1,7 @@
 //! Transport-generic YEP connection: ndjson JSON-RPC over any
 //! `AsyncRead`/`AsyncWrite` pair, so tests drive the full stack over
 //! `tokio::io::duplex` and only `manager.rs` knows about processes
-//! (the same seam split as `capabilities/lsp/client.rs`).
+//! (the same seam split as the LSP client in `everruns-coding`).
 
 use super::protocol::{
     ErrorObject, Incoming, InitializeParams, InitializeResult, StatusChangedParams,

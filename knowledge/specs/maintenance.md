@@ -235,6 +235,9 @@ Toolkit-shaped work, including layout, components, overlays, focus, keymap,
 markdown rendering, terminal escapes, and screen modes, belongs in the
 `tuika` repository, not here. What belongs here is how yolop composes it.
 
+- `everruns-coding` and `tuika-codeformatters` must agree on the `tree-sitter`
+  major line. The runtime links a native library, so Cargo allows one version
+  per binary; bump them together, along with Yolop's own `tree-sitter` pin.
 - The `tuika`, `tuika-codeformatters`, and `tuika-mermaid` versions stay
   current, move together where they are
   companion releases, and keep `Cargo.toml` and `Cargo.lock` in agreement.

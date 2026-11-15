@@ -81,6 +81,9 @@ impl SessionHosting for YolopHosting {
     fn reader(&self, session: SessionId) -> HostBackends {
         self.enrich(self.native.reader(session))
     }
+    fn definitions(&self) -> Option<&dyn everruns::hosting::AgentDefinitions> {
+        self.native.definitions()
+    }
     async fn record(&self, session: SessionId, key: &str) -> Result<Option<Value>> {
         self.native.record(session, key).await
     }

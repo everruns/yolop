@@ -1462,11 +1462,7 @@ fn legacy_rows(
     table: &str,
 ) -> anyhow::Result<Vec<std::collections::HashMap<String, rusqlite::types::Value>>> {
     let mut stmt = conn.prepare(&format!("SELECT * FROM {table}"))?;
-    let names: Vec<String> = stmt
-        .column_names()
-        .iter()
-        .map(ToString::to_string)
-        .collect();
+    let names: Vec<String> = stmt.column_names().map(ToString::to_string).collect();
     let rows = stmt
         .query_map([], |row| {
             let mut map = std::collections::HashMap::new();
