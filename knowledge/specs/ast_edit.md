@@ -21,7 +21,7 @@ tool for multi-file structural edits without new processes or external CLIs.
 
 ## What
 
-A yolop-owned `ast_edit` capability (separate from read-only `ast_grep`) that
+An `ast_edit` capability, implemented in `everruns-coding` (separate from read-only `ast_grep`) that
 exposes one tool:
 
 - `ast_edit`, scan workspace source with an ast-grep `pattern`, rewrite each
@@ -70,8 +70,9 @@ contract.
 
 ### Safety
 
-- All paths are resolved against the workspace root through `WorkspaceHost`;
-  writes use the same blocklist and bounds as other filesystem tools.
+- All paths are resolved by `everruns-coding`'s `LocalCodeHost` against the
+  workspace host root Yolop gives it: canonicalized, then required to stay
+  under that root.
 - `dry_run=true` (default) never writes disk; transcript renders the returned
   `diff` like `edit_file` previews.
 - Scans skip oversized files (`max_file_bytes`, default 512 KiB, max 2 MiB),

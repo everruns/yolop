@@ -87,11 +87,13 @@ impl WorkspaceHost {
 /// A disk path proven to live inside the workspace root.
 ///
 /// The only way to obtain one from model-supplied input is [`resolve_host_scope`],
-/// which resolves repository-relative or real absolute paths and enforces containment. The
-/// disk-scanning capabilities (`repo_map`, `repo_symbols`, `ast_grep`, `lsp`)
-/// resolve model paths through it, so a resolved scope is a *distinct type* from
-/// a bare `PathBuf` a tool might build by hand — a new tool that skips
-/// normalization can't produce a `HostPath` without going through the resolver.
+/// which resolves repository-relative or real absolute paths and enforces containment.
+/// Yolop's own disk-scanning tools (`grep_files`) resolve model paths through it, so a
+/// resolved scope is a *distinct type* from a bare `PathBuf` a tool might build by
+/// hand — a new tool that skips normalization can't produce a `HostPath` without going
+/// through the resolver. The code navigation tools (`repo_map`, `repo_symbols`,
+/// `ast_grep`, `ast_edit`, `lsp`) live in `everruns-coding` and enforce the same
+/// containment in its own resolver, over the root `WorkspaceHost::host_root` provides.
 /// `Deref<Target = Path>` keeps it ergonomic at the call sites.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HostPath(PathBuf);

@@ -21,7 +21,7 @@ agent IDE-grade code intelligence without reimplementing any language.
 
 ## What
 
-A yolop-owned `lsp` capability that speaks the Language Server Protocol over
+An `lsp` capability, implemented in `everruns-coding`, that speaks the Language Server Protocol over
 stdio to real servers and exposes seven tools:
 
 - `lsp_diagnostics`, errors/warnings for one file (pull diagnostics when the
@@ -87,10 +87,10 @@ error at call time with install/override guidance, never a startup failure.
 
 ## Design notes
 
-- The client (`client.rs`) is transport-generic (`AsyncRead`/`AsyncWrite`),
-  so tests drive the full tool stack against an in-process fake server over
-  `tokio::io::duplex`; only `manager.rs` knows about processes. An ignored
-  `rust_analyzer_smoke` test exercises the real-process path.
+- The client, the server manager and their tests live in `everruns-coding`.
+  Yolop owns only the registration (opt-in, never in the default harness),
+  the settings keys above, and the binding to this machine's disk: a
+  `LocalCodeHost` whose root is the workspace host root.
 - Server-initiated requests (`workspace/configuration`,
   `client/registerCapability`, progress creation) get benign default replies
   so servers that block on them keep working.
