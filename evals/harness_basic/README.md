@@ -651,3 +651,10 @@ observed tail, not a p95 estimate or a calibrated confidence interval. These str
 minimum ignored; diagnose the traces rather than treating a flag as statistical
 proof. Luna
 threshold calibration remains unverified until bounded paired trials exist.
+
+All three paid workflow paths use `OPENAI_EVAL_API_KEY` from Doppler's Yolop CI
+configuration through a child-only wrapper. The child maps it to the provider's
+`OPENAI_API_KEY`; a missing dedicated key fails closed instead of falling back to
+the shared project key. The dedicated key is restricted to Responses and expires
+on 2026-12-16; rotate it before the next authorized run after that date. Key
+separation improves billing attribution but is not a spending cap.

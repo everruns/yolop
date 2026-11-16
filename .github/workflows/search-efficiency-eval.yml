@@ -131,7 +131,7 @@ jobs:
         run: |
           control=add-fn
           if [ "${PILOT_SAMPLE}" = add-fn ]; then control=find-constant; fi
-          doppler run -- mira run --preset "${FOCUSED_PRESET}" \
+          doppler run -- bash run_with_eval_key.sh mira run --preset "${FOCUSED_PRESET}" \
             --samples "${PILOT_SAMPLE},${control}" --trials 1 --group-by binary \
             --max-concurrent 1 --provider-concurrency openai=1 \
             --max-retries 0 --timeout 180 \
@@ -146,7 +146,7 @@ jobs:
         working-directory: evals/harness_basic
         run: |
           mira_status=0
-          doppler run -- mira run \
+          doppler run -- bash run_with_eval_key.sh mira run \
             --preset "${FOCUSED_PRESET}" \
             --trials "${FOCUSED_TRIALS}" \
             --group-by binary \
@@ -165,7 +165,7 @@ jobs:
         working-directory: evals/harness_basic
         run: |
           mira_status=0
-          doppler run -- mira run \
+          doppler run -- bash run_with_eval_key.sh mira run \
             --preset "${CONTROL_PRESET}" \
             --trials "${CONTROL_TRIALS}" \
             --group-by binary \

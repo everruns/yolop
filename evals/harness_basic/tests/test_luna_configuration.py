@@ -56,3 +56,25 @@ class PaidCiScopeTests(unittest.TestCase):
         live = ci.split('  live-smoke:', 1)[1].split('  sandbox-contract:', 1)[0]
         self.assertIn("needs.changes.outputs.live-runtime == 'true'", live)
         self.assertIn('cargo test --locked', ci.split('  eval-rust:', 1)[1])
+
+class DedicatedKeyTests(unittest.TestCase):
+    def test_child_uses_dedicated_key_without_shared_fallback(self):
+        import os
+        script = STUDY / 'run_with_eval_key.sh'
+        env = {**os.environ, 'OPENAI_API_KEY': 'shared-fixture', 'OPENAI_EVAL_API_KEY': 'eval-fixture'}
+        result = subprocess.run(['bash', str(script), sys.executable, '-c',
+            'import os; assert os.environ["OPENAI_API_KEY"] == "eval-fixture"; assert "OPENAI_EVAL_API_KEY" not in os.environ'],
+            env=env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout + result.stderr, '')
+        del env['OPENAI_EVAL_API_KEY']
+        result = subprocess.run(['bash', str(script), 'true'], env=env, capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Dedicated OPENAI_EVAL_API_KEY is required', result.stderr)
+        self.assertNotIn('shared-fixture', result.stderr)
+
+    def test_every_paid_mira_invocation_uses_dedicated_wrapper(self):
+        workflow = (STUDY.parents[1] / '.github/workflows/search-efficiency-eval.yml').read_text()
+        lines = [line for line in workflow.splitlines() if 'doppler run --' in line]
+        self.assertEqual(len(lines), 3)
+        self.assertTrue(all('bash run_with_eval_key.sh mira run' in line for line in lines))
