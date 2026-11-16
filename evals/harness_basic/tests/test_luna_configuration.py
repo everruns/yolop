@@ -42,7 +42,7 @@ class LunaConfigurationTests(unittest.TestCase):
 
 
 class PaidCiScopeTests(unittest.TestCase):
-    def test_paid_smoke_covers_runtime_but_not_standalone_evals(self):
+    def test_runtime_scope_is_preserved_and_paid_smoke_requires_opt_in(self):
         ci = (STUDY.parents[1] / '.github/workflows/ci.yml').read_text()
         section = ci.split('            live-runtime:\n', 1)[1].split('            eval-rust:', 1)[0]
         paths = [line.split("'", 2)[1] for line in section.splitlines() if "- '" in line]
@@ -54,5 +54,5 @@ class PaidCiScopeTests(unittest.TestCase):
                      '.github/workflows/ci.yml', 'docs/README.md'):
             self.assertFalse(any(fnmatch.fnmatchcase(path, pattern) for pattern in paths), path)
         live = ci.split('  live-smoke:', 1)[1].split('  sandbox-contract:', 1)[0]
-        self.assertIn("needs.changes.outputs.live-runtime == 'true'", live)
+        self.assertIn("if: github.event_name == 'workflow_dispatch' && inputs.run_live_provider_smoke", live)
         self.assertIn('cargo test --locked', ci.split('  eval-rust:', 1)[1])
