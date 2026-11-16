@@ -141,7 +141,7 @@ jobs:
         working-directory: evals/harness_basic
         run: |
           status=0
-          python3 "${SEARCH_EFFICIENCY_ANALYZER}" \
+          python3 "${SEARCH_EFFICIENCY_ANALYZER}" --expected-target openai/gpt-6-luna \
             "${RUNNER_TEMP}/search-efficiency-focused.json" \
             "${RUNNER_TEMP}/search-efficiency-controls.json" || status=$?
           if [ "${status}" -eq 75 ]; then

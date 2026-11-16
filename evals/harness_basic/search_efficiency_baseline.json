@@ -1,16 +1,18 @@
 {
   "schema_version": 1,
   "baseline": {
-    "git_commit": "e9d5d629ac52cc721a703657052d7a339a449bd3",
-    "everruns_runtime_version": "0.49.0",
-    "description": "Re-pinned 2026-10-27 to green main commit e9d5d62 (Everruns 0.49, #874). The prior pin (66f4e9a, 2026-10-10) predated the coordination threads, connector and E2B tools, built-in rg search, web_search capability and Everruns 0.46 to 0.49 moves, which grew the first request by about 4.3k tokens (8.7k to 13.0k) on every sample, so the nightly failed on 2026-10-26 and 2026-10-27 on control token and cost drift with no correctness regression. Earlier history: the 2026-10-10, 2026-10-05 and 2026-09-19 re-pins and the #643 grep_files path_pattern fix (a real bug caught by this monitor, fixed in code with runtime::tests::grep_tool_matches_directory_anchored_nested_glob_path_pattern) are recorded in git history of this file. Re-pin periodically to keep the ordinary-control gates comparing against current architecture; the focused search-efficiency cases this baseline also anchors remain valid regardless of the pin date."
+    "git_commit": "4b14e3861283aea487ccd39426866ccba7d5af93",
+    "everruns_runtime_version": "0.52.0",
+    "description": "Accepted main at migration to GPT-6 Luna. Both binaries must run fresh against openai/gpt-6-luna. Historical GPT-5.5 evidence below is provenance only, never Luna validation."
   },
   "monitor": {
     "focused_preset": "search-efficiency",
     "focused_trials": 3,
     "control_preset": "search-controls",
     "control_trials": 5,
-    "analyzer": "analyze_search_efficiency.py"
+    "analyzer": "analyze_search_efficiency.py",
+    "target": "openai/gpt-6-luna",
+    "validation_status": "not_live_validated"
   },
   "reference_evidence": [
     {
@@ -29,5 +31,10 @@
       "candidate_passed": 5,
       "cases_per_binary": 5
     }
-  ]
+  ],
+  "historical_baseline": {
+    "git_commit": "e9d5d629ac52cc721a703657052d7a339a449bd3",
+    "everruns_runtime_version": "0.49.0",
+    "description": "Re-pinned 2026-10-27 to green main commit e9d5d62 (Everruns 0.49, #874). The prior pin (66f4e9a, 2026-10-10) predated the coordination threads, connector and E2B tools, built-in rg search, web_search capability and Everruns 0.46 to 0.49 moves, which grew the first request by about 4.3k tokens (8.7k to 13.0k) on every sample, so the nightly failed on 2026-10-26 and 2026-10-27 on control token and cost drift with no correctness regression. Earlier history: the 2026-10-10, 2026-10-05 and 2026-09-19 re-pins and the #643 grep_files path_pattern fix (a real bug caught by this monitor, fixed in code with runtime::tests::grep_tool_matches_directory_anchored_nested_glob_path_pattern) are recorded in git history of this file. Re-pin periodically to keep the ordinary-control gates comparing against current architecture; the focused search-efficiency cases this baseline also anchors remain valid regardless of the pin date."
+  }
 }

@@ -594,3 +594,21 @@ Replay an existing report locally, without calling a provider:
 ```bash
 python3 report_attribution.py focused.json controls.json --out eval-attribution.json
 ```
+## Luna evaluation policy
+
+New harness runs use the explicit `openai/gpt-6-luna` target instead of GPT-5.5.
+This is a model ID, not a promise of an immutable provider snapshot. Retain the
+provider-resolved model/version in evidence when available. Historical reports
+are unchanged and do not establish Luna reliability or cost.
+
+Search comparisons run the accepted baseline binary and candidate on the same
+Luna model and effort, with fresh reports. The workflow rejects absent or mixed
+model labels before grading. The migrated baseline is not live-validated yet;
+configuration and offline tests do not prove model support or suitability.
+Do not cite historical GPT-5.5 comparisons as Luna results.
+
+Standalone study Rust changes run keyless unit tests and Clippy in CI, without
+triggering the shipped runtime's paid smoke job. Runtime, integration-test and
+root dependency changes retain that job. Run a small affected-case pilot before
+requesting a full manual comparison. A pilot is smoke evidence, not an A/B
+reliability claim. No scheduled full-suite runs are restored by this migration.
