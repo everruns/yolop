@@ -38,7 +38,6 @@ jobs:
     timeout-minutes: 5
     outputs:
       rust: ${{ steps.filter.outputs.rust }}
-      live-runtime: ${{ steps.filter.outputs.live-runtime }}
       eval-rust: ${{ steps.filter.outputs.eval-rust }}
       docs: ${{ steps.filter.outputs.docs }}
       eval-analyzers: ${{ steps.filter.outputs.eval-analyzers }}
@@ -57,16 +56,6 @@ jobs:
               - 'rust-toolchain.toml'
               - '**/build.rs'
               - '.github/workflows/ci.yml'
-            # Paid provider checks cover the shipped runtime, not standalone
-            # eval definitions or CI bookkeeping. Offline Rust checks remain broad.
-            live-runtime:
-              - 'src/**'
-              - 'crates/**'
-              - 'tests/**'
-              - 'Cargo.toml'
-              - 'Cargo.lock'
-              - 'build.rs'
-              - 'rust-toolchain.toml'
             eval-rust:
               - 'evals/harness_basic/**'
               - '.github/workflows/ci.yml'

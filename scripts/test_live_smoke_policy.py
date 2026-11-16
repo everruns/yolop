@@ -24,6 +24,13 @@ class LiveSmokePolicyTests(unittest.TestCase):
         self.assertEqual(option["default"], "false")
         self.assertIn("not dollar-capped", option["description"])
 
+    def test_policy_guard_runs_when_workflow_changes(self):
+        changes = self.workflow["jobs"]["changes"]
+        step = next(step for step in changes["steps"] if step.get("id") == "filter")
+        filters = yaml.load(step["with"]["filters"], Loader=yaml.BaseLoader)
+        self.assertIn(".github/workflows/ci.yml", filters["docs"])
+        self.assertIn("python3 scripts/test_live_smoke_policy.py", str(self.workflow["jobs"]["docs-boundary"]))
+
     def test_live_coverage_is_not_replaced_by_a_noop(self):
         steps = self.job["steps"]
         live = next(step for step in steps if step.get("name") == "Live provider smoke tests")
@@ -37,7 +44,8 @@ class LiveSmokePolicyTests(unittest.TestCase):
 
     def test_offline_checks_remain_automatic_and_credentials_stay_scoped(self):
         jobs = self.workflow["jobs"]
-        for name in ("lint", "test", "sandbox-contract", "windows"):
+        for name in ("lint", "test", "sandbox-contract", "windows", "local-inference",
+                     "eval-rust", "eval-analyzers", "terminal-bench-study", "docs-boundary"):
             job = jobs[name]
             self.assertNotIn("workflow_dispatch", job.get("if", ""))
             self.assertNotIn("run_live_provider_smoke", job.get("if", ""))
