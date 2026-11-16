@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import statistics
 import sys
 from collections import defaultdict
@@ -23,6 +24,8 @@ FOCUSED = {
     "equivalent-failure-recovery",
     "zero-result-search-recovery",
     "repo-map-bounded",
+    "overlapping-recent-work",
+    "unchanged-repeated-discovery",
 }
 EXPECTED_SAMPLES = FOCUSED | CONTROLS
 FOCUSED_TRIALS = 3
@@ -169,13 +172,15 @@ def value(case: dict, metric: str) -> float:
             return float(metrics[metric])
         return value(case, TASK_METRIC_FALLBACK[metric])
     if metric in {"input_tokens", "cost_usd"}:
-        return float(transcript.get("usage", {}).get(metric, 0))
+        return float(transcript.get("usage", {}).get(metric) or 0)
     if metric == "duration_ms":
         return float(transcript.get("timing", {}).get(metric, 0))
     return float(transcript.get("metrics", {}).get(metric, 0))
 
 
-def analyze_reports(reports: list[dict]) -> tuple[list[str], list[str], list[str]]:
+def analyze_reports(reports: list[dict], *, mode: str = "improvement") -> tuple[list[str], list[str], list[str]]:
+    if mode not in {"regression", "improvement"}:
+        raise ValueError(f"unknown analysis mode: {mode}")
     grouped: dict[tuple[str, str], list[dict]] = defaultdict(list)
     for report in reports:
         for case in report.get("cases", []):
@@ -189,6 +194,9 @@ def analyze_reports(reports: list[dict]) -> tuple[list[str], list[str], list[str
     failures: list[str] = []
     notes: list[str] = []
     rows: list[str] = []
+    unexpected = sorted({sample for sample, _ in grouped} - EXPECTED_SAMPLES)
+    if unexpected:
+        failures.append(f"unexpected ungated samples: {unexpected}")
     improved = 0
     gradable_focused = 0
     for sample in samples:
@@ -218,6 +226,8 @@ def analyze_reports(reports: list[dict]) -> tuple[list[str], list[str], list[str
                 f"{len(candidate)}/{len(candidate_all)} candidate valid trials"
             )
             continue
+        if len(baseline) != expected_trials or len(candidate) != expected_trials:
+            notes.append(f"{sample}: inconclusive: incomplete valid trial coverage")
         base_graded = [
             result
             for result in (correctness_pass(case) for case in baseline)
@@ -229,8 +239,10 @@ def analyze_reports(reports: list[dict]) -> tuple[list[str], list[str], list[str
             if result is not None
         ]
         if not base_graded or not cand_graded:
-            notes.append(f"{sample}: no correctness rubric to compare")
+            notes.append(f"{sample}: inconclusive: no correctness rubric to compare")
             continue
+        if len(base_graded) != len(baseline) or len(cand_graded) != len(candidate):
+            notes.append(f"{sample}: inconclusive: partial correctness rubric coverage")
         base_pass = sum(base_graded) / len(base_graded)
         cand_pass = sum(cand_graded) / len(cand_graded)
 
@@ -275,8 +287,20 @@ def analyze_reports(reports: list[dict]) -> tuple[list[str], list[str], list[str
             if cand_pass > base_pass:
                 improved += 1
 
+        missing_usage = set()
+        for metric in ("input_tokens", "cost_usd"):
+            for case in baseline + candidate:
+                reported = case.get("transcript", {}).get("usage", {}).get(metric)
+                if type(reported) not in (int, float) or not math.isfinite(reported) or reported < 0:
+                    missing_usage.add(metric)
+                    break
+        if missing_usage:
+            notes.append(f"{sample}: inconclusive: missing/invalid usage for {', '.join(sorted(missing_usage))}")
         medians = {}
         for metric in METRICS:
+            if metric in missing_usage:
+                medians[("baseline", metric)] = medians[("candidate", metric)] = 0
+                continue
             medians[("baseline", metric)] = statistics.median(
                 value(case, metric) for case in baseline
             )
@@ -311,16 +335,10 @@ def analyze_reports(reports: list[dict]) -> tuple[list[str], list[str], list[str
                 "input_tokens",
                 "cost_usd",
             ):
+                if metric in missing_usage:
+                    continue
                 base = medians[("baseline", metric)]
                 candidate_value = medians[("candidate", metric)]
-                if metric in ("input_tokens", "cost_usd"):
-                    # Tokens and cost are bimodal on identical behavior: add-fn
-                    # ran 14k or 24k input tokens at the same 5-6 calls in both
-                    # binaries (nightlies 2026-10-27, 2026-10-28), so 2 of 5 high
-                    # trials flip the median by +60%. The noise only adds, so
-                    # compare the cheapest trial: a real regression raises it.
-                    base = min(value(case, metric) for case in baseline)
-                    candidate_value = min(value(case, metric) for case in candidate)
                 # Call counts are small integers: at a median of 8, a single extra
                 # call is already +12.5% (nightly 2026-10-14, 8 -> 9) on identical
                 # behavior. Count metrics get one call of slack; tokens and cost
@@ -334,6 +352,17 @@ def analyze_reports(reports: list[dict]) -> tuple[list[str], list[str], list[str
                         f"{sample}: control {metric} regressed >{10 if counts else 25}% "
                         f"({base:g} -> {candidate_value:g})"
                     )
+                if not counts:
+                    # Five trials cannot estimate p95. Compare the observed worst
+                    # trial explicitly; do not let a cheap minimum hide a tail.
+                    base_tail = max(value(c, metric) for c in baseline)
+                    cand_tail = max(value(c, metric) for c in candidate)
+                    if cand_tail > base_tail * 1.25:
+                        failures.append(
+                            f"{sample}: control {metric} observed-tail regressed >25% "
+                            f"({base_tail:g} -> {cand_tail:g})"
+                        )
+                    rows.append(f"{sample}: {metric} observed-max {base_tail:g}->{cand_tail:g}")
         if sample == "equivalent-failure-recovery":
             if statistics.median(
                 value(case, "equivalent_failure_warnings") for case in candidate
@@ -366,7 +395,7 @@ def analyze_reports(reports: list[dict]) -> tuple[list[str], list[str], list[str
     # Only demand an improvement when at least one focused case actually produced
     # signal. A provider outage that leaves every focused case inconclusive must
     # not fail here — there was nothing to improve on.
-    if gradable_focused and improved == 0:
+    if mode == "improvement" and gradable_focused and improved == 0:
         failures.append("no focused case improved over baseline")
     return rows, failures, notes
 
@@ -380,8 +409,26 @@ def exit_code(rows: list[str], failures: list[str], notes: list[str]) -> int:
     """Map an analysis to a status: regression, inconclusive, or clean."""
     if failures:
         return REGRESSION_EXIT
-    if not rows and notes:
+    if any("inconclusive" in note for note in notes) or (not rows and notes):
         return INCONCLUSIVE_EXIT
+    return 0
+
+
+def analyze_pilot(reports: list[dict], sample: str) -> int:
+    """An affected-case plus control diagnostic, never full-gate evidence."""
+    cases = [case for report in reports for case in report.get("cases", [])]
+    samples = {sample, "find-constant" if sample == "add-fn" else "add-fn"}
+    expected = {(s, b) for s in samples for b in ("baseline", "candidate")}
+    if len(cases) != 4 or {(c.get("sample"), c.get("params", {}).get("binary")) for c in cases} != expected:
+        print("Pilot invalid: expected exactly one baseline and candidate for affected sample and control.")
+        return INCONCLUSIVE_EXIT
+    if any(c.get("skipped") or is_infra_failure(c) or correctness_pass(c) is None for c in cases):
+        print("Pilot inconclusive: missing valid correctness evidence.")
+        return INCONCLUSIVE_EXIT
+    if not all(correctness_pass(c) for c in cases):
+        print("Pilot correctness failed: inspect traces before escalating.")
+        return REGRESSION_EXIT
+    print("Diagnostic pilot passed: four trajectories only, NOT a full regression or improvement gate.")
     return 0
 
 
@@ -393,9 +440,24 @@ def main() -> int:
         nargs="+",
         help="focused 3-trial and control 5-trial report.json files",
     )
+    parser.add_argument(
+        "--expected-target", help="Reject missing/mixed model provenance before grading"
+    )
+    parser.add_argument("--mode", choices=("regression", "improvement"), default="improvement",
+                        help="Regression preserves correctness/efficiency; improvement also requires a gain")
+    parser.add_argument("--pilot-sample", choices=sorted(EXPECTED_SAMPLES),
+                        help="Diagnostic only: affected case plus control per binary, not the full gate")
     args = parser.parse_args()
+    if args.expected_target:
+        for report in args.reports:
+            cases = json.loads(report.read_text()).get("cases", [])
+            if not cases or any(case.get("target") != args.expected_target for case in cases):
+                print(f"{report}: missing or mismatched target; refusing cross-model comparison", file=sys.stderr)
+                return REGRESSION_EXIT
+    if args.pilot_sample:
+        return analyze_pilot([json.loads(p.read_text()) for p in args.reports], args.pilot_sample)
     rows, failures, notes = analyze_reports(
-        [json.loads(report.read_text()) for report in args.reports]
+        [json.loads(report.read_text()) for report in args.reports], mode=args.mode
     )
     print("\n".join(rows))
     if notes:
@@ -414,10 +476,10 @@ def main() -> int:
         # difference, because "no trial ran" is not "the gates passed".
         print(
             "\nRegression gate inconclusive: provider/infrastructure errors left "
-            "no valid trials to compare; nothing was gated this run."
+            "incomplete valid coverage; this run did not clear the full gate."
         )
         return status
-    print("\nRegression gates passed.")
+    print(f"\n{args.mode.capitalize()} gates passed (complete coverage).")
     return status
 
 

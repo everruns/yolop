@@ -388,25 +388,25 @@ doppler run -- mira run --targets 'anthropic/*' --axis harness=no-ast-grep --sam
 | `smoke` | cheap candidate sanity check | tag `smoke` | claude-sonnet-5-5 | candidate, effort=default, all harness |
 | `harness-compare` | **A/B yolop configurations** | all | claude-sonnet-5-5 | candidate, effort=default, all harness |
 | `progress-guard` | focused warning-behavior check | tag `progress-guard` | claude-sonnet-5-5 | candidate, effort=default, default vs no-progress-guard |
-| `search-efficiency` | baseline/candidate session/search proof, 3 trials | 8 focused cases | gpt-5.5 | baseline + candidate, harness=default, effort=default |
-| `search-controls` | ordinary and semantic-failure controls, 5 trials | 4 controls | gpt-5.5 | baseline + candidate, harness=default, effort=default |
-| `repo-map-profile` | eager-schema adoption and recovery decision, 5 trials | scoped + bounded repo maps | gpt-5.5 | deferred baseline + map-only + map-and-symbols |
-| `repo-map-controls` | ordinary controls for the eager-schema decision, 5 trials | `add-fn`, `find-constant` | gpt-5.5 | deferred baseline + map-only + map-and-symbols |
-| `capability-disclosure` | first-request token and reveal-path proof, 5 trials | exact reply, read-only search, simple edit, complex coding, release/control, deferred history | gpt-5.5 + claude-sonnet-5-5 | baseline + candidate, harness=default, effort=default |
-| `progress-efficiency` | baseline/candidate state-progress proof, 3 trials | checkpoint transition, state cycle, redundant validation, equivalent failure | gpt-5.5 | baseline + candidate, harness=default, effort=default |
-| `progress-controls` | ordinary and semantic-failure controls, 5 trials | 4 controls | gpt-5.5 | baseline + candidate, harness=default, effort=default |
-| `failure-repair` | equivalent-failure recovery proof, 3 trials | `equivalent-failure-recovery` | gpt-5.5 | baseline + candidate, harness=default, effort=default |
-| `failure-repair-controls` | expected diagnostic and distinct-failure controls, 5 trials | two failure-repair controls | gpt-5.5 | baseline + candidate, harness=default, effort=default |
-| `owner-selection` | first-mutation owner selection plus local-edit controls, 3 trials | two owner fixtures + `add-fn` + `implement-todo` | gpt-5.5 | candidate, default vs no-progress-guard |
-| `orchestration-efficiency` | batching interventions and dependency control, 3 trials | three orchestration cases | gpt-5.5 | baseline + parallel-only + policy-only + candidate |
+| `search-efficiency` | baseline/candidate session/search proof, 3 trials | 8 focused cases | gpt-6-luna | baseline + candidate, harness=default, effort=default |
+| `search-controls` | ordinary and semantic-failure controls, 5 trials | 4 controls | gpt-6-luna | baseline + candidate, harness=default, effort=default |
+| `repo-map-profile` | eager-schema adoption and recovery decision, 5 trials | scoped + bounded repo maps | gpt-6-luna | deferred baseline + map-only + map-and-symbols |
+| `repo-map-controls` | ordinary controls for the eager-schema decision, 5 trials | `add-fn`, `find-constant` | gpt-6-luna | deferred baseline + map-only + map-and-symbols |
+| `capability-disclosure` | first-request token and reveal-path proof, 5 trials | exact reply, read-only search, simple edit, complex coding, release/control, deferred history | gpt-6-luna + claude-sonnet-5-5 | baseline + candidate, harness=default, effort=default |
+| `progress-efficiency` | baseline/candidate state-progress proof, 3 trials | checkpoint transition, state cycle, redundant validation, equivalent failure | gpt-6-luna | baseline + candidate, harness=default, effort=default |
+| `progress-controls` | ordinary and semantic-failure controls, 5 trials | 4 controls | gpt-6-luna | baseline + candidate, harness=default, effort=default |
+| `failure-repair` | equivalent-failure recovery proof, 3 trials | `equivalent-failure-recovery` | gpt-6-luna | baseline + candidate, harness=default, effort=default |
+| `failure-repair-controls` | expected diagnostic and distinct-failure controls, 5 trials | two failure-repair controls | gpt-6-luna | baseline + candidate, harness=default, effort=default |
+| `owner-selection` | first-mutation owner selection plus local-edit controls, 3 trials | two owner fixtures + `add-fn` + `implement-todo` | gpt-6-luna | candidate, default vs no-progress-guard |
+| `orchestration-efficiency` | batching interventions and dependency control, 3 trials | three orchestration cases | gpt-6-luna | baseline + parallel-only + policy-only + candidate |
 | `runtime-guidance` | live network truth and todo restraint, 5 trials | network context + small-task negative control | gpt-5.6-terra medium | baseline + candidate |
 | `management` | configuration and administration routing | 21 focused attached-CLI, direct-tool, and `run_command` cases | OpenRouter Muse 1.3 Contributor; OpenAI GPT-5.6 Terra medium; Anthropic Sonnet 5 | candidate, harness=default; provider defaults except Terra fixed to medium |
-| `batch-native-discovery` | dependency-isolated structured read proof under single-tool emission, 3 trials | independent read + dependent control | gpt-5.5 | dependency baseline + candidate |
-| `output-persistence` | dependency-isolated output proof, 3 trials | head preservation + complete-output no-reread | gpt-5.5 | dependency baseline + candidate |
-| `persisted-output-reading` | bounded limited-output recovery proof, 3 trials | small read + large contextual search | gpt-5.5 | dependency baseline + candidate |
-| `output-persistence-controls` | ordinary dependency-isolated controls, 3 trials | `add-fn`, `find-constant` | gpt-5.5 | dependency baseline + candidate |
+| `batch-native-discovery` | dependency-isolated structured read proof under single-tool emission, 3 trials | independent read + dependent control | gpt-6-luna | dependency baseline + candidate |
+| `output-persistence` | dependency-isolated output proof, 3 trials | head preservation + complete-output no-reread | gpt-6-luna | dependency baseline + candidate |
+| `persisted-output-reading` | bounded limited-output recovery proof, 3 trials | small read + large contextual search | gpt-6-luna | dependency baseline + candidate |
+| `output-persistence-controls` | ordinary dependency-isolated controls, 3 trials | `add-fn`, `find-constant` | gpt-6-luna | dependency baseline + candidate |
 | `ast-edit-compare` | **A/B ast_edit capability** | tag `ast-edit` | claude-sonnet-5-5 | candidate, effort=default, default vs with-ast-edit |
-| `effort-compare` | effort sweep | all | gpt-5.5 | candidate, harness=default, all efforts |
+| `effort-compare` | effort sweep | all | gpt-6-luna | candidate, harness=default, all efforts |
 | `models` | model sweep, out-of-the-box yolop | all | all | candidate, harness=default, effort=default |
 
 The initial management matrix run is retained in
@@ -594,3 +594,67 @@ Replay an existing report locally, without calling a provider:
 ```bash
 python3 report_attribution.py focused.json controls.json --out eval-attribution.json
 ```
+
+## Luna evaluation policy
+
+New harness runs use the explicit `openai/gpt-6-luna` target instead of GPT-5.5.
+This is a model ID, not a promise of an immutable provider snapshot. Retain the
+provider-resolved model/version in evidence when available. Historical reports
+are unchanged and do not establish Luna reliability or cost.
+
+Search comparisons run the accepted baseline binary and candidate on the same
+Luna model and effort, with fresh reports. The workflow rejects absent or mixed
+model labels before grading. The migrated baseline is not live-validated yet;
+configuration and offline tests do not prove model support or suitability.
+Do not cite historical GPT-5.5 comparisons as Luna results.
+
+Standalone study Rust changes run keyless unit tests and Clippy in CI, without
+triggering the shipped runtime's paid smoke job. Runtime, integration-test and
+root dependency changes retain that job. Run a small affected-case pilot before
+requesting a full manual comparison. A pilot is smoke evidence, not an A/B
+reliability claim. No scheduled full-suite runs are restored by this migration.
+
+### Evidence and escalation policy
+
+Manual workflow dispatch defaults to a diagnostic pilot: one chosen affected
+scenario plus an ordinary control, one trajectory each for both binaries on Luna
+(four total), serial execution, no host
+retries and a 180-second per-trajectory timeout. Its green result says only that
+the selected four trajectories completed correctly. It is **not** a full gate,
+statistical reliability result or evidence that a change improved efficiency.
+Timeout and trial bounds are not a dollar spending cap; each trajectory can make
+multiple model calls. Obtain a separate bounded spending authorization before
+running paid work, including a pilot.
+
+Inspect pilot traces before escalating. A failed pilot calls for diagnosis,
+not an automatic larger rerun. If a meaningful behavior change needs broader
+coverage, explicitly select `full` and its purpose after reviewing expected
+cost. Full scope retains eight focused scenarios at three trials and four
+controls at five trials, both binaries: 88 trajectories. No automatic escalation
+or scheduled full-suite execution is enabled.
+
+The full analyzer has two explicit purposes:
+
+- `regression`: preserve correctness, declared budgets and efficiency against
+  the accepted baseline. Identical passing behavior is a valid result.
+- `improvement`: all regression checks plus an observed focused-case gain. This
+  remains the CLI default for existing improvement studies.
+
+Both purposes gate exactly the preset scenario sets. Unexpected scenarios are
+errors. Missing cases/trial counts fail; insufficient valid or rubric coverage
+is inconclusive even when other scenarios pass. Provider failures cannot make
+CI green. Existing focused correctness floors, control correctness, call-count
+and failure tolerances are unchanged. Control cost and input tokens now compare
+both median and observed maximum at the existing 25% ceiling, rather than a
+minimum hiding expensive trials. With five control trials the maximum is an
+observed tail, not a p95 estimate or a calibrated confidence interval. These stricter distribution checks may flag sampling noise that the old
+minimum ignored; diagnose the traces rather than treating a flag as statistical
+proof. Luna
+threshold calibration remains unverified until bounded paired trials exist.
+
+All three paid workflow paths use `OPENAI_EVAL_API_KEY` from Doppler's Yolop CI
+configuration through a child-only wrapper. The child maps it to the provider's
+`OPENAI_API_KEY`; a missing dedicated key fails closed instead of falling back to
+the shared project key. The dedicated key is restricted to Responses and expires
+on 2026-12-16; rotate it before the next authorized run after that date. Key
+separation improves billing attribution but is not a spending cap.

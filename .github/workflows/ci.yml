@@ -7,6 +7,12 @@ on:
     branches: [main]
     types: [opened, reopened, synchronize]
   workflow_dispatch:
+    inputs:
+      run_live_provider_smoke:
+        description: 'Run paid provider coverage (not dollar-capped; review models and costs first)'
+        required: false
+        type: boolean
+        default: false
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
@@ -32,6 +38,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       rust: ${{ steps.filter.outputs.rust }}
+      eval-rust: ${{ steps.filter.outputs.eval-rust }}
       docs: ${{ steps.filter.outputs.docs }}
       eval-analyzers: ${{ steps.filter.outputs.eval-analyzers }}
       terminal-bench: ${{ steps.filter.outputs.terminal-bench }}
@@ -49,6 +56,9 @@ jobs:
               - 'rust-toolchain.toml'
               - '**/build.rs'
               - '.github/workflows/ci.yml'
+            eval-rust:
+              - 'evals/harness_basic/**'
+              - '.github/workflows/ci.yml'
             docs:
               - '**/*.md'
               # The same job validates the release metadata: publish order and
@@ -56,13 +66,14 @@ jobs:
               # if a change to what they guard skips them.
               - 'scripts/*.py'
               - '.github/workflows/cli-binaries.yml'
+              - '.github/workflows/ci.yml'
             # The regression-gate analyzers under harness_basic are pure Python
-            # and decide whether the nightly Search Efficiency Eval passes. They
+            # and decide whether the manual Search Efficiency Eval passes. They
             # never touch the Rust toolchain, so give them their own fast leg that
             # runs whenever an analyzer or its tests change.
             eval-analyzers:
-              - 'evals/harness_basic/*.py'
-              - 'evals/harness_basic/tests/**'
+              - 'evals/harness_basic/**'
+              - '.github/workflows/search-efficiency-eval.yml'
               - '.github/workflows/ci.yml'
             # The terminal_bench study and its Harbor agent adapter. Its tests
             # need no Docker, network, or API key, but they do import the study's
@@ -95,6 +106,7 @@ jobs:
           # PyYAML, but do not depend on it staying that way.
           python3 -c 'import yaml' 2>/dev/null \
             || python3 -m pip install --quiet --disable-pip-version-check pyyaml
+          python3 scripts/test_live_smoke_policy.py
           python3 scripts/test_check_release_matrix.py
           python3 scripts/check_release_matrix.py
           python3 scripts/test_check_linux_glibc.py
@@ -126,6 +138,25 @@ jobs:
         # Standard library only — no third-party deps, so the system python is
         # enough and there's nothing to install.
         run: python3 -m unittest discover -s evals/harness_basic/tests -v
+
+  eval-rust:
+    name: Harness eval (offline)
+    needs: changes
+    if: needs.changes.outputs.eval-rust == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.96.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: evals/harness_basic
+      - name: Validate standalone study without provider credentials
+        working-directory: evals/harness_basic
+        run: |
+          cargo fmt --check
+          cargo test --locked
+          cargo clippy --locked --all-targets -- -D warnings
 
   terminal-bench-study:
     name: Terminal-Bench study (Python)
@@ -274,17 +305,14 @@ jobs:
           path: lcov.info
           if-no-files-found: error
 
-  # Runs parallel with lint/test (needs only changes) so the 3min live leg is off the critical path.
+  # Paid provider coverage is manual opt-in, not a side effect of a PR or merge.
+  # Keep the full suite and missing-key failures: a skipped job is not live evidence.
+  # The timeout bounds wall time, not dollars. Review model/cost scope before dispatch.
   live-smoke:
     name: Live Provider Smoke (Doppler)
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    # Gate this job out entirely on fork PRs and dependabot PRs where
-    # DOPPLER_TOKEN is not exposed. When the job does run, it must actually
-    # run the tests — YOLOP_REQUIRE_LIVE_TESTS=1 (below) turns a missing
-    # provider key into a hard failure so the live check can't report green
-    # without exercising anything.
-    if: (github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && github.actor != 'dependabot[bot]' && needs.changes.outputs.rust == 'true'
+    if: github.event_name == 'workflow_dispatch' && inputs.run_live_provider_smoke
     needs: [changes]
     env:
       DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}

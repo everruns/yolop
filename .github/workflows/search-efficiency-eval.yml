@@ -2,6 +2,34 @@ name: Search Efficiency Eval
 
 on:
   workflow_dispatch:
+    inputs:
+      scope:
+        description: 'Pilot (4 trajectories) or full comparison (88 trajectories); both are billable'
+        type: choice
+        options: [pilot, full]
+        default: pilot
+      sample:
+        description: 'Affected scenario for diagnostic pilot only'
+        type: choice
+        options:
+          - grep-files-nested-glob
+          - prior-session-reference
+          - missing-rg-recovery
+          - equivalent-failure-recovery
+          - zero-result-search-recovery
+          - repo-map-bounded
+          - overlapping-recent-work
+          - unchanged-repeated-discovery
+          - add-fn
+          - find-constant
+          - expected-diagnostic-failure-control
+          - distinct-failures-control
+        default: grep-files-nested-glob
+      purpose:
+        description: 'Full gate: preserve behavior or demonstrate an improvement'
+        type: choice
+        options: [regression, improvement]
+        default: regression
 
 concurrency:
   group: search-efficiency-eval
@@ -95,11 +123,30 @@ jobs:
             --target-dir "${GITHUB_WORKSPACE}/target/search-efficiency-baseline"
           cp "${GITHUB_WORKSPACE}/target/search-efficiency-baseline/release/yolop" "${HARNESS_BASIC_BASELINE_BIN}"
 
+      - name: Run diagnostic pilot
+        if: inputs.scope == 'pilot'
+        working-directory: evals/harness_basic
+        env:
+          PILOT_SAMPLE: ${{ inputs.sample }}
+        run: |
+          control=add-fn
+          if [ "${PILOT_SAMPLE}" = add-fn ]; then control=find-constant; fi
+          doppler run -- bash run_with_eval_key.sh mira run --preset "${FOCUSED_PRESET}" \
+            --samples "${PILOT_SAMPLE},${control}" --trials 1 --group-by binary \
+            --max-concurrent 1 --provider-concurrency openai=1 \
+            --max-retries 0 --timeout 180 \
+            --out "${RUNNER_TEMP}/search-efficiency-focused.json" --format json
+          python3 "${SEARCH_EFFICIENCY_ANALYZER}" \
+            --expected-target openai/gpt-6-luna --pilot-sample "${PILOT_SAMPLE}" \
+            "${RUNNER_TEMP}/search-efficiency-focused.json"
+          echo '### Diagnostic pilot only: not a full regression or improvement result' >> "${GITHUB_STEP_SUMMARY}"
+
       - name: Run focused search cases
+        if: inputs.scope == 'full'
         working-directory: evals/harness_basic
         run: |
           mira_status=0
-          doppler run -- mira run \
+          doppler run -- bash run_with_eval_key.sh mira run \
             --preset "${FOCUSED_PRESET}" \
             --trials "${FOCUSED_TRIALS}" \
             --group-by binary \
@@ -114,10 +161,11 @@ jobs:
           echo "Mira focused exit: ${mira_status}; the distribution analyzer decides the regression gate."
 
       - name: Run ordinary controls
+        if: inputs.scope == 'full'
         working-directory: evals/harness_basic
         run: |
           mira_status=0
-          doppler run -- mira run \
+          doppler run -- bash run_with_eval_key.sh mira run \
             --preset "${CONTROL_PRESET}" \
             --trials "${CONTROL_TRIALS}" \
             --group-by binary \
@@ -131,28 +179,26 @@ jobs:
           fi
           echo "Mira controls exit: ${mira_status}; the distribution analyzer decides the regression gate."
 
-      # Exit 75 means the analyzer graded nothing — a provider outage, not a
-      # regression. The job stays green so an unfunded or throttled account does
-      # not page, but the run must not read as a clean nightly: an outage-green
-      # is indistinguishable from a real pass in the run list, which is how a
-      # night with 0/3 valid trials on every sample was once the only green in a
-      # two-week streak.
+      # Partial/provider-failed evidence is not a passing comparison.
       - name: Gate trial distributions
+        if: inputs.scope == 'full'
+        env:
+          GATE_PURPOSE: ${{ inputs.purpose }}
         working-directory: evals/harness_basic
         run: |
           status=0
-          python3 "${SEARCH_EFFICIENCY_ANALYZER}" \
+          python3 "${SEARCH_EFFICIENCY_ANALYZER}" --expected-target openai/gpt-6-luna --mode "${GATE_PURPOSE}" \
             "${RUNNER_TEMP}/search-efficiency-focused.json" \
             "${RUNNER_TEMP}/search-efficiency-controls.json" || status=$?
           if [ "${status}" -eq 75 ]; then
-            echo "::warning::Search-efficiency gate INCONCLUSIVE: provider/infrastructure errors left no valid trials. Nothing was verified this run."
+            echo "::warning::Search-efficiency gate INCONCLUSIVE: valid coverage was incomplete. This run did not clear the full gate."
             {
               echo "### Search efficiency: INCONCLUSIVE"
               echo
-              echo "Provider/infrastructure errors left no valid trials to compare."
-              echo "No regression gate ran — this is not a passing nightly."
+              echo "Valid trial or rubric coverage was incomplete."
+              echo "Incomplete evidence: this is not a passing comparison."
             } >> "${GITHUB_STEP_SUMMARY}"
-            exit 0
+            exit 75
           fi
           exit "${status}"
 
