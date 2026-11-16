@@ -12494,7 +12494,9 @@ mod tests {
         // the CLI-only replacements for their removed model-facing tools.
         // Includes the logical model, config, setup, and mandatory skill
         // discovery/activation schemas that are intentionally eager.
-        const BASELINE_TOOL_DEFINITION_BYTES: usize = 28_901;
+        // 0.53 adds snapshot-aware list_tasks polling guidance. The measured
+        // provider-visible surface grows by 66 bytes; keep all other budgets.
+        const BASELINE_TOOL_DEFINITION_BYTES: usize = 28_901 + 66;
         // 2026-09-12: 13,700 -> 14,350. `spawn_background` joined the
         // never-defer allowlist, so its real 1061-byte schema replaced the
         // ~45-byte deferred stub in the eager surface. Measured 14,302 locally
@@ -12510,7 +12512,9 @@ mod tests {
         // Eager `report_done` adds 650 bytes (measured total: 16,647): every
         // tracked turn calls it, and its stub cost a rejected call plus a full
         // context resend each time.
-        const BASELINE_SCHEMA_BYTES: usize = 14_500 + 710 + 800 + 650;
+        // Published 0.53 adds snapshot-aware polling metadata; measured
+        // schema total is 16,703 bytes, 43 above the prior allowance.
+        const BASELINE_SCHEMA_BYTES: usize = 14_500 + 710 + 800 + 650 + 43;
         let workspace = tempfile::tempdir().expect("workspace");
         let sessions = tempfile::tempdir().expect("sessions");
         let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
