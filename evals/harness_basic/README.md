@@ -463,12 +463,18 @@ invocation even after #740 restored its CLI-route breadcrumb. Loosening a
 budget is a deliberate policy choice about how much slack the eval allows, not
 a bug fix.
 
-The manual/nightly [Search Efficiency Eval](../../.github/workflows/search-efficiency-eval.yml)
+The manual-only [Search Efficiency Eval](../../.github/workflows/search-efficiency-eval.yml)
 builds both the triggering revision and the immutable pre-fix commit recorded
 in [`search_efficiency_baseline.json`](search_efficiency_baseline.json), runs
 the focused and control presets, gates both reports, and uploads the complete
 Mira run archives. It is intentionally excluded from pull-request CI because
 it is a live-model regression monitor, not a deterministic unit test.
+GPT-5.5 runs are blocked before provider setup. Manual dispatch is paused until
+both presets are migrated to `openai/gpt-6-luna`; old GPT-5.5 reports must not
+be reused as a Luna comparison baseline.
+There is no scheduled trigger: each run spends provider credits and must be
+started deliberately. Run the offline analyzer tests in normal CI; dispatch
+the live comparison only when a harness change needs model-backed evidence.
 
 Trials that fail because the provider or infrastructure was unavailable (quota
 exhaustion, billing exhaustion, rate limits, 5xx, network) carry no signal and
@@ -481,7 +487,7 @@ unrecognized outage as a regression is the worst available default.
 When an outage wipes out a majority of a sample's trials the sample is reported
 *inconclusive* rather than a regression. A run with nothing left to compare
 exits `75`, not `0`, the workflow keeps the job green so a throttled account
-never pages, but annotates the run as inconclusive, because a nightly that
+never pages, but annotates the run as inconclusive, because a run that
 graded nothing has not passed the gate and must not be read as evidence that
 `main` is clean. The gate logic is covered by pure-Python unit tests (`tests/`)
 that do run in pull-request CI.
@@ -563,3 +569,28 @@ evals/harness_basic/
 Tests: `cargo test` from this directory (event mining, settings variants,
 checks scorer, matrix shape). Also `cargo fmt --check` and
 `cargo clippy --all-targets -- -D warnings` apply, as everywhere in the repo.
+
+### Run-level cost attribution
+
+The manual search-efficiency workflow writes `eval-attribution.json` alongside
+its report artifacts and a compact cost summary to the GitHub run. The index
+records repository, workflow, run ID and attempt, commit, triggering credentials,
+and each trial's sample, binary, provider/model, usage and session ID. It contains
+no prompts, response bodies, credentials or environment dump.
+
+Use the session ID to find matching OpenAI request metadata, including requests
+from the preserved baseline binary. The index derives this ID from the existing
+session-log filename, so it needs no runtime upgrade or extra provider call.
+Missing session joins and missing cost data are reported explicitly.
+
+Costs are **harness-reported**, not invoice reconciliation. The harness mines
+`output.message.completed` usage, preferring provider actual cost when available
+and otherwise its price-table estimate. Auxiliary calls such as completion review
+may be excluded. OpenAI billing remains authoritative. GitHub actor fields identify
+the credentials used, not whether a person or an agent initiated the run.
+
+Replay an existing report locally, without calling a provider:
+
+```bash
+python3 report_attribution.py focused.json controls.json --out eval-attribution.json
+```
