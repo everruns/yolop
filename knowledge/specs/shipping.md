@@ -60,6 +60,23 @@ Coverage must prove the fix or the acceptance criteria, including the important
 negative paths. Visible transcript or status changes assert the presentation
 model output directly.
 
+## Paid Provider CI
+
+Routine PR and main CI remain offline. The full `Live Provider Smoke (Doppler)`
+job is opt-in through `CI`'s `workflow_dispatch` input
+`run_live_provider_smoke=true`. It retains all provider integration tests and
+fails when a required key is missing. A skipped live job is not proof that
+provider behavior passed; runtime shipping still needs the focused live smoke
+required above, on the exact code being shipped, within its authorized scope.
+
+The manual full suite has no enforceable dollar cap. Its timeout is not a spend
+limit, and the provider defaults can change. Inspect the selected models, test
+inputs, credentials and spending authorization before dispatching it. Do not use
+this workflow for a bounded-budget request unless a separate provider-side cap
+covers every credential it loads. Prefer a focused, independently bounded smoke
+when that is the authorized scope. Never claim a budget is enforced merely
+because the user entered or agreed to a number.
+
 ## Merge Discipline
 
 - Conventional Commits PR titles under 70 characters.
