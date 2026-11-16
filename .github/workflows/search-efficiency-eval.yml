@@ -36,6 +36,9 @@ jobs:
           # baseline manifest as well as the triggering candidate revision.
           fetch-depth: 0
 
+      - name: Validate paid evaluation model
+        run: python3 evals/harness_basic/validate_manual_eval.py
+
       - name: Verify Doppler access
         run: |
           if [ -z "${DOPPLER_TOKEN}" ]; then

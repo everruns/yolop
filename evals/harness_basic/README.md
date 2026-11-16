@@ -469,6 +469,9 @@ in [`search_efficiency_baseline.json`](search_efficiency_baseline.json), runs
 the focused and control presets, gates both reports, and uploads the complete
 Mira run archives. It is intentionally excluded from pull-request CI because
 it is a live-model regression monitor, not a deterministic unit test.
+GPT-5.5 runs are blocked before provider setup. Manual dispatch is paused until
+both presets are migrated to `openai/gpt-6-luna`; old GPT-5.5 reports must not
+be reused as a Luna comparison baseline.
 There is no scheduled trigger: each run spends provider credits and must be
 started deliberately. Run the offline analyzer tests in normal CI; dispatch
 the live comparison only when a harness change needs model-backed evidence.
