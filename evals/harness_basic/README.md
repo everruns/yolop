@@ -616,9 +616,10 @@ reliability claim. No scheduled full-suite runs are restored by this migration.
 ### Evidence and escalation policy
 
 Manual workflow dispatch defaults to a diagnostic pilot: one chosen affected
-scenario, one trajectory for each binary on Luna, serial execution, no host
+scenario plus an ordinary control, one trajectory each for both binaries on Luna
+(four total), serial execution, no host
 retries and a 180-second per-trajectory timeout. Its green result says only that
-the selected two trajectories completed correctly. It is **not** a full gate,
+the selected four trajectories completed correctly. It is **not** a full gate,
 statistical reliability result or evidence that a change improved efficiency.
 Timeout and trial bounds are not a dollar spending cap; each trajectory can make
 multiple model calls. Obtain a separate bounded spending authorization before
@@ -645,5 +646,7 @@ CI green. Existing focused correctness floors, control correctness, call-count
 and failure tolerances are unchanged. Control cost and input tokens now compare
 both median and observed maximum at the existing 25% ceiling, rather than a
 minimum hiding expensive trials. With five control trials the maximum is an
-observed tail, not a p95 estimate or a calibrated confidence interval. Luna
+observed tail, not a p95 estimate or a calibrated confidence interval. These stricter distribution checks may flag sampling noise that the old
+minimum ignored; diagnose the traces rather than treating a flag as statistical
+proof. Luna
 threshold calibration remains unverified until bounded paired trials exist.

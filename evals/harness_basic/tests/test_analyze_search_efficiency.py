@@ -547,7 +547,7 @@ class PilotTests(unittest.TestCase):
         import sys
         import tempfile
         sample = 'grep-files-nested-glob'
-        cases = [case(sample, b, True) for b in ('baseline', 'candidate')]
+        cases = [case(s, b, True) for s in (sample, 'add-fn') for b in ('baseline', 'candidate')]
         for c in cases:
             c['target'] = 'openai/gpt-6-luna'
         with tempfile.TemporaryDirectory() as tmp:
@@ -564,9 +564,10 @@ class PilotTests(unittest.TestCase):
     def test_pilot_failure_and_outage_do_not_pass(self):
         sample = 'grep-files-nested-glob'
         baseline = case(sample, 'baseline', True)
-        self.assertEqual(analyzer.analyze_pilot([{'cases': [baseline,
+        controls = [case('add-fn', b, True) for b in ('baseline', 'candidate')]
+        self.assertEqual(analyzer.analyze_pilot([{'cases': controls + [baseline,
             case(sample, 'candidate', False)]}], sample), 1)
-        self.assertEqual(analyzer.analyze_pilot([{'cases': [baseline,
+        self.assertEqual(analyzer.analyze_pilot([{'cases': controls + [baseline,
             case(sample, 'candidate', False, error=QUOTA_ERROR)]}], sample), 75)
 
     def test_workflow_defaults_to_bounded_diagnostic_not_full_suite(self):
@@ -574,6 +575,6 @@ class PilotTests(unittest.TestCase):
         self.assertNotIn('schedule:', workflow)
         self.assertIn('default: pilot', workflow)
         self.assertIn('--max-retries 0 --timeout 180', workflow)
-        self.assertIn('--samples "${PILOT_SAMPLE}" --trials 1', workflow)
+        self.assertIn('--samples "${PILOT_SAMPLE},${control}" --trials 1', workflow)
         self.assertNotIn('exit 0', workflow)
         self.assertIn('exit 75', workflow)

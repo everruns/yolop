@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       scope:
-        description: 'Pilot (2 trajectories) or full comparison (88 trajectories); both are billable'
+        description: 'Pilot (4 trajectories) or full comparison (88 trajectories); both are billable'
         type: choice
         options: [pilot, full]
         default: pilot
@@ -129,8 +129,10 @@ jobs:
         env:
           PILOT_SAMPLE: ${{ inputs.sample }}
         run: |
+          control=add-fn
+          if [ "${PILOT_SAMPLE}" = add-fn ]; then control=find-constant; fi
           doppler run -- mira run --preset "${FOCUSED_PRESET}" \
-            --samples "${PILOT_SAMPLE}" --trials 1 --group-by binary \
+            --samples "${PILOT_SAMPLE},${control}" --trials 1 --group-by binary \
             --max-concurrent 1 --provider-concurrency openai=1 \
             --max-retries 0 --timeout 180 \
             --out "${RUNNER_TEMP}/search-efficiency-focused.json" --format json
