@@ -578,3 +578,24 @@ class PilotTests(unittest.TestCase):
         self.assertIn('--samples "${PILOT_SAMPLE},${control}" --trials 1', workflow)
         self.assertNotIn('exit 0', workflow)
         self.assertIn('exit 75', workflow)
+
+class ReviewGuardTests(unittest.TestCase):
+    def test_direct_call_rejects_unknown_analysis_mode(self):
+        with self.assertRaisesRegex(ValueError, 'unknown analysis mode'):
+            analyzer.analyze_reports([], mode='regressoin')
+
+    def test_missing_usage_is_inconclusive_not_a_zero_baseline_regression(self):
+        for missing in (None, float('nan'), -1, 'unknown'):
+            cases = focused_cases() + control_cases()
+            next(c for c in cases if c['sample'] == 'add-fn' and c['params']['binary'] == 'baseline')['transcript']['usage']['cost_usd'] = missing
+            rows, failures, notes = analyzer.analyze_reports([{'cases': cases}])
+            self.assertEqual(failures, [])
+            self.assertEqual(analyzer.exit_code(rows, failures, notes), 75)
+
+    def test_real_zero_cost_is_not_confused_with_missing_cost(self):
+        cases = focused_cases() + control_cases()
+        for c in cases:
+            if c['sample'] == 'add-fn' and c['params']['binary'] == 'baseline':
+                c['transcript']['usage']['cost_usd'] = 0
+        _, failures, _ = analyzer.analyze_reports([{'cases': cases}])
+        self.assertTrue(any('cost_usd' in failure for failure in failures))

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import statistics
 import sys
 from collections import defaultdict
@@ -171,13 +172,15 @@ def value(case: dict, metric: str) -> float:
             return float(metrics[metric])
         return value(case, TASK_METRIC_FALLBACK[metric])
     if metric in {"input_tokens", "cost_usd"}:
-        return float(transcript.get("usage", {}).get(metric, 0))
+        return float(transcript.get("usage", {}).get(metric) or 0)
     if metric == "duration_ms":
         return float(transcript.get("timing", {}).get(metric, 0))
     return float(transcript.get("metrics", {}).get(metric, 0))
 
 
 def analyze_reports(reports: list[dict], *, mode: str = "improvement") -> tuple[list[str], list[str], list[str]]:
+    if mode not in {"regression", "improvement"}:
+        raise ValueError(f"unknown analysis mode: {mode}")
     grouped: dict[tuple[str, str], list[dict]] = defaultdict(list)
     for report in reports:
         for case in report.get("cases", []):
@@ -284,8 +287,20 @@ def analyze_reports(reports: list[dict], *, mode: str = "improvement") -> tuple[
             if cand_pass > base_pass:
                 improved += 1
 
+        missing_usage = set()
+        for metric in ("input_tokens", "cost_usd"):
+            for case in baseline + candidate:
+                reported = case.get("transcript", {}).get("usage", {}).get(metric)
+                if type(reported) not in (int, float) or not math.isfinite(reported) or reported < 0:
+                    missing_usage.add(metric)
+                    break
+        if missing_usage:
+            notes.append(f"{sample}: inconclusive: missing/invalid usage for {', '.join(sorted(missing_usage))}")
         medians = {}
         for metric in METRICS:
+            if metric in missing_usage:
+                medians[("baseline", metric)] = medians[("candidate", metric)] = 0
+                continue
             medians[("baseline", metric)] = statistics.median(
                 value(case, metric) for case in baseline
             )
@@ -320,6 +335,8 @@ def analyze_reports(reports: list[dict], *, mode: str = "improvement") -> tuple[
                 "input_tokens",
                 "cost_usd",
             ):
+                if metric in missing_usage:
+                    continue
                 base = medians[("baseline", metric)]
                 candidate_value = medians[("candidate", metric)]
                 # Call counts are small integers: at a median of 8, a single extra

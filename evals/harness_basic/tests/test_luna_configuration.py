@@ -78,3 +78,13 @@ class DedicatedKeyTests(unittest.TestCase):
         lines = [line for line in workflow.splitlines() if 'doppler run --' in line]
         self.assertEqual(len(lines), 3)
         self.assertTrue(all('bash run_with_eval_key.sh mira run' in line for line in lines))
+
+class AnalyzerCiScopeTests(unittest.TestCase):
+    def test_all_guarded_config_inputs_run_offline_analyzer_tests(self):
+        ci = (STUDY.parents[1] / '.github/workflows/ci.yml').read_text()
+        section = ci.split('            eval-analyzers:\n', 1)[1].split('            terminal-bench:', 1)[0]
+        paths = [line.split("'", 2)[1] for line in section.splitlines() if "- '" in line]
+        for path in ('.github/workflows/search-efficiency-eval.yml',
+                     'evals/harness_basic/run_with_eval_key.sh', 'evals/harness_basic/mira.toml',
+                     'evals/harness_basic/search_efficiency_baseline.json'):
+            self.assertTrue(any(fnmatch.fnmatchcase(path, pattern) for pattern in paths), path)
