@@ -204,8 +204,12 @@ matches, and session-search result bytes. Orchestration cases additionally repor
 parallel and structured batches), `dependency_safe_read_sequence` for controls
 with an exact ordered path contract, `bookkeeping_tool_calls`,
 `standalone_bookkeeping_rounds`, `task_tool_calls`, and `task_llm_calls`. The
-task counters exclude bookkeeping tools and bookkeeping-only model rounds so
-automatic title and status maintenance do not consume focused task budgets.
+task counters exclude bookkeeping tools (`write_session_title`, `write_todos`,
+`progress_checkpoint`, and the `report_done` that closes a tracked turn) and
+bookkeeping-only model rounds so automatic title and status maintenance do not
+consume focused task budgets. The search-efficiency control gate compares these
+task counters, not raw call totals: whether the model tracks a short task with
+todos is a mode choice that otherwise flips a five-trial median.
 `cumulative_input_tokens` sums uncached,
 cache-read, and cache-creation input so fewer repeated rounds remain visible
 even when provider caching makes billable input look small.

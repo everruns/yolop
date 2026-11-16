@@ -2569,10 +2569,13 @@ struct Mined {
 /// guard began *requiring* a checkpoint after it warns: without the exemption a
 /// case that budgets exactly the calls its prompt mandates fails the moment the
 /// guard fires, which is the behaviour the case exists to reward.
+/// `report_done` joined for the same reason: the todo prompt requires it to
+/// close every tracked turn, so a trajectory that tracks a task pays it whether
+/// or not the work took one more step.
 fn is_bookkeeping_tool(name: &str) -> bool {
     matches!(
         name,
-        "write_session_title" | "write_todos" | "progress_checkpoint"
+        "write_session_title" | "write_todos" | "progress_checkpoint" | "report_done"
     )
 }
 
@@ -5074,6 +5077,7 @@ mod tests {
     fn progress_checkpoint_is_bookkeeping_not_task_work() {
         assert!(is_bookkeeping_tool("progress_checkpoint"));
         assert!(is_bookkeeping_tool("write_todos"));
+        assert!(is_bookkeeping_tool("report_done"));
         assert!(!is_bookkeeping_tool("grep_files"));
         assert!(!is_bookkeeping_tool("read_file"));
     }
