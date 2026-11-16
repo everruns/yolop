@@ -613,3 +613,48 @@ triggering the shipped runtime's paid smoke job. Runtime, integration-test and
 root dependency changes retain that job. Run a small affected-case pilot before
 requesting a full manual comparison. A pilot is smoke evidence, not an A/B
 reliability claim. No scheduled full-suite runs are restored by this migration.
+
+### Evidence and escalation policy
+
+Manual workflow dispatch defaults to a diagnostic pilot: one chosen affected
+scenario plus an ordinary control, one trajectory each for both binaries on Luna
+(four total), serial execution, no host
+retries and a 180-second per-trajectory timeout. Its green result says only that
+the selected four trajectories completed correctly. It is **not** a full gate,
+statistical reliability result or evidence that a change improved efficiency.
+Timeout and trial bounds are not a dollar spending cap; each trajectory can make
+multiple model calls. Obtain a separate bounded spending authorization before
+running paid work, including a pilot.
+
+Inspect pilot traces before escalating. A failed pilot calls for diagnosis,
+not an automatic larger rerun. If a meaningful behavior change needs broader
+coverage, explicitly select `full` and its purpose after reviewing expected
+cost. Full scope retains eight focused scenarios at three trials and four
+controls at five trials, both binaries: 88 trajectories. No automatic escalation
+or scheduled full-suite execution is enabled.
+
+The full analyzer has two explicit purposes:
+
+- `regression`: preserve correctness, declared budgets and efficiency against
+  the accepted baseline. Identical passing behavior is a valid result.
+- `improvement`: all regression checks plus an observed focused-case gain. This
+  remains the CLI default for existing improvement studies.
+
+Both purposes gate exactly the preset scenario sets. Unexpected scenarios are
+errors. Missing cases/trial counts fail; insufficient valid or rubric coverage
+is inconclusive even when other scenarios pass. Provider failures cannot make
+CI green. Existing focused correctness floors, control correctness, call-count
+and failure tolerances are unchanged. Control cost and input tokens now compare
+both median and observed maximum at the existing 25% ceiling, rather than a
+minimum hiding expensive trials. With five control trials the maximum is an
+observed tail, not a p95 estimate or a calibrated confidence interval. These stricter distribution checks may flag sampling noise that the old
+minimum ignored; diagnose the traces rather than treating a flag as statistical
+proof. Luna
+threshold calibration remains unverified until bounded paired trials exist.
+
+All three paid workflow paths use `OPENAI_EVAL_API_KEY` from Doppler's Yolop CI
+configuration through a child-only wrapper. The child maps it to the provider's
+`OPENAI_API_KEY`; a missing dedicated key fails closed instead of falling back to
+the shared project key. The dedicated key is restricted to Responses and expires
+on 2026-12-16; rotate it before the next authorized run after that date. Key
+separation improves billing attribution but is not a spending cap.

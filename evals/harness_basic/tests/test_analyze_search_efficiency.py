@@ -159,7 +159,7 @@ class AnalyzeTests(unittest.TestCase):
         _, failures, _ = analyzer.analyze({"cases": cases})
         self.assertEqual(failures, [])
 
-    def test_control_token_outlier_trials_do_not_move_the_gate(self):
+    def test_control_token_median_and_tail_regressions_are_not_hidden_by_minimum(self):
         # Nightly 2026-10-28: add-fn ran 14k or 24k tokens at identical calls, so
         # three high candidate trials of five flip the median by +63%.
         cases = focused_cases()
@@ -177,7 +177,8 @@ class AnalyzeTests(unittest.TestCase):
                     ),
                 ]
         _, failures, _ = analyzer.analyze({"cases": cases})
-        self.assertEqual(failures, [])
+        self.assertTrue(any("input_tokens regressed" in f for f in failures))
+        self.assertTrue(any("observed-tail regressed" in f for f in failures))
 
     def test_control_cost_past_noise_ceiling_still_regresses(self):
         cases = focused_cases() + control_cases(candidate_cost=0.013)
@@ -352,8 +353,8 @@ class AnalyzeTests(unittest.TestCase):
         cases += control_cases()
         rows, failures, notes = analyzer.analyze_reports([{"cases": cases}])
         self.assertEqual(failures, [])
-        self.assertEqual(notes, [])
-        self.assertEqual(len(rows), len(analyzer.EXPECTED_SAMPLES))
+        self.assertTrue(any("inconclusive" in n for n in notes))
+        self.assertEqual(analyzer.exit_code(rows, failures, notes), 75)
 
     def test_real_task_failure_still_regresses(self):
         # A non-infra failure (agent got it wrong) must still count against the
@@ -504,3 +505,97 @@ class AnalyzeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class CoverageAndPurposeTests(unittest.TestCase):
+    def test_presets_and_gate_cover_exactly_the_same_samples(self):
+        import tomllib
+        presets = tomllib.loads((MODULE_PATH.parent / 'mira.toml').read_text())['presets']
+        self.assertEqual(set(presets['search-efficiency']['samples']), analyzer.FOCUSED)
+        self.assertEqual(set(presets['search-controls']['samples']), analyzer.CONTROLS)
+
+    def test_identical_passing_baseline_is_regression_pass_not_improvement(self):
+        cases = focused_cases() + control_cases()
+        for item in cases:
+            item['passed'] = True
+            item['transcript']['tool_calls_count'] = 2
+        rows, failures, notes = analyzer.analyze_reports([{'cases': cases}], mode='regression')
+        self.assertEqual(analyzer.exit_code(rows, failures, notes), 0)
+        _, failures, _ = analyzer.analyze_reports([{'cases': cases}], mode='improvement')
+        self.assertIn('no focused case improved over baseline', failures)
+
+    def test_partial_rubric_is_inconclusive_even_when_other_cases_pass(self):
+        cases = focused_cases() + control_cases()
+        cases[0]['scores'] = scores(checks=NA)
+        result = analyzer.analyze_reports([{'cases': cases}])
+        self.assertEqual(analyzer.exit_code(*result), 75)
+
+    def test_unknown_sample_cannot_be_silently_ignored(self):
+        cases = focused_cases() + control_cases() + [case('new-scenario', 'candidate', True)]
+        _, failures, _ = analyzer.analyze_reports([{'cases': cases}])
+        self.assertTrue(any('unexpected ungated samples' in f for f in failures))
+
+    def test_one_expensive_tail_cannot_hide_behind_four_cheap_trials(self):
+        cases = focused_cases() + control_cases()
+        next(c for c in cases if c['sample'] == 'add-fn' and c['params']['binary'] == 'candidate')['transcript']['usage']['cost_usd'] = 0.1
+        _, failures, _ = analyzer.analyze_reports([{'cases': cases}])
+        self.assertTrue(any('cost_usd observed-tail regressed' in f for f in failures))
+
+class PilotTests(unittest.TestCase):
+    def test_cli_pilot_is_diagnostic_and_rejects_incomplete_evidence(self):
+        import json
+        import subprocess
+        import sys
+        import tempfile
+        sample = 'grep-files-nested-glob'
+        cases = [case(s, b, True) for s in (sample, 'add-fn') for b in ('baseline', 'candidate')]
+        for c in cases:
+            c['target'] = 'openai/gpt-6-luna'
+        with tempfile.TemporaryDirectory() as tmp:
+            report = Path(tmp) / 'report.json'
+            for evidence, status, message in ((cases, 0, 'NOT a full regression'),
+                    (cases[:1], 75, 'exactly one baseline and candidate')):
+                report.write_text(json.dumps({'cases': evidence}))
+                result = subprocess.run([sys.executable, str(MODULE_PATH), str(report),
+                    '--expected-target', 'openai/gpt-6-luna', '--pilot-sample', sample],
+                    capture_output=True, text=True)
+                self.assertEqual(result.returncode, status, result.stderr)
+                self.assertIn(message, result.stdout)
+
+    def test_pilot_failure_and_outage_do_not_pass(self):
+        sample = 'grep-files-nested-glob'
+        baseline = case(sample, 'baseline', True)
+        controls = [case('add-fn', b, True) for b in ('baseline', 'candidate')]
+        self.assertEqual(analyzer.analyze_pilot([{'cases': controls + [baseline,
+            case(sample, 'candidate', False)]}], sample), 1)
+        self.assertEqual(analyzer.analyze_pilot([{'cases': controls + [baseline,
+            case(sample, 'candidate', False, error=QUOTA_ERROR)]}], sample), 75)
+
+    def test_workflow_defaults_to_bounded_diagnostic_not_full_suite(self):
+        workflow = (MODULE_PATH.parents[2] / '.github/workflows/search-efficiency-eval.yml').read_text()
+        self.assertNotIn('schedule:', workflow)
+        self.assertIn('default: pilot', workflow)
+        self.assertIn('--max-retries 0 --timeout 180', workflow)
+        self.assertIn('--samples "${PILOT_SAMPLE},${control}" --trials 1', workflow)
+        self.assertNotIn('exit 0', workflow)
+        self.assertIn('exit 75', workflow)
+
+class ReviewGuardTests(unittest.TestCase):
+    def test_direct_call_rejects_unknown_analysis_mode(self):
+        with self.assertRaisesRegex(ValueError, 'unknown analysis mode'):
+            analyzer.analyze_reports([], mode='regressoin')
+
+    def test_missing_usage_is_inconclusive_not_a_zero_baseline_regression(self):
+        for missing in (None, float('nan'), -1, 'unknown'):
+            cases = focused_cases() + control_cases()
+            next(c for c in cases if c['sample'] == 'add-fn' and c['params']['binary'] == 'baseline')['transcript']['usage']['cost_usd'] = missing
+            rows, failures, notes = analyzer.analyze_reports([{'cases': cases}])
+            self.assertEqual(failures, [])
+            self.assertEqual(analyzer.exit_code(rows, failures, notes), 75)
+
+    def test_real_zero_cost_is_not_confused_with_missing_cost(self):
+        cases = focused_cases() + control_cases()
+        for c in cases:
+            if c['sample'] == 'add-fn' and c['params']['binary'] == 'baseline':
+                c['transcript']['usage']['cost_usd'] = 0
+        _, failures, _ = analyzer.analyze_reports([{'cases': cases}])
+        self.assertTrue(any('cost_usd' in failure for failure in failures))
