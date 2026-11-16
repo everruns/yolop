@@ -15,7 +15,7 @@ Foreground TUI, inline, print, ACP, automatic inputs and linked subagents use
 this authority. Runtime construction supplies Agent, Harness, HostServices and
 a reopenable Environment. It does not construct or drive a Core runtime.
 
-The Everruns family uses aligned published 0.52.0 crates, with no vendored
+The Everruns family uses aligned published 0.53.1 crates, with no vendored
 copy: the session-database changes Yolop carried as a backport on 0.51.0 are
 part of that release.
 

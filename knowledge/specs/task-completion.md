@@ -22,9 +22,11 @@ show the check's notice instead.
 
 What is settled without a review is the engine's call: cancellation and
 provider failure end the turn, a turn whose tools left detached work running
-waits for it, and a plain answer with no tool work is accepted (everruns
-releases after 0.52 also review tool-free promises under `Always`). An answer
-that ends on a question is blocked on the person.
+waits for it, and an answer that ends on a question is blocked on the person.
+Under `Always` a plain answer with no tool work is reviewed too, so a promise
+to act that was never kept is continued, and a turn that stops with an empty
+final answer after tool work, or at its output limit, continues without a
+review call.
 
 Continuations default to five per turn, 256,000 tokens (cache reads excluded),
 and ten minutes without tool work: a continuation that runs tools restarts
@@ -59,11 +61,9 @@ still covers a useful answer the request is retried once with fewer output
 tokens; otherwise the turn fails and the engine schedules a check every
 minute for up to an hour, continuing the turn when credits are back
 (`turn.credit_shortfall` events, rendered as notices). Yolop keeps only the
-readable failure block (token counts, key and credits links). Local schedule
-fires reach the session through everruns' local schedule runner, which admits
-them without a `Schedule` origin; yolop's hosting adds it to the admission
-whose id is the runner's occurrence id, so the engine recognizes its own
-checks. Drop that once everruns writes the origin itself.
+readable failure block (token counts, key and credits links). The checks fire
+through everruns' local schedule runner, which admits them with the `Schedule`
+origin the engine keys on.
 
 See [background execution](background.md), [tool output](tool-output.md), and
 [progress guard](progress-guard.md).

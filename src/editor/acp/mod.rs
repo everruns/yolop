@@ -2212,10 +2212,13 @@ mod tests {
     async fn text_only_final_keeps_the_exact_reply() {
         use everruns_llmsim::OnExhausted;
 
-        // A plain answer with no tool work is settled by the engine's gate
-        // without a review call: a second generation would exhaust the script.
-        let config = LlmSimConfig::scripted(vec![SimTurn::Assistant("exact".to_string())])
-            .with_on_exhausted(OnExhausted::Error);
+        // Under `Always` the engine reviews a plain answer too; an achieved
+        // verdict leaves the reply exactly as written, with no notice.
+        let config = LlmSimConfig::scripted(vec![
+            SimTurn::Assistant("exact".to_string()),
+            SimTurn::Assistant(r#"{"state":"achieved","reason":"answered"}"#.into()),
+        ])
+        .with_on_exhausted(OnExhausted::Error);
         let run = with_sdk_client_completion(config, |client| async move {
             let mut session = client.new_session().await?;
             let _ = collect_available_commands(&mut session).await?;
@@ -2293,8 +2296,8 @@ mod tests {
         let messages = captured.lock().unwrap();
         assert_eq!(
             messages.len(),
-            3,
-            "one fresh continuation, no retry loop; its plain answer needs no review"
+            4,
+            "one fresh continuation and its review, no retry loop"
         );
         assert!(
             messages[2]
@@ -2391,6 +2394,9 @@ mod tests {
             ));
         }
         turns.push(SimTurn::Assistant("Verification complete.".into()));
+        turns.push(SimTurn::Assistant(
+            r#"{"state":"achieved","reason":"verified"}"#.into(),
+        ));
         let config = LlmSimConfig::scripted(turns)
             .with_on_exhausted(OnExhausted::Error)
             .with_message_capture(captured.clone());
@@ -2411,8 +2417,8 @@ mod tests {
         assert!(!resumed.assistant_text().contains("budget exhausted"));
         assert_eq!(
             captured.lock().unwrap().len(),
-            14,
-            "tool step, six reviewed candidates, then the resumed answer"
+            15,
+            "tool step, six reviewed candidates, then the reviewed resumed answer"
         );
     }
 
@@ -2552,11 +2558,18 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn empty_reply_ends_the_turn_without_a_loop() {
-        // The engine settles an empty final without a review or a
-        // continuation, so the host must not loop on it either.
+    async fn empty_reply_is_continued_once_to_a_real_answer() {
+        // The engine continues an empty final without a review call, then
+        // reviews the real answer; the host adds no loop of its own.
+        use everruns_llmsim::OnExhausted;
         let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let config = LlmSimConfig::fixed("").with_message_capture(captured.clone());
+        let config = LlmSimConfig::scripted(vec![
+            SimTurn::Assistant(String::new()),
+            SimTurn::Assistant("finished".into()),
+            SimTurn::Assistant(r#"{"state":"achieved","reason":"answered"}"#.into()),
+        ])
+        .with_on_exhausted(OnExhausted::Error)
+        .with_message_capture(captured.clone());
         let run = with_sdk_client_completion(config, |client| async move {
             let mut session = client.new_session().await?;
             let _ = collect_available_commands(&mut session).await?;
@@ -2565,8 +2578,9 @@ mod tests {
         .await;
 
         assert_eq!(run.stop_reason, StopReason::EndTurn);
+        assert!(run.assistant_text().contains("finished"));
         assert!(!run.assistant_text().contains("budget exhausted"));
-        assert_eq!(captured.lock().unwrap().len(), 1);
+        assert_eq!(captured.lock().unwrap().len(), 3);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2718,6 +2732,7 @@ mod tests {
         let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
         let config = LlmSimConfig::scripted(vec![
             SimTurn::Assistant("recorded long parent context".to_string()),
+            SimTurn::Assistant(r#"{"state":"achieved","reason":"done"}"#.into()),
             SimTurn::ToolCalls(vec![SimToolCall {
                 name: "spawn_background".to_string(),
                 arguments: json!({
@@ -2730,6 +2745,7 @@ mod tests {
             }]),
             SimTurn::Assistant("spawned background bash".to_string()),
             SimTurn::Assistant("reviewed spawn_background result".to_string()),
+            SimTurn::Assistant(r#"{"state":"achieved","reason":"done"}"#.into()),
         ])
         .with_message_capture(captured.clone());
 
@@ -2897,11 +2913,12 @@ mod tests {
         // so the client shows facts even when the wake model turn emits no text.
         let config = LlmSimConfig::scripted(vec![
             SimTurn::Assistant("recorded long parent context".to_string()),
+            SimTurn::Assistant(r#"{"state":"achieved","reason":"done"}"#.into()),
             SimTurn::ToolCalls(vec![SimToolCall {
                 name: "spawn_background".to_string(),
                 arguments: json!({
                     "tool": "bash",
-                    "args": { "command": "printf validated" },
+                    "args": { "command": "while [ ! -e release-notice ]; do sleep 0.01; done; printf validated" },
                     "title": "validate notice content",
                     "signal_on_completion": true,
                 }),
@@ -2909,6 +2926,7 @@ mod tests {
             }]),
             SimTurn::Assistant("spawned background bash".to_string()),
             SimTurn::Assistant("reviewed spawn_background result".to_string()),
+            SimTurn::Assistant(r#"{"state":"achieved","reason":"done"}"#.into()),
         ]);
 
         let sessions = tempfile::tempdir().expect("sessions tempdir").keep();
@@ -2934,8 +2952,7 @@ mod tests {
             .to_string();
 
         // Two prompts: the spawn prompt consumes the tool-call turn and its
-        // closing text, leaving the final scripted turn for the wake. The fast
-        // completion may land anywhere in the stream, so accumulate everything.
+        // closing text, leaving the final scripted turn for the wake.
         let mut seen: Vec<serde_json::Value> = Vec::new();
         for (id, text) in [(2, "record context"), (3, "spawn")] {
             send_json(
@@ -2951,6 +2968,9 @@ mod tests {
             let (_, updates) = collect_until_response_id(&mut reader, id).await;
             seen.extend(updates);
         }
+        // Released only after the spawn turn ends, so that turn ends with
+        // detached work pending (no review) and the wake gets the last answer.
+        std::fs::write(cwd.join("release-notice"), "release").unwrap();
         let woke = tokio::time::timeout(Duration::from_secs(20), async {
             loop {
                 let msg = next_json(&mut reader).await;

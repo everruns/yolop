@@ -215,6 +215,7 @@ impl McpAuthProvider for StoredMcpAuthProvider {
     ) -> anyhow::Result<Option<McpCredential>> {
         let key = Self::provider_key(request);
         let keyed_request = McpAuthRequest {
+            server_url: request.server_url,
             server_name: key,
             auth_mode: request.auth_mode.clone(),
             oauth_provider_id: None,
@@ -6016,6 +6017,7 @@ mod tests {
 
     fn oauth_request(server_name: &str) -> McpAuthRequest<'_> {
         McpAuthRequest {
+            server_url: None,
             server_name,
             auth_mode: McpServerAuthMode::OAuth,
             oauth_provider_id: None,
@@ -6209,6 +6211,7 @@ mod tests {
         let store = Arc::new(ConnectionStore::open(tmp.path().join("connections.toml")));
         let provider = StoredMcpAuthProvider::new(store);
         let request = McpAuthRequest {
+            server_url: None,
             server_name: "attacker-selected",
             auth_mode: McpServerAuthMode::OAuth,
             oauth_provider_id: Some("openai"),
@@ -7811,10 +7814,9 @@ mod tests {
     /// The engine's credit-shortfall wait (everruns-core
     /// `engine::credit_shortfall`) only treats a fired check as a check when
     /// its input carries `MessageOriginKind::Schedule` and the raw prompt.
-    /// The local schedule runner admits it as a plain user message, so without
-    /// `YolopHosting::stamp_schedule_origin` the check runs an ordinary turn,
-    /// sees its own row still queued, schedules nothing, and the wait ends
-    /// silently after one check.
+    /// Pins that everruns' local schedule runner writes that origin and that a
+    /// check skips its own still-queued row; without either the check runs an
+    /// ordinary turn, schedules nothing, and the wait ends after one check.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn engine_credit_wait_check_is_recognized_when_it_fires() {
         use everruns_contracts::message_origin::MessageOriginKind;
@@ -7905,8 +7907,9 @@ mod tests {
             .expect("re-created check");
 
         // 3. Wait for the schedule runner to fire it and its turn to settle:
-        //    either the turn records a second credit decision, or the
-        //    delivery completes (trigger_count advances after the turn).
+        //    the turn records a second credit decision and the delivery
+        //    completes (trigger_count advances after the turn). Until then the
+        //    fired row still looks queued beside the next check.
         let shortfalls = |events: &[everruns_core::Event]| {
             events
                 .iter()
@@ -7921,7 +7924,7 @@ mod tests {
                 let schedules = store.list_schedules(session_id).await.expect("list");
                 let events = built.handles.host.events().await.expect("events");
                 if shortfalls(&events).len() >= 2
-                    || schedules
+                    && schedules
                         .iter()
                         .any(|s| s.id == refired.id && s.trigger_count >= 1)
                 {
@@ -12491,7 +12494,9 @@ mod tests {
         // the CLI-only replacements for their removed model-facing tools.
         // Includes the logical model, config, setup, and mandatory skill
         // discovery/activation schemas that are intentionally eager.
-        const BASELINE_TOOL_DEFINITION_BYTES: usize = 28_901;
+        // 0.53 adds snapshot-aware list_tasks polling guidance. The measured
+        // provider-visible surface grows by 66 bytes; keep all other budgets.
+        const BASELINE_TOOL_DEFINITION_BYTES: usize = 28_901 + 66;
         // 2026-09-12: 13,700 -> 14,350. `spawn_background` joined the
         // never-defer allowlist, so its real 1061-byte schema replaced the
         // ~45-byte deferred stub in the eager surface. Measured 14,302 locally
@@ -12507,7 +12512,9 @@ mod tests {
         // Eager `report_done` adds 650 bytes (measured total: 16,647): every
         // tracked turn calls it, and its stub cost a rejected call plus a full
         // context resend each time.
-        const BASELINE_SCHEMA_BYTES: usize = 14_500 + 710 + 800 + 650;
+        // Published 0.53 adds snapshot-aware polling metadata; measured
+        // schema total is 16,703 bytes, 43 above the prior allowance.
+        const BASELINE_SCHEMA_BYTES: usize = 14_500 + 710 + 800 + 650 + 43;
         let workspace = tempfile::tempdir().expect("workspace");
         let sessions = tempfile::tempdir().expect("sessions");
         let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
