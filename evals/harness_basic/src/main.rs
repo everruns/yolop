@@ -102,7 +102,7 @@ fn targets() -> Vec<Target> {
         Target::anthropic("claude-sonnet-5-5"),
         Target::anthropic("claude-opus-4-8"),
         Target::anthropic("claude-sonnet-5"),
-        Target::openai("gpt-5.5"),
+        Target::openai("gpt-6-luna"),
         Target::openai("gpt-5.6-terra"),
         Target::openai("gpt-5.6-terra")
             .label("openai/gpt-5.6-terra-medium")
@@ -5337,6 +5337,18 @@ mod tests {
             terra.metadata.get("reasoning_effort"),
             Some(&json!("medium"))
         );
+    }
+
+    #[test]
+    fn luna_replaces_gpt55_in_the_live_matrix_and_presets() {
+        let models = targets();
+        assert!(
+            models
+                .iter()
+                .any(|t| t.model == "gpt-6-luna" && t.provider == "openai")
+        );
+        assert!(!models.iter().any(|t| t.model.starts_with("gpt-5.5")));
+        assert!(!include_str!("../mira.toml").contains("openai/gpt-5.5"));
     }
 
     #[test]

@@ -32,6 +32,8 @@ jobs:
     timeout-minutes: 5
     outputs:
       rust: ${{ steps.filter.outputs.rust }}
+      live-runtime: ${{ steps.filter.outputs.live-runtime }}
+      eval-rust: ${{ steps.filter.outputs.eval-rust }}
       docs: ${{ steps.filter.outputs.docs }}
       eval-analyzers: ${{ steps.filter.outputs.eval-analyzers }}
       terminal-bench: ${{ steps.filter.outputs.terminal-bench }}
@@ -48,6 +50,19 @@ jobs:
               - 'Cargo.lock'
               - 'rust-toolchain.toml'
               - '**/build.rs'
+              - '.github/workflows/ci.yml'
+            # Paid provider checks cover the shipped runtime, not standalone
+            # eval definitions or CI bookkeeping. Offline Rust checks remain broad.
+            live-runtime:
+              - 'src/**'
+              - 'crates/**'
+              - 'tests/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'build.rs'
+              - 'rust-toolchain.toml'
+            eval-rust:
+              - 'evals/harness_basic/**'
               - '.github/workflows/ci.yml'
             docs:
               - '**/*.md'
@@ -126,6 +141,25 @@ jobs:
         # Standard library only — no third-party deps, so the system python is
         # enough and there's nothing to install.
         run: python3 -m unittest discover -s evals/harness_basic/tests -v
+
+  eval-rust:
+    name: Harness eval (offline)
+    needs: changes
+    if: needs.changes.outputs.eval-rust == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.96.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: evals/harness_basic
+      - name: Validate standalone study without provider credentials
+        working-directory: evals/harness_basic
+        run: |
+          cargo fmt --check
+          cargo test --locked
+          cargo clippy --locked --all-targets -- -D warnings
 
   terminal-bench-study:
     name: Terminal-Bench study (Python)
@@ -284,7 +318,7 @@ jobs:
     # run the tests — YOLOP_REQUIRE_LIVE_TESTS=1 (below) turns a missing
     # provider key into a hard failure so the live check can't report green
     # without exercising anything.
-    if: (github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && github.actor != 'dependabot[bot]' && needs.changes.outputs.rust == 'true'
+    if: (github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && github.actor != 'dependabot[bot]' && needs.changes.outputs.live-runtime == 'true'
     needs: [changes]
     env:
       DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}

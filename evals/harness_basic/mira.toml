@@ -54,7 +54,7 @@ axes = { binary = ["candidate"], effort = ["default"], harness = ["default", "no
 #   doppler run -- mira run --preset search-efficiency --trials 3 --group-by binary
 [presets.search-efficiency]
 samples = ["prior-session-reference", "overlapping-recent-work", "unchanged-repeated-discovery", "grep-files-nested-glob", "missing-rg-recovery", "equivalent-failure-recovery", "zero-result-search-recovery", "repo-map-bounded"]
-targets = ["openai/gpt-5.5"]
+targets = ["openai/gpt-6-luna"]
 axes = { binary = ["baseline", "candidate"], effort = ["default"], harness = ["default"] }
 
 # DISCOVERY-REUSE — focused proof for unchanged repeated reads and useful
@@ -63,7 +63,7 @@ axes = { binary = ["baseline", "candidate"], effort = ["default"], harness = ["d
 # marker. Requires baseline and candidate binaries.
 [presets.discovery-reuse]
 samples = ["overlapping-recent-work", "unchanged-repeated-discovery"]
-targets = ["openai/gpt-5.5"]
+targets = ["openai/gpt-6-luna"]
 axes = { binary = ["baseline", "candidate"], effort = ["default"], harness = ["default"] }
 
 # SEARCH-CONTROLS — ordinary tasks that detect global prompt/tool-surface
@@ -72,7 +72,7 @@ axes = { binary = ["baseline", "candidate"], effort = ["default"], harness = ["d
 #   doppler run -- mira run --preset search-controls --trials 5 --group-by binary
 [presets.search-controls]
 samples = ["add-fn", "find-constant", "expected-diagnostic-failure-control", "distinct-failures-control"]
-targets = ["openai/gpt-5.5"]
+targets = ["openai/gpt-6-luna"]
 axes = { binary = ["baseline", "candidate"], effort = ["default"], harness = ["default"] }
 
 # REPO-MAP-PROFILE compares the current deferred profile, repo_map eager alone,
@@ -80,13 +80,13 @@ axes = { binary = ["baseline", "candidate"], effort = ["default"], harness = ["d
 # decision so one stochastic trajectory cannot dominate the result.
 [presets.repo-map-profile]
 samples = ["repo-map-scoped", "repo-map-bounded"]
-targets = ["openai/gpt-5.5"]
+targets = ["openai/gpt-6-luna"]
 axes = { binary = ["baseline", "repo-map-only", "repo-map-symbols"], effort = ["default"], harness = ["default"] }
 
 # Ordinary controls for the same three schema profiles.
 [presets.repo-map-controls]
 samples = ["add-fn", "find-constant"]
-targets = ["openai/gpt-5.5"]
+targets = ["openai/gpt-6-luna"]
 axes = { binary = ["baseline", "repo-map-only", "repo-map-symbols"], effort = ["default"], harness = ["default"] }
 
 # CAPABILITY-DISCLOSURE — first-turn context and success proof across exact
@@ -97,7 +97,7 @@ axes = { binary = ["baseline", "repo-map-only", "repo-map-symbols"], effort = ["
 #   doppler run -- mira run --preset capability-disclosure --trials 5 --group-by binary,target
 [presets.capability-disclosure]
 tag = "capability-disclosure"
-targets = ["openai/gpt-5.5", "anthropic/claude-sonnet-5-5"]
+targets = ["openai/gpt-6-luna", "anthropic/claude-sonnet-5-5"]
 axes = { binary = ["baseline", "candidate"], effort = ["default"], harness = ["default"] }
 
 # PROGRESS-EFFICIENCY: recurring workspace states, repeated validation, and
@@ -107,7 +107,7 @@ axes = { binary = ["baseline", "candidate"], effort = ["default"], harness = ["d
 #   doppler run -- mira run --preset progress-efficiency --trials 3 --group-by binary
 [presets.progress-efficiency]
 samples = ["progress-guard-checkpoint-read", "dependency-release-oscillation", "redundant-validation", "equivalent-failure-recovery"]
-targets = ["openai/gpt-5.5"]
+targets = ["openai/gpt-6-luna"]
 axes = { binary = ["baseline", "candidate"], effort = ["default"], harness = ["default"] }
 
 # PROGRESS-CONTROLS — ordinary tasks that detect false-positive semantic
@@ -116,19 +116,19 @@ axes = { binary = ["baseline", "candidate"], effort = ["default"], harness = ["d
 #   doppler run -- mira run --preset progress-controls --trials 5 --group-by binary
 [presets.progress-controls]
 samples = ["add-fn", "find-constant", "expected-diagnostic-failure-control", "distinct-failures-control"]
-targets = ["openai/gpt-5.5"]
+targets = ["openai/gpt-6-luna"]
 axes = { binary = ["baseline", "candidate"], effort = ["default"], harness = ["default"] }
 
 # FAILURE-REPAIR, smallest baseline/candidate proof for semantic failure-loop
 # detection. Three trials expose model variance; controls below use five.
 [presets.failure-repair]
 tag = "failure-repair"
-targets = ["openai/gpt-5.5"]
+targets = ["openai/gpt-6-luna"]
 axes = { binary = ["baseline", "candidate"], effort = ["default"], harness = ["default"] }
 
 [presets.failure-repair-controls]
 tag = "failure-repair-control"
-targets = ["openai/gpt-5.5"]
+targets = ["openai/gpt-6-luna"]
 axes = { binary = ["baseline", "candidate"], effort = ["default"], harness = ["default"] }
 
 # OWNER-SELECTION — compare the existing runtime guard with no guard, and
@@ -136,7 +136,7 @@ axes = { binary = ["baseline", "candidate"], effort = ["default"], harness = ["d
 # false positives and ceremony on intentionally local work.
 [presets.owner-selection]
 samples = ["owner-selection-runtime-guard", "owner-selection-prompt-policy", "add-fn", "implement-todo"]
-targets = ["openai/gpt-5.5"]
+targets = ["openai/gpt-6-luna"]
 axes = { binary = ["candidate"], effort = ["default"], harness = ["default", "no-progress-guard"] }
 
 # ORCHESTRATION-EFFICIENCY — compares two interventions independently and in
@@ -146,7 +146,7 @@ axes = { binary = ["candidate"], effort = ["default"], harness = ["default", "no
 #   doppler run -- mira run --preset orchestration-efficiency --trials 3 --group-by binary
 [presets.orchestration-efficiency]
 tag = "orchestration-efficiency"
-targets = ["openai/gpt-5.5"]
+targets = ["openai/gpt-6-luna"]
 axes = { binary = ["baseline", "parallel-only", "policy-only", "candidate"], effort = ["default"], harness = ["default"] }
 
 # RUNTIME-GUIDANCE compares live network truth and todo restraint against the
@@ -174,7 +174,7 @@ axes = { binary = ["candidate"], effort = ["default"], harness = ["default"] }
 # and measures the automatic wake's recovery trajectory.
 [presets.background-wake]
 samples = ["background-failure-wake"]
-targets = ["openai/gpt-5.5"]
+targets = ["openai/gpt-6-luna"]
 axes = { binary = ["candidate"], effort = ["default"], harness = ["default"] }
 
 # BATCH-NATIVE-DISCOVERY — isolates the structured multi-file read contract
@@ -184,7 +184,7 @@ axes = { binary = ["candidate"], effort = ["default"], harness = ["default"] }
 #   doppler run -- mira run --preset batch-native-discovery --trials 3 --group-by binary
 [presets.batch-native-discovery]
 samples = ["independent-investigation-batch", "dependent-read-control"]
-targets = ["openai/gpt-5.5"]
+targets = ["openai/gpt-6-luna"]
 axes = { binary = ["dependency-baseline", "candidate"], effort = ["default"], harness = ["default"] }
 
 # OUTPUT-PERSISTENCE — isolates the Everruns output-persistence change from
@@ -194,7 +194,7 @@ axes = { binary = ["dependency-baseline", "candidate"], effort = ["default"], ha
 #   doppler run -- mira run --preset output-persistence --trials 3 --group-by binary
 [presets.output-persistence]
 samples = ["normal-output-preserves-head", "complete-output-no-reread"]
-targets = ["openai/gpt-5.5"]
+targets = ["openai/gpt-6-luna"]
 axes = { binary = ["dependency-baseline", "candidate"], effort = ["default"], harness = ["default"] }
 
 # PERSISTED-OUTPUT-READING — compares the pre-fix dependency behavior with the
@@ -203,7 +203,7 @@ axes = { binary = ["dependency-baseline", "candidate"], effort = ["default"], ha
 #   doppler run -- mira run --preset persisted-output-reading --trials 3 --group-by binary
 [presets.persisted-output-reading]
 samples = ["persisted-output-small-read", "persisted-output-context-search"]
-targets = ["openai/gpt-5.5"]
+targets = ["openai/gpt-6-luna"]
 axes = { binary = ["dependency-baseline", "candidate"], effort = ["default"], harness = ["default"] }
 
 # OUTPUT-PERSISTENCE-CONTROLS: ordinary coding controls against the same
@@ -212,7 +212,7 @@ axes = { binary = ["dependency-baseline", "candidate"], effort = ["default"], ha
 #   doppler run -- mira run --preset output-persistence-controls --trials 3 --group-by binary
 [presets.output-persistence-controls]
 samples = ["add-fn", "find-constant"]
-targets = ["openai/gpt-5.5"]
+targets = ["openai/gpt-6-luna"]
 axes = { binary = ["dependency-baseline", "candidate"], effort = ["default"], harness = ["default"] }
 
 # AST-EDIT-COMPARE — structural-rewrite traps: default harness vs ast_edit
@@ -231,13 +231,13 @@ axes = { binary = ["candidate"], effort = ["default"], harness = ["default", "wi
 #   doppler run -- mira run --preset edit-tools-compare --group-by harness
 [presets.edit-tools-compare]
 tag = "edit-tools"
-targets = ["openai/gpt-5.5", "anthropic/claude-sonnet-5-5"]
+targets = ["openai/gpt-6-luna", "anthropic/claude-sonnet-5-5"]
 axes = { binary = ["candidate"], effort = ["default"], harness = ["default", "native-edit-tools"] }
 
 # EFFORT-COMPARE — one model, out-of-the-box harness, across reasoning efforts.
 #   doppler run -- mira run --preset effort-compare --group-by effort
 [presets.effort-compare]
-targets = ["openai/gpt-5.5"]
+targets = ["openai/gpt-6-luna"]
 axes = { binary = ["candidate"], harness = ["default"] }
 
 # MODELS — out-of-the-box yolop across the whole model matrix (default effort).

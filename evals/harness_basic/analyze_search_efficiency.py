@@ -393,7 +393,16 @@ def main() -> int:
         nargs="+",
         help="focused 3-trial and control 5-trial report.json files",
     )
+    parser.add_argument(
+        "--expected-target", help="Reject missing/mixed model provenance before grading"
+    )
     args = parser.parse_args()
+    if args.expected_target:
+        for report in args.reports:
+            cases = json.loads(report.read_text()).get("cases", [])
+            if not cases or any(case.get("target") != args.expected_target for case in cases):
+                print(f"{report}: missing or mismatched target; refusing cross-model comparison", file=sys.stderr)
+                return REGRESSION_EXIT
     rows, failures, notes = analyze_reports(
         [json.loads(report.read_text()) for report in args.reports]
     )
