@@ -2,8 +2,6 @@ name: Search Efficiency Eval
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "23 6 * * *"
 
 concurrency:
   group: search-efficiency-eval
@@ -155,6 +153,15 @@ jobs:
           fi
           exit "${status}"
 
+      - name: Write cost attribution
+        if: always()
+        working-directory: evals/harness_basic
+        run: |
+          python3 report_attribution.py \
+            "${RUNNER_TEMP}/search-efficiency-focused.json" \
+            "${RUNNER_TEMP}/search-efficiency-controls.json" \
+            --out "${RUNNER_TEMP}/eval-attribution.json"
+
       - name: Upload eval reports
         if: always()
         uses: actions/upload-artifact@v7
@@ -162,6 +169,7 @@ jobs:
           name: search-efficiency-${{ github.run_id }}
           path: |
             evals/harness_basic/results/
+            ${{ runner.temp }}/eval-attribution.json
             ${{ runner.temp }}/search-efficiency-focused.json
             ${{ runner.temp }}/search-efficiency-controls.json
           if-no-files-found: warn
