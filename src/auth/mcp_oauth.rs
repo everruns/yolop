@@ -304,6 +304,7 @@ mod tests {
             let provider = CoordinatedOAuthProvider::new(store.clone(), egress.clone());
             provider
                 .authorization(&McpAuthRequest {
+                    server_url: None,
                     server_name: "server",
                     auth_mode: everruns_core::McpServerAuthMode::OAuth,
                     oauth_provider_id: None,
@@ -344,6 +345,7 @@ mod tests {
             CoordinatedOAuthProvider::new(Arc::new(ConnectionStore::open(path)), egress.clone());
         let error = provider
             .authorization(&McpAuthRequest {
+                server_url: None,
                 server_name: "server",
                 auth_mode: everruns_core::McpServerAuthMode::OAuth,
                 oauth_provider_id: None,
@@ -405,6 +407,7 @@ mod tests {
                 tokio::time::timeout(
                     std::time::Duration::from_millis(50),
                     provider.authorization(&McpAuthRequest {
+                        server_url: None,
                         server_name: &provider_name,
                         auth_mode: everruns_core::McpServerAuthMode::OAuth,
                         oauth_provider_id: None,
@@ -417,6 +420,7 @@ mod tests {
         }
         let result = provider
             .authorization(&everruns_core::mcp::McpAuthRequest {
+                server_url: None,
                 server_name: &provider_name,
                 auth_mode: everruns_core::McpServerAuthMode::OAuth,
                 oauth_provider_id: None,
@@ -675,6 +679,7 @@ mod tests {
             let credential = tokio::time::timeout(
                 std::time::Duration::from_millis(100),
                 provider.authorization(&McpAuthRequest {
+                    server_url: None,
                     server_name: provider_name,
                     auth_mode: everruns_core::McpServerAuthMode::OAuth,
                     oauth_provider_id: None,
@@ -702,6 +707,7 @@ mod tests {
         let result = tokio::time::timeout(
             std::time::Duration::from_millis(50),
             provider.authorization(&McpAuthRequest {
+                server_url: None,
                 server_name: "server",
                 auth_mode: everruns_core::McpServerAuthMode::OAuth,
                 oauth_provider_id: None,

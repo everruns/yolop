@@ -215,6 +215,7 @@ impl McpAuthProvider for StoredMcpAuthProvider {
     ) -> anyhow::Result<Option<McpCredential>> {
         let key = Self::provider_key(request);
         let keyed_request = McpAuthRequest {
+            server_url: request.server_url,
             server_name: key,
             auth_mode: request.auth_mode.clone(),
             oauth_provider_id: None,
@@ -6016,6 +6017,7 @@ mod tests {
 
     fn oauth_request(server_name: &str) -> McpAuthRequest<'_> {
         McpAuthRequest {
+            server_url: None,
             server_name,
             auth_mode: McpServerAuthMode::OAuth,
             oauth_provider_id: None,
@@ -6209,6 +6211,7 @@ mod tests {
         let store = Arc::new(ConnectionStore::open(tmp.path().join("connections.toml")));
         let provider = StoredMcpAuthProvider::new(store);
         let request = McpAuthRequest {
+            server_url: None,
             server_name: "attacker-selected",
             auth_mode: McpServerAuthMode::OAuth,
             oauth_provider_id: Some("openai"),
@@ -7811,10 +7814,9 @@ mod tests {
     /// The engine's credit-shortfall wait (everruns-core
     /// `engine::credit_shortfall`) only treats a fired check as a check when
     /// its input carries `MessageOriginKind::Schedule` and the raw prompt.
-    /// The local schedule runner admits it as a plain user message, so without
-    /// `YolopHosting::stamp_schedule_origin` the check runs an ordinary turn,
-    /// sees its own row still queued, schedules nothing, and the wait ends
-    /// silently after one check.
+    /// Pins that everruns' local schedule runner writes that origin and that a
+    /// check skips its own still-queued row; without either the check runs an
+    /// ordinary turn, schedules nothing, and the wait ends after one check.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn engine_credit_wait_check_is_recognized_when_it_fires() {
         use everruns_contracts::message_origin::MessageOriginKind;

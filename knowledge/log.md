@@ -1,5 +1,10 @@
 # Knowledge Log
 
+## 2026-11-16, Everruns 0.53.0
+
+- [Task completion](specs/task-completion.md): the engine now reviews tool-free answers under `Always`, continues an empty final or an output-limit stop without a review, and writes the `Schedule` origin on local schedule fires itself, so yolop's origin workaround is gone.
+- [Engine execution](specs/engine-execution.md): the Everruns family moves to 0.53.0.
+
 ## 2026-11-15, Engine completion check
 
 - [Task completion](specs/task-completion.md): the agent runs the everruns completion check with `Always`; the engine reviews and continues turns in place, and yolop's host review loop, budget events and controller are gone. Hosts read `turn.completion_checked`; continuation limits apply when a session starts.

@@ -514,6 +514,8 @@ async fn short_mcp_readiness_budget_preserves_later_turn_tools() {
             llmsim_override: Some(
                 LlmSimConfig::scripted(vec![
                     SimTurn::Assistant("ready".into()),
+                    // The engine reviews the tool-free first answer.
+                    SimTurn::Assistant(r#"{"state":"achieved","reason":"ready"}"#.into()),
                     SimTurn::ToolCalls(vec![SimToolCall {
                         name: mcp_tool("echo", "peek"),
                         arguments: json!({"message": "later-turn"}),

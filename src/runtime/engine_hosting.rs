@@ -29,46 +29,6 @@ pub struct YolopHosting {
     pub platform: Arc<super::engine_platform::PlatformServices>,
 }
 impl YolopHosting {
-    /// Upstream gap (everruns 0.52.0, unchanged on everruns main): the local
-    /// schedule runner admits a fired schedule as a plain user message
-    /// (`HostedSessionRunner::deliver_occurrence`), without the `Schedule`
-    /// origin the server's scheduler writes (`fire_origin`). The engine's
-    /// credit-shortfall wait recognizes its check only by that origin, so
-    /// without it the first check runs as an ordinary turn, finds itself still
-    /// queued, schedules nothing, and the wait silently ends after one check.
-    /// Write the origin here, only on the admission whose id is the
-    /// occurrence id the runner derives for one of this session's schedules;
-    /// user input never carries such an id. Drop once everruns writes it.
-    async fn stamp_schedule_origin(
-        &self,
-        session: SessionId,
-        message: &mut everruns_core::RuntimeMessage,
-    ) {
-        if message.role != everruns_core::RuntimeMessageRole::User || message.origin().is_some() {
-            return;
-        }
-        let Some(text) = message.text().map(str::to_owned) else {
-            return;
-        };
-        let store = self.native.schedule_store(
-            session,
-            everruns_contracts::runtime::organization::DEFAULT_ORG_ID,
-        );
-        let Ok(schedules) = store.list_schedules(session).await else {
-            return;
-        };
-        if let Some(schedule) = schedules
-            .iter()
-            .find(|s| s.description == text && occurrence_message_id(s) == message.id)
-        {
-            everruns_contracts::message_origin::MessageOrigin::schedule(
-                schedule.id.to_string(),
-                &schedule.description,
-            )
-            .write(&mut message.metadata);
-        }
-    }
-
     fn enrich(&self, mut backends: HostBackends) -> HostBackends {
         backends = backends.with_connection_resolver(self.connections.clone());
         if let Some(registry) = backends.session_task_registry.take() {
@@ -99,10 +59,7 @@ impl YolopHosting {
 }
 #[async_trait]
 impl SessionHosting for YolopHosting {
-    async fn command(&self, session: SessionId, mut command: SessionCommand) -> Result<Value> {
-        if let SessionCommand::Admit { message, .. } = &mut command {
-            self.stamp_schedule_origin(session, message).await;
-        }
+    async fn command(&self, session: SessionId, command: SessionCommand) -> Result<Value> {
         self.native.command(session, command).await
     }
     async fn query_snapshot(&self, session: SessionId) -> Result<SessionQuerySnapshot> {
@@ -243,21 +200,4 @@ impl SessionEpoch for WorkspaceEpoch {
     async fn suspend(&self, reason: &str) -> Result<()> {
         self.inner.suspend(reason).await
     }
-}
-
-/// The admission id `everruns::local::LocalScheduleRunner` gives one schedule
-/// occurrence (`schedule_runner::occurrence_message_id`, crate-private there).
-/// Kept byte-identical; `engine_credit_wait_check_is_recognized_when_it_fires`
-/// fails if it drifts.
-fn occurrence_message_id(schedule: &everruns_core::session_schedule::SessionSchedule) -> MessageId {
-    const NAMESPACE: uuid::Uuid = uuid::Uuid::from_u128(0x6f1d_2c4e_8a3b_5d17_9e0f_4b2a_7c61_d385);
-    let occurrence = format!(
-        "{}:{}:{}",
-        schedule.id,
-        schedule.trigger_count,
-        schedule
-            .next_trigger_at
-            .map_or(0, |time| time.timestamp_millis())
-    );
-    MessageId::from_uuid(uuid::Uuid::new_v5(&NAMESPACE, occurrence.as_bytes()))
 }
