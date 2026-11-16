@@ -79,12 +79,12 @@ jobs:
               - '.github/workflows/cli-binaries.yml'
               - '.github/workflows/ci.yml'
             # The regression-gate analyzers under harness_basic are pure Python
-            # and decide whether the nightly Search Efficiency Eval passes. They
+            # and decide whether the manual Search Efficiency Eval passes. They
             # never touch the Rust toolchain, so give them their own fast leg that
             # runs whenever an analyzer or its tests change.
             eval-analyzers:
-              - 'evals/harness_basic/*.py'
-              - 'evals/harness_basic/tests/**'
+              - 'evals/harness_basic/**'
+              - '.github/workflows/search-efficiency-eval.yml'
               - '.github/workflows/ci.yml'
             # The terminal_bench study and its Harbor agent adapter. Its tests
             # need no Docker, network, or API key, but they do import the study's
