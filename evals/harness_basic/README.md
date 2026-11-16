@@ -594,6 +594,7 @@ Replay an existing report locally, without calling a provider:
 ```bash
 python3 report_attribution.py focused.json controls.json --out eval-attribution.json
 ```
+
 ## Luna evaluation policy
 
 New harness runs use the explicit `openai/gpt-6-luna` target instead of GPT-5.5.
