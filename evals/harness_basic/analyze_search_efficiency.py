@@ -30,6 +30,8 @@ CONTROL_TRIALS = 5
 METRICS = (
     "tool_calls",
     "llm_calls",
+    "task_tool_calls",
+    "task_llm_calls",
     "tool_calls_failed",
     "total_tool_result_bytes",
     "input_tokens",
@@ -151,10 +153,21 @@ def budget_pass(case: dict) -> bool | None:
     return None
 
 
+# Call counts net of runtime bookkeeping (write_session_title, write_todos,
+# progress_checkpoint, report_done), as harness_basic mines them.
+TASK_METRIC_FALLBACK = {"task_tool_calls": "tool_calls", "task_llm_calls": "llm_calls"}
+
+
 def value(case: dict, metric: str) -> float:
     transcript = case.get("transcript", {})
     if metric == "tool_calls":
         return float(transcript.get("tool_calls_count", 0))
+    if metric in TASK_METRIC_FALLBACK:
+        # Reports mined before the task_* metrics existed carry only totals.
+        metrics = transcript.get("metrics", {})
+        if metric in metrics:
+            return float(metrics[metric])
+        return value(case, TASK_METRIC_FALLBACK[metric])
     if metric in {"input_tokens", "cost_usd"}:
         return float(transcript.get("usage", {}).get(metric, 0))
     if metric == "duration_ms":
@@ -284,7 +297,20 @@ def analyze_reports(reports: list[dict]) -> tuple[list[str], list[str], list[str
                 failures.append(f"{sample}: ordinary control did not pass every trial")
             if sum(value(case, "equivalent_failure_warnings") for case in candidate):
                 failures.append(f"{sample}: semantic failure repair warned on a control")
-            for metric in ("tool_calls", "llm_calls", "input_tokens", "cost_usd"):
+            # Calls are gated net of todo bookkeeping. Whether the model tracks
+            # a three-step task with write_todos is a mode choice both binaries
+            # make (baseline 1/5, candidate 2-3/5 on expected-diagnostic-
+            # failure-control, nightlies 2026-11-14 and 2026-11-16), and the
+            # tracked mode adds todo rounds and a closing report_done: 7 -> 13
+            # total calls for the same work. Five trials then flip the median on
+            # one trial's mode. Search work is what this gate guards; the
+            # progress-efficiency gate owns bookkeeping.
+            for metric in (
+                "task_tool_calls",
+                "task_llm_calls",
+                "input_tokens",
+                "cost_usd",
+            ):
                 base = medians[("baseline", metric)]
                 candidate_value = medians[("candidate", metric)]
                 if metric in ("input_tokens", "cost_usd"):
@@ -301,7 +327,7 @@ def analyze_reports(reports: list[dict]) -> tuple[list[str], list[str], list[str
                 # are continuous but drift with how much the model writes between
                 # identical calls (nightly 2026-10-17, add-fn at 5 -> 5 calls and
                 # 100% pass: tokens +13%, cost +18%), so they get a 25% ceiling.
-                counts = metric in ("tool_calls", "llm_calls")
+                counts = metric in ("task_tool_calls", "task_llm_calls")
                 limit = (base * 1.10 + 1 if counts else base * 1.25) if base else 0
                 if candidate_value > limit:
                     failures.append(
@@ -367,7 +393,16 @@ def main() -> int:
         nargs="+",
         help="focused 3-trial and control 5-trial report.json files",
     )
+    parser.add_argument(
+        "--expected-target", help="Reject missing/mixed model provenance before grading"
+    )
     args = parser.parse_args()
+    if args.expected_target:
+        for report in args.reports:
+            cases = json.loads(report.read_text()).get("cases", [])
+            if not cases or any(case.get("target") != args.expected_target for case in cases):
+                print(f"{report}: missing or mismatched target; refusing cross-model comparison", file=sys.stderr)
+                return REGRESSION_EXIT
     rows, failures, notes = analyze_reports(
         [json.loads(report.read_text()) for report in args.reports]
     )

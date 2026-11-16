@@ -207,6 +207,44 @@ class AnalyzeTests(unittest.TestCase):
         )
         self.assertTrue(any("llm_calls regressed" in failure for failure in failures))
 
+    def test_todo_tracking_mode_does_not_move_the_control_call_gate(self):
+        # Nightly 2026-11-16, expected-diagnostic-failure-control: the candidate
+        # tracked 3/5 trials with todos (13 calls, 5 of them bookkeeping) and
+        # the baseline 1/5, so raw medians read 7 -> 12 for the same work.
+        cases = focused_cases()
+        for sample in sorted(analyzer.CONTROLS):
+            for binary, tracked in (("baseline", 1), ("candidate", 3)):
+                for trial in range(5):
+                    total = 13 if trial < tracked else 7
+                    cases.append(
+                        case(
+                            sample,
+                            binary,
+                            True,
+                            tools=total,
+                            metrics={
+                                "llm_calls": total,
+                                "task_tool_calls": 6,
+                                "task_llm_calls": 6,
+                            },
+                        )
+                    )
+        _, failures, _ = analyzer.analyze({"cases": cases})
+        self.assertEqual(failures, [])
+
+    def test_extra_task_calls_still_regress_under_bookkeeping(self):
+        cases = focused_cases()
+        for sample in sorted(analyzer.CONTROLS):
+            for _ in range(5):
+                cases += [
+                    case(sample, "baseline", True, metrics={"task_tool_calls": 6}),
+                    case(sample, "candidate", True, metrics={"task_tool_calls": 9}),
+                ]
+        _, failures, _ = analyzer.analyze({"cases": cases})
+        self.assertTrue(
+            any("task_tool_calls regressed" in failure for failure in failures)
+        )
+
     def _focused_with_failures(self, base, cand):
         cases = control_cases()
         sample = sorted(analyzer.FOCUSED)[0]
