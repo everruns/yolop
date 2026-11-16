@@ -397,6 +397,23 @@ def exit_code(rows: list[str], failures: list[str], notes: list[str]) -> int:
     return 0
 
 
+def analyze_pilot(reports: list[dict], sample: str) -> int:
+    """A two-trajectory diagnostic, never evidence of full-gate reliability."""
+    cases = [case for report in reports for case in report.get("cases", [])]
+    if (len(cases) != 2 or any(c.get("sample") != sample for c in cases)
+            or {c.get("params", {}).get("binary") for c in cases} != {"baseline", "candidate"}):
+        print("Pilot invalid: expected exactly one baseline and candidate for selected sample.")
+        return INCONCLUSIVE_EXIT
+    if any(c.get("skipped") or is_infra_failure(c) or correctness_pass(c) is None for c in cases):
+        print("Pilot inconclusive: missing valid correctness evidence.")
+        return INCONCLUSIVE_EXIT
+    if not all(correctness_pass(c) for c in cases):
+        print("Pilot correctness failed: inspect traces before escalating.")
+        return REGRESSION_EXIT
+    print("Diagnostic pilot passed: two trajectories only, NOT a full regression or improvement gate.")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -410,6 +427,8 @@ def main() -> int:
     )
     parser.add_argument("--mode", choices=("regression", "improvement"), default="improvement",
                         help="Regression preserves correctness/efficiency; improvement also requires a gain")
+    parser.add_argument("--pilot-sample", choices=sorted(EXPECTED_SAMPLES),
+                        help="Diagnostic only: one trajectory per binary, not the full gate")
     args = parser.parse_args()
     if args.expected_target:
         for report in args.reports:
@@ -417,6 +436,8 @@ def main() -> int:
             if not cases or any(case.get("target") != args.expected_target for case in cases):
                 print(f"{report}: missing or mismatched target; refusing cross-model comparison", file=sys.stderr)
                 return REGRESSION_EXIT
+    if args.pilot_sample:
+        return analyze_pilot([json.loads(p.read_text()) for p in args.reports], args.pilot_sample)
     rows, failures, notes = analyze_reports(
         [json.loads(report.read_text()) for report in args.reports], mode=args.mode
     )

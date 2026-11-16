@@ -539,3 +539,41 @@ class CoverageAndPurposeTests(unittest.TestCase):
         next(c for c in cases if c['sample'] == 'add-fn' and c['params']['binary'] == 'candidate')['transcript']['usage']['cost_usd'] = 0.1
         _, failures, _ = analyzer.analyze_reports([{'cases': cases}])
         self.assertTrue(any('cost_usd observed-tail regressed' in f for f in failures))
+
+class PilotTests(unittest.TestCase):
+    def test_cli_pilot_is_diagnostic_and_rejects_incomplete_evidence(self):
+        import json
+        import subprocess
+        import sys
+        import tempfile
+        sample = 'grep-files-nested-glob'
+        cases = [case(sample, b, True) for b in ('baseline', 'candidate')]
+        for c in cases:
+            c['target'] = 'openai/gpt-6-luna'
+        with tempfile.TemporaryDirectory() as tmp:
+            report = Path(tmp) / 'report.json'
+            for evidence, status, message in ((cases, 0, 'NOT a full regression'),
+                    (cases[:1], 75, 'exactly one baseline and candidate')):
+                report.write_text(json.dumps({'cases': evidence}))
+                result = subprocess.run([sys.executable, str(MODULE_PATH), str(report),
+                    '--expected-target', 'openai/gpt-6-luna', '--pilot-sample', sample],
+                    capture_output=True, text=True)
+                self.assertEqual(result.returncode, status, result.stderr)
+                self.assertIn(message, result.stdout)
+
+    def test_pilot_failure_and_outage_do_not_pass(self):
+        sample = 'grep-files-nested-glob'
+        baseline = case(sample, 'baseline', True)
+        self.assertEqual(analyzer.analyze_pilot([{'cases': [baseline,
+            case(sample, 'candidate', False)]}], sample), 1)
+        self.assertEqual(analyzer.analyze_pilot([{'cases': [baseline,
+            case(sample, 'candidate', False, error=QUOTA_ERROR)]}], sample), 75)
+
+    def test_workflow_defaults_to_bounded_diagnostic_not_full_suite(self):
+        workflow = (MODULE_PATH.parents[2] / '.github/workflows/search-efficiency-eval.yml').read_text()
+        self.assertNotIn('schedule:', workflow)
+        self.assertIn('default: pilot', workflow)
+        self.assertIn('--max-retries 0 --timeout 180', workflow)
+        self.assertIn('--samples "${PILOT_SAMPLE}" --trials 1', workflow)
+        self.assertNotIn('exit 0', workflow)
+        self.assertIn('exit 75', workflow)
