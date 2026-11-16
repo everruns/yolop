@@ -58,13 +58,25 @@ def main():
     parser.add_argument("reports", nargs="+", type=Path)
     parser.add_argument("--out", required=True, type=Path)
     args = parser.parse_args()
-    reports = [(path.name, json.loads(path.read_text())) for path in args.reports if path.is_file()]
+    reports, missing, invalid = [], [], []
+    for path in args.reports:
+        try:
+            report = json.loads(path.read_text())
+        except FileNotFoundError:
+            missing.append(path.name)
+        except (OSError, UnicodeError, json.JSONDecodeError) as error:
+            invalid.append({"report": path.name, "error": type(error).__name__})
+        else:
+            reports.append((path.name, report))
     manifest = build_manifest(reports, os.environ)
-    manifest["missing_reports"] = [path.name for path in args.reports if not path.is_file()]
+    manifest["missing_reports"] = missing
+    manifest["invalid_reports"] = invalid
     args.out.write_text(json.dumps(manifest, indent=2) + "\n")
     text = summary(manifest)
     if manifest["missing_reports"]:
         text += "- Missing reports: " + ", ".join(manifest["missing_reports"]) + "\n"
+    if invalid:
+        text += "- Invalid reports: " + ", ".join(item["report"] for item in invalid) + "\n"
     print(text)
     if os.environ.get("GITHUB_STEP_SUMMARY"):
         with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as stream:

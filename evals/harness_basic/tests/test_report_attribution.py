@@ -33,10 +33,12 @@ class AttributionTests(unittest.TestCase):
             root = Path(directory)
             report = root / "report.json"
             report.write_text(json.dumps({"cases": []}))
+            invalid = root / "truncated.json"
+            invalid.write_text('{"private":')
             output, summary = root / "attribution.json", root / "summary.md"
             subprocess.run([
                 sys.executable, str(Path(attribution.__file__)), str(report),
-                str(root / "missing.json"), "--out", str(output),
+                str(root / "missing.json"), str(invalid), "--out", str(output),
             ], check=True, capture_output=True, env={
                 **os.environ, "GITHUB_STEP_SUMMARY": str(summary),
                 "OPENAI_API_KEY": "not-a-real-key-must-not-appear",
@@ -44,6 +46,8 @@ class AttributionTests(unittest.TestCase):
             manifest = json.loads(output.read_text())
             self.assertEqual(manifest["missing_reports"], ["missing.json"])
             self.assertIn("Missing reports: missing.json", summary.read_text())
+            self.assertEqual(manifest["invalid_reports"], [{"report": "truncated.json", "error": "JSONDecodeError"}])
+            self.assertNotIn("private", output.read_text())
             self.assertNotIn("not-a-real-key", output.read_text())
 
     def test_missing_usage_and_malformed_session_remain_unknown(self):
