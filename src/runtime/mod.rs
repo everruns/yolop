@@ -7907,8 +7907,9 @@ mod tests {
             .expect("re-created check");
 
         // 3. Wait for the schedule runner to fire it and its turn to settle:
-        //    either the turn records a second credit decision, or the
-        //    delivery completes (trigger_count advances after the turn).
+        //    the turn records a second credit decision and the delivery
+        //    completes (trigger_count advances after the turn). Until then the
+        //    fired row still looks queued beside the next check.
         let shortfalls = |events: &[everruns_core::Event]| {
             events
                 .iter()
@@ -7923,7 +7924,7 @@ mod tests {
                 let schedules = store.list_schedules(session_id).await.expect("list");
                 let events = built.handles.host.events().await.expect("events");
                 if shortfalls(&events).len() >= 2
-                    || schedules
+                    && schedules
                         .iter()
                         .any(|s| s.id == refired.id && s.trigger_count >= 1)
                 {
