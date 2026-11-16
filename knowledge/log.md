@@ -1,5 +1,9 @@
 # Knowledge Log
 
+## 2026-11-16, Paid provider CI is explicit opt-in
+
+- [Shipping](specs/shipping.md): PRs and main pushes no longer launch paid provider tests implicitly. The full provider suite remains available by manual dispatch; skipped checks are not live evidence, and its timeout is not a dollar cap.
+
 ## 2026-11-15, Engine completion check
 
 - [Task completion](specs/task-completion.md): the agent runs the everruns completion check with `Always`; the engine reviews and continues turns in place, and yolop's host review loop, budget events and controller are gone. Hosts read `turn.completion_checked`; continuation limits apply when a session starts.

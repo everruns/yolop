@@ -42,19 +42,10 @@ class LunaConfigurationTests(unittest.TestCase):
 
 
 class PaidCiScopeTests(unittest.TestCase):
-    def test_paid_smoke_covers_runtime_but_not_standalone_evals(self):
+    def test_paid_smoke_requires_opt_in_and_evals_keep_offline_checks(self):
         ci = (STUDY.parents[1] / '.github/workflows/ci.yml').read_text()
-        section = ci.split('            live-runtime:\n', 1)[1].split('            eval-rust:', 1)[0]
-        paths = [line.split("'", 2)[1] for line in section.splitlines() if "- '" in line]
-        for path in ('src/runtime/mod.rs', 'crates/yolop-yep/src/lib.rs',
-                     'tests/integration.rs', 'Cargo.toml', 'Cargo.lock', 'build.rs',
-                     'rust-toolchain.toml'):
-            self.assertTrue(any(fnmatch.fnmatchcase(path, pattern) for pattern in paths), path)
-        for path in ('evals/harness_basic/src/main.rs', 'evals/harness_basic/Cargo.toml',
-                     '.github/workflows/ci.yml', 'docs/README.md'):
-            self.assertFalse(any(fnmatch.fnmatchcase(path, pattern) for pattern in paths), path)
         live = ci.split('  live-smoke:', 1)[1].split('  sandbox-contract:', 1)[0]
-        self.assertIn("needs.changes.outputs.live-runtime == 'true'", live)
+        self.assertIn("if: github.event_name == 'workflow_dispatch' && inputs.run_live_provider_smoke", live)
         self.assertIn('cargo test --locked', ci.split('  eval-rust:', 1)[1])
 
 class DedicatedKeyTests(unittest.TestCase):
