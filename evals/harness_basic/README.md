@@ -388,25 +388,25 @@ doppler run -- mira run --targets 'anthropic/*' --axis harness=no-ast-grep --sam
 | `smoke` | cheap candidate sanity check | tag `smoke` | claude-sonnet-5-5 | candidate, effort=default, all harness |
 | `harness-compare` | **A/B yolop configurations** | all | claude-sonnet-5-5 | candidate, effort=default, all harness |
 | `progress-guard` | focused warning-behavior check | tag `progress-guard` | claude-sonnet-5-5 | candidate, effort=default, default vs no-progress-guard |
-| `search-efficiency` | baseline/candidate session/search proof, 3 trials | 8 focused cases | gpt-5.5 | baseline + candidate, harness=default, effort=default |
-| `search-controls` | ordinary and semantic-failure controls, 5 trials | 4 controls | gpt-5.5 | baseline + candidate, harness=default, effort=default |
-| `repo-map-profile` | eager-schema adoption and recovery decision, 5 trials | scoped + bounded repo maps | gpt-5.5 | deferred baseline + map-only + map-and-symbols |
-| `repo-map-controls` | ordinary controls for the eager-schema decision, 5 trials | `add-fn`, `find-constant` | gpt-5.5 | deferred baseline + map-only + map-and-symbols |
-| `capability-disclosure` | first-request token and reveal-path proof, 5 trials | exact reply, read-only search, simple edit, complex coding, release/control, deferred history | gpt-5.5 + claude-sonnet-5-5 | baseline + candidate, harness=default, effort=default |
-| `progress-efficiency` | baseline/candidate state-progress proof, 3 trials | checkpoint transition, state cycle, redundant validation, equivalent failure | gpt-5.5 | baseline + candidate, harness=default, effort=default |
-| `progress-controls` | ordinary and semantic-failure controls, 5 trials | 4 controls | gpt-5.5 | baseline + candidate, harness=default, effort=default |
-| `failure-repair` | equivalent-failure recovery proof, 3 trials | `equivalent-failure-recovery` | gpt-5.5 | baseline + candidate, harness=default, effort=default |
-| `failure-repair-controls` | expected diagnostic and distinct-failure controls, 5 trials | two failure-repair controls | gpt-5.5 | baseline + candidate, harness=default, effort=default |
-| `owner-selection` | first-mutation owner selection plus local-edit controls, 3 trials | two owner fixtures + `add-fn` + `implement-todo` | gpt-5.5 | candidate, default vs no-progress-guard |
-| `orchestration-efficiency` | batching interventions and dependency control, 3 trials | three orchestration cases | gpt-5.5 | baseline + parallel-only + policy-only + candidate |
+| `search-efficiency` | baseline/candidate session/search proof, 3 trials | 8 focused cases | gpt-6-luna | baseline + candidate, harness=default, effort=default |
+| `search-controls` | ordinary and semantic-failure controls, 5 trials | 4 controls | gpt-6-luna | baseline + candidate, harness=default, effort=default |
+| `repo-map-profile` | eager-schema adoption and recovery decision, 5 trials | scoped + bounded repo maps | gpt-6-luna | deferred baseline + map-only + map-and-symbols |
+| `repo-map-controls` | ordinary controls for the eager-schema decision, 5 trials | `add-fn`, `find-constant` | gpt-6-luna | deferred baseline + map-only + map-and-symbols |
+| `capability-disclosure` | first-request token and reveal-path proof, 5 trials | exact reply, read-only search, simple edit, complex coding, release/control, deferred history | gpt-6-luna + claude-sonnet-5-5 | baseline + candidate, harness=default, effort=default |
+| `progress-efficiency` | baseline/candidate state-progress proof, 3 trials | checkpoint transition, state cycle, redundant validation, equivalent failure | gpt-6-luna | baseline + candidate, harness=default, effort=default |
+| `progress-controls` | ordinary and semantic-failure controls, 5 trials | 4 controls | gpt-6-luna | baseline + candidate, harness=default, effort=default |
+| `failure-repair` | equivalent-failure recovery proof, 3 trials | `equivalent-failure-recovery` | gpt-6-luna | baseline + candidate, harness=default, effort=default |
+| `failure-repair-controls` | expected diagnostic and distinct-failure controls, 5 trials | two failure-repair controls | gpt-6-luna | baseline + candidate, harness=default, effort=default |
+| `owner-selection` | first-mutation owner selection plus local-edit controls, 3 trials | two owner fixtures + `add-fn` + `implement-todo` | gpt-6-luna | candidate, default vs no-progress-guard |
+| `orchestration-efficiency` | batching interventions and dependency control, 3 trials | three orchestration cases | gpt-6-luna | baseline + parallel-only + policy-only + candidate |
 | `runtime-guidance` | live network truth and todo restraint, 5 trials | network context + small-task negative control | gpt-5.6-terra medium | baseline + candidate |
 | `management` | configuration and administration routing | 21 focused attached-CLI, direct-tool, and `run_command` cases | OpenRouter Muse 1.3 Contributor; OpenAI GPT-5.6 Terra medium; Anthropic Sonnet 5 | candidate, harness=default; provider defaults except Terra fixed to medium |
-| `batch-native-discovery` | dependency-isolated structured read proof under single-tool emission, 3 trials | independent read + dependent control | gpt-5.5 | dependency baseline + candidate |
-| `output-persistence` | dependency-isolated output proof, 3 trials | head preservation + complete-output no-reread | gpt-5.5 | dependency baseline + candidate |
-| `persisted-output-reading` | bounded limited-output recovery proof, 3 trials | small read + large contextual search | gpt-5.5 | dependency baseline + candidate |
-| `output-persistence-controls` | ordinary dependency-isolated controls, 3 trials | `add-fn`, `find-constant` | gpt-5.5 | dependency baseline + candidate |
+| `batch-native-discovery` | dependency-isolated structured read proof under single-tool emission, 3 trials | independent read + dependent control | gpt-6-luna | dependency baseline + candidate |
+| `output-persistence` | dependency-isolated output proof, 3 trials | head preservation + complete-output no-reread | gpt-6-luna | dependency baseline + candidate |
+| `persisted-output-reading` | bounded limited-output recovery proof, 3 trials | small read + large contextual search | gpt-6-luna | dependency baseline + candidate |
+| `output-persistence-controls` | ordinary dependency-isolated controls, 3 trials | `add-fn`, `find-constant` | gpt-6-luna | dependency baseline + candidate |
 | `ast-edit-compare` | **A/B ast_edit capability** | tag `ast-edit` | claude-sonnet-5-5 | candidate, effort=default, default vs with-ast-edit |
-| `effort-compare` | effort sweep | all | gpt-5.5 | candidate, harness=default, all efforts |
+| `effort-compare` | effort sweep | all | gpt-6-luna | candidate, harness=default, all efforts |
 | `models` | model sweep, out-of-the-box yolop | all | all | candidate, harness=default, effort=default |
 
 The initial management matrix run is retained in
