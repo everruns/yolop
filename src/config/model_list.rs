@@ -32,7 +32,7 @@ use toml::Value as TomlValue;
 pub struct ModelEntry {
     /// Provider name, one of [`SUPPORTED_PROVIDERS`].
     pub provider: String,
-    /// Provider-relative model id (`gpt-5.6-sol`, `anthropic/claude-opus-4-8`
+    /// Provider-relative model id (`gpt-6.2-sol`, `anthropic/claude-opus-4-8`
     /// on OpenRouter). Never carries the reasoning effort; that is `effort`.
     pub model: String,
     /// Reasoning effort to apply with this entry. `None` leaves the model

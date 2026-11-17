@@ -79,10 +79,10 @@ enum ConfigCommand {
     yolop config models list
 
   Add a model:
-    yolop config models add codex gpt-5.6-sol --label sol
+    yolop config models add codex gpt-6.2-sol --label sol
 
   Remove a model:
-    yolop config models rm codex/gpt-5.6-sol")]
+    yolop config models rm codex/gpt-6.2-sol")]
     /// Manage the model menu offered by /model and ACP clients.
     Models {
         #[command(subcommand)]
@@ -182,7 +182,7 @@ enum ConfigModelCommand {
     Show,
     /// Set the default model for new sessions.
     #[command(
-        after_help = "Examples:\n  Start new sessions on GPT-5.6:\n    yolop config model set openai/gpt-5.6"
+        after_help = "Examples:\n  Start new sessions on GPT-6.2 Sol:\n    yolop config model set openai/gpt-6.2-sol"
     )]
     Set { model: String },
     /// Forget the configured default model.
@@ -1307,8 +1307,8 @@ mod tests {
 
         for example in [
             "yolop config models list",
-            "yolop config models add codex gpt-5.6-sol --label sol",
-            "yolop config models rm codex/gpt-5.6-sol",
+            "yolop config models add codex gpt-6.2-sol --label sol",
+            "yolop config models rm codex/gpt-6.2-sol",
         ] {
             assert!(help.contains(example), "missing help example: {example}");
         }
