@@ -12574,7 +12574,8 @@ mod tests {
         // context resend each time.
         // Published 0.53 adds snapshot-aware polling metadata; measured
         // schema total is 16,703 bytes, 43 above the prior allowance.
-        const BASELINE_SCHEMA_BYTES: usize = 14_500 + 710 + 800 + 650 + 43;
+        // The upstream auto approval option accounts for the final 8 bytes.
+        const BASELINE_SCHEMA_BYTES: usize = 14_500 + 710 + 800 + 650 + 43 + 8;
         let workspace = tempfile::tempdir().expect("workspace");
         let sessions = tempfile::tempdir().expect("sessions");
         let settings = Arc::new(SettingsStore::open(sessions.path().join("settings.toml")));
