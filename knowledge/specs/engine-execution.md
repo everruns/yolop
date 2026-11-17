@@ -19,6 +19,11 @@ The Everruns family uses aligned published 0.53.1 crates, with no vendored
 copy: the session-database changes Yolop carried as a backport on 0.51.0 are
 part of that release.
 
+MCP credential forwarding preserves the framework request's session identity.
+Yolop exposes protective, normal, and off approval modes. Upstream `auto` mode
+is rejected without changing settings because this host has not configured
+an automatic reviewer.
+
 ## Ownership
 
 | Owner | Responsibility |

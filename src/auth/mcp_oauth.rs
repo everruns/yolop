@@ -304,6 +304,7 @@ mod tests {
             let provider = CoordinatedOAuthProvider::new(store.clone(), egress.clone());
             provider
                 .authorization(&McpAuthRequest {
+                    session_id: None,
                     server_url: None,
                     server_name: "server",
                     auth_mode: everruns_core::McpServerAuthMode::OAuth,
@@ -345,6 +346,7 @@ mod tests {
             CoordinatedOAuthProvider::new(Arc::new(ConnectionStore::open(path)), egress.clone());
         let error = provider
             .authorization(&McpAuthRequest {
+                session_id: None,
                 server_url: None,
                 server_name: "server",
                 auth_mode: everruns_core::McpServerAuthMode::OAuth,
@@ -407,6 +409,7 @@ mod tests {
                 tokio::time::timeout(
                     std::time::Duration::from_millis(50),
                     provider.authorization(&McpAuthRequest {
+                        session_id: None,
                         server_url: None,
                         server_name: &provider_name,
                         auth_mode: everruns_core::McpServerAuthMode::OAuth,
@@ -420,6 +423,7 @@ mod tests {
         }
         let result = provider
             .authorization(&everruns_core::mcp::McpAuthRequest {
+                session_id: None,
                 server_url: None,
                 server_name: &provider_name,
                 auth_mode: everruns_core::McpServerAuthMode::OAuth,
@@ -679,6 +683,7 @@ mod tests {
             let credential = tokio::time::timeout(
                 std::time::Duration::from_millis(100),
                 provider.authorization(&McpAuthRequest {
+                    session_id: None,
                     server_url: None,
                     server_name: provider_name,
                     auth_mode: everruns_core::McpServerAuthMode::OAuth,
@@ -707,6 +712,7 @@ mod tests {
         let result = tokio::time::timeout(
             std::time::Duration::from_millis(50),
             provider.authorization(&McpAuthRequest {
+                session_id: None,
                 server_url: None,
                 server_name: "server",
                 auth_mode: everruns_core::McpServerAuthMode::OAuth,

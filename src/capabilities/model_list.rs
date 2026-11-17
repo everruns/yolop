@@ -963,7 +963,7 @@ mod tests {
         let models = saved(&capability);
         assert_eq!(
             models.first(),
-            Some(&ModelEntry::new("openai", "gpt-6.1-sol")),
+            Some(&ModelEntry::new("openai", "gpt-6.2-sol")),
             "the default list is kept, not replaced by the first edit: {models:?}"
         );
         assert_eq!(
@@ -1045,7 +1045,7 @@ mod tests {
         let message = error(
             &capability,
             ModelListAction::Move {
-                model: "openai/gpt-6.1-sol".to_string(),
+                model: "openai/gpt-6.2-sol".to_string(),
                 position: 99,
             },
         )
@@ -1125,7 +1125,7 @@ mod tests {
         let message = error(
             &capability,
             ModelListAction::Use {
-                model: "openai/gpt-6.1-sol".to_string(),
+                model: "openai/gpt-6.2-sol".to_string(),
             },
         )
         .await;

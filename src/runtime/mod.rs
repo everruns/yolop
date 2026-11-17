@@ -215,6 +215,7 @@ impl McpAuthProvider for StoredMcpAuthProvider {
     ) -> anyhow::Result<Option<McpCredential>> {
         let key = Self::provider_key(request);
         let keyed_request = McpAuthRequest {
+            session_id: request.session_id,
             server_url: request.server_url,
             server_name: key,
             auth_mode: request.auth_mode.clone(),
@@ -6023,6 +6024,7 @@ mod tests {
 
     fn oauth_request(server_name: &str) -> McpAuthRequest<'_> {
         McpAuthRequest {
+            session_id: None,
             server_url: None,
             server_name,
             auth_mode: McpServerAuthMode::OAuth,
@@ -6217,6 +6219,7 @@ mod tests {
         let store = Arc::new(ConnectionStore::open(tmp.path().join("connections.toml")));
         let provider = StoredMcpAuthProvider::new(store);
         let request = McpAuthRequest {
+            session_id: None,
             server_url: None,
             server_name: "attacker-selected",
             auth_mode: McpServerAuthMode::OAuth,
@@ -12551,7 +12554,9 @@ mod tests {
         // discovery/activation schemas that are intentionally eager.
         // 0.53 adds snapshot-aware list_tasks polling guidance. The measured
         // provider-visible surface grows by 66 bytes; keep all other budgets.
-        const BASELINE_TOOL_DEFINITION_BYTES: usize = 28_901 + 66;
+        // Upstream approval-mode help adds 166 bytes (including the auto option).
+        // Yolop rejects auto until a reviewer is configured; no gate is weakened.
+        const BASELINE_TOOL_DEFINITION_BYTES: usize = 28_901 + 66 + 166;
         // 2026-09-12: 13,700 -> 14,350. `spawn_background` joined the
         // never-defer allowlist, so its real 1061-byte schema replaced the
         // ~45-byte deferred stub in the eager surface. Measured 14,302 locally
