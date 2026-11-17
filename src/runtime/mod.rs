@@ -9239,6 +9239,9 @@ mod tests {
         let codex = ProviderChoice::default_for_provider_name("codex").unwrap();
         assert!(codex.label().starts_with("codex/gpt-6.2-sol"));
 
+        let openrouter = ProviderChoice::default_for_provider_name("openrouter").unwrap();
+        assert_eq!(openrouter.model_id(), "openai/gpt-6.2-sol");
+
         let anthropic = ProviderChoice::default_for_provider_name("anthropic").unwrap();
         assert_eq!(anthropic.label(), "anthropic/claude-opus-5-5 high");
 

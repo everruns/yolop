@@ -830,6 +830,8 @@ mod tests {
         for reference in [
             "openrouter/nvidia/model:free",
             "openrouter/nvidia/model:high",
+            "openrouter/openai/gpt-6.2-sol",
+            "openrouter/openai/gpt-6.2-astra",
             "openrouter/openai/gpt-6.1-sol",
             "vendor/model:free",
         ] {
