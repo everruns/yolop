@@ -1239,8 +1239,8 @@ impl SessionFileSystem for CodingCliSessionFileStore {
 
 // ---------- provider selection ----------
 
-const DEFAULT_OPENAI_MODEL: &str = "gpt-6.1-sol";
-const DEFAULT_CODEX_MODEL: &str = "gpt-6.1-sol";
+const DEFAULT_OPENAI_MODEL: &str = "gpt-6.2-sol";
+const DEFAULT_CODEX_MODEL: &str = "gpt-6.2-sol";
 const DEFAULT_ANTHROPIC_MODEL: &str = "claude-opus-5-5";
 const DEFAULT_META_MODEL: &str = "muse-spark-1.3";
 const DEFAULT_MISTRAL_MODEL: &str = "mistral-large-4";
@@ -1253,7 +1253,7 @@ const DEFAULT_GOOGLE_MODEL: &str = "gemini-3.8-flash";
 // 0.48 provider adoption (previously the OpenAI-compatible shim at
 // .../v1beta/openai; `default_google` still migrates stored shim URLs).
 const DEFAULT_GEMINI_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta";
-const DEFAULT_OPENROUTER_MODEL: &str = "openai/gpt-6.1-sol";
+const DEFAULT_OPENROUTER_MODEL: &str = "openai/gpt-6.2-sol";
 const DEFAULT_OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
 const DEFAULT_OLLAMA_MODEL: &str = "llama3.2";
 const DEFAULT_OLLAMA_BASE_URL: &str = "http://127.0.0.1:11434/v1";
@@ -2134,9 +2134,11 @@ impl ProviderChoice {
 
     pub fn model_suggestions_for_provider(provider: &str) -> &'static [&'static str] {
         match provider {
-            // GPT-6.1 Sol (everruns 0.33, #3925) leads the OpenAI lines. Its
+            // GPT-6.2 Sol leads the OpenAI lines. Its
             // fast tier is the `speed` setting, not a separate model id.
             "openai" => &[
+                "gpt-6.2-sol",
+                "gpt-6.2-astra",
                 "gpt-6.1-sol",
                 "gpt-6-sol",
                 "gpt-6-luna",
@@ -2151,6 +2153,8 @@ impl ProviderChoice {
                 "gpt-5.2",
             ],
             "codex" => &[
+                "gpt-6.2-sol",
+                "gpt-6.2-astra",
                 "gpt-6.1-sol",
                 "gpt-5.6-sol",
                 "gpt-5.6-terra",
@@ -2197,6 +2201,8 @@ impl ProviderChoice {
                 "gemini-2.5-pro",
             ],
             "openrouter" => &[
+                "openai/gpt-6.2-sol",
+                "openai/gpt-6.2-astra",
                 "openai/gpt-6.1-sol",
                 "openai/gpt-6-sol",
                 "openai/gpt-6-luna",
@@ -2222,7 +2228,7 @@ impl ProviderChoice {
             // offline, the picker fills the rest via runtime discovery.
             "fireworks" => &["accounts/fireworks/models/llama-v3p1-70b"],
             // Vercel AI Gateway: provider/model IDs passed through to the gateway.
-            "vercel" => &["anthropic/claude-opus-5-5", "openai/gpt-6-astra"],
+            "vercel" => &["anthropic/claude-opus-5-5", "openai/gpt-6.2-astra"],
             // Cloudflare Workers AI model ID.
             "cloudflare" => &["@cf/meta/llama-3.3-70b-instruct-fp8-fast"],
             // Microsoft MAI deployment on Azure AI Foundry; operators use their
@@ -8968,19 +8974,24 @@ mod tests {
     #[test]
     fn model_suggestions_include_gpt_5_6_variants() {
         let suggestions = ProviderChoice::model_suggestions_for_provider("openai");
-        assert_eq!(suggestions[0], "gpt-6.1-sol");
-        assert_eq!(suggestions[1], "gpt-6-sol");
-        assert_eq!(suggestions[2], "gpt-6-luna");
-        assert_eq!(suggestions[3], "gpt-6-astra");
+        assert_eq!(suggestions[0], "gpt-6.2-sol");
+        assert_eq!(suggestions[1], "gpt-6.2-astra");
+        assert_eq!(suggestions[2], "gpt-6.1-sol");
+        assert_eq!(suggestions[3], "gpt-6-sol");
+        assert_eq!(suggestions[4], "gpt-6-luna");
+        assert_eq!(suggestions[5], "gpt-6-astra");
         assert!(suggestions.contains(&"gpt-5.6-sol"));
         assert!(suggestions.contains(&"gpt-5.6-terra"));
         assert!(suggestions.contains(&"gpt-5.6-luna"));
         let codex = ProviderChoice::model_suggestions_for_provider("codex");
+        assert_eq!(&codex[..2], &["gpt-6.2-sol", "gpt-6.2-astra"]);
         assert!(codex.contains(&"gpt-6.1-sol"));
         assert!(codex.contains(&"gpt-5.6-sol"));
         assert!(codex.contains(&"gpt-5.6-terra"));
         assert!(codex.contains(&"gpt-5.6-luna"));
         let openrouter = ProviderChoice::model_suggestions_for_provider("openrouter");
+        assert!(openrouter.contains(&"openai/gpt-6.2-sol"));
+        assert!(openrouter.contains(&"openai/gpt-6.2-astra"));
         assert!(openrouter.contains(&"openai/gpt-6.1-sol"));
         assert!(openrouter.contains(&"openai/gpt-6-sol"));
         assert!(openrouter.contains(&"openai/gpt-5.6-sol"));
@@ -8989,6 +9000,47 @@ mod tests {
         assert!(openrouter.contains(&"anthropic/claude-opus-5-5"));
         assert!(openrouter.contains(&"anthropic/claude-sonnet-5-5"));
         assert!(openrouter.contains(&"anthropic/claude-fable-5-1"));
+    }
+
+    #[test]
+    fn gpt_6_2_model_specs_keep_explicit_identity() {
+        for provider in [
+            ProviderChoice::default_openai(),
+            ProviderChoice::default_codex(),
+        ] {
+            for model in ["gpt-6.2-sol", "gpt-6.2-astra", "gpt-6.1-sol", "gpt-6-astra"] {
+                let next = provider.resolve_model_spec(model).unwrap();
+                assert_eq!(next.model_id(), model);
+            }
+        }
+    }
+
+    #[test]
+    fn gpt_6_2_models_expose_upstream_controls() {
+        for model in ["gpt-6.2-sol", "gpt-6.2-astra"] {
+            for provider in [
+                ProviderChoice::default_openai(),
+                ProviderChoice::default_codex(),
+            ] {
+                let next = provider
+                    .resolve_model_spec(&format!("{model} high"))
+                    .unwrap();
+                assert_eq!(next.model_id(), model);
+                assert_eq!(next.reasoning_effort(), Some("high"));
+                assert!(next.reasoning_effort_config().is_some());
+            }
+            let profile = get_model_profile(&DriverId::OpenAI, model)
+                .expect("GPT-6.2 needs published upstream profile metadata");
+            assert!(profile.limits.is_some());
+            assert!(
+                profile
+                    .speed
+                    .unwrap()
+                    .values
+                    .iter()
+                    .any(|tier| tier.value.matches_tier("ultrafast"))
+            );
+        }
     }
 
     #[test]
@@ -9182,10 +9234,10 @@ mod tests {
     #[test]
     fn default_for_provider_name_returns_provider_default_model() {
         let openai = ProviderChoice::default_for_provider_name("openai").unwrap();
-        assert!(openai.label().starts_with("openai/gpt-6.1-sol"));
+        assert!(openai.label().starts_with("openai/gpt-6.2-sol"));
 
         let codex = ProviderChoice::default_for_provider_name("codex").unwrap();
-        assert!(codex.label().starts_with("codex/gpt-6.1-sol"));
+        assert!(codex.label().starts_with("codex/gpt-6.2-sol"));
 
         let anthropic = ProviderChoice::default_for_provider_name("anthropic").unwrap();
         assert_eq!(anthropic.label(), "anthropic/claude-opus-5-5 high");

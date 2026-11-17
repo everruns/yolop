@@ -318,10 +318,10 @@ pub fn schema() -> &'static [ConfigField] {
             aliases: &["service_tier"],
             title: "Speed (service tier)",
             description: "OpenAI service tier for every turn: `flex` (cheaper, slower), \
-                          `default`, `fast` (2x price; `priority` is its older name) or \
-                          `ultrafast` (6x). Sent only when the selected model's profile lists \
-                          the tier, otherwise dropped: GPT-6.1 Sol offers flex and fast, GPT-6 \
-                          Astra also ultrafast. `YOLOP_SPEED` overrides this.",
+                          `default`, `fast` (`priority` is its older name) or \
+                          `ultrafast`. Pricing depends on the selected model. Sent only when the \
+                          selected model's profile lists the tier, otherwise dropped. GPT-6.2 \
+                          Astra and Sol offer ultrafast. `YOLOP_SPEED` overrides this.",
             kind: ValueKind::Text,
             default: Some("default"),
             examples: &["fast", "ultrafast", "flex", "default"],

@@ -199,11 +199,11 @@ Fourteen backends, one switch. Set a key once with `/setup`, override per run wi
 
 | Provider | Default model | Key |
 | -------- | ------------- | --- |
-| `openai` | `gpt-6.1-sol` | `OPENAI_API_KEY` |
-| `codex` | `gpt-6.1-sol` | ChatGPT login (browser or device flow), or `CODEX_API_KEY` / `CODEX_ACCESS_TOKEN` |
+| `openai` | `gpt-6.2-sol` | `OPENAI_API_KEY` |
+| `codex` | `gpt-6.2-sol` | ChatGPT login (browser or device flow), or `CODEX_API_KEY` / `CODEX_ACCESS_TOKEN` |
 | `anthropic` | `claude-opus-5-5` | `ANTHROPIC_API_KEY` |
 | `meta` | `muse-spark-1.3` | `MODEL_API_KEY` |
-| `openrouter` | `openai/gpt-6.1-sol` | browser login, or `OPENROUTER_API_KEY` |
+| `openrouter` | `openai/gpt-6.2-sol` | browser login, or `OPENROUTER_API_KEY` |
 | `google` | `gemini-3.8-flash` | `GEMINI_API_KEY` or `GOOGLE_API_KEY` |
 | `mistral` | `mistral-large-4` | `MISTRAL_API_KEY` |
 | `fireworks` | `accounts/fireworks/models/llama-v3p1-70b` | `FIREWORKS_API_KEY` |
@@ -220,7 +220,7 @@ yolop --provider ollama -p "explain this file"
 yolop --provider local -p "refactor the parser without network access"
 ```
 
-Pick per run with `--provider` and `-m`, persist choices with `/setup` or `yolop config model set`, and switch mid-session with `/model` and `/effort`. GPT-6.1 Sol is on the menu (`-m gpt-6.1-sol`); for OpenAI's faster or cheaper service tiers set `yolop config set speed fast` (or `flex`, `ultrafast`, `default`), or `YOLOP_SPEED` for one run. A tier the model does not offer is skipped.
+Pick per run with `--provider` and `-m`, persist choices with `/setup` or `yolop config model set`, and switch mid-session with `/model` and `/effort`. GPT-6.2 Sol is the default (`-m gpt-6.2-sol`), with GPT-6.2 Astra available for more demanding work (`-m gpt-6.2-astra`); for OpenAI's faster or cheaper service tiers set `yolop config set speed fast` (or `flex`, `ultrafast`, `default`), or `YOLOP_SPEED` for one run. A tier the model does not offer is skipped.
 
 <details>
 <summary>Codex, OpenRouter, custom endpoints, and local inference</summary>
@@ -239,12 +239,12 @@ so you can narrow the query. The test sends one small prompt without tools,
 reports `ok` and latency, and exits nonzero on provider failure. It may incur a
 provider charge. Neither command edits the model menu. `-m` accepts a menu label,
 a unique listed model id, or `provider/model`. A qualified reference selects that
-provider, including gateway ids such as `openrouter/openai/gpt-6.1-sol`.
+provider, including gateway ids such as `openrouter/openai/gpt-6.2-sol`.
 Invalid explicit selections fail without substituting another model.
 
 **Codex.** `--provider codex` uses your ChatGPT plan via a browser or device login (`/setup` walks through it). Pin a model with `yolop config model set codex <id>`, tune reasoning with `/effort`. The Codex route signs in with the Codex CLI's public OAuth client; to use a different client there, set `yolop config set chatgpt_client_id <id>` or `YOLOP_CHATGPT_CLIENT_ID` and log in again. An existing login keeps refreshing with the client that issued it. A browser sign-in uses OpenAI's open-source Sign in with ChatGPT by default, which needs no borrowed client: yolop registers a client for your account on the first sign-in and runs turns on the public Responses API, still billed to your ChatGPT plan. It is a preview route, so a few request options (output token cap, temperature, `speed`) do not apply there. To use the Codex route instead, run `yolop config set chatgpt_sign_in codex` (or set `YOLOP_CHATGPT_SIGN_IN=codex`) and sign in again. A device login uses the Codex route unless `open-source` is set explicitly.
 
-**OpenRouter.** Sign in from the browser or set `OPENROUTER_API_KEY`. The default model is `openai/gpt-6.1-sol`; any `provider/model` id works with `-m`.
+**OpenRouter.** Sign in from the browser or set `OPENROUTER_API_KEY`. The default model is `openai/gpt-6.2-sol`; any `provider/model` id works with `-m`.
 
 **Cloudflare Workers AI.** Needs the `CLOUDFLARE_API_TOKEN` plus the account ID it is scoped to. Setup collects the account ID alongside the key, or export `CLOUDFLARE_ACCOUNT_ID`.
 

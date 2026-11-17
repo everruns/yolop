@@ -6,7 +6,7 @@
 //! ```toml
 //! [[models]]
 //! provider = "openai"
-//! model = "gpt-6.1-sol"
+//! model = "gpt-6.2-sol"
 //! effort = "high"
 //! ```
 //!
@@ -95,10 +95,10 @@ impl ModelEntry {
 /// so listing several providers here costs nothing to a user who has one.
 pub fn default_models() -> Vec<ModelEntry> {
     vec![
-        ModelEntry::new("openai", "gpt-6.1-sol"),
-        ModelEntry::new("openai", "gpt-6-sol"),
+        ModelEntry::new("openai", "gpt-6.2-sol"),
+        ModelEntry::new("openai", "gpt-6.2-astra"),
         ModelEntry::new("openai", "gpt-6-luna"),
-        ModelEntry::new("codex", "gpt-6.1-sol"),
+        ModelEntry::new("codex", "gpt-6.2-sol"),
     ]
 }
 
@@ -172,14 +172,14 @@ mod tests {
     #[test]
     fn default_list_offers_the_gpt_6_line_on_both_accounts() {
         let defaults = default_models();
-        assert_eq!(defaults[0], ModelEntry::new("openai", "gpt-6.1-sol"));
+        assert_eq!(defaults[0], ModelEntry::new("openai", "gpt-6.2-sol"));
         assert_eq!(
             defaults,
             vec![
-                ModelEntry::new("openai", "gpt-6.1-sol"),
-                ModelEntry::new("openai", "gpt-6-sol"),
+                ModelEntry::new("openai", "gpt-6.2-sol"),
+                ModelEntry::new("openai", "gpt-6.2-astra"),
                 ModelEntry::new("openai", "gpt-6-luna"),
-                ModelEntry::new("codex", "gpt-6.1-sol"),
+                ModelEntry::new("codex", "gpt-6.2-sol"),
             ]
         );
         for entry in &defaults {

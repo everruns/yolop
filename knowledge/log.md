@@ -1,5 +1,9 @@
 # Knowledge Log
 
+## 2026-11-17, GPT-6.2 model conventions
+
+- [Model list](specs/model-list.md): GPT-6.2 Sol is the current default and GPT-6.2 Astra the capable alternative in setup and suggestions. Saved explicit IDs and GPT-6 Luna evaluation policies remain unchanged. Full capability metadata follows the published Everruns profile registry.
+
 ## 2026-11-16, Everruns 0.53.1
 
 - [Task completion](specs/task-completion.md): the engine now reviews tool-free answers under `Always`, continues an empty final or an output-limit stop without a review, and writes the `Schedule` origin on local schedule fires itself, so yolop's origin workaround is gone.
