@@ -28,8 +28,8 @@ use everruns_core::builtins::soft_approval::{
 };
 pub use everruns_core::builtins::soft_approval::{PendingApproval, PendingApprovalStore};
 
-/// Yolop's level as upstream spells it. Total both ways: the enums carry the
-/// same three variants because upstream's is a copy of this one.
+/// Yolop's supported levels as upstream spells them. Reviewer-driven auto
+/// approval is not configured by this host; reject it rather than claim success.
 fn to_upstream(mode: ApprovalMode) -> UpstreamApprovalMode {
     match mode {
         ApprovalMode::Protective => UpstreamApprovalMode::Protective,
@@ -38,11 +38,14 @@ fn to_upstream(mode: ApprovalMode) -> UpstreamApprovalMode {
     }
 }
 
-fn from_upstream(mode: UpstreamApprovalMode) -> ApprovalMode {
+fn from_upstream(mode: UpstreamApprovalMode) -> Result<ApprovalMode, String> {
     match mode {
-        UpstreamApprovalMode::Protective => ApprovalMode::Protective,
-        UpstreamApprovalMode::Normal => ApprovalMode::Normal,
-        UpstreamApprovalMode::Off => ApprovalMode::Off,
+        UpstreamApprovalMode::Protective => Ok(ApprovalMode::Protective),
+        UpstreamApprovalMode::Normal => Ok(ApprovalMode::Normal),
+        UpstreamApprovalMode::Off => Ok(ApprovalMode::Off),
+        UpstreamApprovalMode::Auto => {
+            Err("auto approval is not supported by Yolop; choose protective, normal, or off".into())
+        }
     }
 }
 
@@ -79,7 +82,7 @@ impl ApprovalModeStore for SettingsApprovalModes {
 
     fn set_mode(&self, _session_id: &SessionId, mode: UpstreamApprovalMode) -> Result<(), String> {
         self.settings
-            .set_approval_mode(from_upstream(mode))
+            .set_approval_mode(from_upstream(mode)?)
             .map_err(|e| format!("could not save approval level: {e}"))
     }
 }
@@ -120,11 +123,31 @@ mod tests {
             ApprovalMode::Normal,
             ApprovalMode::Off,
         ] {
-            assert_eq!(from_upstream(to_upstream(mode)), mode);
+            assert_eq!(from_upstream(to_upstream(mode)).unwrap(), mode);
             // The two enums agree on the wire name, which is what settings.toml
             // and the status bar show.
             assert_eq!(to_upstream(mode).as_str(), mode.as_str());
         }
+    }
+
+    #[tokio::test]
+    async fn unsupported_auto_mode_is_rejected_without_changing_settings() {
+        use everruns_core::{Capability as _, ToolContext};
+        let (_tmp, settings) = store();
+        let (capability, _pending) = soft_approval_capability(settings.clone(), settings.clone());
+        let tool = capability
+            .tools()
+            .into_iter()
+            .find(|tool| tool.name() == "set_approval_mode")
+            .expect("approval mode tool");
+        let result = tool
+            .execute_with_context(
+                serde_json::json!({"mode": "auto"}),
+                &ToolContext::new(SessionId::new()),
+            )
+            .await;
+        assert!(result.is_error());
+        assert_eq!(settings.approval_mode(), ApprovalMode::Normal);
     }
 
     #[test]

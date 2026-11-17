@@ -4,9 +4,8 @@
 //! drivers send as `service_tier`: `flex`, `default`, `priority`, `fast`
 //! (OpenAI's newer name for priority) or `ultrafast`. Yolop exposes it as one
 //! setting rather than as model-list variants, because the tier a model offers
-//! comes from its upstream profile, not from yolop: GPT-6.1 Sol lists Flex,
-//! Standard and Fast (2x), GPT-6 Astra adds Ultrafast (6x), and models without
-//! a speed config list none. The engine drops a tier the selected model's
+//! comes from its upstream profile, not from yolop. GPT-6.2 Astra and Sol
+//! support Ultrafast; models without a speed config list none. The engine drops a tier the selected model's
 //! profile does not list, with a warning, so a global `ultrafast` stays safe
 //! when the user switches to a model that cannot serve it.
 //!

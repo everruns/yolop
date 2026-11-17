@@ -111,8 +111,8 @@ pub fn schema() -> &'static [ConfigField] {
                           means the built-in default list.",
             kind: ValueKind::List,
             default: Some(
-                "openai/gpt-5.6-sol, openai/gpt-5.6-terra, openai/gpt-5.6-luna, \
-                           codex/gpt-5.6-sol, codex/gpt-5.6-terra, codex/gpt-5.6-luna",
+                "openai/gpt-6.2-sol, openai/gpt-6.2-astra, openai/gpt-6-luna, \
+                           codex/gpt-6.2-sol",
             ),
             examples: &["yolop config models add openrouter anthropic/claude-opus-4-8"],
             provider_scoped: false,
@@ -127,8 +127,8 @@ pub fn schema() -> &'static [ConfigField] {
             kind: ValueKind::Text,
             default: None,
             examples: &[
-                "default_models.openai = gpt-5.5 high",
-                "default_models.codex = gpt-5.5 high",
+                "default_models.openai = gpt-6.2-sol high",
+                "default_models.codex = gpt-6.2-sol high",
                 "default_models.anthropic = claude-opus-4-5",
             ],
             provider_scoped: true,
@@ -318,10 +318,10 @@ pub fn schema() -> &'static [ConfigField] {
             aliases: &["service_tier"],
             title: "Speed (service tier)",
             description: "OpenAI service tier for every turn: `flex` (cheaper, slower), \
-                          `default`, `fast` (2x price; `priority` is its older name) or \
-                          `ultrafast` (6x). Sent only when the selected model's profile lists \
-                          the tier, otherwise dropped: GPT-6.1 Sol offers flex and fast, GPT-6 \
-                          Astra also ultrafast. `YOLOP_SPEED` overrides this.",
+                          `default`, `fast` (`priority` is its older name) or \
+                          `ultrafast`. Pricing depends on the selected model. Sent only when the \
+                          selected model's profile lists the tier, otherwise dropped. GPT-6.2 \
+                          Astra and Sol offer ultrafast. `YOLOP_SPEED` overrides this.",
             kind: ValueKind::Text,
             default: Some("default"),
             examples: &["fast", "ultrafast", "flex", "default"],
@@ -525,6 +525,17 @@ pub fn known_keys() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn model_menu_help_matches_runtime_defaults() {
+        let expected = crate::config::model_list::default_models()
+            .iter()
+            .map(|model| format!("{}/{}", model.provider, model.model))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let field = schema().iter().find(|field| field.key == "models").unwrap();
+        assert_eq!(field.default, Some(expected.as_str()));
+    }
 
     #[test]
     fn aliases_resolve_to_canonical_targets() {

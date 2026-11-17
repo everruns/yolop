@@ -487,14 +487,14 @@ impl App {
         let mut models = match provider {
             "openai" => vec![
                 ModelOption {
-                    spec: Some("gpt-6.1-sol".to_string()),
-                    label: "gpt-6.1-sol".to_string(),
+                    spec: Some("gpt-6.2-sol".to_string()),
+                    label: "gpt-6.2-sol".to_string(),
                     hint: "frontier model for complex coding".to_string(),
                 },
                 ModelOption {
-                    spec: Some("gpt-6-sol".to_string()),
-                    label: "gpt-6-sol".to_string(),
-                    hint: "previous frontier model".to_string(),
+                    spec: Some("gpt-6.2-astra".to_string()),
+                    label: "gpt-6.2-astra".to_string(),
+                    hint: "most capable model for complex work".to_string(),
                 },
                 ModelOption {
                     spec: Some("gpt-6-luna".to_string()),
@@ -502,16 +502,21 @@ impl App {
                     hint: "fast and cost-efficient".to_string(),
                 },
                 ModelOption {
-                    spec: Some("gpt-6-astra".to_string()),
-                    label: "gpt-6-astra".to_string(),
-                    hint: "smallest, cheapest GPT-6".to_string(),
+                    spec: Some("gpt-6.1-sol".to_string()),
+                    label: "gpt-6.1-sol".to_string(),
+                    hint: "previous Sol model".to_string(),
                 },
             ],
             "codex" => vec![
             ModelOption {
-                spec: Some("gpt-6.1-sol".to_string()),
-                label: "gpt-6.1-sol".to_string(),
+                spec: Some("gpt-6.2-sol".to_string()),
+                label: "gpt-6.2-sol".to_string(),
                 hint: "frontier Codex model".to_string(),
+            },
+            ModelOption {
+                spec: Some("gpt-6.2-astra".to_string()),
+                label: "gpt-6.2-astra".to_string(),
+                hint: "most capable model for complex work".to_string(),
             },
             ModelOption {
                 spec: Some("gpt-5.6-sol".to_string()),
@@ -602,9 +607,14 @@ impl App {
             ],
             "openrouter" => vec![
                 ModelOption {
-                    spec: Some("openai/gpt-6.1-sol".to_string()),
-                    label: "openai/gpt-6.1-sol".to_string(),
+                    spec: Some("openai/gpt-6.2-sol".to_string()),
+                    label: "openai/gpt-6.2-sol".to_string(),
                     hint: "frontier OpenAI model through OpenRouter".to_string(),
+                },
+                ModelOption {
+                    spec: Some("openai/gpt-6.2-astra".to_string()),
+                    label: "openai/gpt-6.2-astra".to_string(),
+                    hint: "most capable OpenAI model through OpenRouter".to_string(),
                 },
                 ModelOption {
                     spec: Some("anthropic/claude-opus-5-5".to_string()),
@@ -1999,7 +2009,7 @@ mod tests {
     use crate::config::{CodexAuth, Settings};
 
     #[test]
-    fn openai_and_codex_fallback_models_lead_with_gpt_6_1_sol() {
+    fn openai_and_codex_fallback_models_lead_with_gpt_6_2_sol() {
         for provider in ["openai", "codex"] {
             let specs = App::fallback_model_options(provider)
                 .into_iter()
@@ -2007,9 +2017,10 @@ mod tests {
                 .collect::<Vec<_>>();
             assert_eq!(
                 specs.first().map(String::as_str),
-                Some("gpt-6.1-sol"),
-                "{provider} selector should lead with GPT-6.1 Sol"
+                Some("gpt-6.2-sol"),
+                "{provider} selector should lead with GPT-6.2 Sol"
             );
+            assert!(specs.iter().any(|model| model == "gpt-6.2-astra"));
         }
     }
 

@@ -38,12 +38,12 @@ Stored as `[[models]]` in `settings.toml` (`crate::config::model_list`):
 ```toml
 [[models]]
 provider = "openai"
-model = "gpt-6.1-sol"
+model = "gpt-6.2-sol"
 effort = "high"
 ```
 
 An unset list means "never configured" and resolves to a built-in default menu
-led by `openai/gpt-6.1-sol`. The first edit materializes that default and
+led by `openai/gpt-6.2-sol`. The first edit materializes that default and
 appends to it, so a user never silently loses the entries they were using.
 Loading is tolerant like the rest of settings: an entry naming an unsupported
 provider or missing a model is skipped, never fatal.
@@ -118,7 +118,7 @@ status. The call is chargeable and retains response-size and wall-clock limits.
 Explicit `-m` selection shares reference resolution with the smoke test. A
 recognized provider prefix selects that provider; gateway model ids whose first
 segment is also a provider name must include their gateway prefix, for example
-`openrouter/openai/gpt-6.1-sol`. Bare provider-relative specs remain accepted.
+`openrouter/openai/gpt-6.2-sol`. Bare provider-relative specs remain accepted.
 Ambiguous listed ids, malformed specs, and an explicit model missing from a
 successfully fetched catalog fail before session startup. Provider/model controls apply the same distinction when a model spec is
 supplied explicitly. Catalog reconciliation may repair implicit defaults, but
@@ -126,21 +126,20 @@ never substitutes a different explicit model.
 
 ### Service tiers are a setting, not entries
 
-GPT-6.1 Sol (everruns 0.33) leads the default menu and the OpenAI, Codex, and
-OpenRouter suggestions; each provider defaults to its latest model (`gpt-6.1-sol` for OpenAI and Codex).
-Its faster tiers are not separate menu entries. OpenAI sells them as a
-`service_tier` on the same model id, and which tiers a model offers is upstream
-profile data that changes without a model rename: 6.1 Sol lists Flex, Standard,
-and Fast (2x), GPT-6 Astra adds Ultrafast (6x), and OpenAI has announced
-Ultrafast for 6.1 Sol without shipping it. Encoding tiers as entries would pin
-that table into yolop and go stale.
+GPT-6.2 Sol leads the default menu and the OpenAI, Codex, and OpenRouter
+suggestions. GPT-6.2 Astra is the more capable alternative; GPT-6 Luna remains
+the cost-efficient choice. Saved explicit model IDs are not rewritten.
+Faster tiers are not separate menu entries. OpenAI sells them as a
+`service_tier` on the same model id. Available tiers belong to the upstream
+profile registry, not the picker. GPT-6.2 Astra and Sol require a registry
+version containing their profiles for reasoning, context, pricing and tier
+metadata; a generic model ID alone is not complete model support.
 
 So the tier is one setting, `speed` (`flex`, `default`, `fast`, `priority`,
 `ultrafast`; `YOLOP_SPEED` overrides it), stamped on every user turn as
 `controls.speed` (`crate::runtime::speed`). The engine drops a tier the selected
 model's profile does not list, with a warning, so a global `ultrafast` is safe
-across model switches and simply has no effect on 6.1 Sol until upstream adds
-the tier. The setting reaches providers whose driver sends `service_tier`
+across model switches and has no effect when a profile does not advertise the tier. The setting reaches providers whose driver sends `service_tier`
 (`openai`); yolop's own Codex driver does not send it.
 
 ## Relationship to the per-provider default

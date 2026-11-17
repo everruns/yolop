@@ -285,7 +285,7 @@ impl Tool for RunCommandTool {
                     "items": { "type": "string" },
                     "description": if self.ui.is_some() {
                         "Ordered command arguments, e.g. [`reload`] for /mcp or \
-                         [`openai/gpt-5.4`] for /model."
+                         [`openai/gpt-6.2-sol`] for /model."
                     } else {
                         "Ordered slash-command arguments."
                     }
