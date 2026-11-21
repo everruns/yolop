@@ -355,7 +355,11 @@ pub struct FrontendObserver {
 impl everruns_core::EventListener for FrontendObserver {
     async fn on_event(&self, event: &Event) {
         if event.session_id == self.root {
-            if let everruns_core::EventData::InputMessage(input) = &event.data {
+            // Admissions are turnless. Inputs emitted inside a turn, such as
+            // completion continuations, have no receipt for a frontend to wait on.
+            if event.context.turn_id.is_none()
+                && let everruns_core::EventData::InputMessage(input) = &event.data
+            {
                 self.platform.observe_input(&input.message);
             }
             if let Some(sequence) = event.sequence {
@@ -547,6 +551,112 @@ mod tests {
     use super::*;
     use crate::config::SettingsStore;
     use crate::session_state::checkpoint::RestoreMode;
+
+    #[tokio::test]
+    async fn completion_continuations_do_not_create_phantom_background_wakes() {
+        use everruns_llmsim::SimTurn;
+
+        let workspace = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let settings = Arc::new(SettingsStore::open(data.path().join("settings.toml")));
+        let mut built = build_with_options(
+            workspace.path().into(),
+            ProviderChoice::Sim,
+            None,
+            data.path().into(),
+            settings,
+            BuildOptions {
+                llmsim_override: Some(everruns_llmsim::LlmSimConfig::scripted(vec![
+                    SimTurn::Assistant("I will finish the work now.".into()),
+                    SimTurn::Assistant(
+                        r#"{"state":"in_progress","reason":"The promised work remains."}"#.into(),
+                    ),
+                    SimTurn::Assistant("Finished the requested work.".into()),
+                    SimTurn::Assistant(
+                        r#"{"state":"achieved","reason":"The requested work is complete."}"#.into(),
+                    ),
+                ])),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let turn = built
+            .handles
+            .run_checkpointed_turn(built.model.input_message("Finish the work"))
+            .await
+            .unwrap();
+        assert!(turn.success, "{turn:?}");
+        let events = built.handles.host.events().await.unwrap();
+        let continuation = events
+            .iter()
+            .find_map(|event| match &event.data {
+                everruns_core::EventData::InputMessage(input)
+                    if input.message.is_turn_continuation() =>
+                {
+                    Some(&input.message)
+                }
+                _ => None,
+            })
+            .expect("the Engine must continue the unfinished turn");
+        assert!(
+            built
+                .handles
+                .session
+                .admission(continuation.id)
+                .await
+                .unwrap()
+                .is_none(),
+            "internal continuations belong to the current turn, not a new admission"
+        );
+        // Exercise the same observer again after execution, so delivery timing
+        // cannot hide a spurious wake queued by the real turn.
+        let observer = FrontendObserver {
+            root: built.handles.session_id,
+            platform: built.handles.host.profile.platform.clone(),
+            events: built.handles.events.clone(),
+        };
+        for event in &events {
+            everruns_core::EventListener::on_event(&observer, event).await;
+        }
+        if let Ok(wake) = built.background_wake.try_recv() {
+            let error = built
+                .handles
+                .execute_input(
+                    super::super::background_wake::input_for_wake(&wake),
+                    everruns::CancellationToken::new(),
+                )
+                .await;
+            panic!("phantom background wake: {error:?}");
+        }
+
+        let sent = built
+            .handles
+            .session
+            .send("A real automatic input")
+            .await
+            .unwrap();
+        let input_id = sent.message_id.parse().unwrap();
+        let automatic = built.handles.host.events().await.unwrap();
+        let event = automatic.iter().find(|event| matches!(
+            &event.data, everruns_core::EventData::InputMessage(input) if input.message.id == input_id
+        )).unwrap();
+        everruns_core::EventListener::on_event(&observer, event).await;
+        let wake = built
+            .background_wake
+            .try_recv()
+            .expect("real admissions still wake the frontend");
+        assert_eq!(wake.admission(), Some(input_id));
+        let result = built
+            .handles
+            .execute_input(
+                super::super::background_wake::input_for_wake(&wake),
+                everruns::CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(result.success, "{result:?}");
+    }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn an_unrelated_session_can_run_while_another_database_is_write_locked() {

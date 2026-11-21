@@ -98,6 +98,10 @@ automatically admitted work is executed by the supervisor. UI wake channels
 observe accepted work rather than authorizing it. Startup and lifecycle reads
 recover pending admission notifications missed by a lossy observer.
 
+Only turnless canonical input events announce admissions to frontends. Internal
+inputs already attached to a turn, including completion-check continuations,
+remain part of that execution and must not enqueue another admission waiter.
+
 ## Saved-session cutover
 
 Yolop decodes its old format under the same exclusive session file lease used
