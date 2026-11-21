@@ -10,6 +10,55 @@ mechanical `### What's Changed` list of merged PRs.
 Releases are cut via [`/release`](./.agents/skills/release/SKILL.md), which
 tags the version and publishes to crates.io and the Homebrew tap.
 
+## [0.24.0] - 2026-11-21
+
+### Highlights
+
+- Serve ACP protocol v2 beside v1, with shell command cancel and workspace folders over v2 plus tool result images forwarded to the editor.
+- Enforce the first-mutation worktree isolation decision in auto mode.
+- Use the engine completion check and credit wait, discover Codex models from the provider catalog, and mirror session titles into Rex.
+- Require explicit trust before loading workspace hooks, isolate local execution databases, and coordinate MCP OAuth refresh across processes.
+- Add an optional MCP interactive discovery budget and keep the report_done schema eager in tool search.
+
+### What's Changed
+
+- fix(deps): bump Bashkit to 0.21.1 for patched Wasmtime 49.0.6 ([#957](https://github.com/everruns/yolop/pull/957)) by @chaliy
+- chore(deps): bump jsonschema from 0.60.2 to 0.61.2 ([#956](https://github.com/everruns/yolop/pull/956)) by @dependabot[bot]
+- chore(deps): bump the cargo-minor-and-patch group with 5 updates ([#955](https://github.com/everruns/yolop/pull/955)) by @dependabot[bot]
+- chore(ci): require opt-in for paid provider smoke tests ([#953](https://github.com/everruns/yolop/pull/953)) by @chaliy
+- fix(eval): make search gate coverage and purpose explicit ([#952](https://github.com/everruns/yolop/pull/952)) by @chaliy
+- chore(eval): migrate paid evaluation presets to Luna ([#951](https://github.com/everruns/yolop/pull/951)) by @chaliy
+- chore(evals): make paid comparisons manual and attributable ([#950](https://github.com/everruns/yolop/pull/950)) by @chaliy
+- fix(evals): gate search controls on task calls, not todo bookkeeping ([#949](https://github.com/everruns/yolop/pull/949)) by @chaliy
+- chore(deps): adopt portable Everruns 0.53.1 crates ([#948](https://github.com/everruns/yolop/pull/948)) by @chaliy
+- feat(completion): use the engine completion check and credit wait ([#947](https://github.com/everruns/yolop/pull/947)) by @chaliy
+- refactor(capabilities): take code navigation from everruns-coding ([#946](https://github.com/everruns/yolop/pull/946)) by @chaliy
+- fix(tool-search): keep report_done schema eager ([#945](https://github.com/everruns/yolop/pull/945)) by @chaliy
+- feat(worktree): enforce first-mutation isolation decision in auto mode ([#944](https://github.com/everruns/yolop/pull/944)) by @chaliy
+- fix(acp): forward tool result images to editor ([#943](https://github.com/everruns/yolop/pull/943)) by @chaliy
+- feat(acp): cancel one shell command and add workspace folders over ACP v2 ([#942](https://github.com/everruns/yolop/pull/942)) by @chaliy
+- feat(acp): serve ACP protocol v2 beside v1 ([#941](https://github.com/everruns/yolop/pull/941)) by @chaliy
+- chore(deps): migrate agent-client-protocol to 5.2 ([#940](https://github.com/everruns/yolop/pull/940)) by @chaliy
+- chore(ci): keep a Codecov upload failure from failing main ([#939](https://github.com/everruns/yolop/pull/939)) by @chaliy
+- chore(deps): bump the cargo-minor-and-patch group with 5 updates ([#936](https://github.com/everruns/yolop/pull/936)) by @dependabot[bot]
+- fix(evals): mine session journals from engine.sqlite ([#935](https://github.com/everruns/yolop/pull/935)) by @chaliy
+- fix(sessions): colocate storage and drop the event export ([#934](https://github.com/everruns/yolop/pull/934)) by @chaliy
+- docs: describe yolop as part of the Everruns community ecosystem ([#933](https://github.com/everruns/yolop/pull/933)) by @chaliy
+- fix(session): isolate local execution databases ([#932](https://github.com/everruns/yolop/pull/932)) by @chaliy
+- fix(session): restart repair clock on productive continuation turns ([#931](https://github.com/everruns/yolop/pull/931)) by @chaliy
+- docs: point the sandboxing links at the page's current path ([#930](https://github.com/everruns/yolop/pull/930)) by @chaliy
+- fix(mcp): coordinate oauth refresh across processes ([#929](https://github.com/everruns/yolop/pull/929)) by @chaliy
+- fix(ask): render full prompt and keep single-choice navigable ([#928](https://github.com/everruns/yolop/pull/928)) by @chaliy
+- chore(knowledge): record yolop everruns dedup ledger ([#926](https://github.com/everruns/yolop/pull/926)) by @chaliy
+- feat(codex): discover Codex models from provider catalog ([#925](https://github.com/everruns/yolop/pull/925)) by @chaliy
+- feat(rex): mirror session titles into Rex window and block labels ([#924](https://github.com/everruns/yolop/pull/924)) by @chaliy
+- feat(mcp): add optional interactive discovery budget ([#923](https://github.com/everruns/yolop/pull/923)) by @chaliy
+- fix(edit): preserve untouched patch line endings ([#922](https://github.com/everruns/yolop/pull/922)) by @chaliy
+- fix(hooks): require explicit trust before loading workspace hooks ([#921](https://github.com/everruns/yolop/pull/921)) by @chaliy
+- fix: clarify release guard failures and quote adapter options ([#920](https://github.com/everruns/yolop/pull/920)) by @chaliy
+
+**Full Changelog**: https://github.com/everruns/yolop/compare/v0.23.3...v0.24.0
+
 ## [0.23.3] - 2026-11-06
 
 ### Highlights
