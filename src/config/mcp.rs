@@ -34,8 +34,7 @@ pub(crate) struct McpServerSummary {
 }
 
 // A configured server refused before runtime discovery, not a connection failure.
-pub(crate) const WORKSPACE_STDIO_NOT_LOADED: &str =
-    "not loaded: workspace configuration cannot start local MCP processes. Use a remote HTTP server, or add a trusted local server in user-owned global settings.";
+pub(crate) const WORKSPACE_STDIO_NOT_LOADED: &str = "not loaded: workspace configuration cannot start local MCP processes. Use a remote HTTP server, or add a trusted local server in user-owned global settings.";
 
 pub(crate) fn workspace_stdio_diagnostic(name: &str) -> String {
     let name: String = name.chars().take(80).collect();

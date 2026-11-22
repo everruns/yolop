@@ -10240,9 +10240,22 @@ flowchart TD
                     && line.text.contains("not loaded: workspace configuration")
                     && line.text.contains("user-owned global settings")
             }));
-            assert!(!app.lines.iter().any(|line| line.text.contains("no MCP servers configured")));
-            assert!(!app.lines.iter().any(|line| line.text.contains("must-not-be-shown")));
-            assert!(!app.startup.mcp_server_names.iter().any(|name| name == "local-denied"));
+            assert!(
+                !app.lines
+                    .iter()
+                    .any(|line| line.text.contains("no MCP servers configured"))
+            );
+            assert!(
+                !app.lines
+                    .iter()
+                    .any(|line| line.text.contains("must-not-be-shown"))
+            );
+            assert!(
+                !app.startup
+                    .mcp_server_names
+                    .iter()
+                    .any(|name| name == "local-denied")
+            );
         }
     }
 
