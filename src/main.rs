@@ -587,7 +587,7 @@ enum McpCommand {
     },
     /// List configured MCP servers.
     #[command(
-        after_help = "Examples:\n  See every server this workspace would load:\n    yolop mcp list\n\n  See only global servers:\n    yolop mcp list --scope global"
+        after_help = "Examples:\n  See effective servers and workspace stdio entries blocked before loading:\n    yolop mcp list\n\n  See only global servers:\n    yolop mcp list --scope global"
     )]
     List {
         /// Scope to inspect (`global`, `workspace`, or `effective`).
@@ -1664,13 +1664,17 @@ async fn run_mcp_command(command: McpCommand) -> Result<()> {
                     .map_err(anyhow::Error::msg)?
                     .servers
                     .into_iter()
-                    .filter(|server| server.effective)
+                    .filter(|server| server.effective || server.workspace_stdio_blocked())
                     .collect(),
             };
             if servers.is_empty() {
                 println!("no MCP servers configured");
             } else {
                 for server in servers {
+                    if server.workspace_stdio_blocked() {
+                        println!("{}", config::mcp::workspace_stdio_diagnostic(&server.name));
+                        continue;
+                    }
                     let enabled = if server.enabled {
                         "enabled"
                     } else {

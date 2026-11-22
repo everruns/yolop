@@ -58,6 +58,33 @@ fn yolop_command() -> Command {
     command
 }
 
+#[test]
+fn mcp_list_distinguishes_workspace_policy_from_disabled_and_enabled() {
+    let temp = tempfile::tempdir().unwrap();
+    fs::write(
+        temp.path().join(".mcp.json"),
+        r#"{"mcpServers":{
+          "local-denied":{"type":"stdio","command":"must-not-be-shown"},
+          "local-disabled":{"type":"stdio","command":"unused","enabled":false},
+          "remote":{"type":"http","url":"https://example.com/mcp"}
+        }}"#,
+    )
+    .unwrap();
+    let output = yolop_command()
+        .args(["mcp", "list", "--scope", "workspace", "--cwd"])
+        .arg(temp.path())
+        .env("HOME", temp.path())
+        .env("XDG_CONFIG_HOME", temp.path().join(".config"))
+        .output()
+        .expect("list workspace MCP configuration");
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("local-denied\": not loaded: workspace configuration"));
+    assert!(stdout.contains("local-disabled\tworkspace\tdisabled"));
+    assert!(stdout.contains("remote\tworkspace\tenabled"));
+    assert!(!stdout.contains("must-not-be-shown"));
+}
+
 /// `models pull` must reach the download without panicking.
 ///
 /// 0.16.0 shipped a `Runtime::new().block_on(..)` inside the pull, which is
