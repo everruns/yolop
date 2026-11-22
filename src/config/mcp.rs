@@ -33,6 +33,23 @@ pub(crate) struct McpServerSummary {
     pub(crate) server: McpServerEntry,
 }
 
+// A configured server refused before runtime discovery, not a connection failure.
+pub(crate) const WORKSPACE_STDIO_NOT_LOADED: &str =
+    "not loaded: workspace configuration cannot start local MCP processes. Use a remote HTTP server, or add a trusted local server in user-owned global settings.";
+
+pub(crate) fn workspace_stdio_diagnostic(name: &str) -> String {
+    let name: String = name.chars().take(80).collect();
+    format!("{name:?}: {WORKSPACE_STDIO_NOT_LOADED}")
+}
+
+impl McpServerSummary {
+    pub(crate) fn workspace_stdio_blocked(&self) -> bool {
+        self.scope == McpConfigScope::Workspace
+            && self.enabled
+            && !workspace_server_is_safe(&self.server)
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct McpServerEntry {
     #[serde(default = "default_enabled")]
@@ -130,6 +147,21 @@ impl McpConfigStore {
             workspace_path: self.workspace_mcp_path.clone(),
             servers: summaries,
         })
+    }
+
+    /// Names only. Never surface repository-provided executable arguments or secrets.
+    pub(crate) fn blocked_workspace_stdio(&self) -> Vec<String> {
+        load_workspace_mcp_settings(&self.workspace_mcp_path)
+            .map(|workspace| {
+                workspace
+                    .servers
+                    .into_iter()
+                    .filter_map(|(name, entry)| {
+                        (entry.enabled && !workspace_server_is_safe(&entry)).then_some(name)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     pub(crate) fn upsert(
@@ -460,6 +492,41 @@ mod tests {
                 .expect("remove")
         );
         assert!(load_mcp_servers_from_paths(&settings_path, &workspace).is_empty());
+    }
+
+    #[test]
+    fn workspace_stdio_status_is_bounded_and_omits_config_values() {
+        let workspace = TempDir::new().expect("tempdir");
+        let settings = workspace.path().join("settings.toml");
+        let store = McpConfigStore::new(settings, workspace.path().to_path_buf());
+        std::fs::write(
+            workspace.path().join(WORKSPACE_MCP_CONFIG_FILE),
+            serde_json::to_vec(&serde_json::json!({
+                "mcpServers": {
+                    "blocked\nname": { "type": "stdio", "command": "do-not-render" },
+                    "disabled": { "type": "stdio", "command": "unused", "enabled": false },
+                    "remote": { "type": "http", "url": "https://example.com/mcp" }
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(store.blocked_workspace_stdio(), ["blocked\nname"]);
+        let report = store
+            .effective()
+            .unwrap()
+            .servers
+            .into_iter()
+            .filter(McpServerSummary::workspace_stdio_blocked)
+            .map(|server| workspace_stdio_diagnostic(&server.name))
+            .collect::<Vec<_>>();
+        assert_eq!(report.len(), 1);
+        assert!(report[0].contains("not loaded: workspace configuration"));
+        assert!(report[0].contains("user-owned global settings"));
+        assert!(!report[0].contains("do-not-render"));
+        assert!(!report[0].contains('\n'));
+        assert!(workspace_stdio_diagnostic(&"a".repeat(500)).len() < 280);
     }
 
     #[test]

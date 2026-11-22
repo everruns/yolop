@@ -51,7 +51,11 @@ path, so MCP tools flow through the same agent loop as the built-in tools.
 - **Discovery + execution**: the runtime discovers each server's tools live
   (`tools/list`) and routes `mcp_*` tool calls to the MCP executor. Tool names
   are prefixed (`mcp_<server>__<tool>`) by the runtime to avoid collisions.
-- **Visibility**: `/mcp` lists the configured servers; configured server names
+- **Visibility**: `/mcp`, `/mcp reload` and `yolop mcp list` explain when an
+  enabled workspace stdio server was refused before discovery. Disabled
+  entries and connection or discovery failures are separate. The diagnostic
+  shows the server name, not its command, arguments or environment.
+- **Runtime catalog**: configured server names
   also appear in `StartupInfo` and in the agent system prompt (first 10, with
   `yolop mcp list` as the full discovery path).
 - **Live reload**: server changes apply to the running session without a

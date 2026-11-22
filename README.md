@@ -285,7 +285,10 @@ This budget applies to turn preparation; explicit context inspection and
 The manual path for remote HTTP servers is `.mcp.json` at the repo root. Local
 stdio servers must be added to user-owned global configuration with
 `yolop mcp add <name> --scope global --type stdio ...`, because
-repository-controlled commands are not executed:
+repository-controlled commands are not executed. `/mcp`, `/mcp reload` and
+`yolop mcp list` explain when a workspace stdio entry was not loaded.
+
+For a workspace HTTP server:
 
 ```jsonc
 // .mcp.json

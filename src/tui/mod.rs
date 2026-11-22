@@ -3531,18 +3531,24 @@ impl App {
 
     async fn manage_mcp_command(&mut self, raw: Option<&str>) {
         let Some(raw) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
-            if self.startup.mcp_server_names.is_empty() {
+            let blocked_workspace = self.blocked_workspace_mcp_stdio();
+            if self.startup.mcp_server_names.is_empty() && blocked_workspace.is_empty() {
                 let global = crate::config::mcp::global_mcp_config_path()
                     .map(|p| p.display().to_string())
                     .unwrap_or_else(|| "the yolop config dir".to_string());
                 self.push_system(format!(
                     "no MCP servers configured (add them with `/mcp add`, `yolop mcp add`, .mcp.json in the workspace root, or {global})"
                 ));
+            } else if self.startup.mcp_server_names.is_empty() {
+                self.push_system("active MCP servers: none".into());
             } else {
                 self.push_system(format!(
                     "active MCP servers: {}",
                     self.startup.mcp_server_names.join(", ")
                 ));
+            }
+            for line in blocked_workspace {
+                self.push_system(line);
             }
             match self.session.mcp_readiness().await {
                 Ok(statuses) => {
@@ -3911,6 +3917,14 @@ impl App {
         applied
     }
 
+    fn blocked_workspace_mcp_stdio(&self) -> Vec<String> {
+        crate::config::mcp::McpConfigStore::default_for_workspace(&self.startup.workspace_root)
+            .blocked_workspace_stdio()
+            .into_iter()
+            .map(|name| crate::config::mcp::workspace_stdio_diagnostic(&name))
+            .collect()
+    }
+
     /// Apply the on-disk MCP config to the live session and report the active
     /// set. `prelude`, when set, is printed first (e.g. the mutation summary).
     async fn reload_mcp_and_report(&mut self, prelude: Option<String>) {
@@ -3927,6 +3941,9 @@ impl App {
                         "active MCP servers: {}",
                         self.startup.mcp_server_names.join(", ")
                     ));
+                }
+                for line in self.blocked_workspace_mcp_stdio() {
+                    self.push_system(line);
                 }
             }
             Err(error) => self.push_system(format!("failed to reload MCP servers: {error}")),
@@ -10203,6 +10220,30 @@ flowchart TD
             "disable should report the active set: {:?}",
             app.lines
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn mcp_status_and_reload_explain_ignored_workspace_stdio() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        std::fs::write(
+            app.startup.workspace_root.join(".mcp.json"),
+            r#"{"mcpServers":{"local-denied":{"type":"stdio","command":"must-not-be-shown"}}}"#,
+        )
+        .unwrap();
+
+        for command in ["mcp", "mcp reload"] {
+            app.lines.clear();
+            app.dispatch_command_for_test(command).await;
+            assert!(app.lines.iter().any(|line| {
+                line.text.contains("local-denied")
+                    && line.text.contains("not loaded: workspace configuration")
+                    && line.text.contains("user-owned global settings")
+            }));
+            assert!(!app.lines.iter().any(|line| line.text.contains("no MCP servers configured")));
+            assert!(!app.lines.iter().any(|line| line.text.contains("must-not-be-shown")));
+            assert!(!app.startup.mcp_server_names.iter().any(|name| name == "local-denied"));
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
