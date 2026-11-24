@@ -40,6 +40,270 @@ fn git(root: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
+fn mouse(kind: MouseEventKind, column: u16, row: u16) -> MouseEvent {
+    MouseEvent {
+        kind,
+        column,
+        row,
+        modifiers: KeyModifiers::NONE,
+    }
+}
+
+#[tokio::test]
+async fn workflow_mouse_paging_and_live_refresh_keep_input_and_transcript_ownership() {
+    let mut test = app_with_llmsim().await;
+    let root = test._workspace.path().to_path_buf();
+    git(&root, &["init", "-q"]);
+    git(&root, &["config", "user.name", "Test User"]);
+    git(&root, &["config", "user.email", "test@example.com"]);
+    std::fs::write(root.join("a.rs"), "before\n".repeat(100)).unwrap();
+    std::fs::write(root.join("b.rs"), "before\n").unwrap();
+    git(&root, &["add", "."]);
+    git(&root, &["commit", "-qm", "baseline"]);
+    std::fs::write(root.join("a.rs"), "after\n".repeat(100)).unwrap();
+    std::fs::write(root.join("b.rs"), "second file\n").unwrap();
+    test.app.set_render_mode(RenderMode::Fullscreen);
+    test.app.set_input_text("keep draft".into());
+    test.app.dispatch_command_for_test("diff").await;
+    settle(&mut test.app).await;
+    let area = Rect::new(0, 0, 140, 30);
+    let mut terminal = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
+    terminal.draw(|frame| draw(frame, &mut test.app)).unwrap();
+    let list = test.app.workflow.list_area;
+    assert!(
+        test.app
+            .handle_workflow_mouse(
+                mouse(MouseEventKind::Down(MouseButton::Left), list.x, list.y + 1),
+                area
+            )
+            .await
+    );
+    settle(&mut test.app).await;
+    assert_eq!(test.app.workflow_presentation().unwrap().selected, 1);
+    assert!(
+        test.app
+            .workflow_presentation()
+            .unwrap()
+            .detail
+            .contains("+second file")
+    );
+    test.app
+        .handle_workflow_mouse(
+            mouse(MouseEventKind::Down(MouseButton::Left), list.x, list.y),
+            area,
+        )
+        .await;
+    settle(&mut test.app).await;
+    terminal.draw(|frame| draw(frame, &mut test.app)).unwrap();
+    let transcript_offset = test.app.scroll.offset();
+    let panel = workflow_render::panel_area(&test.app, area).unwrap();
+    for kind in [MouseEventKind::ScrollDown, MouseEventKind::ScrollUp] {
+        assert!(
+            test.app
+                .handle_workflow_mouse(mouse(kind, panel.x + 2, panel.y + 15), area)
+                .await
+        );
+        if kind == MouseEventKind::ScrollDown {
+            assert!(test.app.workflow.scroll.offset() > 0);
+        }
+    }
+    assert_eq!(test.app.workflow.scroll.offset(), 0);
+    test.app.handle_key(key(KeyCode::PageDown)).await;
+    assert!(test.app.workflow.scroll.offset() > 0);
+    test.app.handle_key(key(KeyCode::PageUp)).await;
+    assert_eq!(test.app.workflow.scroll.offset(), 0);
+    assert!(
+        test.app
+            .handle_workflow_mouse(
+                mouse(MouseEventKind::Moved, panel.x + 2, panel.y + 15),
+                area
+            )
+            .await
+    );
+    assert!(
+        !test
+            .app
+            .handle_workflow_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 0, 0), area)
+            .await
+    );
+    assert!(!test.app.workflow.focused);
+    assert_eq!(test.app.scroll.offset(), transcript_offset);
+    test.app.handle_key(key(KeyCode::Char('!'))).await;
+    assert_eq!(test.app.input_text(), "keep draft!");
+    assert!(workflow_render::panel_area(&test.app, Rect::new(0, 0, 80, 24)).is_none());
+    test.app
+        .handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL))
+        .await;
+    test.app.handle_key(key(KeyCode::Char('p'))).await;
+    assert!(workflow_render::panel_area(&test.app, Rect::new(0, 0, 80, 24)).is_some());
+    std::fs::write(root.join("c.rs"), "created while reviewing\n").unwrap();
+    tokio::time::sleep(Duration::from_millis(2100)).await;
+    test.app.poll_workflow();
+    settle(&mut test.app).await;
+    assert_eq!(test.app.workflow_presentation().unwrap().rows.len(), 3);
+    assert_eq!(test.app.workflow_presentation().unwrap().selected, 0);
+    test.app.dispatch_command_for_test("diff-base HEAD").await;
+    settle(&mut test.app).await;
+    assert!(
+        test.app
+            .workflow_presentation()
+            .unwrap()
+            .subtitle
+            .contains("Versus base")
+    );
+    for expected in ["Working tree", "Last turn", "Session", "Versus base"] {
+        test.app.handle_key(key(KeyCode::Tab)).await;
+        settle(&mut test.app).await;
+        assert!(
+            test.app
+                .workflow_presentation()
+                .unwrap()
+                .subtitle
+                .contains(expected)
+        );
+    }
+    assert_eq!(test.app.input_text(), "keep draft!");
+}
+
+#[tokio::test]
+async fn workflow_busy_palette_and_argument_cancellation_preserve_the_running_task() {
+    let mut test = app_with_llmsim().await;
+    test.app.set_input_text("unsent follow-up".into());
+    test.app.start_turn("perform the first task".into());
+    test.app.open_workflow(WorkflowPanel::Actions);
+    test.app.handle_paste("/model ".into()).await;
+    assert_eq!(test.app.workflow_presentation().unwrap().rows.len(), 1);
+    test.app.handle_key(key(KeyCode::Enter)).await;
+    assert!(
+        test.app
+            .workflow_presentation()
+            .unwrap()
+            .detail
+            .contains("after the active turn settles")
+    );
+    assert!(test.app.setup.is_none());
+    test.app.handle_key(key(KeyCode::Esc)).await;
+    test.app.open_workflow(WorkflowPanel::Actions);
+    test.app.handle_paste("/context".into()).await;
+    test.app.handle_key(key(KeyCode::Enter)).await;
+    test.app.pump_ui_commands_for_test().await;
+    assert_eq!(
+        test.app.workflow_presentation().unwrap().title,
+        "Context and usage"
+    );
+    test.app.handle_key(key(KeyCode::Esc)).await;
+    test.app.open_workflow(WorkflowPanel::Actions);
+    test.app.handle_paste("/attach ".into()).await;
+    test.app.handle_key(key(KeyCode::Enter)).await;
+    test.app.handle_key(key(KeyCode::Enter)).await;
+    assert!(
+        test.app
+            .workflow_presentation()
+            .unwrap()
+            .detail
+            .contains("An argument is required")
+    );
+    test.app.handle_key(key(KeyCode::Char('x'))).await;
+    test.app.handle_key(key(KeyCode::Backspace)).await;
+    assert!(test.app.workflow_presentation().unwrap().query.is_empty());
+    test.app.handle_key(key(KeyCode::Esc)).await;
+    assert_eq!(test.app.workflow_presentation().unwrap().title, "Actions");
+    test.app.handle_key(key(KeyCode::Char('x'))).await;
+    test.app.handle_key(key(KeyCode::Backspace)).await;
+    assert!(test.app.workflow_presentation().unwrap().query.is_empty());
+    test.app
+        .handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL))
+        .await;
+    assert!(test.app.workflow_presentation().is_none());
+    assert!(test.app.busy);
+    assert_eq!(test.app.input_text(), "unsent follow-up");
+    test.app.pump_turn_until_idle_for_test().await;
+}
+
+#[tokio::test]
+async fn workflow_timeline_modes_refuse_unavailable_files_and_active_turns() {
+    let mut test = app_with_llmsim().await;
+    test.app.start_turn("first task".into());
+    test.app.pump_turn_until_idle_for_test().await;
+    test.app.dispatch_command_for_test("timeline").await;
+    for (key_code, label) in [('w', "Workspace"), ('b', "Both"), ('c', "Conversation")] {
+        test.app.handle_key(key(KeyCode::Char(key_code))).await;
+        assert!(
+            test.app
+                .workflow_presentation()
+                .unwrap()
+                .subtitle
+                .contains(label)
+        );
+    }
+    test.app.handle_key(key(KeyCode::Char('w'))).await;
+    test.app.handle_key(key(KeyCode::Enter)).await;
+    settle(&mut test.app).await;
+    let refusal = test.app.workflow_presentation().unwrap();
+    assert!(
+        refusal
+            .detail
+            .contains("selected checkpoint has no workspace snapshot"),
+        "{}",
+        refusal.detail
+    );
+    assert_eq!(
+        test.app.workflow_presentation().unwrap().title,
+        "Rewind timeline"
+    );
+    test.app.handle_key(key(KeyCode::Esc)).await;
+    test.app.start_turn("second task".into());
+    test.app.open_workflow(WorkflowPanel::Timeline);
+    test.app.handle_key(key(KeyCode::Enter)).await;
+    assert!(
+        test.app
+            .workflow_presentation()
+            .unwrap()
+            .detail
+            .contains("Wait for the active turn")
+    );
+    test.app.handle_key(key(KeyCode::Esc)).await;
+    test.app.pump_turn_until_idle_for_test().await;
+    assert!(
+        test.app
+            .session
+            .active_lines()
+            .await
+            .unwrap()
+            .iter()
+            .any(|line| line.text.contains("second task"))
+    );
+}
+
+#[tokio::test]
+async fn workflow_usage_distinguishes_latest_context_from_cumulative_events() {
+    let mut test = app_with_llmsim().await;
+    let (tx, rx) = mpsc::unbounded_channel();
+    test.app.rx = Some(rx);
+    let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+    for event in [
+        TurnEvent::Tokens(8000),
+        TurnEvent::ContextUsed(2000),
+        TurnEvent::Tokens(500),
+        TurnEvent::ContextUsed(1000),
+    ] {
+        tx.send(event).unwrap();
+        test.app.run_loop_iteration(&mut terminal).await.unwrap();
+    }
+    test.app.dispatch_command_for_test("context").await;
+    let view = test.app.workflow_presentation().unwrap();
+    assert!(
+        view.detail
+            .contains("Context occupancy: 1000 tokens; model capacity unknown")
+    );
+    assert!(view.detail.contains("Session tokens: 8500"));
+    assert!(
+        view.detail
+            .contains("Latest request input, not cumulative usage")
+    );
+    assert!(view.detail.contains("Monetary cost: unknown"));
+}
+
 #[tokio::test]
 async fn workflow_palette_dispatches_views_and_keeps_the_unicode_draft() {
     let mut test = app_with_llmsim().await;
@@ -357,6 +621,31 @@ async fn workflow_approval_shows_scope_and_never_treats_modified_keys_or_paste_a
     assert!(detail.contains("git push origin codex/example"));
     assert!(detail.contains("ALL later requests"));
     assert!(detail.contains("outside sandbox"));
+    let area = Rect::new(0, 0, 80, 8);
+    let mut terminal = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
+    terminal.draw(|frame| draw(frame, &mut test.app)).unwrap();
+    let transcript_offset = test.app.scroll.offset();
+    assert!(
+        test.app
+            .handle_workflow_mouse(mouse(MouseEventKind::ScrollDown, 1, 1), area)
+            .await
+    );
+    assert!(test.app.approval_scroll.offset() > 0);
+    assert!(
+        test.app
+            .handle_workflow_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 1, 1), area)
+            .await
+    );
+    assert!(!answer.is_finished());
+    test.app
+        .handle_workflow_mouse(mouse(MouseEventKind::ScrollUp, 1, 1), area)
+        .await;
+    assert_eq!(test.app.approval_scroll.offset(), 0);
+    test.app.handle_key(key(KeyCode::PageDown)).await;
+    assert!(test.app.approval_scroll.offset() > 0);
+    test.app.handle_key(key(KeyCode::PageUp)).await;
+    assert_eq!(test.app.approval_scroll.offset(), 0);
+    assert_eq!(test.app.scroll.offset(), transcript_offset);
     test.app.handle_paste("a".into()).await;
     test.app
         .handle_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL))
