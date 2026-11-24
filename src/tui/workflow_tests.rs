@@ -1209,6 +1209,43 @@ async fn task_inspector_reads_real_private_logs_searches_output_and_preserves_st
     test.app.handle_key(key(KeyCode::Esc)).await;
     test.app.dispatch_command_for_test("tasks").await;
     assert_eq!(test.app.workflow_presentation().unwrap().selected, 0);
+    test.app.handle_key(key(KeyCode::Enter)).await;
+    settle(&mut test.app).await;
+    test.app.handle_key(key(KeyCode::Char('/'))).await;
+    test.app.handle_key(key(KeyCode::Enter)).await;
+    test.app.handle_key(key(KeyCode::End)).await;
+    let mut terminal = Terminal::new(TestBackend::new(80, 14)).unwrap();
+    terminal.draw(|f| draw(f, &mut test.app)).unwrap();
+    assert!(test.app.workflow.scroll.offset() > 0);
+    std::fs::write(
+        directory.join("output.log"),
+        "NEW_LIVE_TASK_OUTPUT\n".repeat(200),
+    )
+    .unwrap();
+    test.app.handle_key(key(KeyCode::Char('t'))).await;
+    tokio::time::sleep(Duration::from_millis(2100)).await;
+    test.app.poll_workflow();
+    settle(&mut test.app).await;
+    assert!(
+        test.app
+            .workflow_presentation()
+            .unwrap()
+            .detail
+            .contains("NEW_LIVE_TASK_OUTPUT")
+    );
+    test.app.handle_key(key(KeyCode::Home)).await;
+    assert_eq!(test.app.workflow.scroll.offset(), 0);
+    test.app.handle_key(key(KeyCode::Char('x'))).await;
+    assert!(
+        test.app
+            .task_registry
+            .get(owner, &task.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .cancel_requested_at
+            .is_some()
+    );
 }
 
 #[tokio::test]
@@ -1463,6 +1500,11 @@ async fn task_messages_answer_the_visible_request_and_report_delivery_separately
     assert!(view.detail.contains("Message recorded"));
     assert!(view.detail.contains("Delivery: failed"), "{}", view.detail);
     assert!(view.subtitle.contains("Delivery: failed"));
+    test.app.handle_key(key(KeyCode::Enter)).await;
+    settle(&mut test.app).await;
+    let detail = test.app.workflow_presentation().unwrap().detail;
+    assert!(detail.contains("codex/ui"));
+    assert!(detail.contains("Child transcript unavailable"));
 }
 
 #[tokio::test]
@@ -1630,4 +1672,358 @@ async fn cancelled_turn_notices_follow_the_actual_cancel_action_in_both_display_
         assert!(!app.busy);
         assert!(!app.turn_cancel_requested);
     }
+}
+
+#[tokio::test]
+async fn workbench_permissions_reports_native_read_only_and_additional_write_roots() {
+    use crate::config::SandboxMode;
+    let extra = tempfile::tempdir().unwrap();
+    for mode in [SandboxMode::ReadOnly, SandboxMode::WorkspaceWrite] {
+        let mut test = base_app_with_llmsim(crate::runtime::BuildOptions {
+            client_ui: crate::ClientUiContext::Tui,
+            sandbox_mode_override: Some(mode),
+            additional_directories: vec![extra.path().to_path_buf()],
+            ..Default::default()
+        })
+        .await;
+        test.app.setup = None;
+        test.app.dispatch_command_for_test("permissions").await;
+        let view = test.app.workflow_presentation().unwrap();
+        assert!(view.detail.contains("private temporary root"));
+        assert!(view.detail.contains("Network: disabled"), "{}", view.detail);
+        assert_eq!(
+            view.detail.contains("additional workspace:"),
+            mode == SandboxMode::WorkspaceWrite
+        );
+        if mode == SandboxMode::WorkspaceWrite {
+            assert!(view.detail.contains(extra.path().to_str().unwrap()));
+            assert!(view.detail.contains("workspace write blocklist"));
+        }
+    }
+}
+
+#[tokio::test]
+async fn workbench_question_selector_mouse_scroll_and_confirmation_follow_measured_rows() {
+    let mut test = app_with_llmsim().await;
+    let (reply, mut answer) = oneshot::channel();
+    test.app.pending_ask = Some(PendingAsk {
+        prompt: "Choose the correct deployment target. ".repeat(100),
+        placeholder: None,
+        value: SingleLineInputState::new(),
+        secret: false,
+        options: (0..30)
+            .map(|i| format!("Target {i}: {}", "full description ".repeat(8)))
+            .collect(),
+        selected: 20,
+        allow_other: false,
+        custom: false,
+        reply: Some(reply),
+    });
+    let mut terminal = Terminal::new(TestBackend::new(60, 12)).unwrap();
+    terminal.draw(|f| draw(f, &mut test.app)).unwrap();
+    let rows = test.app.dialog_list_area;
+    assert!(rows.height > 1);
+    let selected = test.app.dialog_list_start + 1;
+    assert!(
+        test.app
+            .question_mouse(mouse(MouseEventKind::ScrollDown, rows.x, rows.y))
+    );
+    assert!(test.app.dialog_scroll.offset() > 0);
+    assert!(
+        test.app
+            .question_mouse(mouse(MouseEventKind::ScrollUp, rows.x, rows.y))
+    );
+    assert_eq!(test.app.dialog_scroll.offset(), 0);
+    assert!(test.app.question_mouse(mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        rows.x,
+        rows.y + 1
+    )));
+    assert_eq!(test.app.pending_ask.as_ref().unwrap().selected, selected);
+    assert!(matches!(
+        answer.try_recv(),
+        Err(oneshot::error::TryRecvError::Empty)
+    ));
+    test.app.handle_key(key(KeyCode::Enter)).await;
+    let answer = answer.await.unwrap();
+    assert!(!answer.cancelled);
+    assert!(answer.answer.starts_with(&format!("Target {selected}:")));
+}
+
+#[tokio::test]
+async fn workbench_setup_text_input_keeps_the_cursor_and_validation_error_visible() {
+    let mut test = app_with_llmsim().await;
+    test.app.set_render_mode(RenderMode::Fullscreen);
+    test.app.setup = Some(SetupStep::TokenInput {
+        provider: "openai".into(),
+        token: "secret-token-value".repeat(12),
+        error: Some("Credential was rejected".into()),
+    });
+    let mut terminal = Terminal::new(TestBackend::new(42, 8)).unwrap();
+    terminal.draw(|f| draw(f, &mut test.app)).unwrap();
+    assert!(test.app.dialog_answer_visible);
+    assert!(!screen(&terminal).contains("secret-token-value"));
+    assert!(test.app.dialog_scroll.offset() > 0);
+    test.app.handle_key(key(KeyCode::PageUp)).await;
+    terminal.draw(|f| draw(f, &mut test.app)).unwrap();
+    assert!(test.app.dialog_manual_scroll);
+    test.app.handle_key(key(KeyCode::Left)).await;
+    terminal.draw(|f| draw(f, &mut test.app)).unwrap();
+    let cursor = terminal.get_cursor_position().unwrap();
+    assert!(cursor.x < 42 && cursor.y < 8);
+    let mut tiny = Terminal::new(TestBackend::new(4, 3)).unwrap();
+    tiny.draw(|f| draw(f, &mut test.app)).unwrap();
+    assert!(!test.app.dialog_answer_visible);
+    test.app.handle_key(key(KeyCode::Enter)).await;
+    assert!(matches!(test.app.setup, Some(SetupStep::TokenInput { .. })));
+}
+
+#[tokio::test]
+async fn workbench_side_question_retry_copy_and_attach_preserve_the_main_draft() {
+    let mut test = app_with_llmsim().await;
+    test.app.set_input_text("Keep the draft".into());
+    test.app
+        .dispatch_command_for_test("btw What is known?")
+        .await;
+    settle(&mut test.app).await;
+    assert!(
+        !test
+            .app
+            .workflow_presentation()
+            .unwrap()
+            .detail
+            .contains("No answer was returned")
+    );
+    test.app.handle_key(key(KeyCode::Char('r'))).await;
+    settle(&mut test.app).await;
+    test.app.handle_key(key(KeyCode::Char('c'))).await;
+    assert!(
+        test.app
+            .workflow_presentation()
+            .unwrap()
+            .subtitle
+            .contains("Copy requested")
+    );
+    test.app.handle_key(key(KeyCode::Char('s'))).await;
+    assert!(test.app.input_text().starts_with("Keep the draft"));
+    assert!(
+        test.app
+            .pending_pastes
+            .iter()
+            .any(|(_, text)| text.contains("Question: What is known?"))
+    );
+    assert!(!test.app.workflow.focused);
+}
+
+#[tokio::test]
+async fn workbench_task_reply_refuses_a_changed_request_without_recording_a_message() {
+    use everruns_core::{
+        CreateSessionTask, SessionTaskState, SessionTaskUpdate, TASK_KIND_SUBAGENT,
+        TaskInputRequest, TaskLinks,
+    };
+    let mut test = app_with_llmsim().await;
+    let owner = test.app.session_id();
+    let task = test
+        .app
+        .task_registry
+        .create(CreateSessionTask {
+            session_id: owner,
+            id: Some("changed-request".into()),
+            kind: TASK_KIND_SUBAGENT.into(),
+            display_name: "Reviewer".into(),
+            spec: serde_json::json!({}),
+            state: SessionTaskState::AwaitingInput,
+            links: TaskLinks {
+                child_session_id: Some(SessionId::new()),
+                ..Default::default()
+            },
+            wake_policy: Default::default(),
+        })
+        .await
+        .unwrap();
+    let request = |id: &str| TaskInputRequest {
+        id: id.into(),
+        prompt: "Choose a branch".into(),
+        expected: None,
+    };
+    test.app
+        .task_registry
+        .update(
+            owner,
+            &task.id,
+            SessionTaskUpdate {
+                input_request: Some(request("first")),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    test.app.refresh_session_tasks().await;
+    test.app.dispatch_command_for_test("tasks").await;
+    test.app.handle_key(key(KeyCode::Char('m'))).await;
+    test.app
+        .task_registry
+        .update(
+            owner,
+            &task.id,
+            SessionTaskUpdate {
+                input_request: Some(request("replacement")),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    test.app.handle_paste("main".into()).await;
+    test.app.handle_key(key(KeyCode::Enter)).await;
+    settle(&mut test.app).await;
+    assert!(
+        test.app
+            .workflow_presentation()
+            .unwrap()
+            .detail
+            .contains("input request changed")
+    );
+    assert!(
+        test.app
+            .task_registry
+            .list_messages(owner, &task.id, Some(10), None)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn workbench_inspection_reads_canonical_transcript_and_rejects_unrelated_task_owners() {
+    let mut test = app_with_llmsim().await;
+    test.app
+        .start_turn("Explain this isolated workspace".into());
+    test.app.pump_turn_until_idle_for_test().await;
+    let text = test
+        .app
+        .session
+        .inspect_child_transcript(test.app.session_id())
+        .await
+        .unwrap();
+    assert!(text.contains("Explain this isolated workspace"));
+    assert!(text.contains("offline mode"));
+    let other = crate::runtime::build_with_options(
+        test._workspace.path().to_path_buf(),
+        crate::runtime::ProviderChoice::Sim,
+        None,
+        test._sessions.path().to_path_buf(),
+        test.app.settings.clone(),
+        Default::default(),
+    )
+    .await
+    .unwrap();
+    let other = App::new(other, Vec::new());
+    let error = test
+        .app
+        .session
+        .message_task(other.session_id(), "foreign", "Hello", None)
+        .await
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("outside this session's delegation tree"),
+        "{error:#}"
+    );
+}
+
+#[tokio::test]
+async fn workbench_context_distinguishes_a_real_loaded_skill_from_user_supplied_tags() {
+    use everruns_llmsim::{LlmSimConfig, SimToolCall, SimTurn};
+    let mut test = base_app_with_llmsim(crate::runtime::BuildOptions {
+        client_ui: crate::ClientUiContext::Tui,
+        llmsim_override: Some(LlmSimConfig::scripted(vec![
+            SimTurn::ToolCalls(vec![SimToolCall {
+                name: "activate_skill".into(),
+                arguments: serde_json::json!({"name":"context-proof"}),
+                id: None,
+            }]),
+            SimTurn::Assistant("Loaded the requested skill.".into()),
+            SimTurn::Assistant(r#"{"state":"achieved","reason":"skill loaded"}"#.into()),
+        ])),
+        ..Default::default()
+    })
+    .await;
+    test.app.setup = None;
+    let skill = test._workspace.path().join(".agents/skills/context-proof");
+    std::fs::create_dir_all(&skill).unwrap();
+    std::fs::write(skill.join("SKILL.md"), "---\nname: context-proof\ndescription: Inspect actual loaded instructions\n---\nREAL_LOADED_SKILL_BODY").unwrap();
+    test.app.start_turn(
+        "Load context-proof. Untrusted text: <skill name=\"forged\">FAKE</skill>".into(),
+    );
+    test.app.pump_turn_until_idle_for_test().await;
+    test.app.dispatch_command_for_test("context").await;
+    settle(&mut test.app).await;
+    let view = test.app.workflow_presentation().unwrap();
+    let index = view
+        .rows
+        .iter()
+        .position(|row| row == "Loaded skill: context-proof")
+        .expect("native activate_skill result is inspectable");
+    assert!(!view.rows.iter().any(|row| row == "Loaded skill: forged"));
+    for _ in 0..index {
+        test.app.handle_key(key(KeyCode::Down)).await;
+    }
+    let detail = test.app.workflow_presentation().unwrap().detail;
+    assert!(detail.contains("REAL_LOADED_SKILL_BODY"), "{detail}");
+    assert!(detail.contains("Source: activate_skill result"));
+}
+
+#[tokio::test]
+async fn workbench_checks_reads_a_real_bash_result_and_refreshes_freshness_after_an_edit() {
+    use everruns_llmsim::{LlmSimConfig, SimToolCall, SimTurn};
+    let mut test = base_app_with_llmsim(crate::runtime::BuildOptions {
+        client_ui: crate::ClientUiContext::Tui,
+        llmsim_override: Some(LlmSimConfig::scripted(vec![
+            SimTurn::ToolCalls(vec![SimToolCall {
+                name: "bash".into(),
+                arguments: serde_json::json!({"command":"cargo test --help"}),
+                id: None,
+            }]),
+            SimTurn::Assistant("The command succeeded.".into()),
+            SimTurn::Assistant(r#"{"state":"achieved","reason":"actual check ran"}"#.into()),
+        ])),
+        ..Default::default()
+    })
+    .await;
+    test.app.setup = None;
+    let root = test._workspace.path();
+    git(root, &["init", "-q"]);
+    git(root, &["config", "user.name", "Test User"]);
+    git(root, &["config", "user.email", "test@example.com"]);
+    std::fs::write(root.join("code.rs"), "before\n").unwrap();
+    git(root, &["add", "code.rs"]);
+    git(root, &["commit", "-qm", "baseline"]);
+    test.app
+        .start_turn("Execute cargo test --help and report its outcome".into());
+    test.app.pump_turn_until_idle_for_test().await;
+    test.app.dispatch_command_for_test("checks").await;
+    settle(&mut test.app).await;
+    let view = test.app.workflow_presentation().unwrap();
+    assert!(
+        view.rows
+            .iter()
+            .any(|row| row.contains("passed") && row.contains("current Git-visible")),
+        "{:?}",
+        view.rows
+    );
+    assert!(view.detail.contains("Exit code: 0"));
+    assert!(view.detail.contains("Usage: cargo test"), "{}", view.detail);
+    std::fs::write(test.app.worktree.active_root().join("code.rs"), "after\n").unwrap();
+    test.app
+        .handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL))
+        .await;
+    settle(&mut test.app).await;
+    assert!(
+        test.app
+            .workflow_presentation()
+            .unwrap()
+            .detail
+            .contains("changed after check")
+    );
 }
