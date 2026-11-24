@@ -58,6 +58,7 @@ jobs:
               - '.github/workflows/ci.yml'
             eval-rust:
               - 'evals/harness_basic/**'
+              - 'evals/lsp_integration/**'
               - '.github/workflows/ci.yml'
             docs:
               - '**/*.md'
@@ -140,23 +141,26 @@ jobs:
         run: python3 -m unittest discover -s evals/harness_basic/tests -v
 
   eval-rust:
-    name: Harness eval (offline)
+    name: Rust studies (offline)
     needs: changes
     if: needs.changes.outputs.eval-rust == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.96.0
+      - uses: dtolnay/rust-toolchain@1.100.0
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: evals/harness_basic
-      - name: Validate standalone study without provider credentials
-        working-directory: evals/harness_basic
+          workspaces: |
+            evals/harness_basic
+            evals/lsp_integration
+      - name: Validate standalone studies without provider credentials
         run: |
-          cargo fmt --check
-          cargo test --locked
-          cargo clippy --locked --all-targets -- -D warnings
+          for study in evals/harness_basic evals/lsp_integration; do
+            cargo fmt --check --manifest-path "$study/Cargo.toml"
+            cargo test --locked --manifest-path "$study/Cargo.toml"
+            cargo clippy --locked --all-targets --manifest-path "$study/Cargo.toml" -- -D warnings
+          done
 
   terminal-bench-study:
     name: Terminal-Bench study (Python)
@@ -195,7 +199,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.96.0
+        uses: dtolnay/rust-toolchain@1.100.0
         with:
           components: rustfmt, clippy
 
@@ -217,8 +221,8 @@ jobs:
   # the feature is invisible to it. Its own cache key keeps that tree out of the
   # "debug" cache every other Rust job restores.
   #
-  # Ten tests *are* behind the feature (the driver's tool-call conversion and
-  # the downloader's progress accounting), so this job runs them as well as
+  # The disabled driver and downloader tests are behind this feature, so this
+  # job runs them as well as
   # linting. Clippy has already compiled the test targets by then, which is the
   # expensive part; executing them costs seconds.
   local-inference:
@@ -231,7 +235,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.96.0
+        uses: dtolnay/rust-toolchain@1.100.0
         with:
           components: clippy
 
@@ -260,7 +264,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.96.0
+        uses: dtolnay/rust-toolchain@1.100.0
 
       - name: Cache Rust
         uses: Swatinem/rust-cache@v2
@@ -330,7 +334,7 @@ jobs:
         uses: dopplerhq/cli-action@v4
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.96.0
+        uses: dtolnay/rust-toolchain@1.100.0
 
       - name: Cache Rust
         uses: Swatinem/rust-cache@v2
@@ -360,7 +364,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.96.0
+        uses: dtolnay/rust-toolchain@1.100.0
 
       - name: Cache Rust
         uses: Swatinem/rust-cache@v2
@@ -382,7 +386,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.96.0
+        uses: dtolnay/rust-toolchain@1.100.0
 
       - name: Cache Rust
         uses: Swatinem/rust-cache@v2

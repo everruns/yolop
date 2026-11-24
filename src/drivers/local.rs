@@ -47,9 +47,23 @@ impl ChatDriver for LocalChatDriver {
 mod tests {
     use super::*;
 
-    #[test]
-    fn local_driver_reports_temporary_disablement() {
-        let err = disabled();
+    #[tokio::test]
+    async fn registered_local_driver_refuses_inference() {
+        use everruns_contracts::{DriverId, ProviderConfig, ProviderEndpoint};
+        let mut registry = DriverRegistry::new();
+        register_driver(&mut registry);
+        let driver = registry
+            .create_chat_driver(&ProviderConfig::new(DriverId::external(LOCAL_DRIVER_ID)))
+            .unwrap();
+        let err = driver
+            .chat_completion_stream(
+                &ProviderEndpoint::default(),
+                vec![],
+                &LlmCallConfig::new("local-test"),
+            )
+            .await
+            .err()
+            .expect("disabled inference must fail before making a request");
         assert_eq!(err.llm_error_kind(), Some(LlmErrorKind::Unavailable));
         assert!(
             err.to_string().contains("temporarily disabled"),

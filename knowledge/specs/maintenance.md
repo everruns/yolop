@@ -242,7 +242,10 @@ Published upstream support is not by itself a reason to delete host policy:
   host argument detail. They are presentation policy, not a missing upstream API.
 - `tool_argument_validation` protects authoritative full schemas behind deferred
   stubs, bounds compilation and diagnostics, and removes argument values from
-  errors. Upstream repair and tool search do not replace that execution gate.
+  errors. Upstream `validate_tool_arguments` also checks schemas, but compiles
+  per call and returns every raw validator error, including argument-derived
+  paths and values. It does not preserve the host privacy and resource bounds.
+  Retain the pre-execution guard until those contracts are available upstream.
   `tool_reveal` supplies host how-to prompt gating using upstream disclosure.
 
 Further worktree, config and MCP simplification must preserve the host's trust,
@@ -293,23 +296,17 @@ and the manifest pin test are the only automated witnesses.
 
 ## Local-Inference, Metal, CUDA Matrix
 
-Code behind `local-inference` (`src/drivers/local.rs`, `src/models/`) and the
-accelerated release builds (`metal` on macOS, `cuda` on Linux) is outside the
-routine feature set. The pass touches it only when the scope includes it, and
-then with the commands in `AGENTS.md`:
+Code behind `local-inference` (`src/drivers/local.rs`, `src/models/`) is outside
+routine checks and uses its own `CARGO_TARGET_DIR`, per `AGENTS.md`. While the
+engine is suspended, this feature enables downloads and a refusing inference
+driver; `metal` and `cuda` are aliases with no acceleration. Their current
+status and the engine restoration bar live in [local inference](local-inference.md).
 
-- `local-inference` checks run under their own `CARGO_TARGET_DIR` so the
-  large engine graph never pollutes the routine target directory.
-- A `cuda` change also wants the backend compiled with `nvcc` and
-  `CUDA_COMPUTE_CAP` set, since kernels target one capability and no GPU
-  exists here to query.
-- Distribution stays split per the local inference spec: the default
-  portable build never absorbs the engine, and the accelerated builds stay
-  per target.
-
-Rationale: the engine graph is hundreds of crates. Compiling it inside the
-routine target directory wastes every later routine command, and an untested
-accelerated build ships a release artifact nobody proved.
+When an engine returns, compile each accelerated backend with its vendor
+toolchain. CUDA needs an explicit compute capability when no GPU is available
+to query. Build success alone never proves GPU runtime behavior. Keep the
+portable distribution independent of an engine and measure the restored
+feature's build and binary cost in an isolated target directory.
 
 ## Binary Size
 

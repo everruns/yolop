@@ -5,7 +5,6 @@ edition = "2024"
 authors = ["Everruns <support@everruns.com>"]
 license = "MIT"
 description = "The yolop extension protocol (YEP): wire types and a server SDK for authoring yolop extension capability servers."
-homepage = "https://github.com/everruns/yolop"
 repository = "https://github.com/everruns/yolop"
 readme = "README.md"
 keywords = ["yolop", "yolop-extension", "agent", "protocol", "plugin"]

@@ -849,7 +849,7 @@ impl JsonlEventEmitter {
         // sequence even across resumes.
         let previous = self
             .sequence
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |sequence| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |sequence| {
                 Some(sequence.saturating_add(1))
             })
             .expect("sequence update closure always succeeds");
