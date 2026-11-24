@@ -3293,7 +3293,9 @@ mod tests {
         );
 
         let messages = tokio::time::timeout(Duration::from_secs(25), async {
-            let mut messages: Vec<String> = Vec::new();
+            // A due wake can stream before the foreground prompt responds.
+            // Preserve those updates when checking the whole scheduled lifecycle.
+            let mut messages = update_texts(&prompt_updates, "agent_message_chunk");
             while !messages.concat().contains("scheduled run completed") {
                 let msg = next_json(&mut reader).await;
                 if msg.get("method").and_then(Value::as_str) != Some("session/update") {
