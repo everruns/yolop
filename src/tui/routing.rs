@@ -19,6 +19,7 @@ use tuika::focus::FocusRegistry;
 pub(crate) const HISTORY_SEARCH: &str = "history-search";
 /// The y/a/n sandbox approval prompt.
 pub(crate) const SANDBOX_APPROVAL: &str = "sandbox-approval";
+pub(crate) const WORKFLOW: &str = "workflow";
 /// The background-task sidebar, when the user focused it deliberately.
 pub(crate) const BACKGROUND_PANEL: &str = "background-panel";
 /// An extension `ui/ask` prompt.
@@ -35,6 +36,7 @@ pub(crate) const COMPOSER: &str = "composer";
 /// A plain snapshot rather than a borrow of `App`, so resolving ownership never
 /// conflicts with the `&mut self` a route stage then takes.
 pub(crate) struct InputSurfaces {
+    pub(crate) workflow_focused: bool,
     pub(crate) searching: bool,
     pub(crate) awaiting_sandbox_approval: bool,
     pub(crate) background_panel_focused: bool,
@@ -56,6 +58,9 @@ impl InputSurfaces {
         }
         if self.awaiting_sandbox_approval {
             return SANDBOX_APPROVAL;
+        }
+        if self.workflow_focused && !self.asking && !self.in_setup {
+            return WORKFLOW;
         }
         if self.background_panel_focused {
             return BACKGROUND_PANEL;
@@ -103,6 +108,7 @@ mod tests {
 
     fn surfaces() -> InputSurfaces {
         InputSurfaces {
+            workflow_focused: false,
             searching: false,
             awaiting_sandbox_approval: false,
             background_panel_focused: false,
@@ -146,6 +152,7 @@ mod tests {
     #[test]
     fn search_outranks_every_other_surface() {
         let all = InputSurfaces {
+            workflow_focused: true,
             searching: true,
             awaiting_sandbox_approval: true,
             background_panel_focused: true,

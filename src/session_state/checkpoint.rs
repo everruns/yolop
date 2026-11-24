@@ -89,6 +89,7 @@ struct CheckpointNode {
     prompt: String,
     event_start: i32,
     event_end: Option<i32>,
+    success: Option<bool>,
     native_before: Option<Vec<SequenceRange>>,
     snapshot: Option<WorkspaceSnapshot>,
     snapshot_error: Option<String>,
@@ -305,6 +306,7 @@ pub struct CheckpointSummary {
     pub workspace_available: bool,
     pub workspace_error: Option<String>,
     pub created_at: DateTime<Utc>,
+    pub success: Option<bool>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -580,8 +582,48 @@ impl CheckpointManager {
                 workspace_available: node.snapshot.is_some(),
                 workspace_error: node.snapshot_error.as_deref().map(safe_display),
                 created_at: node.created_at,
+                success: node.success,
             })
             .collect()
+    }
+
+    /// Read-only comparison anchors follow the active history branch, including
+    /// an in-flight turn. Missing snapshots must never silently mean HEAD.
+    pub(crate) fn review_tree(&self, whole_session: bool) -> Option<String> {
+        let state = self.state.lock().expect("checkpoint state lock");
+        let path = active_path(&state);
+        let id = if whole_session {
+            path.first().or(state.pending.as_ref())
+        } else {
+            state.pending.as_ref().or(path.last())
+        }?;
+        state
+            .nodes
+            .get(id)?
+            .snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.tree.clone())
+    }
+
+    pub(crate) fn sessions_dir(&self) -> &Path {
+        self.session_dir.parent().unwrap_or(&self.session_dir)
+    }
+
+    pub(crate) fn cancel_preview(&self, token: &str) {
+        let prepared = {
+            let mut prepared = self.prepared.lock().expect("prepared restore lock");
+            if prepared
+                .as_ref()
+                .is_some_and(|preview| preview.token == token)
+            {
+                prepared.take()
+            } else {
+                None
+            }
+        };
+        if let Some(prepared) = prepared {
+            self.delete_snapshot_ref(prepared.recovery_snapshot.as_ref());
+        }
     }
 
     pub fn prepare_undo(&self, mode: RestoreMode) -> Result<RestorePreview> {
@@ -1388,6 +1430,7 @@ fn apply_record(state: &mut TimelineState, record: TimelineRecord) {
                     prompt,
                     event_start,
                     event_end: None,
+                    success: None,
                     native_before,
                     snapshot,
                     snapshot_error,
@@ -1398,10 +1441,12 @@ fn apply_record(state: &mut TimelineState, record: TimelineRecord) {
         TimelineRecord::TurnCompleted {
             checkpoint_id,
             event_end,
+            success,
             ..
         } => {
             if let Some(node) = state.nodes.get_mut(&checkpoint_id) {
                 node.event_end = Some(event_end);
+                node.success = Some(success);
                 state.head = Some(checkpoint_id.clone());
             }
             if state.pending.as_deref() == Some(&checkpoint_id) {

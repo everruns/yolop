@@ -57,6 +57,7 @@ pub enum StreamKind {
 pub struct ActivityStatus {
     pub text: String,
     pub(crate) fallback: bool,
+    pub(crate) phase: super::workflow_presentation::ExecutionPhase,
 }
 
 /// Events emitted by [`crate::runtime::session::Session`] while a turn (or `!shell`
@@ -413,7 +414,8 @@ pub(crate) fn message_line(author: Author, message: &RuntimeMessage) -> Option<C
 }
 
 pub fn status_for_event(event: &RuntimeEvent) -> Option<ActivityStatus> {
-    match &event.data {
+    use super::workflow_presentation::ExecutionPhase;
+    let mut status = match &event.data {
         EventData::ReasonStarted(_) => Some(fallback_status("thinking")),
         EventData::ReasonCompleted(data) => {
             if !data.success {
@@ -442,7 +444,16 @@ pub fn status_for_event(event: &RuntimeEvent) -> Option<ActivityStatus> {
             })
             .map(activity_status),
         EventData::ToolStarted(data) => {
-            Some(activity_status(format!("→ {}", tool_started_label(data))))
+            let command = data
+                .tool_call
+                .arguments
+                .get("command")
+                .and_then(Value::as_str);
+            Some(activity_status(
+                command
+                    .map(|command| first_line(command, 120))
+                    .unwrap_or_else(|| format!("→ {}", tool_started_label(data))),
+            ))
         }
         EventData::ToolProgress(data) => Some(activity_status(format!(
             "… {}: {}",
@@ -466,17 +477,52 @@ pub fn status_for_event(event: &RuntimeEvent) -> Option<ActivityStatus> {
             "compacting context ({})…",
             data.reason
         ))),
+        EventData::TurnCreditShortfall(data) => {
+            let message = crate::runtime::credit_exhaustion::shortfall_notice(data)
+                .unwrap_or_else(|| "Waiting for credits".into());
+            Some(activity_status(if let Some(next) = data.next_check_at {
+                format!(
+                    "{message} · next check {} UTC · /background to inspect or cancel",
+                    next.format("%H:%M:%S")
+                )
+            } else {
+                message
+            }))
+        }
         EventData::TurnCancelled(_) => Some(activity_status("turn cancelled")),
         EventData::TurnFailed(data) => Some(activity_status(format!(
             "turn failed: {}",
             first_line(&data.error, 100)
         ))),
         _ => None,
-    }
+    }?;
+    status.phase = match &event.data {
+        EventData::ToolStarted(_)
+        | EventData::ToolProgress(_)
+        | EventData::ActStarted(_)
+        | EventData::ActCompleted(_) => ExecutionPhase::Running,
+        EventData::ToolCallRequested(_) => ExecutionPhase::Waiting,
+        EventData::ContextCompacting(_) => ExecutionPhase::Compacting,
+        EventData::TurnCreditShortfall(data) => {
+            use everruns_core::events::CreditShortfallAction;
+            if matches!(
+                data.action,
+                CreditShortfallAction::WaitStarted | CreditShortfallAction::StillWaiting
+            ) {
+                ExecutionPhase::WaitingForCredits
+            } else {
+                ExecutionPhase::Retrying
+            }
+        }
+        EventData::OutputMessageStarted(_) => ExecutionPhase::Responding,
+        _ => ExecutionPhase::Thinking,
+    };
+    Some(status)
 }
 
 pub(crate) fn activity_status(text: impl Into<String>) -> ActivityStatus {
     ActivityStatus {
+        phase: super::workflow_presentation::ExecutionPhase::Thinking,
         text: text.into(),
         fallback: false,
     }
@@ -484,6 +530,7 @@ pub(crate) fn activity_status(text: impl Into<String>) -> ActivityStatus {
 
 pub(crate) fn fallback_status(text: impl Into<String>) -> ActivityStatus {
     ActivityStatus {
+        phase: super::workflow_presentation::ExecutionPhase::Thinking,
         text: text.into(),
         fallback: true,
     }
@@ -1065,6 +1112,22 @@ mod tests {
             tool_call_fingerprint: None,
             side_effect_class: None,
         }
+    }
+
+    #[test]
+    fn workflow_activity_uses_runtime_phase_and_actual_shell_operation() {
+        let status = status_for_event(&event(started_tool(
+            "bash",
+            json!({"command":"cargo test --workspace"}),
+        )))
+        .unwrap();
+        assert_eq!(
+            status.phase,
+            super::super::workflow_presentation::ExecutionPhase::Running
+        );
+        let text =
+            super::super::workflow_presentation::execution_summary(status.phase, &status.text, 2);
+        assert_eq!(text, "Running · cargo test --workspace · 2 background");
     }
 
     #[test]

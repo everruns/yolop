@@ -19,6 +19,12 @@ use tuika::keymap::{Keymap, Layer};
 /// [`App`](super::App) in [`App::run_global_action`](super::App::run_global_action).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum GlobalAction {
+    Prefix,
+    Actions,
+    Find,
+    Changes,
+    FocusWorkflow,
+    Editor,
     /// Open Ctrl+R reverse-history search over past prompts.
     ReverseSearch,
     /// Ctrl+C: interrupt the current turn, or arm/confirm exit when idle.
@@ -41,6 +47,11 @@ pub(crate) enum GlobalAction {
 pub(crate) fn global_keymap() -> Keymap<GlobalAction> {
     Keymap::new().layer(
         Layer::new("global")
+            .bind_labeled("ctrl+p", "actions", GlobalAction::Actions)
+            .bind_labeled("ctrl+x f", "find transcript", GlobalAction::Find)
+            .bind_labeled("ctrl+x d", "changes", GlobalAction::Changes)
+            .bind_labeled("ctrl+x p", "panel/composer", GlobalAction::FocusWorkflow)
+            .bind_labeled("ctrl+g", "external editor", GlobalAction::Editor)
             .bind_labeled("ctrl+r", "search history", GlobalAction::ReverseSearch)
             .bind_labeled("ctrl+c", "interrupt", GlobalAction::Interrupt)
             .bind_labeled("ctrl+d", "quit", GlobalAction::Quit)
@@ -92,6 +103,16 @@ mod tests {
             keymap.dispatch(ctrl('o')),
             Dispatch::Command(GlobalAction::ToggleWorkDetails)
         );
+        assert_eq!(keymap.dispatch(ctrl('x')), Dispatch::Pending);
+        assert_eq!(
+            keymap.dispatch(Key::new(KeyCode::Char('d'))),
+            Dispatch::Command(GlobalAction::Changes)
+        );
+        assert_eq!(keymap.dispatch(ctrl('x')), Dispatch::Pending);
+        assert_eq!(
+            keymap.dispatch(Key::new(KeyCode::Char('p'))),
+            Dispatch::Command(GlobalAction::FocusWorkflow)
+        );
     }
 
     #[test]
@@ -108,7 +129,7 @@ mod tests {
     #[test]
     fn every_binding_carries_a_help_label() {
         let hints = global_keymap().hints();
-        assert_eq!(hints.len(), 6);
+        assert_eq!(hints.len(), 11);
         assert!(hints.iter().all(|hint| hint.label.is_some()));
         assert!(hints.iter().any(|hint| hint.keys == "Ctrl+R"));
     }

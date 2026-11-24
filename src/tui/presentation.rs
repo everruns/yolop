@@ -74,6 +74,10 @@ fn compact_elapsed(secs: u64) -> String {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PresentationState {
+    pub command_prefix: bool,
+    pub draft_attachments: usize,
+    pub changes_open: bool,
+    pub failure_available: bool,
     pub startup: StartupPresentation,
     pub stream_preview: Option<StreamPreview>,
     pub busy: bool,
@@ -210,6 +214,31 @@ impl StreamKind {
 }
 
 impl PresentationState {
+    pub(crate) fn composer_hint(&self) -> String {
+        if self.command_prefix {
+            return "Ctrl+X: d changes · f find · p panel/composer · Esc cancel".into();
+        }
+        let mut hint = if self.busy {
+            format!("Enter to steer · {} pending", self.queued_messages)
+        } else {
+            "Enter to send".into()
+        };
+        if self.draft_attachments > 0 {
+            hint.push_str(&format!(
+                " · {} attachments (/attachments)",
+                self.draft_attachments
+            ));
+        }
+        if self.failure_available && !self.busy {
+            hint.push_str(" · /recover");
+        }
+        if self.changes_open {
+            hint.push_str(" · Ctrl+X P changes");
+        } else {
+            hint.push_str(" · Ctrl+P actions");
+        }
+        hint
+    }
     pub(crate) fn startup_lines(&self) -> Vec<PresentedStartupLine> {
         let mut lines = Vec::new();
         if let Some(repository) = &self.startup.repository {
@@ -648,6 +677,10 @@ mod tests {
 
     fn state() -> PresentationState {
         PresentationState {
+            command_prefix: false,
+            draft_attachments: 0,
+            changes_open: false,
+            failure_available: false,
             startup: StartupPresentation {
                 workspace: "/work/yolop".to_string(),
                 repository: None,

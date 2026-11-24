@@ -55,6 +55,9 @@ pub(crate) fn draw(f: &mut Frame<'_>, app: &mut App) {
 
 pub(super) fn draw_shared(f: &mut Frame<'_>, app: &mut App) {
     let area = f.area();
+    if super::workflow_render::draw_approval(f, area, app) {
+        return;
+    }
     // Inline viewports cannot place a true full-screen modal above terminal
     // scrollback. Treat overlays as sheets that own this complete viewport so
     // the composer and status chrome never bleed through around their edges.
@@ -66,8 +69,12 @@ pub(super) fn draw_shared(f: &mut Frame<'_>, app: &mut App) {
         draw_setup_overlay(f, area, app);
         return;
     }
+    if app.workflow.panel.is_some() && app.workflow.focused && !app.workflow.docked(area.width) {
+        super::workflow_render::draw(f, area, app);
+        return;
+    }
     let rail_layout = activity_rail_layout(
-        area,
+        super::workflow_render::main_area(app, area),
         app.background_panel.is_some(),
         app.background_panel_focused,
     );
@@ -93,6 +100,7 @@ pub(super) fn draw_shared(f: &mut Frame<'_>, app: &mut App) {
     if let Some(sidebar) = rail_layout.rail {
         draw_activity_rail(f, sidebar, app);
     }
+    super::workflow_render::draw(f, area, app);
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2367,6 +2375,9 @@ pub(crate) fn draw_input_cursor(f: &mut Frame<'_>, area: Rect, app: &App) {
 }
 
 pub(crate) fn message_separator_title(state: &ViewState) -> Line<'static> {
+    if state.presentation.command_prefix {
+        return Line::from(state.presentation.composer_hint());
+    }
     if let Some(activity) = state.presentation.activity_text() {
         return thinking_title(
             state.busy_frame,
@@ -2378,7 +2389,11 @@ pub(crate) fn message_separator_title(state: &ViewState) -> Line<'static> {
     Line::from(vec![
         Span::styled("─── ", Style::default().fg(ACCENT_BLUE)),
         Span::styled(
-            format!("(Enter to send, {} for newline) ", newline_shortcut_hint()),
+            format!(
+                "({}, {} for newline) ",
+                state.presentation.composer_hint(),
+                newline_shortcut_hint()
+            ),
             Style::default().fg(TEXT_MUTED),
         ),
     ])

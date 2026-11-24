@@ -30,8 +30,11 @@ add context or redirect the agent without first cancelling useful work.
 - Pressing `Esc` twice cancels only the active turn. Queued messages remain and
   begin delivery when cancellation settles.
 - While busy, slash- and bang-prefixed drafts are steering messages, not
-  immediate host commands. This prevents commands or shell processes from
-  overlapping the active turn.
+  immediate host commands, except the read-only workflow views (`/diff`,
+  `/timeline`, `/sessions`, `/attachments`, `/context`, `/actions`, `/find`,
+  `/recover`), plus their local attachment and comparison controls. These open
+  local inspection without overlapping execution.
+  Restoration and session switching still refuse active foreground work.
 
 The queue is session-local and process-local, matching the embedded runtime's
 turn lifecycle. Normal session persistence begins when each queued message is

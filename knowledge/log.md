@@ -1,5 +1,9 @@
 # Knowledge Log
 
+## 2026-11-23, Terminal workflow views
+
+- [Terminal workflow views](specs/terminal-workflows.md): review comparisons, visual restoration, session switching with private drafts, inspectable attachments, scoped approval, recovery, and action discovery share existing runtime controls and tuika views.
+
 ## 2026-11-23, Published upstream ownership and current build guidance
 
 - [Maintenance](specs/maintenance.md): recheck adapter ownership against Everruns 0.53.1, share the upstream tool cancellation registry, and reuse its post-cancellation task snapshot. Retain host monitor, partial-output, workspace checkpoint and capability-control contracts.

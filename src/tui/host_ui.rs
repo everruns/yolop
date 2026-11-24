@@ -50,20 +50,35 @@ pub struct AskAnswer {
 /// Variants name *what* should happen; the host decides *how* to render it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum UiCommand {
+    OpenWorkflow {
+        panel: super::workflow::WorkflowPanel,
+    },
+    AttachFile {
+        reference: String,
+    },
+    SetReviewBase {
+        reference: String,
+    },
     /// Print the command palette / input help.
     ShowHelp,
     /// Print the list of available tools.
     ShowTools,
     /// Inspect or update configured MCP servers.
-    ManageMcp { arg: Option<String> },
+    ManageMcp {
+        arg: Option<String>,
+    },
     /// Print the workspace root.
     ShowCwd,
     /// Change the inline session status layout.
-    SetStatusLayout { arg: Option<String> },
+    SetStatusLayout {
+        arg: Option<String>,
+    },
     /// Clear the transcript buffer.
     ClearTranscript,
     /// Run a shell command from the workspace root.
-    RunShell { command: String },
+    RunShell {
+        command: String,
+    },
     /// Exit the application.
     Quit,
     /// Open guided setup, optionally focused on one provider.
@@ -72,12 +87,19 @@ pub enum UiCommand {
         reauthenticate: bool,
     },
     /// Open the interactive model picker. `arg` pre-seeds the selection.
-    OpenModelOverlay { arg: Option<String> },
+    OpenModelOverlay {
+        arg: Option<String>,
+    },
     /// Open the interactive reasoning-effort picker. `arg` pre-seeds it.
-    OpenEffortOverlay { arg: Option<String> },
+    OpenEffortOverlay {
+        arg: Option<String>,
+    },
     /// Set (or, when `status` is empty, clear) an extension's status-bar field.
     /// Pushed by an extension server's `status/changed` notification.
-    SetExtensionStatus { ext: String, status: String },
+    SetExtensionStatus {
+        ext: String,
+        status: String,
+    },
     /// Activate (`activate = true`) or deactivate an extension capability on the
     /// live session so it takes effect this session, not just next. Pushed by
     /// `enable_extension`/`disable_extension` after the settings write.
