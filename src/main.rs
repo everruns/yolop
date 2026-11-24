@@ -2179,6 +2179,72 @@ async fn run_tui(
     // trajectory can be exported after the TUI loop ends.
     let trajectory_handles = runtime.handles.clone();
     let trajectory_model = runtime.model.clone();
+    let mut app = if compact_work {
+        App::new_with_work_display(runtime, pending_images, tui::WorkDisplayMode::Compact)
+    } else {
+        App::new(runtime, pending_images)
+    };
+    app.enable_native_progress();
+    if fullscreen {
+        app.set_render_mode(tui::RenderMode::Fullscreen);
+    }
+    let result = loop {
+        let result = run_terminal_session(&mut app, fullscreen).await;
+        if result.is_err() || !app.take_editor_request() {
+            break result;
+        }
+        app.edit_prompt().await;
+    };
+    let open_session = app.open_session();
+    let show_resume_hint = app.should_show_resume_hint();
+    let session_id = app.session_id().to_string();
+    let last_assistant_message = app.last_assistant_message().map(str::to_owned);
+
+    write_trajectory_if_requested(
+        &trajectory_handles,
+        &trajectory_model,
+        trajectory_out.as_deref(),
+    )
+    .await;
+    // Same teardown contract as `--print`: let the trace extensions export the
+    // session's final events before their servers are killed.
+    trajectory_handles.flush_trace_exporters().await;
+
+    // Opening a thread from the board hands the terminal to that session, and
+    // quitting the thread comes back to the coordinator it was opened from.
+    if result.is_ok() {
+        let switch = match open_session {
+            Some(thread) => Some((thread.to_string(), Some(session_id.clone()))),
+            None => std::env::var(RETURN_SESSION_ENV)
+                .ok()
+                .filter(|coordinator| *coordinator != session_id)
+                .map(|coordinator| (coordinator, None)),
+        };
+        if let Some((target, return_to)) = switch {
+            drop(app);
+            return switch_session(&target, return_to.as_deref());
+        }
+    }
+
+    if show_resume_hint {
+        println!();
+        if fullscreen && let Some(message) = last_assistant_message {
+            println!("{message}\n");
+        }
+        print_resume_divider();
+        println!(
+            "Continue with {}",
+            continuation_command(std::env::args_os(), &session_id)
+        );
+        println!();
+        print_centered_ukraine_banner();
+    }
+    result
+}
+
+/// Each external-editor handoff uses the same complete terminal teardown and
+/// entry as a normal session, preserving the App and its unfinished work.
+async fn run_terminal_session(app: &mut App, fullscreen: bool) -> Result<()> {
     let mut raw_mode = RawModeGuard::new()?;
     // Which part of the terminal the renderer owns, in tuika's terms: the whole
     // alternate screen, or a footer pinned to the bottom of the main screen with
@@ -2228,20 +2294,7 @@ async fn run_tui(
         tracing::warn!("footer pinning failed, starting unpinned: {err:#}");
     }
 
-    let mut app = if compact_work {
-        App::new_with_work_display(runtime, pending_images, tui::WorkDisplayMode::Compact)
-    } else {
-        App::new(runtime, pending_images)
-    };
-    app.enable_native_progress();
-    if fullscreen {
-        app.set_render_mode(tui::RenderMode::Fullscreen);
-    }
     let result = app.run(&mut terminal).await;
-    let open_session = app.open_session();
-    let show_resume_hint = app.should_show_resume_hint();
-    let session_id = app.session_id().to_string();
-    let last_assistant_message = app.last_assistant_message().map(str::to_owned);
 
     // Hand the footer's rows back to the terminal so the shell prompt resumes
     // directly below the published transcript instead of after — or on top of —
@@ -2270,46 +2323,6 @@ async fn run_tui(
         alt.leave();
     }
     raw_mode.disable()?;
-
-    write_trajectory_if_requested(
-        &trajectory_handles,
-        &trajectory_model,
-        trajectory_out.as_deref(),
-    )
-    .await;
-    // Same teardown contract as `--print`: let the trace extensions export the
-    // session's final events before their servers are killed.
-    trajectory_handles.flush_trace_exporters().await;
-
-    // Opening a thread from the board hands the terminal to that session, and
-    // quitting the thread comes back to the coordinator it was opened from.
-    if result.is_ok() {
-        let switch = match open_session {
-            Some(thread) => Some((thread.to_string(), Some(session_id.clone()))),
-            None => std::env::var(RETURN_SESSION_ENV)
-                .ok()
-                .filter(|coordinator| *coordinator != session_id)
-                .map(|coordinator| (coordinator, None)),
-        };
-        if let Some((target, return_to)) = switch {
-            drop(app);
-            return switch_session(&target, return_to.as_deref());
-        }
-    }
-
-    if show_resume_hint {
-        println!();
-        if fullscreen && let Some(message) = last_assistant_message {
-            println!("{message}\n");
-        }
-        print_resume_divider();
-        println!(
-            "Continue with {}",
-            continuation_command(std::env::args_os(), &session_id)
-        );
-        println!();
-        print_centered_ukraine_banner();
-    }
     result
 }
 
@@ -2339,8 +2352,8 @@ fn switch_session(session_id: &str, return_to: Option<&str>) -> Result<()> {
     }
 }
 
-/// This run's arguments without the session and one-shot inputs, resuming
-/// `session_id` instead.
+/// Resume the target with its saved workspace, not this run's explicit cwd or
+/// one-shot inputs. Other run flags remain available to the target session.
 fn switch_session_args(
     args: impl IntoIterator<Item = std::ffi::OsString>,
     session_id: &str,
@@ -2349,22 +2362,38 @@ fn switch_session_args(
     let _executable = args.next();
     let mut kept = Vec::new();
     let mut skip_value = false;
+    let mut skip_images = false;
     for arg in args {
         if skip_value {
             skip_value = false;
             continue;
         }
         let value = arg.to_string_lossy();
+        if skip_images {
+            if !value.starts_with('-') {
+                continue;
+            }
+            skip_images = false;
+        }
+        if matches!(value.as_ref(), "-i" | "--image")
+            || value.starts_with("--image=")
+            || (value.starts_with("-i") && value.len() > 2)
+        {
+            skip_images = true;
+            continue;
+        }
         if matches!(
             value.as_ref(),
-            "-p" | "--print" | "-i" | "--image" | "--session" | "--trajectory-out"
+            "-p" | "--print" | "--session" | "--trajectory-out" | "-C" | "--cwd"
         ) {
             skip_value = true;
             continue;
         }
-        if ["--print=", "--image=", "--session=", "--trajectory-out="]
+        if ["--print=", "--session=", "--trajectory-out=", "--cwd="]
             .iter()
             .any(|prefix| value.starts_with(prefix))
+            || (value.starts_with("-C") && value.len() > 2)
+            || (value.starts_with("-p") && value.len() > 2 && !value.starts_with("--"))
         {
             continue;
         }
@@ -2961,6 +2990,63 @@ mod tests {
                 "thread"
             ]
         );
+    }
+
+    #[test]
+    fn switching_sessions_resumes_the_target_workspace_for_every_cwd_flag_form() {
+        let sessions = tempfile::tempdir().unwrap();
+        let saved = tempfile::tempdir().unwrap();
+        let id = SessionId::from_seed(314);
+        runtime::session_log::write_session_workspace(
+            &sessions.path().join(id.to_string()),
+            &runtime::session_log::SessionWorkspaceMetadata::new(saved.path().into(), None),
+        )
+        .unwrap();
+        for cwd in [
+            vec!["-C", "/old/workspace"],
+            vec!["--cwd", "/old/workspace"],
+            vec!["--cwd=/old/workspace"],
+            vec!["-C/old/workspace"],
+            vec!["-C=/old/workspace"],
+        ] {
+            let original = std::iter::once("yolop")
+                .chain(cwd)
+                .chain(["--inline"])
+                .map(std::ffi::OsString::from);
+            let switched = switch_session_args(original, &id.to_string());
+            let cli = Cli::try_parse_from(std::iter::once(OsString::from("yolop")).chain(switched))
+                .unwrap();
+            assert!(cli.inline);
+            assert_eq!(
+                resolve_workspace_root(cli.cwd, Some(id), sessions.path()).unwrap(),
+                saved.path()
+            );
+        }
+    }
+
+    #[test]
+    fn switching_sessions_drops_attached_and_variadic_one_shot_images() {
+        for images in [
+            vec!["-i", "one.png", "two.png"],
+            vec!["--image", "one.png", "two.png"],
+            vec!["-ione.png", "two.png"],
+            vec!["-i=one.png", "two.png"],
+            vec!["--image=one.png", "two.png"],
+        ] {
+            let args = std::iter::once("yolop")
+                .chain(images)
+                .chain(["--inline", "--session", "old"])
+                .map(OsString::from);
+            let switched = switch_session_args(args, "target");
+            assert_eq!(
+                switched,
+                ["--inline", "--session", "target"].map(OsString::from)
+            );
+            let cli = Cli::try_parse_from(std::iter::once(OsString::from("yolop")).chain(switched))
+                .unwrap();
+            assert!(cli.images.is_empty());
+            assert!(cli.inline);
+        }
     }
     use std::ffi::OsString;
     use std::process::Command;

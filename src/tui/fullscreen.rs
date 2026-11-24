@@ -117,6 +117,9 @@ pub(crate) fn native_theme() -> tuika::Theme {
 
 pub(crate) fn draw(f: &mut Frame, app: &mut App) {
     let area = f.area();
+    if super::workflow_render::draw_approval(f, area, app) {
+        return;
+    }
 
     // Overlays own the whole viewport, composited as tuika overlays over a blank
     // base (same "sheet" behavior as inline, but tuika-native).
@@ -128,12 +131,16 @@ pub(crate) fn draw(f: &mut Frame, app: &mut App) {
         draw_setup_overlay(f, area, app);
         return;
     }
+    if app.workflow.panel.is_some() && app.workflow.focused && !app.workflow.docked(area.width) {
+        super::workflow_render::draw(f, area, app);
+        return;
+    }
     if area.width < 4 || area.height == 0 {
         return;
     }
 
     let rail_layout = render::activity_rail_layout(
-        area,
+        super::workflow_render::main_area(app, area),
         app.background_panel.is_some(),
         app.background_panel_focused,
     );
@@ -326,7 +333,8 @@ pub(crate) fn draw(f: &mut Frame, app: &mut App) {
 
     // The composer remains editable while a turn runs so Enter can queue a
     // steering message for the next safe turn boundary.
-    if app.setup.is_none() && !app.background_panel_focused {
+    super::workflow_render::draw(f, area, app);
+    if app.setup.is_none() && !app.background_panel_focused && !app.workflow.focused {
         let input_rect = input_probe.rect();
         if input_rect.width > 0 && input_rect.height > 0 {
             let (x, y) = app.composer.cursor_screen(input_rect);

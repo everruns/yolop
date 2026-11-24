@@ -1,4 +1,12 @@
+mod attachment;
+mod draft;
 mod mcp_status;
+mod review;
+pub(crate) mod workflow;
+mod workflow_presentation;
+mod workflow_render;
+#[cfg(test)]
+mod workflow_tests;
 // TUI app state and event loop.
 // Decision: keep the TUI surface tiny. Transcript output is published into the
 // native terminal scrollback; the renderer owns only a short footer at the
@@ -177,6 +185,7 @@ fn compact_detail_line(line: &ChatLine) -> ChatLine {
 }
 
 pub struct App {
+    workflow: workflow::Workflow,
     session: Session,
     startup: StartupInfo,
     model: ModelState,
@@ -264,6 +273,8 @@ pub struct App {
     pending_ask: Option<PendingAsk>,
     sandbox_approval_rx: crate::sandbox_approval::ApprovalReceiver,
     pending_sandbox_approval: Option<PendingSandboxApproval>,
+    approval_scroll: ScrollState,
+    approval_scroll_metrics: (usize, usize),
     /// Settings store shared with the runtime (same instance
     /// `ModelsCapability` writes). Used to resolve credentials when querying
     /// provider models APIs and to show per-provider connection status in
@@ -524,6 +535,7 @@ pub(crate) struct PendingAsk {
 }
 
 struct PendingSandboxApproval {
+    request: Option<crate::sandbox_approval::ApprovalRequest>,
     reply: oneshot::Sender<crate::sandbox_approval::ApprovalDecision>,
 }
 
@@ -536,6 +548,7 @@ struct PendingSandboxApproval {
 /// finished, which keeps every surface on the one route rather than splitting
 /// the async ones back out into a chain of their own.
 enum Deferred {
+    WorkflowKey(KeyEvent),
     SetupKey(KeyEvent),
     BackgroundPanelKey(KeyEvent),
     SubmitInput,
@@ -758,6 +771,7 @@ impl App {
             mpsc::unbounded_channel::<OpenRouterLoginEvent>();
         let (mcp_login_tx, mcp_login_rx) = mpsc::unbounded_channel::<McpLoginEvent>();
         let mut app = Self {
+            workflow: workflow::Workflow::default(),
             session,
             startup: runtime.startup,
             model: runtime.model,
@@ -809,6 +823,12 @@ impl App {
             pending_ask: None,
             sandbox_approval_rx: runtime.sandbox_approval_rx,
             pending_sandbox_approval: None,
+            approval_scroll: {
+                let mut scroll = ScrollState::new();
+                scroll.set_offset(0);
+                scroll
+            },
+            approval_scroll_metrics: (0, 0),
             settings: runtime.settings,
             sandbox_mode_override: runtime.sandbox_mode_override,
             model_catalog: HashMap::new(),
@@ -866,6 +886,7 @@ impl App {
         if should_setup {
             app.start_first_run_setup();
         }
+        app.restore_draft();
         app
     }
 
@@ -1283,6 +1304,10 @@ impl App {
             settings.approval_policy(),
         );
         PresentationState {
+            command_prefix: !self.keymap.pending().is_empty(),
+            draft_attachments: self.pending_pastes.len() + self.pending_images.len(),
+            changes_open: self.workflow.panel == Some(workflow::WorkflowPanel::Changes),
+            failure_available: self.workflow.failure.is_some(),
             startup: StartupPresentation {
                 workspace: self.startup.workspace_root.display().to_string(),
                 repository: if self.render_mode.is_fullscreen() {
@@ -1483,9 +1508,16 @@ impl App {
         } else {
             turn.elapsed_secs
         };
+        let activity = workflow_presentation::execution_summary(
+            self.workflow.phase,
+            &turn.activity,
+            self.background_counts()
+                .map(|counts| counts.running)
+                .unwrap_or(0),
+        );
         let summary = CompactWorkPresentation {
             outcome: turn.outcome,
-            activity: &turn.activity,
+            activity: &activity,
             action_count: turn.action_count,
             elapsed_secs,
             expanded: turn.expanded,
@@ -1789,6 +1821,9 @@ impl App {
                         );
                     }
                     if self.should_quit {
+                        if !self.workflow.editor_requested {
+                            self.close_workflow();
+                        }
                         self.deny_pending_sandbox_approval();
                         self.publish_remaining_transcript(terminal);
                         return Ok(());
@@ -1796,6 +1831,7 @@ impl App {
 
                     io_failures += 1;
                     if io_failures >= MAX_TERMINAL_IO_FAILURES {
+                        self.close_workflow();
                         return Err(err);
                     }
                     tracing::warn!(
@@ -1804,6 +1840,12 @@ impl App {
                 }
             }
             if self.should_quit {
+                if !self.workflow.editor_requested {
+                    self.close_workflow();
+                }
+                if let Err(error) = self.save_draft() {
+                    self.push_system(format!("Could not save draft: {error:#}"));
+                }
                 self.deny_pending_sandbox_approval();
                 self.publish_remaining_transcript(terminal);
                 return Ok(());
@@ -1843,6 +1885,7 @@ impl App {
         B: Backend,
         B::Error: std::error::Error + Send + Sync + 'static,
     {
+        self.poll_workflow();
         self.refresh_session_tasks_if_due();
         if self.busy
             && !self.queued_messages.is_empty()
@@ -1881,7 +1924,11 @@ impl App {
         // Bound retained history now that split-footer mode has flushed this
         // frame's lines, so `trim_transcript` can drop the freshly-flushed prefix.
         self.trim_transcript();
+        self.workflow.image_layer.clear();
         terminal.draw(|f| draw(f, self))?;
+        if self.native_progress {
+            self.workflow.image_layer.emit(&mut std::io::stdout())?;
+        }
 
         // 1) drain background turn events
         if let Some(rx) = self.rx.as_mut() {
@@ -1892,6 +1939,7 @@ impl App {
                 }
                 Ok(TurnEvent::Activity(activity)) => {
                     if !activity.fallback || self.turn_activity.is_none() {
+                        self.workflow.phase = activity.phase;
                         self.update_compact_activity(&activity.text);
                         self.turn_activity = Some(activity.text);
                     }
@@ -1924,6 +1972,10 @@ impl App {
                     };
                     self.finalize_compact_turn(outcome);
                     self.finish_busy();
+                    if !success && !cancelled {
+                        self.workflow.failure = Some("The turn ended with a failure. Inspect retained work details before continuing.".into());
+                        self.push_system("Task failed. Open /recover for continuation, model, sign-in, and inspection actions.".into());
+                    }
                     if let Some(status) = self.program_status.as_mut() {
                         if success {
                             status.done();
@@ -1960,6 +2012,8 @@ impl App {
                         status.error();
                     }
                     self.push_system(format!("turn failed: {err}"));
+                    self.workflow.failure = Some(err);
+                    self.push_system("Open /recover to continue, change model, sign in, or inspect completed work.".into());
                     self.start_next_queued_turn().await;
                     return Ok(());
                 }
@@ -2022,26 +2076,7 @@ impl App {
             });
             applied_ui_command = true;
         }
-        if self.pending_ask.is_none()
-            && self.pending_sandbox_approval.is_none()
-            && let Ok((request, reply)) = self.sandbox_approval_rx.try_recv()
-        {
-            self.push_system(format!("approval needed: {}", request.reason));
-            self.lines.push(ChatLine {
-                author: Author::Tool,
-                text: request.command,
-            });
-            let scope = match request.scope {
-                crate::sandbox_approval::ApprovalScope::FullAccess => "danger-full-access",
-                crate::sandbox_approval::ApprovalScope::Sandboxed => {
-                    "this command inside the active sandbox"
-                }
-                crate::sandbox_approval::ApprovalScope::Memory => "durable memory changes",
-            };
-            self.push_system(format!(
-                "press y to approve {scope} once, a to approve {scope} for this session, n or Esc to deny"
-            ));
-            self.pending_sandbox_approval = Some(PendingSandboxApproval { reply });
+        if self.poll_sandbox_approval() {
             return Ok(());
         }
         if applied_ui_command {
@@ -2126,6 +2161,9 @@ impl App {
                 }
                 CrosstermEvent::Mouse(mouse) => {
                     let area = terminal.get_frame().area();
+                    if self.handle_workflow_mouse(mouse, area).await {
+                        continue;
+                    }
                     if self.render_mode.is_fullscreen() {
                         if let Some(shape) = self.update_link_pointer(mouse) {
                             let _ = pointer::write(&mut std::io::stdout(), shape);
@@ -2202,6 +2240,16 @@ impl App {
         {
             Ok(replayed_lines) => self.lines.extend(replayed_lines),
             Err(err) => self.push_system(format!("load replayed transcript: {err}")),
+        }
+        self.startup.replayed_events = 0;
+        if let Some(recap) = self
+            .lines
+            .iter()
+            .rev()
+            .find(|line| line.author == Author::Assistant)
+            .map(|line| first_line(&line.text, 240))
+        {
+            self.push_system(format!("Resumed session. Last response: {recap}"));
         }
     }
 
@@ -2348,7 +2396,10 @@ impl App {
         // a running turn: it leaves that turn's Esc and Ctrl+C arming alone.
         // `Pre` is the router's first stage and no surface can outrank it, so
         // this one exception is spelled out here instead of declared.
-        let search_owns_keyboard = surfaces.owner(&event) == routing::HISTORY_SEARCH;
+        let search_owns_keyboard = matches!(
+            surfaces.owner(&event),
+            routing::HISTORY_SEARCH | routing::WORKFLOW | routing::SANDBOX_APPROVAL
+        );
 
         if !search_owns_keyboard && self.busy && key.code != KeyCode::Esc {
             self.esc_pending_cancel = false;
@@ -2388,6 +2439,10 @@ impl App {
             self.handle_sandbox_approval_key(key);
             InputOutcome::Consumed
         });
+        router.target_fn(routing::WORKFLOW, |_| {
+            deferred = Some(Deferred::WorkflowKey(key));
+            InputOutcome::Consumed
+        });
         router.target_fn(routing::BACKGROUND_PANEL, |_| {
             deferred = Some(Deferred::BackgroundPanelKey(key));
             InputOutcome::Consumed
@@ -2411,6 +2466,7 @@ impl App {
         router.finish();
 
         match deferred {
+            Some(Deferred::WorkflowKey(key)) => self.handle_workflow_key(key).await,
             Some(Deferred::SetupKey(key)) => self.handle_setup_key(key).await,
             Some(Deferred::BackgroundPanelKey(key)) => self.handle_background_panel_key(key).await,
             Some(Deferred::SubmitInput) => self.submit_input().await,
@@ -2422,6 +2478,7 @@ impl App {
     /// The modal state that decides input ownership, sampled for one event.
     fn input_surfaces(&self) -> routing::InputSurfaces {
         routing::InputSurfaces {
+            workflow_focused: self.workflow.panel.is_some() && self.workflow.focused,
             searching: self.history_search.is_some(),
             awaiting_sandbox_approval: self.pending_sandbox_approval.is_some(),
             // A manually opened/focused sidebar captures task navigation keys.
@@ -2439,9 +2496,28 @@ impl App {
     /// Run one global chord action, naming any follow-up work that must await.
     fn run_global_action(&mut self, action: GlobalAction) -> Option<Deferred> {
         match action {
+            GlobalAction::Prefix => {}
+            GlobalAction::Actions => self.open_workflow(workflow::WorkflowPanel::Actions),
+            GlobalAction::Find => self.open_workflow(workflow::WorkflowPanel::Search),
+            GlobalAction::Changes => self.open_workflow(workflow::WorkflowPanel::Changes),
+            GlobalAction::FocusWorkflow => {
+                if self.workflow.panel.is_some() {
+                    self.workflow.focused = !self.workflow.focused;
+                }
+            }
+            GlobalAction::Editor => {
+                if self.pending_ask.is_none()
+                    && self.pending_sandbox_approval.is_none()
+                    && self.setup.is_none()
+                {
+                    self.workflow.editor_requested = true;
+                    self.should_quit = true;
+                }
+            }
             GlobalAction::ReverseSearch => self.history_search_start(),
             GlobalAction::Interrupt => self.handle_ctrl_c(),
             GlobalAction::Quit => {
+                self.close_workflow();
                 self.abort_codex_login();
                 self.abort_openrouter_login();
                 self.abort_mcp_login();
@@ -2459,11 +2535,66 @@ impl App {
         None
     }
 
+    fn poll_sandbox_approval(&mut self) -> bool {
+        if self.pending_ask.is_none()
+            && self.pending_sandbox_approval.is_none()
+            && let Ok((request, reply)) = self.sandbox_approval_rx.try_recv()
+        {
+            self.push_system(format!("approval needed: {}", request.reason));
+            self.lines.push(ChatLine {
+                author: Author::Tool,
+                text: request.command.clone(),
+            });
+            let scope = match request.scope {
+                crate::sandbox_approval::ApprovalScope::FullAccess => "danger-full-access",
+                crate::sandbox_approval::ApprovalScope::Sandboxed => {
+                    "this command inside the active sandbox"
+                }
+                crate::sandbox_approval::ApprovalScope::Memory => "durable memory changes",
+            };
+            self.push_system(format!(
+                "press y to approve {scope} once, a to approve {scope} for this session, n or Esc to deny"
+            ));
+            if let Some(status) = self.program_status.as_mut() {
+                status.blocked_permission();
+            }
+            self.pending_sandbox_approval = Some(PendingSandboxApproval {
+                request: Some(request),
+                reply,
+            });
+            self.approval_scroll.set_offset(0);
+            return true;
+        }
+        false
+    }
+
     /// Keyboard handling for the y/a/n sandbox approval prompt.
     fn handle_sandbox_approval_key(&mut self, key: KeyEvent) {
+        if key.code == KeyCode::Char('d') && key.modifiers == KeyModifiers::CONTROL {
+            self.deny_pending_sandbox_approval();
+            self.should_quit = true;
+            return;
+        }
+        if key.code == KeyCode::Char('c') && key.modifiers == KeyModifiers::CONTROL {
+            self.deny_pending_sandbox_approval();
+            return;
+        }
+        if matches!(key.code, KeyCode::PageUp | KeyCode::PageDown) {
+            let (content, viewport) = self.approval_scroll_metrics;
+            let offset = self.approval_scroll.offset();
+            self.approval_scroll
+                .set_offset(if key.code == KeyCode::PageUp {
+                    offset.saturating_sub(viewport.max(1))
+                } else {
+                    offset
+                        .saturating_add(viewport.max(1))
+                        .min(ScrollState::max_offset(content, viewport))
+                });
+            return;
+        }
         let is_plain_character = matches!(key.modifiers, KeyModifiers::NONE | KeyModifiers::SHIFT);
         match key.code {
-            KeyCode::Char('y') | KeyCode::Char('Y') => {
+            KeyCode::Char('y') | KeyCode::Char('Y') if is_plain_character => {
                 if let Some(pending) = self.pending_sandbox_approval.take() {
                     let _ = pending
                         .reply
@@ -2483,6 +2614,12 @@ impl App {
                 self.deny_pending_sandbox_approval();
             }
             _ => {}
+        }
+        if self.pending_sandbox_approval.is_none()
+            && self.busy
+            && let Some(status) = self.program_status.as_mut()
+        {
+            status.working();
         }
     }
 
@@ -2520,10 +2657,8 @@ impl App {
     /// Resolve one crossterm key against the app-global [`keymap`](crate::tui::keymap),
     /// returning the [`GlobalAction`] to run when a global chord matches.
     ///
-    /// Every global binding is a single stroke, so the keymap never returns
-    /// `Pending` here; a non-match (`Unmatched`) — or a key that does not
-    /// translate to a `tuika` event, such as a release — yields `None` so the
-    /// key falls through to the composer and modal handlers below.
+    /// A sequence prefix is consumed without editing the draft. Unmatched
+    /// keys fall through to the composer or the owning modal surface.
     fn dispatch_global_key(&mut self, key: KeyEvent) -> Option<GlobalAction> {
         let tuika::Event::Key(translated) = tuika::translate_event(CrosstermEvent::Key(key))?
         else {
@@ -2531,7 +2666,8 @@ impl App {
         };
         match self.keymap.dispatch(translated) {
             Dispatch::Command(action) => Some(action),
-            Dispatch::Pending | Dispatch::Unmatched => None,
+            Dispatch::Pending => Some(GlobalAction::Prefix),
+            Dispatch::Unmatched => None,
         }
     }
 
@@ -2842,6 +2978,10 @@ impl App {
         // A prompt that reads single keystrokes has nowhere to put pasted text.
         // It still owns the event, so the surface underneath never sees it.
         router.target_fn(routing::SANDBOX_APPROVAL, |_| InputOutcome::Consumed);
+        router.target_fn(routing::WORKFLOW, |_| {
+            self.workflow_paste(&pasted);
+            InputOutcome::Consumed
+        });
         router.target_fn(routing::BACKGROUND_PANEL, |_| InputOutcome::Consumed);
         router.target_fn(routing::ASK, |_| {
             self.handle_ask_paste(&pasted);
@@ -3060,6 +3200,18 @@ impl App {
 
     async fn submit_input(&mut self) {
         let raw = self.input_text();
+        if self.busy
+            && raw
+                .trim()
+                .strip_prefix('/')
+                .and_then(|command| command.split_whitespace().next())
+                .is_some_and(workflow::is_local_view_command)
+        {
+            self.reset_input();
+            self.handle_command(raw.trim().trim_start_matches('/'))
+                .await;
+            return;
+        }
         crate::tui::input::paste_attachment::prune_pending_pastes(&raw, &mut self.pending_pastes);
         let pending_pastes = std::mem::take(&mut self.pending_pastes);
         let expanded =
@@ -3407,6 +3559,9 @@ impl App {
         let clearing = matches!(&command, UiCommand::ClearTranscript);
         let start = self.lines.len();
         match command {
+            UiCommand::OpenWorkflow { panel } => self.open_workflow(panel),
+            UiCommand::AttachFile { reference } => self.attach_file(reference),
+            UiCommand::SetReviewBase { reference } => self.set_review_base(reference),
             UiCommand::ShowHelp => self.show_help(),
             UiCommand::ShowTools => self.show_tools().await,
             UiCommand::ManageMcp { arg } => self.manage_mcp_command(arg.as_deref()).await,
@@ -4391,6 +4546,8 @@ impl App {
         handle: crate::runtime::session::TurnHandle,
         activity: Option<String>,
     ) {
+        self.workflow.phase = workflow_presentation::ExecutionPhase::Thinking;
+        self.workflow.failure = None;
         if let Some(status) = self.program_status.as_mut() {
             status.working();
         }
@@ -4517,10 +4674,8 @@ fn command_suggestions(
         });
     }
 
-    // Keep the dropdown bounded but large enough to show every built-in
-    // command (10 client commands + capability commands like /setup) for a
-    // bare `/`, so none is hidden behind the cap.
-    out.truncate(12);
+    // Keep completions bounded; the action palette searches the full registry.
+    out.truncate(32);
     out
 }
 
@@ -6580,6 +6735,10 @@ flowchart TD
 
     fn presentation_state_idle() -> PresentationState {
         PresentationState {
+            command_prefix: false,
+            draft_attachments: 0,
+            changes_open: false,
+            failure_available: false,
             startup: StartupPresentation {
                 workspace: "/work/yolop".to_string(),
                 repository: None,
@@ -7483,10 +7642,10 @@ flowchart TD
             .collect()
     }
 
-    struct TestApp {
-        app: App,
-        _workspace: tempfile::TempDir,
-        _sessions: tempfile::TempDir,
+    pub(super) struct TestApp {
+        pub(super) app: App,
+        pub(super) _workspace: tempfile::TempDir,
+        pub(super) _sessions: tempfile::TempDir,
     }
 
     /// The pause has to survive the trip from the tool to the screen. Upstream's
@@ -7680,7 +7839,7 @@ flowchart TD
         assert_eq!(plain.app.background_panel, None);
     }
 
-    async fn app_with_llmsim() -> TestApp {
+    pub(super) async fn app_with_llmsim() -> TestApp {
         app_with_llmsim_options(crate::runtime::BuildOptions::default()).await
     }
 
@@ -7715,7 +7874,10 @@ flowchart TD
     async fn sandbox_approval_can_be_granted_for_the_session() {
         let mut test = app_with_llmsim().await;
         let (reply, answer) = oneshot::channel();
-        test.app.pending_sandbox_approval = Some(PendingSandboxApproval { reply });
+        test.app.pending_sandbox_approval = Some(PendingSandboxApproval {
+            request: None,
+            reply,
+        });
 
         test.app
             .handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::empty()))
@@ -7737,7 +7899,10 @@ flowchart TD
 
         for modifiers in [KeyModifiers::CONTROL, KeyModifiers::ALT] {
             let (reply, mut answer) = oneshot::channel();
-            test.app.pending_sandbox_approval = Some(PendingSandboxApproval { reply });
+            test.app.pending_sandbox_approval = Some(PendingSandboxApproval {
+                request: None,
+                reply,
+            });
 
             test.app
                 .handle_key(KeyEvent::new(KeyCode::Char('a'), modifiers))
@@ -8346,12 +8511,12 @@ flowchart TD
         /// because terminal-side commands now take effect asynchronously via
         /// the host UI channel rather than synchronously inside
         /// `handle_command`.
-        async fn dispatch_command_for_test(&mut self, cmd: &str) {
+        pub(super) async fn dispatch_command_for_test(&mut self, cmd: &str) {
             self.handle_command(cmd).await;
             self.pump_ui_commands_for_test().await;
         }
 
-        async fn pump_ui_commands_for_test(&mut self) {
+        pub(super) async fn pump_ui_commands_for_test(&mut self) {
             while let Ok(request) = self.ui_rx.try_recv() {
                 let messages = self.apply_ui_command(request.command).await;
                 if let Some(reply) = request.reply {
@@ -8362,7 +8527,7 @@ flowchart TD
 
         /// Drain turn events the way [`App::run_loop_iteration`] does until
         /// the background turn finishes or the deadline passes.
-        async fn pump_turn_until_idle_for_test(&mut self) {
+        pub(super) async fn pump_turn_until_idle_for_test(&mut self) {
             use std::time::Duration;
 
             let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
@@ -8937,7 +9102,10 @@ flowchart TD
         app.set_input_text(String::new());
 
         let (reply, _answer_rx) = oneshot::channel();
-        app.pending_sandbox_approval = Some(PendingSandboxApproval { reply });
+        app.pending_sandbox_approval = Some(PendingSandboxApproval {
+            request: None,
+            reply,
+        });
 
         app.handle_paste("rm -rf /".to_string()).await;
 

@@ -275,6 +275,9 @@ The controller is host-independent; presentation is not:
 
 - TUI: `/rewind`, `/undo`, and `/redo` produce textual previews and confirmation
   tokens; a conversation restore puts the original prompt back in the composer.
+  `/timeline` composes a checkpoint picker over the same controller. It offers
+  explicit conversation/workspace/both selection, previews before confirmation,
+  invalidates a cancelled preview, and exposes redo without typing a token.
 - ACP: advertise system commands through the existing
   `available_commands_update` path, restricted to workspace restore. ACP cannot
   replace the client transcript after conversation history is rewound, so

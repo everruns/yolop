@@ -382,9 +382,13 @@ struct SessionMatch {
     event_count: usize,
     tool_names: Vec<String>,
     path: String,
+    title: Option<String>,
+    workspace: Option<String>,
+    branch: Option<String>,
+    recap: Option<String>,
 }
 
-fn search_sessions(
+pub(crate) fn search_sessions(
     sessions_dir: &Path,
     current_session_id: SessionId,
     arguments: &Value,
@@ -448,7 +452,32 @@ fn search_sessions(
         let id: SessionId = session_id
             .parse()
             .map_err(|error| format!("invalid saved session ID: {error}"))?;
-        let (scan, path) = scan_session(&session_dir, id, query_lower.as_deref())?;
+        let metadata = crate::runtime::session_log::read_session_workspace_metadata(&session_dir)
+            .ok()
+            .flatten();
+        let title = metadata.as_ref().and_then(|meta| meta.title.clone());
+        let workspace = metadata
+            .as_ref()
+            .map(|meta| meta.active_root.display().to_string());
+        let branch = metadata
+            .as_ref()
+            .and_then(|meta| meta.worktree.as_ref())
+            .map(|wt| wt.branch.clone());
+        let metadata_matches = query_lower.as_ref().is_some_and(|query| {
+            [title.as_deref(), workspace.as_deref(), branch.as_deref()]
+                .into_iter()
+                .flatten()
+                .any(|text| text.to_lowercase().contains(query))
+        });
+        let (scan, path) = scan_session(
+            &session_dir,
+            id,
+            if metadata_matches {
+                None
+            } else {
+                query_lower.as_deref()
+            },
+        )?;
         if !scan.valid {
             ignored_session_shells += 1;
             continue;
@@ -476,6 +505,12 @@ fn search_sessions(
                     .unwrap_or_else(|| session_dir.clone())
                     .display()
                     .to_string(),
+                title,
+                workspace,
+                branch,
+                recap: metadata
+                    .and_then(|meta| meta.summary)
+                    .map(|text| truncate_chars(&text, MAX_SNIPPET_CHARS)),
             });
             if matches.len() == limit {
                 break;

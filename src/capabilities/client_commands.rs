@@ -36,7 +36,10 @@ pub(crate) const CLIENT_COMMANDS_PROMPT: &str = r#"Terminal commands, all runnab
 "clear the screen", "show tools", "switch model", "restart MCP", "reconnect MCP",
 or "refresh MCP" (`/mcp reload`), "log in to an MCP server" (`/mcp login <name>`),
     "add/remove/enable/disable an MCP server" (`/mcp <verb> <name>`, reloads live unless `--no-reload`);
-never invent a manager window. `/shell` is typed-only; use `bash`."#;
+never invent a manager window. Inspect work with `/diff`, `/timeline`, `/sessions`,
+`/attachments`, `/context`, `/actions`, `/find`, and `/recover`. `/attach path#start-end`
+adds an explicit file snapshot to the draft. `/diff-base <ref>` changes the comparison.
+`/shell` is typed-only; use `bash`."#;
 
 pub(crate) struct ClientCommandsCapability {
     ui: Arc<dyn HostUi>,
@@ -147,11 +150,74 @@ fn command_descriptors() -> Vec<CommandDescriptor> {
             )],
         ),
         cmd("quit", "exit", &[]),
+        cmd("diff", "review changed files and diffs", &[]),
+        cmd(
+            "diff-base",
+            "compare changes against a Git reference",
+            &[required(
+                "reference",
+                "Base branch or commit, for example origin/main.",
+            )],
+        ),
+        cmd("timeline", "preview and restore checkpoints visually", &[]),
+        cmd("sessions", "search and resume saved sessions", &[]),
+        cmd("attachments", "inspect or remove draft attachments", &[]),
+        cmd(
+            "attach",
+            "attach a file or line range to the draft",
+            &[required(
+                "path",
+                "Workspace-relative path, optionally followed by #start-end.",
+            )],
+        ),
+        cmd(
+            "context",
+            "explain context occupancy and session usage",
+            &[],
+        ),
+        cmd("actions", "search all available commands", &[]),
+        cmd("find", "search and navigate the transcript", &[]),
+        cmd(
+            "recover",
+            "continue a failed task or repair configuration",
+            &[],
+        ),
     ]
 }
 
 pub(crate) fn ui_command_for(name: &str, arg: Option<String>) -> Option<UiCommand> {
+    use crate::tui::workflow::WorkflowPanel;
     match name {
+        "diff" => Some(UiCommand::OpenWorkflow {
+            panel: WorkflowPanel::Changes,
+        }),
+        "timeline" => Some(UiCommand::OpenWorkflow {
+            panel: WorkflowPanel::Timeline,
+        }),
+        "sessions" => Some(UiCommand::OpenWorkflow {
+            panel: WorkflowPanel::Sessions,
+        }),
+        "attachments" => Some(UiCommand::OpenWorkflow {
+            panel: WorkflowPanel::Attachments,
+        }),
+        "context" => Some(UiCommand::OpenWorkflow {
+            panel: WorkflowPanel::Usage,
+        }),
+        "actions" => Some(UiCommand::OpenWorkflow {
+            panel: WorkflowPanel::Actions,
+        }),
+        "find" => Some(UiCommand::OpenWorkflow {
+            panel: WorkflowPanel::Search,
+        }),
+        "recover" => Some(UiCommand::OpenWorkflow {
+            panel: WorkflowPanel::Recovery,
+        }),
+        "attach" => Some(UiCommand::AttachFile {
+            reference: arg.unwrap_or_default(),
+        }),
+        "diff-base" => Some(UiCommand::SetReviewBase {
+            reference: arg.unwrap_or_default(),
+        }),
         "help" => Some(UiCommand::ShowHelp),
         "tools" => Some(UiCommand::ShowTools),
         "mcp" => Some(UiCommand::ManageMcp { arg }),

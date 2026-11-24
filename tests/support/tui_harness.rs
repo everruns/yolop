@@ -46,6 +46,7 @@ pub struct TuiSpawnOptions {
     pub sandbox: bool,
     /// Tracing filter passed to the spawned binary.
     pub rust_log: Option<String>,
+    pub editor: Option<String>,
 }
 
 impl Default for TuiSpawnOptions {
@@ -61,6 +62,7 @@ impl Default for TuiSpawnOptions {
             workspace: None,
             sandbox: false,
             rust_log: None,
+            editor: None,
         }
     }
 }
@@ -281,6 +283,12 @@ pub fn spawn_tui_llmsim_with_settings(
     cmd.env("XDG_CONFIG_HOME", home.path().join(".config"));
     cmd.env("XDG_DATA_HOME", home.path().join(".local/share"));
     cmd.env("TERM", "xterm-256color");
+    cmd.env_remove("VISUAL");
+    if let Some(editor) = options.editor {
+        cmd.env("EDITOR", editor);
+    } else {
+        cmd.env_remove("EDITOR");
+    }
     if let Some(rust_log) = options.rust_log {
         cmd.env("RUST_LOG", rust_log);
     }

@@ -35,8 +35,11 @@ add context or redirect the agent without first cancelling useful work.
   assigned to the cancelled turn remain in its durable history and are not
   automatically replayed as new work.
 - While busy, slash- and bang-prefixed drafts are steering messages, not
-  immediate host commands. This prevents commands or shell processes from
-  overlapping the active turn.
+  immediate host commands, except the read-only workflow views (`/diff`,
+  `/timeline`, `/sessions`, `/attachments`, `/context`, `/actions`, `/find`,
+  `/recover`), plus their local attachment and comparison controls. These open
+  local inspection without overlapping execution.
+  Restoration and session switching still refuse active foreground work.
 
 Only inputs awaiting admission are process-local. An accepted input belongs to
 the session's durable engine authority, including if the TUI exits before the

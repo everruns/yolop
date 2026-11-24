@@ -14,6 +14,7 @@ and [`docs/`](../docs/); it must not link back into this internal bundle.
 
 - [Conversational control](specs/conversational-control.md), steering and interruption behavior.
 - [Presentation](specs/presentation.md), terminal-independent presentation semantics.
+- [Terminal workflow views](specs/terminal-workflows.md), changes, rewind, sessions, draft context, recovery, and action discovery.
 - [Commands](specs/commands.md), client command behavior.
 - [Mid-turn steering](specs/steering.md), input received during execution.
 - [System prompt composition](specs/system-prompt.md), what earns a place in the per-turn prefix.

@@ -26,6 +26,8 @@ local sessions first, ordered by authority and WAL modification times, and:
 
 - matches case-insensitive text in user/assistant messages and recorded reason
   failures;
+- also matches saved titles, workspace paths, and worktree branches, returning
+  them alongside saved recaps for the terminal session switcher;
 - excludes the current session by default so a reference repeated in the active
   prompt cannot shadow the historical match;
 - lists recent sessions when no query is supplied;

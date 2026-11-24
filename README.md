@@ -152,6 +152,12 @@ The composer takes `!<command>` for direct shell runs, `@` for file path complet
 
 Prefer a compact layout? `yolop --inline` runs the TUI inline instead of the alternate screen, handy in short terminals and tmux panes.
 
+Press `Ctrl+P` for searchable actions, `Ctrl+X F` to find transcript text, or `Ctrl+X D` to
+review changes. `/timeline` previews rewind and redo, `/sessions` finds earlier
+work, `/attachments` inspects draft context, and `/recover` offers failure
+recovery. `Ctrl+G` opens your external prompt editor. See
+[Terminal workflows](docs/features/terminal-workflows.md).
+
 ### Print mode for scripts and CI
 
 `-p` (`--print`) answers once and exits. It is the mode for scripts and CI.

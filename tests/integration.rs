@@ -1614,6 +1614,97 @@ fn tui_default_fullscreen_renders_and_responds_smoke() {
 }
 
 #[test]
+fn tui_workflow_palette_context_and_recovery_keep_the_live_draft() {
+    for inline in [false, true] {
+        let mut tui = spawn_tui_llmsim_with(
+            &yolop_binary(),
+            TuiSpawnOptions {
+                inline,
+                rows: 30,
+                cols: 110,
+                ..Default::default()
+            },
+        );
+        assert!(
+            tui.wait_for_output("Enter to send", Duration::from_secs(10)),
+            "{}",
+            tui.output_text()
+        );
+        tui.write_input(b"unsent draft\x10");
+        assert!(
+            tui.wait_for_output("Actions", Duration::from_secs(5)),
+            "{}",
+            tui.output_text()
+        );
+        tui.write_input(b"/context\r");
+        assert!(
+            tui.wait_for_output("Context and usage", Duration::from_secs(5)),
+            "{}",
+            tui.output_text()
+        );
+        assert!(
+            tui.wait_for_output("Monetary cost: unknown", Duration::from_secs(5)),
+            "{}",
+            tui.output_text()
+        );
+        tui.write_input(b"\x1b");
+        let screen = tui.wait_for_screen(Duration::from_secs(5), |lines| {
+            lines.iter().any(|line| line.contains("unsent draft"))
+        });
+        assert!(
+            screen.iter().any(|line| line.contains("unsent draft")),
+            "{screen:?}"
+        );
+        tui.write_input(b"\x03\x03\x03");
+        assert!(tui.wait_or_kill(Duration::from_secs(5)).success());
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn tui_external_editor_returns_the_edited_draft_without_submitting() {
+    let fixture = tempfile::tempdir().unwrap();
+    let editor = fixture.path().join("editor");
+    fs::write(
+        &editor,
+        "#!/bin/sh\nprintf 'edited prompt from external editor' > \"$1\"\n",
+    )
+    .unwrap();
+    fs::set_permissions(&editor, fs::Permissions::from_mode(0o700)).unwrap();
+    let mut tui = spawn_tui_llmsim_with(
+        &yolop_binary(),
+        TuiSpawnOptions {
+            inline: false,
+            editor: Some(editor.display().to_string()),
+            ..Default::default()
+        },
+    );
+    assert!(
+        tui.wait_for_output("Enter to send", Duration::from_secs(10)),
+        "{}",
+        tui.output_text()
+    );
+    tui.write_input(b"original draft\x07");
+    let screen = tui.wait_for_screen(Duration::from_secs(10), |lines| {
+        lines
+            .iter()
+            .any(|line| line.contains("edited prompt from external editor"))
+    });
+    assert!(
+        screen
+            .iter()
+            .any(|line| line.contains("edited prompt from external editor")),
+        "{screen:?}"
+    );
+    assert!(
+        screen.iter().any(|line| line.contains("Enter to send")),
+        "{screen:?}"
+    );
+    tui.write_input(b"\x03\x03\x03");
+    assert!(tui.wait_or_kill(Duration::from_secs(5)).success());
+}
+
+#[test]
 fn tui_inline_renders_and_responds_smoke() {
     tui_smoke(TuiSpawnOptions::default(), "inline", false);
 }
@@ -2891,7 +2982,12 @@ fn tui_shell_session_approval_skips_later_prompts_for_the_same_scope() {
 
     tui.write_input(b"!shell printf first-session-command\r");
     assert!(
-        tui.wait_for_output("approval needed", Duration::from_secs(5)),
+        tui.wait_for_output("Permission required", Duration::from_secs(5))
+            && tui.wait_for_output("Allow once: this request only.", Duration::from_secs(5))
+            && tui.wait_for_output(
+                "ALL later requests in this permission scope",
+                Duration::from_secs(5)
+            ),
         "shell approval prompt did not render: {}",
         tui.output_text()
     );
@@ -2930,23 +3026,23 @@ fn tui_shell_session_approval_skips_later_prompts_for_the_same_scope() {
         "second shell details did not expand: {}",
         tui.output_text()
     );
-    // The footer keeps the recent transcript on screen, so the first command's
-    // approval prompt is still painted somewhere above; what must not happen is
-    // a *new* prompt after the second command was submitted. Assert on order
-    // within the settled screen rather than on the raw byte stream.
+    // Approval is an exclusive modal. A second request would hide the settled
+    // transcript until answered, so inspect the screen rather than old bytes.
     let screen = tui.wait_for_screen(Duration::from_secs(5), |screen| {
         screen
             .iter()
             .any(|line| line.contains("shell exited with code 0"))
     });
-    let submitted = screen
-        .iter()
-        .position(|line| line.contains("second-session-command"))
-        .expect("second command echoed in the transcript");
     assert!(
-        !screen[submitted..]
+        screen
             .iter()
-            .any(|line| line.contains("approval needed")),
+            .any(|line| line.contains("second-session-command")),
+        "second command echoed in the transcript: {screen:?}"
+    );
+    assert!(
+        !screen
+            .iter()
+            .any(|line| line.contains("Permission required")),
         "same-scope session approval prompted again: {screen:?}"
     );
 
