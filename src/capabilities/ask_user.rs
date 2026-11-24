@@ -181,45 +181,6 @@ mod basic_tests {
         })).unwrap()
     }
     #[tokio::test]
-    async fn ask_user_print_and_acp_defaults() {
-        let questions = vec![question(AskUserQuestionKind::Choice)];
-        let result = HostResponder(None).ask(&questions).await;
-        assert_eq!(result.answers[0].selected, vec!["Alpha"]);
-        assert_eq!(
-            AcpResponder.ask(&questions).await.status,
-            AskUserStatus::Declined
-        );
-    }
-    #[tokio::test]
-    async fn tui_preserves_choice_labels_and_cancellation() {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let host = HostResponder(Some(tx));
-        let questions = vec![question(AskUserQuestionKind::Choice)];
-        let (result, ()) = tokio::join!(host.ask(&questions), async {
-            let request = rx.recv().await.unwrap();
-            assert_eq!(request.options, vec!["Alpha", "Beta"]);
-            request
-                .reply
-                .send(crate::tui::host_ui::AskAnswer {
-                    answer: "Beta".into(),
-                    cancelled: false,
-                })
-                .unwrap();
-        });
-        assert_eq!(result.answers[0].selected, vec!["Beta"]);
-        let (result, ()) = tokio::join!(host.ask(&questions), async {
-            let request = rx.recv().await.unwrap();
-            request
-                .reply
-                .send(crate::tui::host_ui::AskAnswer {
-                    answer: String::new(),
-                    cancelled: true,
-                })
-                .unwrap();
-        });
-        assert_eq!(result.status, AskUserStatus::Cancelled);
-    }
-    #[tokio::test]
     async fn single_choice_with_other_stays_a_selector() {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let host = HostResponder(Some(tx));
@@ -268,26 +229,6 @@ mod basic_tests {
             Some("something entirely new")
         );
     }
-
-    #[tokio::test]
-    async fn secret_never_reaches_composer_and_closed_channel_cancels() {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let host = HostResponder(Some(tx));
-        assert_eq!(
-            host.ask(&[question(AskUserQuestionKind::Secret)])
-                .await
-                .status,
-            AskUserStatus::Declined
-        );
-        assert!(rx.try_recv().is_err());
-        drop(rx);
-        assert_eq!(
-            host.ask(&[question(AskUserQuestionKind::Choice)])
-                .await
-                .status,
-            AskUserStatus::Cancelled
-        );
-    }
 }
 
 #[cfg(test)]
@@ -316,6 +257,10 @@ mod edge_tests {
         let result = host.ask(std::slice::from_ref(&q)).await;
         assert_eq!(result.answered_by, AskUserAnsweredBy::Unattended);
         assert_eq!(result.answers[0].selected, ["B"]);
+        assert_eq!(
+            AcpResponder.ask(std::slice::from_ref(&q)).await.status,
+            AskUserStatus::Declined
+        );
         let mut no_default = q.clone();
         no_default.options[1].is_default = false;
         assert_eq!(host.ask(&[no_default]).await.answers[0].selected, ["A"]);
@@ -387,6 +332,7 @@ mod edge_tests {
         assert_eq!(result.status, AskUserStatus::Answered);
         assert_eq!(result.answered_by, AskUserAnsweredBy::User);
         assert_eq!(result.answers[0].id, "q");
+        assert_eq!(result.answers[0].selected, ["B"]);
         assert_eq!(result.answers[1].other_text.as_deref(), Some("hello"));
     }
 

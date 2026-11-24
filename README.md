@@ -374,7 +374,7 @@ Run `yolop --help` for the full list. These are the flags you will reach for dai
 | `--acp` | Speak Agent Client Protocol over stdio. |
 | `--sandbox` | Attach the sandbox dashboard sidecar when one is provisioned for the run. |
 | `--image <path>` | Attach an image (multimodal models). Repeatable. |
-| `--trajectory-out <file>` | Write the full transcript JSONL, for bug reports and replays. |
+| `--trajectory-out <file>` | Export the session as one ATIF v1.7 JSON document. |
 | `--config-dir`, `--data-dir` | Override the settings home / session-plus-model home (or `YOLOP_CONFIG_DIR`, `YOLOP_DATA_DIR`). |
 | Subcommands | `yolop into (paseo|zed|buzz)`, `yolop mcp ...`, `yolop weights ...`, `yolop version`. Full list: `yolop --help`. |
 

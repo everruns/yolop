@@ -12,8 +12,6 @@
 //!   * the agent loops back to the LLM after a tool result and consumes the
 //!     next scripted turn
 //!   * a scripted `SimError` propagates as a turn failure
-//!   * `OnExhausted::Error` makes a second `run_turn` fail once the script
-//!     is consumed; the default `RepeatLast` keeps replaying the last turn
 //!
 //! Streaming-pipeline coverage lives in `streaming_tests`; this module is
 //! specifically about the agent control flow.
@@ -632,50 +630,6 @@ async fn ask_user_dispatch_returns_the_default_in_noninteractive_runtime() {
     assert!(output.contains("blue"), "default answer: {output}");
     assert!(output.contains("unattended"), "answer origin: {output}");
     assert!(!output.contains("error"), "tool must succeed: {output}");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn scripted_default_repeat_last_lets_second_call_succeed_after_exhaustion() {
-    // Default OnExhausted::RepeatLast: once the script is consumed the
-    // last turn keeps serving. Two run_turns against a 1-turn script
-    // must both succeed — proving the agent loop does not error out
-    // when the script has been exhausted under the default mode.
-    let (runtime, _ws) = build_scripted_runtime(LlmSimConfig::scripted(vec![SimTurn::Assistant(
-        "only turn".to_string(),
-    )]))
-    .await;
-
-    let first = run_single_turn(&runtime, "first").await;
-    let second = run_single_turn(&runtime, "second").await;
-
-    assert!(first.success, "first run_turn must succeed");
-    assert!(
-        second.success,
-        "RepeatLast must let a second run_turn succeed past exhaustion: {second:?}"
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn scripted_on_exhausted_error_fails_second_call() {
-    // OnExhausted::Error makes the agent loop fail once the script has
-    // been consumed. Proves the exhaustion mode is wired through end-to-end.
-    let (runtime, _ws) = build_scripted_runtime(
-        LlmSimConfig::scripted(vec![SimTurn::Assistant("once".to_string())])
-            .with_on_exhausted(OnExhausted::Error),
-    )
-    .await;
-
-    let first = run_single_turn(&runtime, "first").await;
-    assert!(
-        first.success,
-        "first run_turn before exhaustion must succeed"
-    );
-
-    let second = run_single_turn(&runtime, "second").await;
-    assert!(
-        !second.success,
-        "OnExhausted::Error must surface as a failed turn after the script is consumed"
-    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -25,27 +25,11 @@ path = "src/main.rs"
 
 [features]
 default = []
-# Experimental in-process inference (`--provider local`). Off by default: the
-# engine pulls ~258 extra crates and dominates build time, which would punish
-# `cargo install yolop` and the contributor `cargo check` loop. The shipped
-# artifacts turn it on instead — see .github/workflows/cli-binaries.yml, which
-# builds the release binaries (and therefore the Homebrew formula) with it.
+# Weight downloads for `yolop weights pull`. The inference engine is suspended
+# for security; see knowledge/specs/local-inference.md for the restoration bar.
 local-inference = ["dep:hf-hub"]
-
-# GPU acceleration for `local-inference`. The engine runs on CPU unless one of
-# these is on, and an 8B model on CPU is slow enough to read as "local models
-# are useless" when the real finding is "this was never accelerated" — so the
-# switch has to exist and be discoverable, not just be described in prose.
-#
-# Both are separate from `local-inference` because they need a vendor toolchain
-# the plain feature does not: `metal` only builds on macOS, and `cuda` needs the
-# CUDA toolkit installed. Enabling either implies `local-inference`.
-#
-# Their existence is why the checks say `--features local-inference` and not
-# `--all-features`: the latter enables both, and on a Linux CI runner both fail
-# to build — `cuda` needs `nvcc`, `metal` pulls `objc2`, which is Apple-only.
-# Cargo has no way to exclude a feature from `--all-features`, so the feature
-# list has to be spelled out.
+# Retain accelerated artifact feature names while inference is suspended.
+# Restoring the engine must wire and verify each backend before release.
 metal = ["local-inference"]
 cuda = ["local-inference"]
 
@@ -60,7 +44,6 @@ chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4.6", features = ["derive"] }
 crossterm = "0.29"
 dirs = "7"
-eventsource-stream = "0.2"
 # Toolchain-free crates.io extension install: fetch + unpack a `.crate`
 # (gzip'd tar) natively, no cargo/rustc. Pure-Rust backends (miniz_oxide),
 # so yolop stays a self-contained binary.
@@ -83,6 +66,7 @@ hf-hub = { version = "0.4.3", default-features = false, features = [
 ], optional = true }
 rand = "0.10"
 uuid = { version = "1", features = ["v5"] }
+# Descriptor-relative skill deletion refuses repository-controlled symlinks.
 rustix = { version = "1.1", features = ["fs"] }
 # Already present through the facade's local backend. Yolop uses the same SQLite handle for
 # its capability-owned local session coordination tables.
@@ -102,14 +86,14 @@ textwrap = "0.16"
 # The TUI toolkit behind both renderers. It lives in its own repository
 # (everruns/tuika) and is consumed from crates.io like any other dependency;
 # yolop gets no special treatment there.
-tuika = "0.13.0"
+tuika = "=0.13.0"
 # Optional structured-markdown renderers stay outside tuika core. Mermaid
 # fences become terminal diagrams; safe block HTML becomes styled text.
-tuika-mermaid = "0.5.0"
-tuika-html = "0.3.0"
+tuika-mermaid = "=0.5.0"
+tuika-html = "=0.3.0"
 # Tree-sitter Highlighter impl for tuika's CodeBlock/Markdown; owns the grammar
 # deps so tuika core stays dependency-light. Published from the tuika repo.
-tuika-codeformatters = "0.8.0"
+tuika-codeformatters = "=0.8.0"
 tokio = { version = "1.52", features = ["full"] }
 tokio-util = { version = "0.7", features = ["compat"] }
 tree-sitter = "0.27"
@@ -152,14 +136,9 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Securit
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
-# Descriptor-relative skill deletion uses rustix so repository-controlled
-# symlinks cannot redirect recursive removal outside the selected scope.
-rustix = { version = "1", features = ["fs"] }
 
 [dev-dependencies]
-inventory = "0.3"
 portable-pty = "0.9.0"
-proptest = "1"
 tiny_http = "0.12"
 vt100 = "0.18"
 

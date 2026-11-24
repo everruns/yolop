@@ -28,14 +28,13 @@ cargo test --workspace --features yolop-yep/schema
 ```
 
 Heuristics: review the whole `everruns-*` family, not only the crates named
-in the root manifest (`everruns-host`, `everruns-core`,
-`everruns-anthropic`, `everruns-openai`,
-`everruns-integrations-duckduckgo`, `everruns-platform`). Patch releases
+in the root manifest (the facade, contracts, core, drivers, capabilities, coding,
+integrations and LLMSim crates). Patch releases
 less than one day old are too fresh, but minor and major Everruns releases can
 be adopted after compatibility review. Re-resolve from scratch to prove
 manifest pins are sufficient before
 restoring the lockfile on failure. End state is `cargo metadata --locked`
-clean, no yanked crates, no audit findings where the tool runs, no duplicate
+clean, no yanked crates, no audit findings where the tool runs, no avoidable duplicate
 versions, no unused dependencies, and `rust-toolchain.toml`, CI, and docs in
 agreement. Major upgrades and protocol bumps ship as their own PRs. Go deep
 on majors in scope: read the breaking notes, weigh migration cost against the
@@ -59,10 +58,10 @@ published on crates.io wins.
 ## Tuika boundary
 
 ```bash
-cargo update --dry-run -p tuika -p tuika-codeformatters -p tuika-mermaid
+cargo update --dry-run -p tuika -p tuika-codeformatters -p tuika-mermaid -p tuika-html
 ```
 
-Heuristics: the three versions move together where they are companion
+Heuristics: all four crates, including `tuika-html`, move together where they are companion
 releases, `Cargo.toml` and `Cargo.lock` agree, and no path or git dependency
 exists. Read the upstream changelog for rendering, input, and escape changes
 that compile clean. Prove TUI changes with unit coverage and the tuika
@@ -111,7 +110,7 @@ covered surface: a contradiction is a bug in exactly one side, fix the wrong
 side and say which changed. `README.md` and `docs/` never link into
 `knowledge/` or `.agents/`. Verify the README scope claim, install path, and
 quickstart by running the commands; stale pages describing removed flags or
-past architecture are findings with owners. Provider and model lists match `runtime.rs`,
+past architecture are findings with owners. Provider and model lists match `runtime/mod.rs`,
 flag tables match the CLI definition, manifest fields match the extensions
 spec. Prose avoids em-dashes. Update `knowledge/index.md` when concepts are
 added, removed, renamed, or reclassified, and `knowledge/log.md` for

@@ -1,5 +1,12 @@
 # Knowledge Log
 
+## 2026-11-23, Published upstream ownership and current build guidance
+
+- [Maintenance](specs/maintenance.md): recheck adapter ownership against Everruns 0.53.1, share the upstream tool cancellation registry, and reuse its post-cancellation task snapshot. Retain host monitor, partial-output, workspace checkpoint and capability-control contracts.
+- [ACP](specs/acp.md): saved sessions replay canonical history, not a continuous JSONL export.
+- [Release](specs/release.md): backend feature names currently enable downloads only while inference is suspended. Contributor guidance covers all three workspace packages. Package versions are independent and the publish order comes from Cargo metadata.
+- [Tool search](specs/tool-search.md): replace the historical tool list with the owning runtime allowlist and current disclosure contract.
+
 ## 2026-11-21, Continuations stay inside their Engine turn
 
 - [Engine execution](specs/engine-execution.md): frontend admission notifications exclude inputs already attached to a turn, preventing completion continuations from producing phantom background wakes.

@@ -10,8 +10,7 @@ Status: implemented via upstream `everruns-core` (provider-agnostic).
 
 ## Why
 
-Yolop ships ~17 always-on tools (file ops, bash, search, todos, skills,
-memory, web fetch). Sending every tool's full JSON schema on every turn costs
+Yolop composes coding, shell, task, skill, memory, web and optional MCP tools. Sending every tool's full JSON schema on every turn costs
 input tokens and scales badly as tools are added (e.g. MCP servers).
 
 Deferred tool loading hides the parameter schemas of rarely-used tools until
@@ -20,98 +19,33 @@ callable.
 
 ## What
 
-Yolop registers the upstream `everruns_core::capabilities::ToolSearchCapability`
-(id `tool_search`, generic/provider-agnostic) in `runtime.rs`. It does **not**
-use the native `openai_tool_search` path, which fails with a `server_error` on
-the reasoning models that advertise it (gpt-5.4 family; gpt-5.5 gated off, see
-EVE-521).
+Yolop registers upstream `ToolSearchCapability` in
+[`runtime/mod.rs`](../../src/runtime/mod.rs). It rewrites provider-visible
+schemas without changing authoritative definitions or tool execution routing.
+This client-side mechanism works across providers and does not require native
+server-side search support.
 
-Yolop previously shipped a *vendored* copy of this capability because the
-upstream client-side mechanism was stateless: it re-stubbed every deferrable
-tool each iteration, so structured tool callers emitted `{}` against the
-registered stub schema and could never pass parameters. Both fixes landed
-upstream in EVE-527 (everruns#2130, released in `everruns-core` 0.11.0), so the
-vendor was deleted and yolop now consumes upstream directly:
+- **Progressive disclosure:** engine context assembly derives disclosure from
+  the transcript. A searched tool's authoritative schema becomes available
+  without a process-local reveal store, including after resume. Failed known
+  calls also reveal the schema needed for recovery.
+- **Eager tools:** `YOLOP_NEVER_DEFER_TOOLS` in the runtime owns the allowlist.
+  Repository discovery and code navigation, shell and background execution,
+  delegation, task bookkeeping, skill discovery/activation and mandatory
+  progress checkpoints keep full schemas available immediately. Native editing
+  keeps its trained-in shape visible when enabled. This prevents common tools
+  and required transitions from spending a round trip correcting guessed fields.
+- **Extensions and MCP:** extension `never_defer` manifest declarations are
+  honored. Specialized tools, including MCP tools, otherwise defer on the same
+  footing. A whole-server reveal is represented by the upstream `__` prefix.
+- **Compact stubs:** a deferred definition exposes its name and description
+  with a permissive object schema. The capability prompt explains discovery
+  once. [Tool-call validation](tool-calling.md) still checks calls against the
+  full authoritative schema before execution.
 
-1. **Progressive disclosure.** When the model calls `tool_search`, the matched
-   tools are recorded as revealed for that session. Turn context is reassembled
-   (and the schema hook re-runs) each iteration, so on the *next* step the
-   revealed tools are advertised with their full, authoritative schemas on the
-   *registered* definition and the model can pass real arguments. Tool execution
-   always uses the real tools; only the advertised schema changes.
-
-2. **Static host-shaped eager profile.** Yolop passes first-turn repository
-   discovery (`read_file`, `list_directory`, `grep_files`, `repo_map`,
-   `repo_symbols`, `ast_grep`), bookkeeping (`write_todos`,
-   `report_done`, `write_session_title`), the shell (`bash`), background execution
-   (`spawn_background`), and the mandatory progress-guard transition
-   (`progress_checkpoint`) to
-   `ToolSearchCapability::new().with_never_defer([...])`. Mutation, other
-   background tools, release/control, skills, session history, web, LSP, and other
-   specialized tools keep their names and descriptions visible but reveal their
-   authoritative schemas through `tool_search` when the task calls for them.
-   This is host/task shaped without a volatile classifier: the allowlist is
-   stable for the session and provider-cache prefix. `bash` is eager because the
-   deferred stub names no parameters while allowing extras, so a model fills the
-   gap from other harnesses' shell schemas and yolop's
-   `additionalProperties: false` schema then rejects the call: the most-used
-   tool in the harness spent a round trip on a correction.
-   `spawn_background` is eager for the same reason: its deferred stub names no
-   parameters while allowing extras, so the model fills the gap from other
-   harnesses' background schemas and spends the turn on a validation correction
-   instead of starting the work. `report_done` is eager because the todo prompt
-   asks for it at the end of every tracked turn; its stub named no parameters,
-   so models guessed `checks` or `outcome: passed`, validation rejected the
-   call, and every tracked turn reported twice. `repo_map`,
-   `repo_symbols`, and `ast_grep` are eager so code work can move from broad
-   orientation to symbol or structural navigation without a schema-reveal round
-   trip. `repo_map` also stays eager for a contract reason: its deferred stub
-   exposed no argument names, so models supplied foreign `depth`, `max_depth`,
-   or `max_symbols` controls and validation rejected otherwise valid scopes. Its
-   authoritative schema keeps only types and bounds. Optional defaults live in
-   the tool description because strict-provider trials showed that required
-   optional fields provoke over-broad maps. The repeated-read investigation
-   supersedes the earlier decision to defer `repo_symbols`: immediate symbol and
-   structural navigation is more valuable during code work than its small
-   first-request token saving. LSP tools
-   defer with every other opt-in surface; this reverses an earlier eager profile
-   justified by an LSP adoption eval that measured lower adoption with stubbed
-   schemas, so re-measure before treating the current profile as settled.
-   Extension tools explicitly marked `never_defer` retain their manifest
-   contract. Yolop does not own the built-in definitions, so it sets this
-   policy by name rather than changing each tool's `DeferrablePolicy`.
-
-   When `progress_guard` requires its checkpoint, the guard removes
-   `tool_search` and other statically blocked exploration paths from the next
-   provider-visible tool list. No reveal round is needed or advertised because
-   `progress_checkpoint` is already in this eager profile.
-
-   **MCP server tools defer on the same footing**: with many configured servers
-   their schemas are the largest, least-used part of the surface, so only names
-   and descriptions ride each turn until `tool_search` loads a schema (execution
-   still routes through the real registry proxy, so a stubbed MCP tool call works
-   once revealed).
-
-3. **Compact deferred schemas.** `everruns-core` 0.17.21 reduced every deferred
-   definition to the permissive JSON object stub `{type: object,
-   additionalProperties: true}`. The single capability prompt owns the reveal
-   instruction instead of repeating prose inside every tool schema. Full
-   descriptions remain visible, and a reveal restores the same authoritative
-   schema used for execution and structured tool calling.
-
-Deferral activates only once the total tool count crosses
-`DEFAULT_TOOL_SEARCH_THRESHOLD` (15); below that, full schemas fit comfortably.
-
-## Provider support
-
-Works on every provider/model because it only rewrites the standard `tools`
-array, no driver or native-feature dependency. Validated end-to-end (a
-deferred web-search tool loaded via `tool_search` and called with correct
-arguments) on:
-
-- OpenAI `gpt-5.5` (default) and `gpt-5.4`
-- Anthropic `claude-sonnet`
-- NVIDIA Nemotron via OpenRouter
+Upstream's `DEFAULT_TOOL_SEARCH_THRESHOLD` determines when deferral begins.
+Yolop's default-harness test verifies that the composed tool count crosses it;
+there is no separate host threshold or duplicate list of tool definitions.
 
 ## Reveal gating
 
@@ -124,7 +58,7 @@ for where the line falls and why the how-to is a separate paragraph.
 
 ## Non-goals
 
-- No native/server-side tool search. The native OpenAI path stays unused until
-  EVE-521 is fixed upstream.
+- Native/server-side tool search is not enabled; provider-independent
+  disclosure is the current host contract.
 - The capability adds exactly one tool (`tool_search`); it does not otherwise
   change yolop's tool surface.

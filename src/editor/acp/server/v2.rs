@@ -568,9 +568,8 @@ impl Link {
     /// `tool_call/cancel` and `terminal/cancel` (a terminal's id is its
     /// call's). `false` when the call is unknown, final or not cancellable.
     ///
-    /// TODO(everruns#5384): only shell commands register until the upstream
-    /// act loop cancels any call; then accept every running tool call and
-    /// cancel through `everruns_core::engine::tool_cancel`.
+    /// ACP currently exposes cancellation for shell calls only. Both inline
+    /// and detached bash use the engine's shared cancellation registry.
     fn cancel_call(&self, session_id: &str, tool_call_id: &str) -> bool {
         let Some(runtime) = self.with_state(session_id, |state| {
             state
@@ -581,7 +580,7 @@ impl Link {
         }) else {
             return false;
         };
-        if !crate::runtime::tool_cancel::shared().cancel(runtime, tool_call_id) {
+        if !everruns_core::engine::tool_cancel::shared().cancel(runtime, tool_call_id) {
             return false;
         }
         self.with_state(session_id, |state| {
