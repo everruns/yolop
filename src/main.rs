@@ -2352,8 +2352,8 @@ fn switch_session(session_id: &str, return_to: Option<&str>) -> Result<()> {
     }
 }
 
-/// This run's arguments without the session and one-shot inputs, resuming
-/// `session_id` instead.
+/// Resume the target with its saved workspace, not this run's explicit cwd or
+/// one-shot inputs. Other run flags remain available to the target session.
 fn switch_session_args(
     args: impl IntoIterator<Item = std::ffi::OsString>,
     session_id: &str,
@@ -2370,14 +2370,21 @@ fn switch_session_args(
         let value = arg.to_string_lossy();
         if matches!(
             value.as_ref(),
-            "-p" | "--print" | "-i" | "--image" | "--session" | "--trajectory-out"
+            "-p" | "--print" | "-i" | "--image" | "--session" | "--trajectory-out" | "-C" | "--cwd"
         ) {
             skip_value = true;
             continue;
         }
-        if ["--print=", "--image=", "--session=", "--trajectory-out="]
-            .iter()
-            .any(|prefix| value.starts_with(prefix))
+        if [
+            "--print=",
+            "--image=",
+            "--session=",
+            "--trajectory-out=",
+            "--cwd=",
+        ]
+        .iter()
+        .any(|prefix| value.starts_with(prefix))
+            || (value.starts_with("-C") && value.len() > 2)
         {
             continue;
         }
@@ -2974,6 +2981,38 @@ mod tests {
                 "thread"
             ]
         );
+    }
+
+    #[test]
+    fn switching_sessions_resumes_the_target_workspace_for_every_cwd_flag_form() {
+        let sessions = tempfile::tempdir().unwrap();
+        let saved = tempfile::tempdir().unwrap();
+        let id = SessionId::from_seed(314);
+        runtime::session_log::write_session_workspace(
+            &sessions.path().join(id.to_string()),
+            &runtime::session_log::SessionWorkspaceMetadata::new(saved.path().into(), None),
+        )
+        .unwrap();
+        for cwd in [
+            vec!["-C", "/old/workspace"],
+            vec!["--cwd", "/old/workspace"],
+            vec!["--cwd=/old/workspace"],
+            vec!["-C/old/workspace"],
+            vec!["-C=/old/workspace"],
+        ] {
+            let original = std::iter::once("yolop")
+                .chain(cwd)
+                .chain(["--inline"])
+                .map(std::ffi::OsString::from);
+            let switched = switch_session_args(original, &id.to_string());
+            let cli = Cli::try_parse_from(std::iter::once(OsString::from("yolop")).chain(switched))
+                .unwrap();
+            assert!(cli.inline);
+            assert_eq!(
+                resolve_workspace_root(cli.cwd, Some(id), sessions.path()).unwrap(),
+                saved.path()
+            );
+        }
     }
     use std::ffi::OsString;
     use std::process::Command;

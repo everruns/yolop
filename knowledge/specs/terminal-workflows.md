@@ -44,7 +44,8 @@ contract. Outcomes derive from recorded turn completions.
 Session search reuses bounded read-only discovery and also matches saved titles,
 workspace paths, and branches. It previews recorded messages and saved summaries
 without equating historical failure with current process state. A target lease
-check precedes handoff; failure preserves the current session.
+check precedes handoff; failure preserves the current session. Handoff resumes
+the target's saved workspace instead of carrying the current run's cwd override.
 
 Composer text, paste payloads, and images form session-private `draft.json`,
 atomically replaced with owner-only permissions and a 32 MiB bound. Normal exit

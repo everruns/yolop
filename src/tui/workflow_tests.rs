@@ -85,8 +85,26 @@ async fn workflow_changes_refresh_attach_diff_and_preserve_composer_focus() {
     assert!(view.detail.contains("+after"));
     test.app.handle_key(key(KeyCode::Char('a'))).await;
     assert!(!test.app.workflow.focused);
+    assert_eq!(
+        test.app.workflow_presentation().unwrap().focus_hint,
+        "Ctrl+X P focus"
+    );
     assert!(test.app.input_text().starts_with("Review this"));
     assert!(test.app.pending_pastes[0].1.contains("+after"));
+    test.app.set_input_text(String::new());
+    for ch in "Explain the token validation change".chars() {
+        test.app.handle_key(key(KeyCode::Char(ch))).await;
+    }
+    assert_eq!(test.app.input_text(), "Explain the token validation change");
+    let mut terminal = Terminal::new(TestBackend::new(160, 40)).unwrap();
+    terminal.draw(|frame| draw(frame, &mut test.app)).unwrap();
+    let buffer = terminal.backend().buffer();
+    assert!((0..40).any(|row| {
+        (0..80)
+            .map(|col| buffer[(col, row)].symbol())
+            .collect::<String>()
+            .contains("Explain the token validation change")
+    }));
     test.app
         .handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL))
         .await;
@@ -401,7 +419,7 @@ async fn workflow_session_search_matches_titles_and_refuses_a_live_target() {
     let mut metadata = crate::runtime::session_log::read_session_workspace_metadata(&directory)
         .unwrap()
         .unwrap();
-    metadata.title = Some("Repair sign-in".into());
+    metadata.title = Some("Repair sign-in\u{1b}[2J".into());
     metadata.summary = Some("Next: inspect the authentication diff".into());
     crate::runtime::session_log::write_session_workspace(&directory, &metadata).unwrap();
     test.app.set_input_text("unfinished draft".into());
@@ -411,6 +429,7 @@ async fn workflow_session_search_matches_titles_and_refuses_a_live_target() {
     settle(&mut test.app).await;
     let view = test.app.workflow_presentation().unwrap();
     assert_eq!(view.rows.len(), 1);
+    assert!(!view.rows[0].contains('\u{1b}'));
     assert!(
         view.detail
             .contains("Next: inspect the authentication diff")
@@ -426,4 +445,15 @@ async fn workflow_session_search_matches_titles_and_refuses_a_live_target() {
     );
     assert_eq!(test.app.input_text(), "unfinished draft");
     drop(other);
+    test.app.handle_key(key(KeyCode::Enter)).await;
+    assert!(test.app.should_quit);
+    assert_eq!(test.app.open_session(), Some(id));
+    let saved_draft = test
+        ._sessions
+        .path()
+        .join(test.app.session_id().to_string())
+        .join("draft.json");
+    let saved: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(saved_draft).unwrap()).unwrap();
+    assert_eq!(saved["text"], "unfinished draft");
 }

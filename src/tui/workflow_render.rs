@@ -116,15 +116,7 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) -> bool {
     };
     let theme = fullscreen::yolop_theme();
     let frame = Boxed::new(content)
-        .title(format!(
-            "{}{}",
-            state.title,
-            if app.workflow.focused {
-                " · focused"
-            } else {
-                " · F6 focus"
-            }
-        ))
+        .title(format!("{} · {}", state.title, state.focus_hint))
         .padding(Padding::symmetric(1, 0))
         .background(Style::default().bg(theme.surface).fg(theme.text));
     let overlay = Overlay {

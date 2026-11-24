@@ -6,6 +6,7 @@ use super::review::file_display;
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(super) struct WorkflowPresentation {
     pub title: String,
+    pub focus_hint: String,
     pub subtitle: String,
     pub query: String,
     pub query_label: String,

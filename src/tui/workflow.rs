@@ -600,6 +600,11 @@ impl App {
         };
         let mut view = WorkflowPresentation {
             title: title.into(),
+            focus_hint: if self.workflow.focused {
+                "focused".into()
+            } else {
+                "Ctrl+X P focus".into()
+            },
             query: self.workflow.query.clone(),
             footer: footer.into(),
             selected: self.workflow.selected,
@@ -696,6 +701,10 @@ impl App {
         if let Some(error) = &self.workflow.error {
             view.detail = format!("{error}\n\n{}", view.detail);
         }
+        // Saved titles, tool labels and paths are data, not terminal commands.
+        view.rows
+            .iter_mut()
+            .for_each(|row| *row = super::review::file_display(row));
         Some(view)
     }
 

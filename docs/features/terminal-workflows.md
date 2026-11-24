@@ -47,7 +47,7 @@ does not rewind Git commits, ignored files, or external effects. Textual
 
 `/sessions` searches saved titles, workspace paths, branches, and messages.
 Select a result to inspect its last matching message and saved recap; press
-**Enter** to resume it. Finish or cancel foreground work before switching.
+**Enter** to resume it in its saved workspace. Finish or cancel foreground work before switching.
 Private drafts and attachments are restored when you return. A session already
 open elsewhere cannot be taken over.
 
