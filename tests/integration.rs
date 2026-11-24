@@ -2982,7 +2982,12 @@ fn tui_shell_session_approval_skips_later_prompts_for_the_same_scope() {
 
     tui.write_input(b"!shell printf first-session-command\r");
     assert!(
-        tui.wait_for_output("approval needed", Duration::from_secs(5)),
+        tui.wait_for_output("Permission required", Duration::from_secs(5))
+            && tui.wait_for_output("Allow once: this request only.", Duration::from_secs(5))
+            && tui.wait_for_output(
+                "ALL later requests in this permission scope",
+                Duration::from_secs(5)
+            ),
         "shell approval prompt did not render: {}",
         tui.output_text()
     );
@@ -3021,23 +3026,23 @@ fn tui_shell_session_approval_skips_later_prompts_for_the_same_scope() {
         "second shell details did not expand: {}",
         tui.output_text()
     );
-    // The footer keeps the recent transcript on screen, so the first command's
-    // approval prompt is still painted somewhere above; what must not happen is
-    // a *new* prompt after the second command was submitted. Assert on order
-    // within the settled screen rather than on the raw byte stream.
+    // Approval is an exclusive modal. A second request would hide the settled
+    // transcript until answered, so inspect the screen rather than old bytes.
     let screen = tui.wait_for_screen(Duration::from_secs(5), |screen| {
         screen
             .iter()
             .any(|line| line.contains("shell exited with code 0"))
     });
-    let submitted = screen
-        .iter()
-        .position(|line| line.contains("second-session-command"))
-        .expect("second command echoed in the transcript");
     assert!(
-        !screen[submitted..]
+        screen
             .iter()
-            .any(|line| line.contains("approval needed")),
+            .any(|line| line.contains("second-session-command")),
+        "second command echoed in the transcript: {screen:?}"
+    );
+    assert!(
+        !screen
+            .iter()
+            .any(|line| line.contains("Permission required")),
         "same-scope session approval prompted again: {screen:?}"
     );
 
