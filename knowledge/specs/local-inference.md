@@ -1,229 +1,116 @@
 ---
 type: Architecture Specification
 title: Local inference
-description: Defines Yolop's in-process inference provider, why it is feature-gated, and how the gate interacts with distribution.
+description: Defines the suspended inference provider, the working weight store, and the security and validation bar for restoring an engine.
 ---
 
-# Local inference (temporarily disabled for security)
+# Local inference
 
-> Status 2026-11-03: the mistralrs engine is removed until upstream
-> publishes a fixed release. `mistralrs 0.8.1` pins `candle-core 0.10.2`
-> which requires `zip ^7.2.0`, vulnerable to zip advisories fixed in
-> `9.0.0`/`9.0.5`. `--provider local` still resolves but fails with a
-> disabled message; `yolop weights` listing/removal still work, pulls still
-> download via hf-hub (no zip). Re-enable on mistralrs with candle-core
-> 0.11.1+ / zip 9.0.5+.
+## Current status
 
-## Why
+Inference is suspended for security. The latest published `mistralrs` is still
+0.8.1 as of 2026-11-23. It pins `candle-core` 0.10.2, which requires vulnerable
+`zip ^7.2.0`. The fixes require zip 9.0.5 or later; do not restore that graph or
+weaken an audit to enable inference.
 
-Yolop's `ollama` provider is not an Ollama integration. It is the OpenAI driver
-pointed at `http://127.0.0.1:11434/v1` with a placeholder key, the same code
-path as any hosted endpoint, aimed at loopback. Everything that makes local
-models awkward lives outside yolop: a second program to install, a daemon to
-keep running, and a model store yolop cannot see.
+`--provider local` still resolves but refuses inference with an actionable
+disabled message. With `local-inference`, the registry contains a refusing
+driver; without it, the provider is unavailable. Neither case silently falls
+back to another provider. Weight listing and removal work in every build;
+weight pulls work with `local-inference` through `hf-hub` 1.0. The engine's
+suspension is independent of the download client.
 
-The `local` provider removed that program (suspended). The inference engine
-([`mistralrs`](https://crates.io/crates/mistralrs)) was linked into the
-binary and answered requests in-process, with no socket in between.
+## Intent and provider contract
 
-What it does *not* remove is the download. Weights are gigabytes and cannot ride
-in a crate, so first use fetches them from Hugging Face. The honest framing is
-that "install and run a daemon" becomes "wait once": a smaller promise than
-"local models with no setup", and the one this design can actually keep.
+The experiment asks whether a model small enough for a developer laptop can
+reliably drive Yolop's tool loop without a separate inference daemon. That is
+not yet proven. `ollama` remains a separate route: the OpenAI-compatible driver
+pointed at a local server, with that server owning inference and its model store.
 
-This is an experiment. Whether a model small enough to run on a developer laptop
-can drive yolop's tool loop well enough to be useful is unproven, and the
-provider exists to answer that question with evidence rather than argument.
+A local model spec is a Hugging Face repository or `repo::file.gguf` for a
+specific file. Local provider selection carries no base URL or credential.
+Reasoning effort is rejected rather than silently ignored because arbitrary
+repository IDs have no authoritative effort profile.
 
-## What
-
-- Provider name `local`; a model spec is a Hugging Face repo (`Qwen/Qwen3-8B`),
-  or `repo::file.gguf` to select one GGUF inside a repo. Safetensors repos are
-  quantized in-situ on load.
-- The default model must be a `repo::file.gguf` spec, and its chat template must
-  emit tool calls as JSON inside `<tool_call>`. Both are hard constraints, not
-  preferences. A safetensors default means downloading full-precision weights to
-  quantize them locally, several times the bytes for the same result. The
-  template shape is narrower still: mistralrs 0.8.1 stripped the `<tool_call>`
-  wrapper and JSON-parsed what was inside, so a model whose template emitted the
-  `<function=…><parameter=…>` XML variant, Qwen3-Coder among them, produced tool
-  calls that never parsed. A local model that cannot call tools cannot drive the
-  agent loop, so this disqualified a model no matter how well it coded.
-- No base URL and no credential: `Provider::Local` carries neither, because
-  there is no endpoint to address and nothing to authenticate against.
-- Reasoning effort is rejected rather than ignored. A repo id is not an entry in
-  a model-profile catalog, so there is no effort configuration to resolve an
-  explicit request against.
-- Engines were loaded once and never evicted (suspended). A loaded engine was
-  process-lifetime by design, which is why the cache held `&'static Model`:
-  the engine's streaming handle borrowed the model, and an `Arc` would have
-  made every response stream self-referential.
+Restoring an engine must preserve explicit downloads: a turn loads only
+installed weights and otherwise names the `yolop weights pull` command. A
+multi-gigabyte transfer must never hide inside the first inference request.
 
 ## Feature gate and distribution
 
-The engine dominated build time, so the gate existed for that reason. While the
-engine is suspended, the gate keeps `hf-hub` downloads behind `local-inference`
-and the `metal`/`cuda` features as resolving aliases with no acceleration.
+`local-inference` is off by default. It currently adds the Hugging Face download
+client and its Xet transfer stack, with no inference engine. `metal` and `cuda`
+currently imply only `local-inference`; they provide no GPU acceleration while
+the engine is absent. Routine and optional builds use separate target
+directories, as defined in [AGENTS.md](../../AGENTS.md).
 
-### Measured cost
-
-Cold release builds (the shipped profile), separate target directories, no
-cache, 4-core container. Crate counts come from diffing a `mistralrs`-only
-probe lockfile against this one. While the engine is suspended for security,
-the `local-inference` delta is near zero (`hf-hub` only); the rows below
-describe the linked engine.
-
-| | Default | `--features local-inference` | Delta |
-|---|---|---|---|
-| Crates | 763 | 1021 | +258 (+34%) |
-| Cold release build | 12 min 35 s | 29 min 09 s | +16 min 34 s (2.32×) |
-| Binary on disk | 96.3 MiB | 137.6 MiB | +41.3 MiB (1.43×) |
-| Release tarball (`.tar.gz`) | 27.8 MiB | not measured | — |
-| Native-toolchain deps | none | none | — |
-
-With the engine linked, debug builds paid a separate, larger price.
-`mistralrs-core` alone linked an 844 MiB debug rlib, and because a feature set
-defines a whole graph, a `target/` holding both the routine set and
-`--all-features` compiled 248 crates twice and reached 16 GB. Suspended, the
-feature adds only `hf-hub`.
-
-So the routine commands stay on `--features yolop-yep/schema`, which resolves to
-the same crates as a default build, and the gated tests get one job of their
-own with its own cache ([`ci.yml`](../../.github/workflows/ci.yml)). That job
-both lints and tests: the tests behind the feature (currently the disabled
-driver plus the downloader's progress accounting) are invisible to the
-coverage job because it never enables the feature. Running them there is
-nearly free, since linting `--all-targets` has already compiled them. The
-historical engine cost above applies when the engine returns.
-
-These rows predate the size-optimized release profile (fat LTO at
-`opt-level = "s"`). On the same container that profile took a default binary
-from 92.8 MB to 71.8 MB, and the engine delta has not been re-measured under it,
-so re-run the workflow before quoting either column.
-
-Absolute times are machine-specific; the ratios are the durable part.
+The historical engine justified a build gate: on the measured four-core
+container it increased a cold release build from 12m35s to 29m09s and an
+unoptimized-for-size release binary from 96.3 MiB to 137.6 MiB. Those figures
+predate the current release profile and download client. They are not current
+size or build-time claims. Re-measure with
 [`local-inference-cost.yml`](../../.github/workflows/local-inference-cost.yml)
-reproduces this on a runner.
-
-The numbers are more modest than the crate count suggests, and they change where
-the gate earns its keep:
-
-- **Compile time justifies the gate for people who build from source.**
-  `cargo install yolop` roughly doubles, and a contributor's cold build pays the
-  same. That is worth avoiding for the majority who will never select `local`.
-- **Binary size is what the distribution split fixes, not the gate.** Through
-  v0.17.0 the release binaries were built with the feature on, so a Homebrew
-  install carried the engine whether or not the user ever ran a local model:
-  **+41.3 MiB of disk** after install, plus a download that grew by the
-  compressed delta (the baseline binary compresses 3.46×, 96.3 → 27.8 MiB; the
-  delta itself was never measured, so do not quote a figure for it). That is
-  what the lever in [`cli-binaries.yml`](../../.github/workflows/cli-binaries.yml)
-  was for, and it has since been pulled: the default artifact no longer carries
-  the engine, and the people who want it download a build that does. See
-  [Distribution](#distribution).
+when an engine returns.
 
 ## Distribution
 
-`local-inference` is **off** in the crate's default features, so
-`cargo install yolop` and the contributor `cargo check` loop stay fast. A
-release ([Release](release.md)) resolves the same trade by shipping two builds
-per target rather than picking one:
+[Release](release.md) retains separate portable and backend-named artifacts:
 
-| Asset                              | Features                    | For                              |
-|------------------------------------|-----------------------------|----------------------------------|
-| `yolop-<target>.tar.gz`            | default, no engine          | everyone; what Homebrew installs |
-| `yolop-<target>-metal.tar.gz`      | `metal` (macOS; currently an alias for `local-inference`) | no engine while suspended; downloads only |
-| `yolop-<target>-cuda.tar.gz`       | `cuda` (Linux x86_64; currently an alias for `local-inference`) | no engine while suspended; downloads only |
+| Asset | Current behavior |
+| --- | --- |
+| `yolop-<target>.tar.gz` | Default build, no inference or weight download client; used by Homebrew |
+| `yolop-<target>-metal.tar.gz` | Download client only while suspended |
+| `yolop-<target>-cuda.tar.gz` | Download client only while suspended |
 
-The default asset is the portable one because it is the only build that runs
-wherever the target does. An accelerated build carries a runtime requirement
-the plain one does not: a `cuda` binary needs an NVIDIA driver present, and
-that is not a thing to hand someone who typed `brew install`. There is
-deliberately no CPU-only engine build in the list: the [Acceleration](#acceleration)
-finding is that an unaccelerated engine measures the wrong thing, so shipping
-one as a *download* would only spread that mistake.
-
-A build without the feature still resolves `--provider local`; only the driver
-is compiled out. Such a build reports the provider unusable so it stays out of
-automatic provider fallback, and fails loudly if selected explicitly, rather
-than silently disappearing from the picker.
-
-## Acceleration (suspended with the engine)
-
-While the engine is suspended for security, `metal`/`cuda` are resolving
-aliases with no acceleration and no working engine; the rest of this section
-describes the linked engine and applies again when it returns.
-
-The engine runs on **CPU** unless a GPU backend is compiled in, and the
-difference is not a detail: an 8B model on CPU is slow enough to read as "local
-models are useless" when the real finding is "this was never accelerated".
-Evaluating the experiment on an unaccelerated build measures the wrong thing.
-
-Two features turn a backend on. Each implies `local-inference`, and each needs a
-vendor toolchain the plain feature does not, which is why they are separate:
-
-```bash
-cargo build --release --features metal   # Apple Silicon; macOS only
-cargo build --release --features cuda    # NVIDIA; needs the CUDA toolkit
-```
-
-Their existence is a second reason no check can use `--all-features`, on top of
-the build-cost one above: `--all-features` turns both on, and on a Linux runner
-both fail outright. `cuda` pulls `cudarc`, whose build script panics when `nvcc`
-is absent; `metal` pulls `objc2`, which refuses to compile off Apple platforms.
-Cargo cannot exclude a feature from `--all-features`, so every check names the
-features it wants.
-
-`metal` is compiled for both macOS release targets by
-[`metal-build-check.yml`](../../.github/workflows/metal-build-check.yml), on
-pull requests that touch the manifests. Without it the accelerated backends
-would be compiled nowhere at review time, so a dependency bump could break them
-and only a release would find out. `cuda` has no review-time equivalent: it is
-the slower build and the one no `pull_request` path can justify on runner cost.
-
-`cuda` is now also compiled in CI, by the release itself rather than a check:
-[`cli-binaries.yml`](../../.github/workflows/cli-binaries.yml) installs Ubuntu's
-`nvidia-cuda-toolkit` for the accelerated Linux build. That proves it compiles,
-which is all a GPU-less runner can prove. **Its first evidence that it runs
-still has to come from a CUDA host.** Two things about that build are worth
-knowing before quoting it as support: the kernels are compiled for one compute
-capability, pinned to 8.0 via `CUDA_COMPUTE_CAP` because there is no GPU to
-interrogate, and anything newer reaches it through PTX rather than a native
-cubin. 8.0 is a floor candle imposes, not a choice: its kernels call
-`__hmax_nan` and `__hmin_nan`, which nvcc defines only for
-`__CUDA_ARCH__ >= 800`, so a lower capability fails in `compatibility.cuh`
-rather than producing a wider-reaching binary. **Pre-Ampere cards are therefore
-out of reach of the shipped `cuda` build.**
+Do not describe backend-named downloads as working accelerated inference.
+When an engine returns, the plain artifact must remain portable. Backend
+artifacts may require platform-specific toolchains and GPU drivers. Their
+matrix and packaging rules live in the release workflow rather than a second
+copy here.
 
 ## The model store
 
 Weights live under `<data_dir>/yolop/models/`, one flat directory per repo
-(`/` → `__`). Yolop owns this directory instead of deferring to the engine's own
-cache, because an engine-managed cache leaves users with gigabytes they can
-neither see nor delete through yolop. `yolop weights list` reports what is on
-disk and its size; `yolop weights rm` reclaims it.
+(`/` becomes `__`). Yolop owns this store so users can inspect disk use with
+`yolop weights list` and reclaim it with `yolop weights rm`, including after
+inference is disabled or removed.
 
-**A turn never downloads.** The engine is capable of fetching its own weights,
-but it does so inside the first inference call: the turn appears to hang for
-several gigabytes with nothing on screen. Instead the driver loads only from the
-store and, when the weights are absent, fails immediately with the `yolop weights
-pull` command that fixes it. The wait is explicit, has a progress bar, and
-happens where a progress bar can be drawn.
+Pulling uses `hf-hub` 1.0's async client, including its Xet transfer path. Each
+file downloads into a private temporary directory inside the destination
+store, then moves into place only after success. A failed transfer never leaves
+a partial installed file that a later pull could mistake for complete. Validate
+filenames before passing them to the client, including remote listing entries.
 
-Listing and removal are plain filesystem work and compile into every build, so a
-build without the engine can still clean up what an earlier one downloaded.
-Pulling needs the Hugging Face client and is feature-gated with the rest;
-without the engine there would be nothing to run the bytes.
+Progress uses cumulative high-water marks for per-file and aggregate Xet
+reports, so overlapping updates never double-count bytes. Successful
+installation completes a progress entry. Missing optional support files are
+tolerable; required weights and configuration still fail the pull. Installed
+files are skipped. Resume is at file granularity: an interrupted shard starts
+again on the next pull.
 
-## Open questions
+## Engine restoration bar
 
-- Tool-calling reliability in the agent loop, measured rather than asserted.
-  [`evals/harness_basic/`](../../evals/harness_basic/) carries a `local` target
-  for this, gated on `YOLOP_LOCAL_MODEL` naming a pulled model so an ordinary
-  run skips it. That is the cheap first gate; SWE-bench Verified is the later
-  and far more expensive one. **No numbers exist yet**; until they do, this
-  provider stays an experiment.
-- Downloads resume only at file granularity: an interrupted shard restarts from
-  zero on the next pull.
-- No quantization choice for safetensors repos; the driver always applies 8-bit
-  in-situ quantization on load.
+- Require a dependency graph with no known vulnerabilities. A fixed
+  `candle-core` release alone is insufficient while the engine pins an older
+  version. The upstream restoration route needs candle-core 0.11.1 or later
+  and zip 9.0.5 or later. A vendored fix or replacement engine must independently
+  prove the same security and distribution contracts.
+- Keep the default model a prequantized GGUF spec. Downloading full-precision
+  safetensors merely to quantize locally multiplies first-use transfer cost.
+- Prove tool-call parsing with the selected model's real chat template. The
+  previous engine understood JSON inside `<tool_call>` but not Qwen3-Coder's
+  `<function=...><parameter=...>` XML shape. Coding quality without working tool
+  calls does not qualify a default.
+- Revisit model lifetime and streaming ownership against the replacement API.
+  The previous engine borrowed its model from response streams and therefore
+  retained loaded models for the process lifetime. Do not assume that design
+  is still necessary.
+- Wire and compile both acceleration backends. The previous CUDA graph needed
+  `nvcc` and compute capability 8.0; validate those requirements again instead
+  of treating them as a property of the suspended feature aliases. Compilation
+  without a GPU proves only build compatibility. Runtime evidence needs real
+  Metal and CUDA hosts. An unaccelerated CPU run does not establish useful GPU
+  agent performance.
+- Run the gated local target in [harness studies](../../evals/harness_basic/)
+  with `YOLOP_LOCAL_MODEL` naming installed weights. Measure tool-loop success,
+  startup, memory and binary size before describing the experiment as usable.

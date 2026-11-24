@@ -8,9 +8,10 @@
 
 use super::{GGUF_SEPARATOR, repo_dir, split_spec};
 use anyhow::{Context, Result, anyhow};
-use hf_hub::api::tokio::ApiBuilder;
+use hf_hub::HFClient;
+use hf_hub::progress::{DownloadEvent, ProgressEvent, ProgressHandler};
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -135,33 +136,46 @@ impl ProgressSink for StderrProgress {
     }
 }
 
-/// Adapter from `hf_hub`'s callback trait to our sink. `hf_hub` requires
-/// `Clone + Send + Sync`, so the sink sits behind a shared lock rather than
-/// being owned outright.
-#[derive(Clone)]
+/// One file per operation. Hub progress is cumulative and may report both
+/// aggregate Xet counts and per-file updates, so only advance the high-water mark.
 struct HubProgress {
     sink: Arc<Mutex<dyn ProgressSink>>,
+    filename: String,
+    completed: Mutex<u64>,
 }
 
-// The tokio flavour of `Progress` is async. Every call here is a lock and a
-// formatted write, so the bodies stay synchronous inside an async signature
-// rather than holding the lock across an await.
-impl hf_hub::api::tokio::Progress for HubProgress {
-    async fn init(&mut self, size: usize, filename: &str) {
-        if let Ok(mut sink) = self.sink.lock() {
-            sink.file_started(filename, (size > 0).then_some(size as u64));
+impl HubProgress {
+    fn advance_to(&self, bytes: u64) {
+        let mut completed = self.completed.lock().expect("progress byte count");
+        let delta = bytes.saturating_sub(*completed);
+        *completed = (*completed).max(bytes);
+        if delta > 0
+            && let Ok(mut sink) = self.sink.lock()
+        {
+            sink.bytes_advanced(delta);
         }
     }
+}
 
-    async fn update(&mut self, size: usize) {
-        if let Ok(mut sink) = self.sink.lock() {
-            sink.bytes_advanced(size as u64);
-        }
-    }
-
-    async fn finish(&mut self) {
-        if let Ok(mut sink) = self.sink.lock() {
-            sink.file_finished();
+impl ProgressHandler for HubProgress {
+    fn on_progress(&self, event: &ProgressEvent) {
+        match event {
+            ProgressEvent::Download(DownloadEvent::Start { total_bytes, .. }) => {
+                if let Ok(mut sink) = self.sink.lock() {
+                    sink.file_started(&self.filename, (*total_bytes > 0).then_some(*total_bytes));
+                }
+            }
+            ProgressEvent::Download(DownloadEvent::Progress { files }) => {
+                for file in files.iter().filter(|file| file.filename == self.filename) {
+                    self.advance_to(file.bytes_completed);
+                }
+            }
+            ProgressEvent::Download(DownloadEvent::AggregateProgress {
+                bytes_completed, ..
+            }) => {
+                self.advance_to(*bytes_completed);
+            }
+            _ => {}
         }
     }
 }
@@ -175,32 +189,41 @@ pub struct PullSummary {
 
 /// Download `spec` into the model store.
 ///
-/// A GGUF spec fetches the one named file plus the repo's tokenizer when it has
-/// one; a safetensors spec fetches every `.safetensors` shard plus its support
+/// A GGUF spec fetches the named file; a safetensors spec fetches every
+/// `.safetensors` shard plus its support
 /// files. Files already present are skipped, so an interrupted pull resumes at
 /// file granularity.
 pub async fn pull(spec: &str, sink: Arc<Mutex<dyn ProgressSink>>) -> Result<PullSummary> {
     let (repo, gguf_file) = split_spec(spec);
     let dest = repo_dir(repo)?;
-    std::fs::create_dir_all(&dest).with_context(|| format!("create {}", dest.display()))?;
+    let api = HFClient::new().context("build the Hugging Face client")?;
+    pull_into(repo, gguf_file, &dest, sink, &api).await
+}
 
-    let api = ApiBuilder::new()
-        .with_progress(false)
-        .build()
-        .context("build the Hugging Face client")?;
-    let repo_api = api.model(repo.to_string());
+async fn pull_into(
+    repo: &str,
+    gguf_file: Option<&str>,
+    dest: &Path,
+    sink: Arc<Mutex<dyn ProgressSink>>,
+    api: &HFClient,
+) -> Result<PullSummary> {
+    std::fs::create_dir_all(dest).with_context(|| format!("create {}", dest.display()))?;
+    let (owner, name) = hf_hub::split_id(repo);
+    let repo_api = api.model(owner, name);
 
     let wanted = match gguf_file {
         Some(file) => vec![(file.to_string(), false)],
         None => {
             let info = repo_api
                 .info()
+                .send()
                 .await
                 .with_context(|| format!("list files in {repo}"))?;
             let shards: Vec<(String, bool)> = info
                 .siblings
-                .iter()
-                .map(|sibling| sibling.rfilename.clone())
+                .unwrap_or_default()
+                .into_iter()
+                .map(|sibling| sibling.rfilename)
                 .filter(|name| {
                     name.ends_with(".safetensors") || name.ends_with(".safetensors.index.json")
                 })
@@ -227,13 +250,28 @@ pub async fn pull(spec: &str, sink: Arc<Mutex<dyn ProgressSink>>) -> Result<Pull
     for (filename, optional) in wanted {
         // `filename` is untrusted: it is either the `::` half of a CLI spec or
         // a name the remote repo listing supplied.
-        let target = super::safe_join(&dest, &filename)?;
+        let target = super::safe_join(dest, &filename)?;
         if target.is_file() {
             continue;
         }
 
-        let progress = HubProgress { sink: sink.clone() };
-        let downloaded = match repo_api.download_with_progress(&filename, progress).await {
+        let progress = Arc::new(HubProgress {
+            sink: sink.clone(),
+            filename: filename.clone(),
+            completed: Mutex::new(0),
+        });
+        // The new client writes directly into local_dir, including on failure.
+        // Keep partial files private until success so a later pull never mistakes
+        // an interrupted transfer for an installed weight file.
+        let staging = tempfile::tempdir_in(dest).context("stage model download")?;
+        let downloaded = match repo_api
+            .download_file()
+            .filename(&filename)
+            .local_dir(staging.path())
+            .progress(progress.clone())
+            .send()
+            .await
+        {
             Ok(path) => path,
             Err(err) if optional => {
                 tracing::debug!(%filename, %err, "skipping optional model file");
@@ -244,30 +282,23 @@ pub async fn pull(spec: &str, sink: Arc<Mutex<dyn ProgressSink>>) -> Result<Pull
             }
         };
 
-        summary.bytes += install(&downloaded, &target)?;
+        let bytes = std::fs::metadata(&downloaded)?.len();
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::rename(downloaded, target).context("install completed model file")?;
+        progress.advance_to(bytes);
+        if let Ok(mut sink) = sink.lock() {
+            sink.file_finished();
+        }
+        summary.bytes += bytes;
         summary.files.push(filename);
     }
 
     if summary.files.is_empty() {
-        tracing::info!(spec, "model already present in the store");
+        tracing::info!(repo, gguf_file, "model already present in the store");
     }
     Ok(summary)
-}
-
-/// Move a downloaded file into the store, falling back to a copy when the hub
-/// cache sits on a different filesystem (rename fails across mount points).
-fn install(source: &PathBuf, target: &PathBuf) -> Result<u64> {
-    if let Some(parent) = target.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    match std::fs::rename(source, target) {
-        Ok(()) => {}
-        Err(_) => {
-            std::fs::copy(source, target)
-                .with_context(|| format!("copy into {}", target.display()))?;
-        }
-    }
-    Ok(std::fs::metadata(target)?.len())
 }
 
 #[cfg(test)]
@@ -293,55 +324,285 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn hub_callbacks_reach_the_sink() {
-        use hf_hub::api::tokio::Progress;
-
+    #[test]
+    fn hub_progress_counts_overlapping_cumulative_events_once() {
+        use hf_hub::progress::{FileProgress, FileStatus};
         let sink = Arc::new(Mutex::new(RecordingSink::default()));
-        let mut progress = HubProgress { sink: sink.clone() };
-        progress.init(1024, "model.safetensors").await;
-        progress.update(512).await;
-        progress.update(512).await;
-        progress.finish().await;
-
-        let sink = sink.lock().expect("lock");
-        assert_eq!(
-            sink.started,
-            vec![("model.safetensors".to_string(), Some(1024))]
+        let progress = HubProgress {
+            sink: sink.clone(),
+            filename: "model.safetensors".into(),
+            completed: Mutex::new(0),
+        };
+        progress.on_progress(
+            &DownloadEvent::Start {
+                total_files: 1,
+                total_bytes: 1024,
+            }
+            .into(),
         );
+        progress.on_progress(
+            &DownloadEvent::AggregateProgress {
+                bytes_completed: 512,
+                total_bytes: 1024,
+                bytes_per_sec: None,
+            }
+            .into(),
+        );
+        progress.on_progress(
+            &DownloadEvent::Progress {
+                files: vec![FileProgress {
+                    filename: "model.safetensors".into(),
+                    bytes_completed: 512,
+                    total_bytes: 1024,
+                    status: FileStatus::InProgress,
+                }],
+            }
+            .into(),
+        );
+        progress.advance_to(1024);
+        progress.advance_to(512);
+        let sink = sink.lock().unwrap();
+        assert_eq!(sink.started, [("model.safetensors".into(), Some(1024))]);
         assert_eq!(sink.bytes, 1024);
+        assert_eq!(sink.finished, 0, "the successful pull owns completion");
+    }
+
+    #[test]
+    fn an_unknown_length_is_reported_as_indeterminate() {
+        let sink = Arc::new(Mutex::new(RecordingSink::default()));
+        let progress = HubProgress {
+            sink: sink.clone(),
+            filename: "tokenizer.json".into(),
+            completed: Mutex::new(0),
+        };
+        progress.on_progress(
+            &DownloadEvent::Start {
+                total_files: 1,
+                total_bytes: 0,
+            }
+            .into(),
+        );
+        assert_eq!(sink.lock().unwrap().started[0].1, None);
+    }
+
+    struct HubFixture {
+        server: Arc<tiny_http::Server>,
+        worker: Option<std::thread::JoinHandle<()>>,
+        requests: Arc<Mutex<Vec<String>>>,
+        client: HFClient,
+    }
+
+    impl HubFixture {
+        fn new(files: &[(&str, &[u8])], siblings: &[&str], truncate_get: bool) -> Self {
+            let server = Arc::new(tiny_http::Server::http("127.0.0.1:0").unwrap());
+            let client = HFClient::builder()
+                .endpoint(format!("http://{}", server.server_addr()))
+                .token("")
+                .client(
+                    reqwest::Client::builder()
+                        // Make a deliberately short body close immediately, rather
+                        // than waiting for the client's bounded fallback timeout.
+                        .default_headers(reqwest::header::HeaderMap::from_iter([(
+                            reqwest::header::CONNECTION,
+                            reqwest::header::HeaderValue::from_static("close"),
+                        )]))
+                        .timeout(Duration::from_secs(10))
+                        .build()
+                        .unwrap(),
+                )
+                .cache_enabled(false)
+                .retry_max_attempts(0)
+                .build()
+                .unwrap();
+            let files: std::collections::HashMap<String, Vec<u8>> = files
+                .iter()
+                .map(|(name, bytes)| (format!("/test/model/resolve/main/{name}"), bytes.to_vec()))
+                .collect();
+            let listing = serde_json::json!({"id":"test/model", "siblings": siblings.iter()
+                .map(|name| serde_json::json!({"rfilename":name})).collect::<Vec<_>>()})
+            .to_string();
+            let requests = Arc::new(Mutex::new(Vec::new()));
+            let observed = requests.clone();
+            let receiver = server.clone();
+            let worker = std::thread::spawn(move || {
+                while let Ok(Some(request)) = receiver.recv_timeout(Duration::from_secs(10)) {
+                    observed.lock().unwrap().push(format!(
+                        "{} {}",
+                        request.method(),
+                        request.url()
+                    ));
+                    let response = if request.url().starts_with("/api/models/test/model") {
+                        tiny_http::Response::from_data(listing.as_bytes())
+                    } else if let Some(bytes) = files.get(request.url()) {
+                        if truncate_get && request.method() == &tiny_http::Method::Get {
+                            tiny_http::Response::new(
+                                tiny_http::StatusCode(200),
+                                vec![],
+                                std::io::Cursor::new(bytes.clone()),
+                                Some(bytes.len() + 100),
+                                None,
+                            )
+                        } else {
+                            tiny_http::Response::from_data(bytes.clone())
+                        }
+                    } else {
+                        tiny_http::Response::from_data(Vec::new()).with_status_code(404)
+                    };
+                    let _ = request.respond(response);
+                }
+            });
+            Self {
+                server,
+                worker: Some(worker),
+                requests,
+                client,
+            }
+        }
+    }
+
+    impl Drop for HubFixture {
+        fn drop(&mut self) {
+            self.server.unblock();
+            self.worker.take().unwrap().join().unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn gguf_pull_installs_nested_file_reports_progress_and_skips_installed_files() {
+        let hub = HubFixture::new(&[("nested/model.gguf", b"model weights")], &[], false);
+        let dest = tempfile::tempdir().unwrap();
+        let sink = Arc::new(Mutex::new(RecordingSink::default()));
+        let summary = pull_into(
+            "test/model",
+            Some("nested/model.gguf"),
+            dest.path(),
+            sink.clone(),
+            &hub.client,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            std::fs::read(dest.path().join("nested/model.gguf")).unwrap(),
+            b"model weights"
+        );
+        assert_eq!(
+            summary,
+            PullSummary {
+                files: vec!["nested/model.gguf".into()],
+                bytes: 13
+            }
+        );
+        let count = hub.requests.lock().unwrap().len();
+        let second = pull_into(
+            "test/model",
+            Some("nested/model.gguf"),
+            dest.path(),
+            sink.clone(),
+            &hub.client,
+        )
+        .await
+        .unwrap();
+        assert_eq!(second, PullSummary::default());
+        assert_eq!(
+            hub.requests.lock().unwrap().len(),
+            count,
+            "installed files need no network"
+        );
+        let sink = sink.lock().unwrap();
+        assert_eq!(sink.started, [("nested/model.gguf".into(), Some(13))]);
+        assert_eq!(sink.bytes, 13);
         assert_eq!(sink.finished, 1);
     }
 
     #[tokio::test]
-    async fn an_unknown_length_is_reported_as_indeterminate() {
-        use hf_hub::api::tokio::Progress;
-
-        // Hugging Face omits the length for some files; a zero must not render
-        // as a bar that can never fill.
+    async fn safetensors_pull_lists_shards_and_tolerates_missing_optional_files() {
+        let hub = HubFixture::new(
+            &[
+                ("model.safetensors", b"weights"),
+                ("config.json", b"{}"),
+                ("tokenizer_config.json", b"{}"),
+            ],
+            &["model.safetensors", "README.md"],
+            false,
+        );
+        let dest = tempfile::tempdir().unwrap();
         let sink = Arc::new(Mutex::new(RecordingSink::default()));
-        let mut progress = HubProgress { sink: sink.clone() };
-        progress.init(0, "tokenizer.json").await;
-        assert_eq!(sink.lock().expect("lock").started[0].1, None);
+        let summary = pull_into("test/model", None, dest.path(), sink.clone(), &hub.client)
+            .await
+            .unwrap();
+        assert_eq!(
+            summary.files,
+            ["model.safetensors", "config.json", "tokenizer_config.json"]
+        );
+        assert_eq!(summary.bytes, 11);
+        assert_eq!(sink.lock().unwrap().finished, 3);
+        assert!(!dest.path().join("generation_config.json").exists());
     }
 
-    #[test]
-    fn optional_files_are_the_ones_repos_legitimately_omit() {
-        assert!(is_optional("generation_config.json"));
-        // Without a config the engine cannot construct the model at all, so a
-        // missing one has to fail the pull rather than be skipped.
-        assert!(!is_optional("config.json"));
+    #[tokio::test]
+    async fn interrupted_download_never_leaves_an_installed_file_or_reports_completion() {
+        let hub = HubFixture::new(&[("model.gguf", b"partial")], &[], true);
+        let dest = tempfile::tempdir().unwrap();
+        let sink = Arc::new(Mutex::new(RecordingSink::default()));
+        let result = pull_into(
+            "test/model",
+            Some("model.gguf"),
+            dest.path(),
+            sink.clone(),
+            &hub.client,
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "a truncated response must fail: {result:?}"
+        );
+        assert_eq!(
+            std::fs::read_dir(dest.path()).unwrap().count(),
+            0,
+            "partial staging is removed"
+        );
+        assert_eq!(
+            sink.lock().unwrap().bytes,
+            7,
+            "partial bytes reached the sink"
+        );
+        assert_eq!(sink.lock().unwrap().finished, 0);
     }
 
-    #[test]
-    fn install_falls_back_to_copy_across_filesystems() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let source = temp.path().join("src.bin");
-        let target = temp.path().join("nested").join("dst.bin");
-        std::fs::write(&source, vec![7u8; 64]).expect("write");
+    #[tokio::test]
+    async fn unsafe_listing_is_rejected_before_downloading_outside_the_store() {
+        let hub = HubFixture::new(&[], &["../outside.safetensors"], false);
+        let dest = tempfile::tempdir().unwrap();
+        let sink = Arc::new(Mutex::new(RecordingSink::default()));
+        let error = pull_into("test/model", None, dest.path(), sink, &hub.client)
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("only plain relative paths"),
+            "{error}"
+        );
+        assert_eq!(std::fs::read_dir(dest.path()).unwrap().count(), 0);
+    }
 
-        assert_eq!(install(&source, &target).expect("install"), 64);
-        assert!(target.is_file());
+    #[tokio::test]
+    async fn missing_required_config_fails_without_discarding_completed_weights() {
+        let hub = HubFixture::new(
+            &[("model.safetensors", b"weights")],
+            &["model.safetensors"],
+            false,
+        );
+        let dest = tempfile::tempdir().unwrap();
+        let sink = Arc::new(Mutex::new(RecordingSink::default()));
+        let error = pull_into("test/model", None, dest.path(), sink.clone(), &hub.client)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("config.json"), "{error}");
+        assert_eq!(
+            std::fs::read(dest.path().join("model.safetensors")).unwrap(),
+            b"weights"
+        );
+        assert!(!dest.path().join("config.json").exists());
+        assert_eq!(sink.lock().unwrap().finished, 1);
     }
 
     #[test]

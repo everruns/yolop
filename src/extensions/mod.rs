@@ -102,23 +102,32 @@ mod spawn_tests {
             eprintln!("skipping: cargo not available");
             return;
         }
-        let build = tokio::process::Command::new("cargo")
-            .args([
-                "build",
-                "--offline",
-                "-p",
-                "yolop-yep",
-                "--example",
-                "echo",
-                "--features",
-                "yolop-yep/schema",
-                "--message-format=json",
-            ])
-            .current_dir(env!("CARGO_MANIFEST_DIR"))
-            .kill_on_drop(true)
-            .output()
-            .await
-            .expect("build SDK fixture");
+        // A nested build must not wait on the parent's target lock or unrelated
+        // lint jobs. This fixture compiles only the small standalone SDK.
+        let target = tempfile::tempdir().expect("SDK fixture target");
+        let build = tokio::time::timeout(
+            std::time::Duration::from_secs(120),
+            tokio::process::Command::new("cargo")
+                .args([
+                    "build",
+                    "--offline",
+                    "-p",
+                    "yolop-yep",
+                    "--example",
+                    "echo",
+                    "--features",
+                    "yolop-yep/schema",
+                    "--message-format=json",
+                ])
+                .arg("--target-dir")
+                .arg(target.path())
+                .current_dir(env!("CARGO_MANIFEST_DIR"))
+                .kill_on_drop(true)
+                .output(),
+        )
+        .await
+        .expect("SDK fixture build timed out")
+        .expect("build SDK fixture");
         assert!(
             build.status.success(),
             "SDK fixture build failed: {}",
