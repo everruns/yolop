@@ -10,7 +10,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use anyhow::Result;
-use everruns_contracts::typed_id::SessionId;
+use everruns_contracts::typed_id::{MessageId, SessionId, TurnId};
 use everruns_core::ContentPart;
 #[cfg(test)]
 use everruns_core::Event;
@@ -46,6 +46,13 @@ pub(crate) struct CommandOutcome {
 pub(crate) struct TurnHandle {
     pub events: mpsc::UnboundedReceiver<TurnEvent>,
     pub cancel: oneshot::Sender<()>,
+    pub steering: Option<super::turn_scope::SteeringTarget>,
+}
+
+pub(crate) enum QueuedInputState {
+    Missing,
+    Pending,
+    Assigned(everruns::hosting::TurnAssignment),
 }
 
 /// Facade over the runtime for a single session. Cheap to construct; holds
@@ -64,6 +71,56 @@ impl Session {
 
     pub(crate) fn handles(&self) -> &RuntimeHandles {
         &self.handles
+    }
+
+    pub async fn active_turn_for(
+        &self,
+        target: &super::turn_scope::SteeringTarget,
+    ) -> Result<Option<TurnId>> {
+        use everruns::hosting::SessionHosting;
+        let events = self.handles.host.events().await?;
+        let assigned = target.assigned_turn(&self.handles.session, &events).await?;
+        let status = self
+            .handles
+            .host
+            .profile
+            .native
+            .status(self.session_id())
+            .await?;
+        Ok(assigned.filter(|turn| status.open_turn == Some(*turn)))
+    }
+
+    pub async fn queued_input_state(&self, id: MessageId) -> Result<QueuedInputState> {
+        let Some(admission) = self.handles.session.admission(id).await? else {
+            return Ok(QueuedInputState::Missing);
+        };
+        Ok(match admission.assignment().await? {
+            Some(assignment) => QueuedInputState::Assigned(assignment),
+            None => QueuedInputState::Pending,
+        })
+    }
+
+    /// The identity survives uncertain replies and is reused when observing
+    /// a queued follow-up. Engine alone decides whether input joins a turn.
+    pub fn queued_input(&self, prompt: String, images: Vec<ContentPart>) -> InputMessage {
+        let mut input = self.model.input_message_with_images(prompt, images);
+        input.metadata.get_or_insert_default().insert(
+            "yolop.frontend_host".into(),
+            serde_json::json!(self.handles.host.profile.platform.instance),
+        );
+        input
+    }
+
+    pub async fn prepare_queued_turn(&self) -> Result<()> {
+        self.model.validate_model_available().await?;
+        self.handles.host.sync_model(self.session_id()).await?;
+        self.handles.events.materializer().ensure()?;
+        Ok(())
+    }
+
+    pub async fn admit_queued_input(&self, id: MessageId, input: InputMessage) -> Result<()> {
+        self.handles.session.send_with_id(id, input).await?;
+        Ok(())
     }
 
     pub fn session_id(&self) -> SessionId {
@@ -233,6 +290,7 @@ impl Session {
                 .insert("yolop.observe_admission".into(), serde_json::json!(id));
         }
         let mut scope = super::turn_scope::TurnScope::new(&mut input);
+        let steering = scope.steering_target();
         let handles = self.handles.clone();
         let model = self.model.clone();
         let (tx, rx) = mpsc::unbounded_channel::<TurnEvent>();
@@ -458,6 +516,7 @@ impl Session {
         TurnHandle {
             events: rx,
             cancel: cancel_tx,
+            steering: Some(steering),
         }
     }
 
@@ -512,6 +571,7 @@ impl Session {
         TurnHandle {
             events: rx,
             cancel: cancel_tx,
+            steering: None,
         }
     }
 }

@@ -5361,11 +5361,10 @@ pub async fn build_with_options(
     });
     // `progress_guard` — runtime-visible warnings when tool use stops making
     // observable progress.
-    capabilities.register(ProgressGuardCapability::open(
-        &session_dir,
-        session_id,
-        replayed_tool_count,
-    ));
+    capabilities.register(
+        ProgressGuardCapability::open(&session_dir, session_id, replayed_tool_count)
+            .with_hosting(native_hosting.clone()),
+    );
     // Soft approval — spoken-consent guidance + audit tool, gated by the
     // central `approval_mode` setting (read live each turn).
     let (soft_approval, pending_approval) =

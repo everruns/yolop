@@ -1,5 +1,11 @@
 # Knowledge Log
 
+## 2026-11-23, Retained coding evidence
+
+- [Progress guard](specs/progress-guard.md): bounded command outcomes and accepted investigation checkpoints survive context replacement and session reopen. Later possible mutations mark checks stale; native history revisions prevent evidence from returning from abandoned branches.
+- [Task completion](specs/task-completion.md): retained command outcomes inform verification without replacing the engine's completion policy.
+- [Steering](specs/steering.md): the TUI durably admits corrections into the active Engine turn and observes accepted follow-ups when admission races with completion.
+
 ## 2026-11-23, Current Rust and download-client migration
 
 - [Local inference](specs/local-inference.md): weight pulls use the async hf-hub 1.0 client with atomic per-file installation and cumulative Xet progress accounting. Inference remains suspended independently of the downloader.
