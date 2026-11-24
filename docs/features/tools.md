@@ -100,6 +100,11 @@ allowlist of well-known public resources.
   progress guard requests it. An unneeded or unchanged checkpoint returns a
   completed result with `accepted: false`, a `status`, and an actionable
   `message`, so the agent can continue without retrying a failed tool call.
+- Recent validation command outcomes and the last accepted investigation
+  checkpoint remain available after context compaction or session resume.
+  Later possible edits mark earlier checks stale. These records describe what
+  ran, not whether the tests cover the requested behavior; changes made by
+  external editors or services still need fresh verification.
 - Unfinished work receives bounded automatic continuation in terminal, ACP, and
   print sessions. Defaults are five automatic turns, 256000 tokens, and 600 seconds
   from the first continuation. The first reached limit pauses and asks you to

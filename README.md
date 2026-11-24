@@ -134,9 +134,14 @@ The flagship: a full screen chat with a scrolling transcript, syntax highlighted
 
 Type a task and watch it read, edit, and run commands. Ask side questions with `/btw` without touching history, recover unfinished work through bounded automatic continuation, and track long work in the `Ctrl+B` activity rail.
 
+While the agent works, type a correction and press `Enter`. It receives the
+message after its current tool calls finish and adjusts within the same turn.
+Press `Esc` twice to cancel the active turn.
+
 | Key | Action |
 | --- | ------ |
-| `Ctrl+C` | Interrupt the running turn |
+| `Ctrl+C` | Clear the draft; press twice to quit |
+| `Esc`, `Esc` | Cancel the active turn |
 | `Ctrl+D` | Quit |
 | `Ctrl+R` | Search history (`↑` / `↓` recall, persisted across sessions) |
 | `Ctrl+B` | Activity rail for agents, background commands, and monitors |

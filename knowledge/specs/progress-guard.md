@@ -89,6 +89,35 @@ recorded tool count does not exceed the active replay branch. A rewind behind
 that state or an incomplete state-file write therefore discards stale guard
 state instead of applying it to an earlier trajectory.
 
+## Retained coding evidence
+
+The guard retains the four most recent recognized validation commands with
+their call identities, exit codes, and observed command outcomes. A later
+mutation attempt or unclassified shell command marks earlier checks stale,
+including failed commands that may have partially written files. Compound shell
+actions conservatively invalidate freshness even after a recognized check. Reads do not
+invalidate checks. Missing exit status never counts as a successful check.
+Command previews are bounded; full commands and output remain in canonical
+history. Command success does not establish test adequacy or task completion,
+and freshness does not cover external editors, services, or dependency changes.
+
+The latest accepted investigation checkpoint retains its facts, hypothesis,
+missing evidence and next decisive action. These are prior assistant notes,
+not verified claims or new user instructions. Rejected checkpoints do not
+replace the accepted one.
+
+Both records are private derived state in the existing progress store. They
+return as a bounded, untrusted capability-context update when context is
+replaced or a session reopens. Unchanged evidence does not create another
+update, and sessions without evidence pay no context cost. The native history
+revision fences this projection: changing branches clears it even when the
+selected branch has the same tool count. The canonical journal remains the
+authority and the engine retains ownership of completion and recovery.
+If compaction removes an unchanged recorded update during the current request,
+a provider-view transform restores the already lineage-checked snapshot after
+trimming. It adds no duplicate when the snapshot survived, and leaves the
+cached system prompt and canonical history untouched.
+
 ## Ownership
 
 This is Yolop host behavior: the capability composes Everruns' existing

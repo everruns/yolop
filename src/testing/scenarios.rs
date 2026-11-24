@@ -231,6 +231,181 @@ async fn scripted_prompt_command_tool_queues_quit_ui_command() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn provider_recovery_keeps_completed_command_evidence_without_replaying_effects() {
+    let (runtime, workspace) = build_scripted_runtime_with_workspace_and_options(
+        LlmSimConfig::scripted(vec![
+            SimTurn::ToolCalls(vec![SimToolCall {
+                name: "bash".into(),
+                arguments: json!({"command": "printf started >> launches"}),
+                id: None,
+            }]),
+            SimTurn::StreamStall,
+            SimTurn::Assistant("Recovered after the command finished.".into()),
+        ]),
+        |_| {},
+        BuildOptions {
+            provider_stall_timeout: Some(Duration::from_millis(100)),
+            provider_retry_config: Some(everruns_contracts::llm_retry::LlmRetryConfig {
+                max_retries: 2,
+                initial_backoff: Duration::from_millis(10),
+                max_backoff: Duration::from_millis(20),
+                backoff_multiplier: 2.0,
+                jitter_factor: 0.0,
+                max_retry_elapsed: Duration::from_secs(10),
+            }),
+            ..Default::default()
+        },
+    )
+    .await;
+    let result = run_single_turn(&runtime, "Run the command once and retain its result.").await;
+    assert!(result.success, "{result:?}");
+    let events = runtime.handles.host.events().await.unwrap();
+    let commands = events
+        .iter()
+        .filter_map(|event| match &event.data {
+            everruns_core::EventData::ToolCompleted(tool) if tool.tool_name == "bash" => Some(tool),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        commands.len(),
+        1,
+        "completed command was replayed during recovery"
+    );
+    assert!(
+        commands[0].success,
+        "completed evidence was lost: {commands:?}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(workspace.join("launches"))
+            .unwrap_or_else(|error| panic!("{error}: {result:?}; {commands:?}")),
+        "started"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn coding_evidence_reaches_the_provider_after_a_later_edit() {
+    let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let config = LlmSimConfig::scripted(vec![
+        SimTurn::ToolCalls(vec![SimToolCall {
+            name: "bash".into(),
+            arguments: json!({"command": "python3 -m unittest -q"}),
+            id: None,
+        }]),
+        SimTurn::ToolCalls(vec![SimToolCall {
+            name: "write_file".into(),
+            arguments: json!({"path": "implementation.py", "content": "VALUE = 2\n"}),
+            id: None,
+        }]),
+        SimTurn::Assistant("The previous check predates the edit.".into()),
+    ])
+    .with_message_capture(captured.clone());
+    let (runtime, workspace) = build_scripted_runtime_with_workspace(config, |workspace| {
+        std::fs::write(workspace.join("implementation.py"), "VALUE = 1\n").unwrap();
+        std::fs::write(workspace.join("test_implementation.py"),
+            "import unittest\nfrom implementation import VALUE\nclass Check(unittest.TestCase):\n    def test_value(self):\n        self.assertEqual(VALUE, 1)\n").unwrap();
+    }).await;
+    let result = run_single_turn(&runtime, "Run the check, then edit the implementation.").await;
+    assert!(result.success, "{result:?}");
+    assert!(
+        captured.lock().unwrap().iter().any(|messages| {
+            let text = messages
+                .iter()
+                .map(|message| message.content_as_text())
+                .collect::<Vec<_>>()
+                .join("\n");
+            text.contains("coding-evidence")
+                && text.contains("\"command_succeeded\":true")
+                && text.contains("\"stale\":true")
+        }),
+        "provider never received the stale successful check"
+    );
+
+    let id = runtime.handles.session_id;
+    let sessions = runtime.startup.session_dir.parent().unwrap().to_path_buf();
+    let settings = runtime.settings.clone();
+    for _ in 0..6 {
+        assert!(
+            run_single_turn(&runtime, &"Earlier investigation context. ".repeat(700))
+                .await
+                .success
+        );
+    }
+    drop(runtime);
+    captured.lock().unwrap().clear();
+    let resumed = build_with_options(
+        workspace,
+        ProviderChoice::Sim,
+        Some(id),
+        sessions,
+        settings,
+        BuildOptions {
+            llmsim_override: Some(
+                LlmSimConfig::fixed("done")
+                    .with_model("llmsim-yolop")
+                    .with_context_window(32768)
+                    .with_message_capture(captured.clone()),
+            ),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let continued = run_single_turn(&resumed, "Continue from the retained evidence.").await;
+    assert!(continued.success, "{continued:?}");
+    {
+        let requests = captured.lock().unwrap();
+        let prompt = requests[0]
+            .iter()
+            .map(|message| message.content_as_text())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            prompt.contains("coding-evidence") && prompt.contains("\"stale\":true"),
+            "retained stale-check evidence disappeared after context replacement"
+        );
+        assert!(
+            !prompt.contains("Ran 1 test"),
+            "the original check output must leave the model view for this retention test"
+        );
+    }
+    let original = resumed
+        .handles
+        .checkpoints
+        .list()
+        .last()
+        .unwrap()
+        .id
+        .clone();
+    let rewind = resumed
+        .handles
+        .checkpoints
+        .prepare_rewind(
+            &original,
+            crate::session_state::checkpoint::RestoreMode::Conversation,
+        )
+        .unwrap();
+    resumed
+        .handles
+        .checkpoints
+        .confirm(&rewind.token)
+        .await
+        .unwrap();
+    captured.lock().unwrap().clear();
+    assert!(
+        run_single_turn(&resumed, "Start again on the selected branch.")
+            .await
+            .success
+    );
+    assert!(
+        !captured.lock().unwrap()[0]
+            .iter()
+            .any(|message| message.content_as_text().contains("coding-evidence")),
+        "abandoned branch evidence returned after rewind"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn scripted_tool_call_executes_bash_then_assistant_completes() {
     // First scripted turn issues a bash tool call that touches a marker
     // file in the workspace. Second turn closes the loop with plain text

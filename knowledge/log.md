@@ -1,5 +1,11 @@
 # Knowledge Log
 
+## 2026-11-23, Retained coding evidence
+
+- [Progress guard](specs/progress-guard.md): bounded command outcomes and accepted investigation checkpoints survive context replacement and session reopen. Later possible mutations mark checks stale; native history revisions prevent evidence from returning from abandoned branches.
+- [Task completion](specs/task-completion.md): retained command outcomes inform verification without replacing the engine's completion policy.
+- [Steering](specs/steering.md): the TUI durably admits corrections into the active Engine turn and observes accepted follow-ups when admission races with completion.
+
 ## 2026-11-23, Published upstream ownership and current build guidance
 
 - [Maintenance](specs/maintenance.md): recheck adapter ownership against Everruns 0.53.1, share the upstream tool cancellation registry, and reuse its post-cancellation task snapshot. Retain host monitor, partial-output, workspace checkpoint and capability-control contracts.

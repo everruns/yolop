@@ -204,9 +204,8 @@ pub struct App {
     /// [`cursor_screen`](TextInputState::cursor_screen) — so the two modes
     /// can never drift.
     composer: TextInputState,
-    /// User messages submitted while a turn is active. The embedded runtime
-    /// cannot accept concurrent inputs, so these start in FIFO order at the
-    /// next turn boundary. Cancellation deliberately leaves the queue intact.
+    /// Inputs awaiting admission or assignment. Engine steers active turns;
+    /// local shell work and startup retain FIFO delivery until an agent can run.
     queued_messages: VecDeque<QueuedMessage>,
     pub busy: bool,
     pub should_quit: bool,
@@ -224,6 +223,7 @@ pub struct App {
     stream_preview: Option<StreamPreview>,
     rx: Option<mpsc::UnboundedReceiver<TurnEvent>>,
     turn_cancel: Option<oneshot::Sender<()>>,
+    turn_steering: Option<crate::runtime::turn_scope::SteeringTarget>,
     /// Active setup overlay, if any. The overlay owns its own keyboard
     /// handling so provider, token, and model setup never echo through the
     /// normal chat composer.
@@ -663,6 +663,10 @@ pub(crate) struct CredentialOption {
 }
 
 struct QueuedMessage {
+    id: everruns_contracts::typed_id::MessageId,
+    expected_turn: Option<everruns_contracts::typed_id::TurnId>,
+    error_reported: bool,
+    input: Option<everruns_core::InputMessage>,
     prompt: String,
     display: String,
     images: Vec<ContentPart>,
@@ -783,6 +787,7 @@ impl App {
             stream_preview: None,
             rx: None,
             turn_cancel: None,
+            turn_steering: None,
             setup: None,
             codex_login: None,
             codex_login_tx,
@@ -1839,6 +1844,12 @@ impl App {
         B::Error: std::error::Error + Send + Sync + 'static,
     {
         self.refresh_session_tasks_if_due();
+        if self.busy
+            && !self.queued_messages.is_empty()
+            && let Err(error) = self.steer_queued_messages().await
+        {
+            self.queued_input_error(error);
+        }
         terminal.autoresize()?;
         if !self.render_mode.is_fullscreen() {
             // Ratatui anchors an inline viewport to the cursor row it was
@@ -1930,10 +1941,10 @@ impl App {
                         {
                             self.push_user(display);
                         }
-                        self.start_next_queued_turn();
+                        self.start_next_queued_turn().await;
                         return Ok(());
                     }
-                    if self.start_next_queued_turn() {
+                    if self.start_next_queued_turn().await {
                         return Ok(());
                     }
                     self.announce_pending_approval();
@@ -1949,7 +1960,7 @@ impl App {
                         status.error();
                     }
                     self.push_system(format!("turn failed: {err}"));
-                    self.start_next_queued_turn();
+                    self.start_next_queued_turn().await;
                     return Ok(());
                 }
                 Err(mpsc::error::TryRecvError::Empty) => {}
@@ -1959,7 +1970,7 @@ impl App {
                     if let Some(status) = self.program_status.as_mut() {
                         status.error();
                     }
-                    self.start_next_queued_turn();
+                    self.start_next_queued_turn().await;
                 }
             }
         }
@@ -3086,12 +3097,23 @@ impl App {
         self.awaiting_approval = None;
         self.push_user(display.clone());
         let images = std::mem::take(&mut self.pending_images);
-        if self.busy {
+        if self.busy || !self.queued_messages.is_empty() {
             self.queued_messages.push_back(QueuedMessage {
+                id: everruns_contracts::typed_id::MessageId::new(),
+                expected_turn: None,
+                error_reported: false,
+                input: None,
                 prompt: text,
                 display,
                 images,
             });
+            if self.busy {
+                if let Err(error) = self.steer_queued_messages().await {
+                    self.queued_input_error(error);
+                }
+            } else {
+                self.start_next_queued_turn().await;
+            }
         } else {
             self.start_turn_with_images(text, images);
         }
@@ -4121,6 +4143,7 @@ impl App {
 
     fn cancel_current_turn(&mut self) {
         self.esc_pending_cancel = false;
+        self.turn_steering = None;
         if let Some(cancel) = self.turn_cancel.take() {
             let _ = cancel.send(());
             self.turn_activity = Some("cancelling".into());
@@ -4140,20 +4163,113 @@ impl App {
         self.stream_preview = None;
         self.rx = None;
         self.turn_cancel = None;
+        self.turn_steering = None;
         if self.native_progress {
             self.term_progress.clear();
         }
         self.esc_pending_cancel = false;
     }
 
-    /// Start the oldest steering message after the active turn has fully
-    /// settled. One runtime turn runs at a time; later messages remain queued.
-    fn start_next_queued_turn(&mut self) -> bool {
-        let Some(message) = self.queued_messages.pop_front() else {
-            return false;
+    fn queued_input_error(&mut self, error: impl std::fmt::Display) {
+        if let Some(message) = self.queued_messages.front_mut()
+            && !message.error_reported
+        {
+            message.error_reported = true;
+            self.push_system(format!("Message remains queued: {error}"));
+        }
+    }
+
+    fn queued_input(&mut self) -> everruns_core::InputMessage {
+        let message = self.queued_messages.front_mut().expect("queued input");
+        message
+            .input
+            .get_or_insert_with(|| {
+                self.session
+                    .queued_input(message.prompt.clone(), message.images.clone())
+            })
+            .clone()
+    }
+
+    async fn steer_queued_messages(&mut self) -> Result<()> {
+        use crate::runtime::session::QueuedInputState;
+        let Some(target) = self
+            .turn_steering
+            .clone()
+            .filter(|_| self.turn_cancel.is_some())
+        else {
+            return Ok(());
         };
-        self.start_turn_with_images(message.prompt, message.images);
-        true
+        while let Some(message) = self.queued_messages.front() {
+            let id = message.id;
+            match self.session.queued_input_state(id).await? {
+                QueuedInputState::Pending => return Ok(()),
+                QueuedInputState::Assigned(assignment) => {
+                    if assignment.steered && Some(assignment.turn_id) == message.expected_turn {
+                        self.queued_messages.pop_front();
+                        self.push_system("Steering received for the active turn.".into());
+                        continue;
+                    }
+                    return Ok(());
+                }
+                QueuedInputState::Missing => {}
+            }
+            let Some(active) = self.session.active_turn_for(&target).await? else {
+                return Ok(());
+            };
+            let message = self.queued_messages.front_mut().expect("queued input");
+            if message
+                .expected_turn
+                .is_some_and(|expected| expected != active)
+            {
+                return Ok(());
+            }
+            message.expected_turn = Some(active);
+            let input = self.queued_input();
+            self.session.admit_queued_input(id, input).await?;
+        }
+        Ok(())
+    }
+
+    async fn start_next_queued_turn(&mut self) -> bool {
+        use crate::runtime::session::QueuedInputState;
+        while let Some(message) = self.queued_messages.front() {
+            let id = message.id;
+            let state = match self.session.queued_input_state(id).await {
+                Ok(state) => state,
+                Err(error) => {
+                    self.queued_input_error(error);
+                    return false;
+                }
+            };
+            if let QueuedInputState::Assigned(assignment) = &state
+                && assignment.steered
+                && Some(assignment.turn_id) == message.expected_turn
+            {
+                self.queued_messages.pop_front();
+                self.push_system("Steering received for the active turn.".into());
+                continue;
+            }
+            if matches!(state, QueuedInputState::Missing) {
+                if let Err(error) = self.session.prepare_queued_turn().await {
+                    self.queued_input_error(error);
+                    return false;
+                }
+                let input = self.queued_input();
+                if let Err(error) = self.session.admit_queued_input(id, input).await {
+                    self.queued_input_error(error);
+                    return false;
+                }
+            }
+            let message = self
+                .queued_messages
+                .pop_front()
+                .expect("admitted queued input");
+            self.prepare_turn(&message.prompt);
+            let handle = self.session.observe_admission(id);
+            self.begin_turn(handle, None);
+            return true;
+        }
+        false
     }
 
     /// The engine reviewed the finished turn and continued it while work
@@ -4277,6 +4393,7 @@ impl App {
         }
         self.rx = Some(handle.events);
         self.turn_cancel = Some(handle.cancel);
+        self.turn_steering = handle.steering;
         self.esc_pending_cancel = false;
         self.busy = true;
         self.turn_activity = activity;
@@ -7561,21 +7678,23 @@ flowchart TD
     }
 
     async fn app_with_llmsim() -> TestApp {
+        app_with_llmsim_options(crate::runtime::BuildOptions::default()).await
+    }
+
+    async fn app_with_llmsim_options(mut options: crate::runtime::BuildOptions) -> TestApp {
         let workspace = tempfile::tempdir().expect("workspace tempdir");
         let sessions = tempfile::tempdir().expect("sessions tempdir");
         let settings = std::sync::Arc::new(crate::config::SettingsStore::open(
             sessions.path().join("settings.toml"),
         ));
+        options.client_commands = true;
         let runtime = crate::runtime::build_with_options(
             workspace.path().to_path_buf(),
             crate::runtime::ProviderChoice::Sim,
             None,
             sessions.path().to_path_buf(),
             settings,
-            crate::runtime::BuildOptions {
-                client_commands: true,
-                ..crate::runtime::BuildOptions::default()
-            },
+            options,
         )
         .await
         .expect("build llmsim runtime");
@@ -8245,6 +8364,9 @@ flowchart TD
 
             let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
             while self.busy {
+                if let Err(error) = self.steer_queued_messages().await {
+                    self.queued_input_error(error);
+                }
                 if tokio::time::Instant::now() >= deadline {
                     panic!(
                         "turn did not complete within 15s: busy={} lines={:?}",
@@ -8282,19 +8404,19 @@ flowchart TD
                             };
                             self.finalize_compact_turn(outcome);
                             self.finish_busy();
-                            self.start_next_queued_turn();
+                            self.start_next_queued_turn().await;
                         }
                         Ok(TurnEvent::Failed(err)) => {
                             self.finalize_compact_turn(CompactWorkOutcome::Failed);
                             self.finish_busy();
                             self.push_system(format!("turn failed: {err}"));
-                            self.start_next_queued_turn();
+                            self.start_next_queued_turn().await;
                         }
                         Err(mpsc::error::TryRecvError::Empty) => {}
                         Err(mpsc::error::TryRecvError::Disconnected) => {
                             self.finalize_compact_turn(CompactWorkOutcome::Failed);
                             self.finish_busy();
-                            self.start_next_queued_turn();
+                            self.start_next_queued_turn().await;
                         }
                     }
                 }
@@ -9972,6 +10094,141 @@ flowchart TD
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn busy_composer_admits_steering_before_the_active_tool_finishes() {
+        use everruns_llmsim::{LlmSimConfig, SimToolCall, SimTurn};
+        struct Release(std::path::PathBuf);
+        impl Drop for Release {
+            fn drop(&mut self) {
+                let _ = std::fs::write(&self.0, "release");
+            }
+        }
+        let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut fixture = app_with_llmsim_options(crate::runtime::BuildOptions {
+            llmsim_override: Some(LlmSimConfig::scripted(vec![
+                SimTurn::ToolCalls(vec![SimToolCall {
+                    name: "bash".into(),
+                    arguments: serde_json::json!({"command": "touch steering.ready; while [ ! -e steering.release ]; do sleep 0.01; done"}),
+                    id: None,
+                }]),
+                SimTurn::Assistant("Applied the correction.".into()),
+            ]).with_message_capture(captured.clone())),
+            ..Default::default()
+        }).await;
+        let workspace = fixture._workspace.path().to_path_buf();
+        let release = Release(workspace.join("steering.release"));
+        let app = &mut fixture.app;
+        app.setup = None;
+        app.set_input_text("Investigate the change.".into());
+        app.submit_input().await;
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while !workspace.join("steering.ready").exists() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the first tool must start");
+        app.set_input_text("Preserve the public API. STEERING_CONSTRAINT".into());
+        app.submit_input().await;
+        let events = app.session.handles().host.events().await.unwrap();
+        assert!(
+            events.iter().any(|event| matches!(&event.data,
+                everruns_core::EventData::InputMessage(input)
+                    if input.message.text().is_some_and(|text| text.contains("STEERING_CONSTRAINT"))
+            )),
+            "steering must be durable while the original command is still running"
+        );
+        assert!(app.busy);
+        assert!(!release.0.exists());
+        drop(release);
+        app.pump_turn_until_idle_for_test().await;
+        let events = app.session.handles().host.events().await.unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.event_type == "turn.started")
+                .count(),
+            1,
+            "a correction must join the active turn"
+        );
+        assert_eq!(events.iter().filter(|event| matches!(&event.data,
+            everruns_core::EventData::InputMessage(input)
+                if input.message.text().is_some_and(|text| text.contains("STEERING_CONSTRAINT"))
+        )).count(), 1, "observing the receipt must not submit the correction again");
+        assert!(captured.lock().unwrap().iter().skip(1).any(|messages| {
+            messages
+                .iter()
+                .any(|message| message.content_as_text().contains("STEERING_CONSTRAINT"))
+        }));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancelling_an_assigned_correction_does_not_replay_it_as_a_new_turn() {
+        use everruns_llmsim::{LlmSimConfig, SimToolCall, SimTurn};
+        struct Release(std::path::PathBuf);
+        impl Drop for Release {
+            fn drop(&mut self) {
+                let _ = std::fs::write(&self.0, "release");
+            }
+        }
+        let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut config = LlmSimConfig::scripted(vec![
+            SimTurn::ToolCalls(vec![SimToolCall {
+                name: "bash".into(),
+                arguments: serde_json::json!({"command": "touch cancel.ready; while [ ! -e cancel.release ]; do sleep 0.01; done"}),
+                id: None,
+            }]),
+            SimTurn::Assistant("Corrected work.".into()),
+        ]).with_message_capture(captured.clone());
+        config.response_delay = Some(Duration::from_millis(500));
+        let mut fixture = app_with_llmsim_options(crate::runtime::BuildOptions {
+            llmsim_override: Some(config),
+            ..Default::default()
+        })
+        .await;
+        let workspace = fixture._workspace.path().to_path_buf();
+        let release = Release(workspace.join("cancel.release"));
+        let app = &mut fixture.app;
+        app.setup = None;
+        app.set_input_text("Begin the task.".into());
+        app.submit_input().await;
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while !workspace.join("cancel.ready").exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        app.set_input_text("Keep this accepted correction.".into());
+        app.submit_input().await;
+        drop(release);
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while captured.lock().unwrap().len() < 2 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        app.cancel_current_turn();
+        app.pump_turn_until_idle_for_test().await;
+        let events = app.session.handles().host.events().await.unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.event_type == "turn.started")
+                .count(),
+            1
+        );
+        assert!(
+            events.iter().any(|event| matches!(&event.data,
+                everruns_core::EventData::InputMessage(input)
+                    if input.message.text() == Some("Keep this accepted correction.")
+            )),
+            "cancellation must retain accepted input in history"
+        );
+        assert!(app.queued_messages.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn busy_composer_queues_messages_for_fifo_delivery() {
         let mut fixture = app_with_llmsim().await;
         let app = &mut fixture.app;
@@ -9991,7 +10248,6 @@ flowchart TD
         app.set_input_text("then verify it".into());
         app.submit_input().await;
 
-        assert_eq!(app.queued_messages.len(), 2);
         assert!(app.input_text().is_empty());
         assert!(app.busy, "queueing must not interrupt the active turn");
 
@@ -10008,23 +10264,48 @@ flowchart TD
             user_lines,
             ["first turn", "steer this way", "then verify it"]
         );
-        let assistant_count = app
-            .lines
+        let events = app.session.handles().host.events().await.unwrap();
+        let inputs = events
             .iter()
-            .filter(|line| line.author == Author::Assistant)
-            .count();
-        assert_eq!(assistant_count, 3, "each queued message must be delivered");
+            .filter_map(|event| match &event.data {
+                everruns_core::EventData::InputMessage(input) => Some(&input.message),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            inputs
+                .iter()
+                .filter_map(|message| message.text())
+                .collect::<Vec<_>>(),
+            ["first turn", "steer this way", "then verify it"]
+        );
+        for input in inputs {
+            let receipt = app
+                .session
+                .handles()
+                .session
+                .admission(input.id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(
+                matches!(
+                    receipt.state().await.unwrap(),
+                    everruns::hosting::AdmissionState::Complete { .. }
+                ),
+                "every queued message must be consumed, including messages sharing an answer"
+            );
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn cancelling_active_turn_retains_and_delivers_queued_message() {
+    async fn cancelling_local_shell_retains_and_delivers_queued_message() {
         let mut fixture = app_with_llmsim().await;
         let app = &mut fixture.app;
         app.setup = None;
         app.lines.clear();
 
-        app.set_input_text("cancel this turn".into());
-        app.submit_input().await;
+        app.start_shell_command("sleep 1".into());
         app.set_input_text("keep this steering".into());
         app.submit_input().await;
 
