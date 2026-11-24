@@ -151,6 +151,15 @@ fn command_descriptors() -> Vec<CommandDescriptor> {
         ),
         cmd("quit", "exit", &[]),
         cmd("diff", "review changed files and diffs", &[]),
+        cmd("checks", "inspect recorded checks and their output", &[]),
+        cmd("tasks", "inspect background work and agent output", &[]),
+        cmd("files", "find and preview files to attach", &[]),
+        cmd("attention", "review work that needs your attention", &[]),
+        cmd(
+            "permissions",
+            "inspect access boundaries and revoke session grants",
+            &[],
+        ),
         cmd(
             "diff-base",
             "compare changes against a Git reference",
@@ -188,6 +197,21 @@ fn command_descriptors() -> Vec<CommandDescriptor> {
 pub(crate) fn ui_command_for(name: &str, arg: Option<String>) -> Option<UiCommand> {
     use crate::tui::workflow::WorkflowPanel;
     match name {
+        "checks" => Some(UiCommand::OpenWorkflow {
+            panel: WorkflowPanel::Checks,
+        }),
+        "tasks" => Some(UiCommand::OpenWorkflow {
+            panel: WorkflowPanel::Tasks,
+        }),
+        "files" => Some(UiCommand::OpenWorkflow {
+            panel: WorkflowPanel::Files,
+        }),
+        "attention" => Some(UiCommand::OpenWorkflow {
+            panel: WorkflowPanel::Attention,
+        }),
+        "permissions" => Some(UiCommand::OpenWorkflow {
+            panel: WorkflowPanel::Permissions,
+        }),
         "diff" => Some(UiCommand::OpenWorkflow {
             panel: WorkflowPanel::Changes,
         }),

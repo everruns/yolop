@@ -21,6 +21,7 @@ pub(crate) mod attestation;
 pub(crate) mod reasoning;
 pub(crate) mod saved_sessions;
 pub mod session;
+pub(crate) mod session_labels;
 mod session_layout;
 pub mod session_log;
 pub(crate) mod speed;

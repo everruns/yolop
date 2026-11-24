@@ -6,6 +6,8 @@
 //! `everruns_core` event/message model from leaking across the UI surface and
 //! makes the turn lifecycle independently testable.
 
+mod inspection;
+
 use std::collections::HashSet;
 use std::sync::Arc;
 

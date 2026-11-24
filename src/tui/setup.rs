@@ -13,7 +13,7 @@ use super::*;
 /// Step a picker selection up one row, clamping at the top. Routes the
 /// transition through tuika's [`SelectState`](tuika::components::SelectState) so every setup
 /// picker shares one tested navigation source instead of open-coding the clamp
-/// (see the `draw_setup_picker` note in `fullscreen.rs`).
+/// (see the shared picker in `dialog.rs`).
 fn select_up(selected: usize) -> usize {
     let mut state = tuika::components::SelectState::new();
     state.select(Some(selected));
@@ -877,7 +877,7 @@ impl App {
     pub(crate) async fn handle_setup_mouse<B: Backend>(
         &mut self,
         mouse: MouseEvent,
-        area: Rect,
+        _area: Rect,
         terminal: &mut Terminal<B>,
     ) -> bool {
         if !matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
@@ -890,35 +890,11 @@ impl App {
         if len == 0 {
             return false;
         }
-        // Mirror draw_setup_picker: bordered panel, one column of horizontal
-        // padding, header lines, then the option rows.
-        let panel = setup_panel_rect(area);
-        let list_top = panel
-            .y
-            .saturating_add(1)
-            .saturating_add(picker.header.len() as u16);
-        let content_bottom = panel.y.saturating_add(panel.height.saturating_sub(1));
-        let list_height = picker
-            .viewport
-            .unwrap_or(len as u16)
-            .min(content_bottom.saturating_sub(list_top));
-        if list_height == 0 {
-            return false;
+        let bounds = self.dialog_list_area;
+        if !self.dialog_answer_visible || bounds.width == 0 || bounds.height == 0 {
+            return true;
         }
-        let bounds = Rect {
-            x: panel.x.saturating_add(2),
-            y: list_top,
-            width: panel.width.saturating_sub(4),
-            height: list_height,
-        };
-        // The renderer centers the scroll window on the selection, so derive
-        // the same first visible row before hit-testing.
-        let first_visible = tuika::components::VirtualWindow::around(
-            len,
-            list_height as usize,
-            Some(picker.selected),
-        )
-        .start();
+        let first_visible = self.dialog_list_start;
         let Some(event) = tuika::translate_event(CrosstermEvent::Mouse(mouse)) else {
             return false;
         };

@@ -2536,7 +2536,10 @@ mod tests {
         let (session, _) = collect_until_response_id(&mut reader, 1).await;
         let id = session["result"]["sessionId"].as_str().unwrap();
         send_json(&mut w, json!({"jsonrpc":"2.0", "id":2, "method":"session/prompt", "params":{"sessionId":id, "prompt":[{"type":"text","text":"Run the check"}]}})).await;
-        tokio::time::timeout(Duration::from_secs(5), async {
+        // This admission follows two native generations and a real shell launch.
+        // Allow loaded workspace runs to reach it; the cancellation assertions
+        // still require exactly three generations and no repair.
+        tokio::time::timeout(Duration::from_secs(20), async {
             while captured.lock().unwrap().len() < 3 {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }

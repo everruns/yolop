@@ -2294,7 +2294,9 @@ async fn run_terminal_session(app: &mut App, fullscreen: bool) -> Result<()> {
         tracing::warn!("footer pinning failed, starting unpinned: {err:#}");
     }
 
+    app.resume_attention_reporting();
     let result = app.run(&mut terminal).await;
+    app.suspend_attention_reporting();
 
     // Hand the footer's rows back to the terminal so the shell prompt resumes
     // directly below the published transcript instead of after — or on top of —

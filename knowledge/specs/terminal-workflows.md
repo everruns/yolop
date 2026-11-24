@@ -77,6 +77,57 @@ Pasted text never does. Context occupancy, process token usage, cost, and
 subscription allowance are distinct. Unknown values are labelled unknown.
 Compaction changes the model projection while retaining authoritative history.
 
+## Evidence, context and background inspection
+
+`/checks` projects canonical completed validation calls, including bounded output
+references. New foreground and background Bash checks stamp Git-visible content
+before and after execution. Freshness requires both stamps and a matching current
+workspace; changed or unavailable evidence never becomes a verified current pass.
+Ignored files, submodules and external dependencies are outside that claim.
+Evidence survives output-envelope truncation. Private artifact readers reject
+symlinks and traversal and cap both reference traversal and text tails.
+
+`/tasks` uses the existing task tree and native registry. Identity is owner session
+plus task ID. Messages go through the native message-task service, cancellation
+through the existing task cancel control, and inspection reads bounded child
+transcripts, durable messages and private artifacts. Refresh preserves stable
+selection and reading position. Output filtering, live pause and tail following
+are host state, never a second task lifecycle.
+
+Context inspection uses the runtime's assembled next-request context rather than
+rescanning disk. It distinguishes the skill catalog from retained activated skill
+bodies, instructions from source-tagged file contributions, filtered history from
+unsent draft attachments, and estimates from provider-reported occupancy. Previews
+are bounded and image payloads are omitted from text views.
+
+`/files` discovers Git-visible or ignore-filtered workspace files with bounded
+counts. Fuzzy matching and numeric range syntax choose an attachment; the same
+safe snapshot reader serves preview and submit. `/btw` runs the native read-only
+side query asynchronously in a cancellable overlay, without steering or changing
+canonical history. Copy or attach are explicit host actions.
+
+## Attention, access and dialog visibility
+
+The host inbox is bounded and deduplicated from canonical task transitions and
+foreground lifecycle events. Acknowledgement does not forget event identity.
+Unread counts stay visible in composer guidance. Desktop alerts are opt-in per
+process and generic, only new events with known lost focus notify. Tuika owns the
+OSC encoders and focus-mode guard. Yolop owns consent, deduplication and privacy.
+Focus reporting is suspended for terminal teardown and external editor handoff.
+
+Session pin, rename and archive state lives in private atomic `ui.json` files,
+not canonical history. Invalid labels do not hide other sessions. Live activity
+uses the existing exclusive lease. Archive filters and project grouping are view
+state. The permissions inspector reads the active provider and actual process
+session grants; revocation applies to future requests only.
+
+Dialog input ownership follows visible modal priority. Optional chrome yields to
+body content at short sizes. Questions keep answer controls separate from the
+scrollable prompt; setup choices use probed list geometry. Details, errors and
+restore diffs remain scrollable. Tiny layouts refuse unseen answers, submissions
+and authorization. Panels restore selection and scrolling; the action palette
+starts clean. Help is derived from the real global keymap.
+
 ## Verification
 
 Tests drive command dispatch, key/paste routing, Git projections, restore
