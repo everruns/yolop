@@ -19,7 +19,8 @@ while focused and hides when you return to the composer.
 Working tree includes staged, unstaged, and untracked changes. Last turn and
 Session require a captured Yolop worktree snapshot. An unavailable snapshot
 is explained rather than replaced with another comparison. The panel refreshes
-while open. Git queries, file counts, and previews are bounded. Binary and
+while open. Comparisons stay inside the active workspace, including repository
+subdirectories. Git queries, file counts, and previews are bounded. Binary and
 oversized content are identified when a text preview is unavailable.
 
 ## Inspect context before sending
@@ -66,8 +67,8 @@ unsent draft stays intact.
 
 Hard approval shows the full action, reason, and permission scope. **y** permits
 this request once. **a** permits all subsequent requests in that scope for the
-current process session. **n**, **Esc**, or **Ctrl+C** denies. Pasted text and
-modified approval keys cannot authorize an action.
+current process session. **n**, **Esc**, or **Ctrl+C** denies. Only unmodified
+approval keys and their Shift variants authorize. Pasted text never does.
 
 `/context` separates latest-request context occupancy, cumulative tokens reported
 during this process, and the compaction threshold. Monetary cost and subscription

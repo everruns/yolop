@@ -115,6 +115,7 @@ pub(super) async fn collect(root: &Path, reference: &str) -> Result<ReviewSnapsh
         root,
         &[
             "diff",
+            "--relative",
             "--no-ext-diff",
             "--no-textconv",
             "--numstat",
@@ -287,6 +288,7 @@ pub(super) async fn file_diff(root: &Path, reference: &str, file: &ChangedFile) 
         &[
             "--literal-pathspecs",
             "diff",
+            "--relative",
             "--no-ext-diff",
             "--no-textconv",
             "--no-color",
@@ -426,5 +428,42 @@ mod tests {
                 .contains("+new")
         );
         assert!(resolve(root, "--help").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn comparisons_from_a_subdirectory_stay_inside_the_workspace() {
+        let repo = tempfile::tempdir().unwrap();
+        let root = repo.path();
+        let workspace = root.join("app");
+        std::fs::create_dir(&workspace).unwrap();
+        command(root, &["init", "-q"]);
+        command(root, &["config", "user.name", "Test User"]);
+        command(root, &["config", "user.email", "test@example.com"]);
+        std::fs::write(root.join("outside.txt"), "private before\n").unwrap();
+        std::fs::write(workspace.join("code.rs"), "before\n").unwrap();
+        command(root, &["add", "."]);
+        command(root, &["commit", "-qm", "baseline"]);
+        std::fs::write(root.join("outside.txt"), "private after\n").unwrap();
+        std::fs::write(workspace.join("code.rs"), "after\n").unwrap();
+        std::fs::write(workspace.join("new.rs"), "new source\n").unwrap();
+        let snapshot = collect(&workspace, "HEAD").await.unwrap();
+        assert_eq!(
+            snapshot
+                .files
+                .iter()
+                .map(|file| file.path.as_str())
+                .collect::<Vec<_>>(),
+            ["code.rs", "new.rs"]
+        );
+        let diff = file_diff(&workspace, &snapshot.reference, &snapshot.files[0])
+            .await
+            .unwrap();
+        assert!(diff.contains("-before"));
+        assert!(diff.contains("+after"));
+        assert!(!diff.contains("private"));
+        command(root, &["add", "app"]);
+        let tree = command(root, &["write-tree"]);
+        command(root, &["reset", "-q", "HEAD"]);
+        assert!(collect(&workspace, &tree).await.unwrap().files.is_empty());
     }
 }

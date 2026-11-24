@@ -28,6 +28,8 @@ underneath it.
 Git queries are asynchronous, cancellable, time-limited, and output-limited.
 External diff, text conversion, pagers, and filesystem monitors are disabled.
 References resolve to verified object IDs; paths use literal pathspecs.
+Diff paths and scope stay relative to the active workspace, including a
+subdirectory of a larger repository.
 Working-tree comparisons include index, disk, and untracked changes. Session
 and last-turn scopes follow surviving checkpoint lineage, including a pending
 turn's snapshot. Missing anchors never silently mean HEAD.
