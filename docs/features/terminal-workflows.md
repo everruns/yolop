@@ -13,6 +13,7 @@ while focused and hides when you return to the composer.
 - **Up/Down** selects a file; **PageUp/PageDown** scrolls its diff.
 - **Tab** cycles Working tree, Last turn, Session, and Versus base.
 - `/diff-base origin/main` selects a comparison branch or commit.
+  Empty, help, and invalid references preserve the previous comparison base.
 - **h** selects the next hunk. **a** attaches that hunk to the draft;
   **A** attaches the full file diff. Add your question and send normally.
 
@@ -22,12 +23,16 @@ is explained rather than replaced with another comparison. The panel refreshes
 while open. Comparisons stay inside the active workspace, including repository
 subdirectories. Git queries, file counts, and previews are bounded. Binary and
 oversized content are identified when a text preview is unavailable.
+Unsupported filename encodings are skipped with a visible count; other files
+remain reviewable.
 
 ## Inspect context before sending
 
 `/attach src/main.rs#20-45` attaches a snapshot of those lines. Omit the range
 for the whole text file. Paths are workspace-relative. Symlinks, special files,
 and files above 512 KiB are refused.
+Only numeric `#line` or `#start-end` suffixes select ranges, so names such as
+`notes#draft.md` remain literal paths.
 
 `/attachments` previews attached text. **Delete** removes the selected payload
 and placeholder. Select an image and press **Enter** to preview it on terminals

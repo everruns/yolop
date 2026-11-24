@@ -4,6 +4,7 @@ use super::review::{ReviewScope, ReviewSnapshot};
 use super::workflow_presentation::{self as present, ExecutionPhase, WorkflowPresentation};
 use super::*;
 use crate::session_state::checkpoint::{RestoreMode, RestorePreview};
+use anyhow::Context;
 use serde_json::json;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -41,11 +42,32 @@ struct Row {
 }
 
 enum Loaded {
+    ReviewBase(String),
     Review(ReviewSnapshot, String, String),
     Diff(String, String),
     Sessions(serde_json::Value),
-    Preview(RestorePreview),
+    Preview(PreviewLease),
     Attachment(String, String),
+}
+
+// The token and its recovery ref belong to the view or pending load. Dropping
+// either must cancel even when a blocking prepare finishes after cancellation.
+struct PreviewLease {
+    preview: RestorePreview,
+    manager: std::sync::Arc<crate::session_state::checkpoint::CheckpointManager>,
+}
+
+impl std::ops::Deref for PreviewLease {
+    type Target = RestorePreview;
+    fn deref(&self) -> &Self::Target {
+        &self.preview
+    }
+}
+
+impl Drop for PreviewLease {
+    fn drop(&mut self) {
+        self.manager.cancel_preview(&self.preview.token);
+    }
 }
 
 pub(super) struct Workflow {
@@ -67,7 +89,7 @@ pub(super) struct Workflow {
     pub scroll: ScrollState,
     pub scroll_metrics: (usize, usize),
     restore_mode: RestoreMode,
-    preview: Option<RestorePreview>,
+    preview: Option<PreviewLease>,
     error: Option<String>,
     pub failure: Option<String>,
     pub phase: ExecutionPhase,
@@ -160,14 +182,37 @@ impl Workflow {
 }
 
 impl App {
-    fn close_workflow(&mut self) {
-        if let Some(preview) = self.workflow.preview.as_ref() {
-            self.session
-                .handles()
-                .checkpoints
-                .cancel_preview(&preview.token);
-        }
+    pub(super) fn close_workflow(&mut self) {
         self.workflow.close();
+    }
+
+    pub(super) fn set_review_base(&mut self, reference: String) {
+        let reference = reference.trim().to_string();
+        if reference.is_empty() || matches!(reference.as_str(), "-h" | "--help") {
+            let usage =
+                "Usage: /diff-base <reference>, for example /diff-base origin/main".to_string();
+            self.push_system(usage.clone());
+            if self.workflow.panel.is_some() {
+                self.workflow.error = Some(usage);
+            }
+            return;
+        }
+        if self.pending_ask.is_some()
+            || self.pending_sandbox_approval.is_some()
+            || self.setup.is_some()
+        {
+            self.push_system("Finish the open dialog before changing the comparison base.".into());
+            return;
+        }
+        self.open_workflow(WorkflowPanel::Changes);
+        self.workflow.cancel_load();
+        let root = self.worktree.active_root();
+        self.workflow.pending = Some(tokio::spawn(async move {
+            super::review::resolve(&root, &format!("{reference}^{{commit}}"))
+                .await
+                .context("Invalid comparison reference")?;
+            Ok(Loaded::ReviewBase(reference))
+        }));
     }
 
     pub(super) async fn handle_workflow_mouse(&mut self, mouse: MouseEvent, area: Rect) -> bool {
@@ -496,6 +541,11 @@ impl App {
                 Ok(Ok(loaded)) => {
                     self.workflow.error = None;
                     match loaded {
+                        Loaded::ReviewBase(reference) => {
+                            self.workflow.base = reference;
+                            self.workflow.scope = ReviewScope::Base;
+                            self.open_workflow(WorkflowPanel::Changes);
+                        }
                         Loaded::Review(snapshot, path, diff) => {
                             self.workflow.rows = snapshot
                                 .files
@@ -750,7 +800,7 @@ impl App {
             } else {
                 anyhow::bail!("Select a checkpoint first")
             };
-            Ok(Loaded::Preview(preview))
+            Ok(Loaded::Preview(PreviewLease { preview, manager }))
         }));
     }
 
@@ -806,11 +856,8 @@ impl App {
             return;
         }
         if key.code == KeyCode::Esc {
-            if let Some(preview) = self.workflow.preview.take() {
-                self.session
-                    .handles()
-                    .checkpoints
-                    .cancel_preview(&preview.token);
+            if self.workflow.preview.is_some() {
+                self.workflow.preview = None;
             } else {
                 self.close_workflow();
             }
@@ -1199,4 +1246,78 @@ fn edit_in_external_editor(original: &str) -> anyhow::Result<String> {
         "edited prompt exceeds 512 KiB"
     );
     Ok(String::from_utf8(bytes)?)
+}
+
+#[cfg(test)]
+mod preview_lifetime_tests {
+    use super::*;
+
+    async fn prepared_app() -> super::super::tests::TestApp {
+        let mut test = super::super::tests::app_with_llmsim().await;
+        test.app.setup = None;
+        test.app.start_turn("keep this completed task".into());
+        test.app.pump_turn_until_idle_for_test().await;
+        test.app.dispatch_command_for_test("timeline").await;
+        test.app
+            .handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .await;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while test.app.workflow.preview.is_none() {
+            assert!(Instant::now() < deadline, "preview did not load");
+            test.app.poll_workflow();
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        test
+    }
+
+    #[tokio::test]
+    async fn quit_invalidates_the_pending_restore_without_rewinding() {
+        let mut test = prepared_app().await;
+        let token = test.app.workflow.preview.as_ref().unwrap().token.clone();
+        test.app
+            .handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL))
+            .await;
+        assert!(test.app.should_quit);
+        assert!(test.app.workflow.preview.is_none());
+        assert!(
+            test.app
+                .session
+                .handles()
+                .checkpoints
+                .confirm(&token)
+                .await
+                .is_err()
+        );
+        assert!(
+            test.app
+                .session
+                .active_lines()
+                .await
+                .unwrap()
+                .iter()
+                .any(|line| line.text.contains("keep this completed task"))
+        );
+    }
+
+    #[tokio::test]
+    async fn discarding_a_completed_preview_load_invalidates_its_token() {
+        let mut test = prepared_app().await;
+        let preview = test.app.workflow.preview.take().unwrap();
+        let token = preview.token.clone();
+        let task = tokio::spawn(async move { Ok::<_, anyhow::Error>(Loaded::Preview(preview)) });
+        while !task.is_finished() {
+            tokio::task::yield_now().await;
+        }
+        test.app.workflow.pending = Some(task);
+        test.app.close_workflow();
+        assert!(
+            test.app
+                .session
+                .handles()
+                .checkpoints
+                .confirm(&token)
+                .await
+                .is_err()
+        );
+    }
 }

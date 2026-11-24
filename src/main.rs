@@ -2362,29 +2362,38 @@ fn switch_session_args(
     let _executable = args.next();
     let mut kept = Vec::new();
     let mut skip_value = false;
+    let mut skip_images = false;
     for arg in args {
         if skip_value {
             skip_value = false;
             continue;
         }
         let value = arg.to_string_lossy();
+        if skip_images {
+            if !value.starts_with('-') {
+                continue;
+            }
+            skip_images = false;
+        }
+        if matches!(value.as_ref(), "-i" | "--image")
+            || value.starts_with("--image=")
+            || (value.starts_with("-i") && value.len() > 2)
+        {
+            skip_images = true;
+            continue;
+        }
         if matches!(
             value.as_ref(),
-            "-p" | "--print" | "-i" | "--image" | "--session" | "--trajectory-out" | "-C" | "--cwd"
+            "-p" | "--print" | "--session" | "--trajectory-out" | "-C" | "--cwd"
         ) {
             skip_value = true;
             continue;
         }
-        if [
-            "--print=",
-            "--image=",
-            "--session=",
-            "--trajectory-out=",
-            "--cwd=",
-        ]
-        .iter()
-        .any(|prefix| value.starts_with(prefix))
+        if ["--print=", "--session=", "--trajectory-out=", "--cwd="]
+            .iter()
+            .any(|prefix| value.starts_with(prefix))
             || (value.starts_with("-C") && value.len() > 2)
+            || (value.starts_with("-p") && value.len() > 2 && !value.starts_with("--"))
         {
             continue;
         }
@@ -3012,6 +3021,31 @@ mod tests {
                 resolve_workspace_root(cli.cwd, Some(id), sessions.path()).unwrap(),
                 saved.path()
             );
+        }
+    }
+
+    #[test]
+    fn switching_sessions_drops_attached_and_variadic_one_shot_images() {
+        for images in [
+            vec!["-i", "one.png", "two.png"],
+            vec!["--image", "one.png", "two.png"],
+            vec!["-ione.png", "two.png"],
+            vec!["-i=one.png", "two.png"],
+            vec!["--image=one.png", "two.png"],
+        ] {
+            let args = std::iter::once("yolop")
+                .chain(images)
+                .chain(["--inline", "--session", "old"])
+                .map(OsString::from);
+            let switched = switch_session_args(args, "target");
+            assert_eq!(
+                switched,
+                ["--inline", "--session", "target"].map(OsString::from)
+            );
+            let cli = Cli::try_parse_from(std::iter::once(OsString::from("yolop")).chain(switched))
+                .unwrap();
+            assert!(cli.images.is_empty());
+            assert!(cli.inline);
         }
     }
     use std::ffi::OsString;

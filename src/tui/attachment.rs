@@ -70,7 +70,13 @@ pub(super) fn read(root: &Path, path: &str) -> Result<Vec<u8>> {
 }
 
 pub(super) fn text(root: &Path, reference: &str) -> Result<(String, String)> {
-    let (path, range) = match reference.rsplit_once('#') {
+    let (path, range) = match reference.rsplit_once('#').and_then(|(path, range)| {
+        let (start, end) = range.split_once('-').unwrap_or((range, range));
+        Some((
+            path,
+            (start.parse::<usize>().ok()?, end.parse::<usize>().ok()?),
+        ))
+    }) {
         Some((path, range)) => (path, Some(range)),
         None => (reference, None),
     };
@@ -79,14 +85,7 @@ pub(super) fn text(root: &Path, reference: &str) -> Result<(String, String)> {
         !content.contains('\0'),
         "binary file cannot be attached as text"
     );
-    let selected = if let Some(range) = range {
-        let (start, end) = range.split_once('-').unwrap_or((range, range));
-        let start = start
-            .parse::<usize>()
-            .context("line numbers must be positive integers")?;
-        let end = end
-            .parse::<usize>()
-            .context("line numbers must be positive integers")?;
+    let selected = if let Some((start, end)) = range {
         let lines = content.lines().collect::<Vec<_>>();
         ensure!(
             start > 0 && end >= start && end <= lines.len(),
@@ -110,6 +109,9 @@ mod tests {
         let repo = tempfile::tempdir().unwrap();
         std::fs::write(repo.path().join("code.rs"), "one\ntwo\nthree\n").unwrap();
         assert_eq!(text(repo.path(), "code.rs#2-3").unwrap().1, "two\nthree");
+        std::fs::write(repo.path().join("a#b.txt"), "one\ntwo\nthree\n").unwrap();
+        assert_eq!(text(repo.path(), "a#b.txt").unwrap().1, "one\ntwo\nthree\n");
+        assert_eq!(text(repo.path(), "a#b.txt#2-3").unwrap().1, "two\nthree");
         for path in [
             "../code.rs",
             "code.rs#0",

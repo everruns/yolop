@@ -126,6 +126,7 @@ pub(super) async fn collect(root: &Path, reference: &str) -> Result<ReviewSnapsh
     )
     .await?;
     let mut files = Vec::new();
+    let mut unsupported_paths = std::collections::HashSet::new();
     let mut entries = bytes.split(|b| *b == 0);
     while let Some(entry) = entries.next().filter(|entry| !entry.is_empty()) {
         let mut fields = entry.splitn(3, |b| *b == b'\t');
@@ -136,8 +137,12 @@ pub(super) async fn collect(root: &Path, reference: &str) -> Result<ReviewSnapsh
             let _old_path = entries.next();
             path = entries.next().unwrap_or_default();
         }
+        let Ok(path_string) = String::from_utf8(path.to_vec()) else {
+            unsupported_paths.insert(path.to_vec());
+            continue;
+        };
         files.push(ChangedFile {
-            path: String::from_utf8(path.to_vec()).context("non-UTF-8 path cannot be reviewed")?,
+            path: path_string,
             summary: format!(
                 "+{} -{}",
                 String::from_utf8_lossy(added),
@@ -153,10 +158,14 @@ pub(super) async fn collect(root: &Path, reference: &str) -> Result<ReviewSnapsh
     let untracked = untracked
         .split(|b| *b == 0)
         .filter(|path| !path.is_empty())
-        .map(|path| {
-            String::from_utf8(path.to_vec()).context("non-UTF-8 untracked path cannot be reviewed")
+        .filter_map(|path| match String::from_utf8(path.to_vec()) {
+            Ok(path) => Some(path),
+            Err(_) => {
+                unsupported_paths.insert(path.to_vec());
+                None
+            }
         })
-        .collect::<Result<Vec<_>>>()?;
+        .collect::<Vec<_>>();
     let captured = if untracked.is_empty() {
         Vec::new()
     } else {
@@ -209,12 +218,19 @@ pub(super) async fn collect(root: &Path, reference: &str) -> Result<ReviewSnapsh
         });
     }
     files.sort_by(|a, b| a.path.cmp(&b.path));
+    let mut notice = if files.len() == MAX_FILES {
+        "Showing the first 500 changed files".into()
+    } else {
+        format!("{} changed files", files.len())
+    };
+    if !unsupported_paths.is_empty() {
+        notice.push_str(&format!(
+            "; skipped {} path(s) with non-UTF-8 names",
+            unsupported_paths.len()
+        ));
+    }
     Ok(ReviewSnapshot {
-        notice: if files.len() == MAX_FILES {
-            "Showing the first 500 changed files".into()
-        } else {
-            format!("{} changed files", files.len())
-        },
+        notice,
         files,
         reference,
     })
@@ -465,5 +481,53 @@ mod tests {
         let tree = command(root, &["write-tree"]);
         command(root, &["reset", "-q", "HEAD"]);
         assert!(collect(&workspace, &tree).await.unwrap().files.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unsupported_filenames_do_not_hide_reviewable_changes() {
+        use std::os::unix::ffi::OsStringExt;
+        let repo = tempfile::tempdir().unwrap();
+        let root = repo.path();
+        command(root, &["init", "-q"]);
+        command(root, &["config", "user.name", "Test User"]);
+        command(root, &["config", "user.email", "test@example.com"]);
+        let tracked = root.join(std::ffi::OsString::from_vec(b"tracked-\xff".to_vec()));
+        let untracked = root.join(std::ffi::OsString::from_vec(b"new-\xff".to_vec()));
+        if let Err(error) = std::fs::write(&tracked, "old\n") {
+            // APFS rejects non-UTF-8 names; byte-oriented filesystems run the
+            // actual Git regression below.
+            if error.raw_os_error() == Some(libc::EILSEQ) {
+                return;
+            }
+            panic!("create non-UTF-8 fixture: {error}");
+        }
+        std::fs::write(root.join("code.rs"), "old\n").unwrap();
+        command(root, &["add", "."]);
+        command(root, &["commit", "-qm", "baseline"]);
+        std::fs::write(tracked, "new\n").unwrap();
+        std::fs::write(untracked, "new\n").unwrap();
+        std::fs::write(root.join("code.rs"), "new\n").unwrap();
+        std::fs::write(root.join("new.rs"), "new\n").unwrap();
+        let snapshot = collect(root, "HEAD").await.unwrap();
+        assert_eq!(
+            snapshot
+                .files
+                .iter()
+                .map(|file| file.path.as_str())
+                .collect::<Vec<_>>(),
+            ["code.rs", "new.rs"]
+        );
+        assert!(
+            snapshot
+                .notice
+                .contains("skipped 2 path(s) with non-UTF-8 names")
+        );
+        assert!(
+            file_diff(root, &snapshot.reference, &snapshot.files[0])
+                .await
+                .unwrap()
+                .contains("+new")
+        );
     }
 }

@@ -30,6 +30,9 @@ External diff, text conversion, pagers, and filesystem monitors are disabled.
 References resolve to verified object IDs; paths use literal pathspecs.
 Diff paths and scope stay relative to the active workspace, including a
 subdirectory of a larger repository.
+Comparison-base changes validate asynchronously before replacing the previous
+base. Unsupported filename encodings are counted and skipped without hiding
+the remaining changes.
 Working-tree comparisons include index, disk, and untracked changes. Session
 and last-turn scopes follow surviving checkpoint lineage, including a pending
 turn's snapshot. Missing anchors never silently mean HEAD.
@@ -39,7 +42,8 @@ turn's snapshot. Missing anchors never silently mean HEAD.
 The visual timeline shares CheckpointManager with textual commands and the
 model tool. Conversation, workspace, and combined restores are separate choices.
 A preview changes no active history or workspace. A second Enter confirms its
-token; cancellation invalidates it. Writer fencing, owned-worktree restrictions,
+token; cancellation and view disposal invalidate it, including abandoned pending
+loads and terminal exit. Writer fencing, owned-worktree restrictions,
 recovery snapshots, external-effect exclusions, and redo retain the checkpoint
 contract. Outcomes derive from recorded turn completions.
 

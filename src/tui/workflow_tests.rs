@@ -383,15 +383,68 @@ async fn workflow_changes_refresh_attach_diff_and_preserve_composer_focus() {
             .contains("No workspace snapshot")
     );
     test.app.handle_key(key(KeyCode::Esc)).await;
+    let previous_base = test.app.workflow.base.clone();
     test.app.dispatch_command_for_test("diff-base --help").await;
     settle(&mut test.app).await;
+    assert_eq!(test.app.workflow.base, previous_base);
+    assert!(test.app.workflow_presentation().is_none());
+    assert!(
+        test.app
+            .lines
+            .iter()
+            .any(|line| line.text.contains("Usage: /diff-base"))
+    );
+}
+
+#[tokio::test]
+async fn workflow_base_validation_keeps_the_previous_comparison_and_draft() {
+    let mut test = app_with_llmsim().await;
+    let root = test._workspace.path();
+    git(root, &["init", "-q"]);
+    git(root, &["config", "user.name", "Test User"]);
+    git(root, &["config", "user.email", "test@example.com"]);
+    std::fs::write(root.join("code.rs"), "before\n").unwrap();
+    git(root, &["add", "."]);
+    git(root, &["commit", "-qm", "baseline"]);
+    test.app.set_input_text("keep this draft".into());
+    test.app.dispatch_command_for_test("diff-base HEAD").await;
+    settle(&mut test.app).await;
+    assert_eq!(test.app.workflow.base, "HEAD");
+    let start = test.app.lines.len();
+    test.app.dispatch_command_for_test("diff-base").await;
+    assert!(
+        test.app.lines[start..]
+            .iter()
+            .any(|line| line.text.contains("/diff-base requires: reference"))
+    );
+    test.app
+        .apply_ui_command(UiCommand::SetReviewBase {
+            reference: String::new(),
+        })
+        .await;
+    assert_eq!(test.app.workflow.base, "HEAD");
     assert!(
         test.app
             .workflow_presentation()
             .unwrap()
-            .subtitle
-            .contains("--help")
+            .detail
+            .contains("Usage: /diff-base")
     );
+    for argument in [" --help", " -h", " missing-reference-for-test"] {
+        test.app
+            .dispatch_command_for_test(&format!("diff-base{argument}"))
+            .await;
+        settle(&mut test.app).await;
+        assert_eq!(test.app.workflow.base, "HEAD");
+        assert_eq!(test.app.input_text(), "keep this draft");
+        let detail = test.app.workflow_presentation().unwrap().detail;
+        let expected = if argument.contains("missing-reference") {
+            "Invalid comparison reference"
+        } else {
+            "Usage: /diff-base"
+        };
+        assert!(detail.contains(expected), "{argument:?}: {detail}");
+    }
 }
 
 #[tokio::test]

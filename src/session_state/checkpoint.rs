@@ -1724,6 +1724,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cancelling_preview_removes_only_its_recovery_ref_without_restoring() {
+        let (root, _session, manager) = manager().await;
+        let checkpoint = manager.begin_turn("change the file").unwrap();
+        emit_user(&manager, "change the file").await;
+        std::fs::write(root.path().join("tracked.txt"), "changed\n").unwrap();
+        manager.finish_turn(&checkpoint, true).unwrap();
+        let preview = manager.prepare_undo(RestoreMode::Both).unwrap();
+        let reference = manager
+            .prepared
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .recovery_snapshot
+            .as_ref()
+            .unwrap()
+            .reference
+            .clone()
+            .unwrap();
+        manager.cancel_preview("another-token");
+        assert!(
+            git_command(root.path(), None)
+                .args(["show-ref", "--verify", &reference])
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+        manager.cancel_preview(&preview.token);
+        assert!(
+            !git_command(root.path(), None)
+                .args(["show-ref", "--verify", &reference])
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.path().join("tracked.txt")).unwrap(),
+            "changed\n"
+        );
+        assert_eq!(manager.list().len(), 1);
+        assert!(manager.confirm(&preview.token).await.is_err());
+    }
+
+    #[tokio::test]
     async fn failed_native_restore_can_retry_confirmation_without_restarting() {
         use crate::runtime::{BuildOptions, ProviderChoice, build_with_options};
         let repo = tempfile::tempdir().unwrap();

@@ -1816,6 +1816,9 @@ impl App {
                         );
                     }
                     if self.should_quit {
+                        if !self.workflow.editor_requested {
+                            self.close_workflow();
+                        }
                         self.deny_pending_sandbox_approval();
                         self.publish_remaining_transcript(terminal);
                         return Ok(());
@@ -1823,6 +1826,7 @@ impl App {
 
                     io_failures += 1;
                     if io_failures >= MAX_TERMINAL_IO_FAILURES {
+                        self.close_workflow();
                         return Err(err);
                     }
                     tracing::warn!(
@@ -1831,6 +1835,9 @@ impl App {
                 }
             }
             if self.should_quit {
+                if !self.workflow.editor_requested {
+                    self.close_workflow();
+                }
                 if let Err(error) = self.save_draft() {
                     self.push_system(format!("Could not save draft: {error:#}"));
                 }
@@ -2499,6 +2506,7 @@ impl App {
             GlobalAction::ReverseSearch => self.history_search_start(),
             GlobalAction::Interrupt => self.handle_ctrl_c(),
             GlobalAction::Quit => {
+                self.close_workflow();
                 self.abort_codex_login();
                 self.abort_openrouter_login();
                 self.abort_mcp_login();
@@ -3531,11 +3539,7 @@ impl App {
         match command {
             UiCommand::OpenWorkflow { panel } => self.open_workflow(panel),
             UiCommand::AttachFile { reference } => self.attach_file(reference),
-            UiCommand::SetReviewBase { reference } => {
-                self.workflow.base = reference;
-                self.workflow.scope = review::ReviewScope::Base;
-                self.open_workflow(workflow::WorkflowPanel::Changes);
-            }
+            UiCommand::SetReviewBase { reference } => self.set_review_base(reference),
             UiCommand::ShowHelp => self.show_help(),
             UiCommand::ShowTools => self.show_tools().await,
             UiCommand::ManageMcp { arg } => self.manage_mcp_command(arg.as_deref()).await,
