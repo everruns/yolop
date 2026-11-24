@@ -1,7 +1,4 @@
-# everruns-llmsim 0.48.0 depends on llmsim 0.6, which uses
-# `AtomicU64::try_update` (stable since 1.95), so the everruns graph no longer
-# builds on its declared 1.94.0 MSRV. Matches the toolchain everruns itself
-# builds with. Keep in sync with what the everruns-* dependency graph needs.
+# Keep CI and optional build gates on this same stable release.
 [toolchain]
-channel = "1.96.0"
+channel = "1.100.0"
 components = ["rustfmt", "clippy"]

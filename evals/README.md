@@ -19,8 +19,8 @@ Install the host CLI once (`brew install everruns/tap/mira`, `cargo binstall
 mira-cli`, or `cargo install mira-cli --locked`), then drive a study from its own
 directory so its `mira.toml` is found and the auto-saved run folders land in that
 study's `results/`. Each study's `mira.toml` declares a `default_launcher` (these
-studies target mira >=0.3.0), so a bare `mira run`/`mira list` from that directory starts it, no
-`--uv`/`--cmd` needed. (Authoring a Python study? The
+Rust studies target mira >=0.5.0), so a bare `mira run`/`mira list` from that directory starts it, no
+`--study-uv`/`--study-cmd` needed. (Authoring a Python study? The
 [`mira-eval`](https://pypi.org/project/mira-eval/) SDK is on PyPI,
 `pip install mira-eval`.)
 

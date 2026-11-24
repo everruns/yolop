@@ -5,7 +5,6 @@ edition = "2024"
 authors = ["Everruns <support@everruns.com>"]
 license = "MIT"
 description = "yolop extension: export agentic traces to Pydantic Logfire (OTLP)."
-homepage = "https://github.com/everruns/yolop"
 repository = "https://github.com/everruns/yolop"
 readme = "README.md"
 keywords = ["yolop", "yolop-extension", "logfire", "opentelemetry", "tracing"]

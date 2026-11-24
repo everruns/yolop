@@ -34,7 +34,7 @@ less than one day old are too fresh, but minor and major Everruns releases can
 be adopted after compatibility review. Re-resolve from scratch to prove
 manifest pins are sufficient before
 restoring the lockfile on failure. End state is `cargo metadata --locked`
-clean, no yanked crates, no audit findings where the tool runs, no avoidable duplicate
+clean, no yanked crates, no known audit vulnerabilities, no avoidable duplicate
 versions, no unused dependencies, and `rust-toolchain.toml`, CI, and docs in
 agreement. Major upgrades and protocol bumps ship as their own PRs. Go deep
 on majors in scope: read the breaking notes, weigh migration cost against the
@@ -75,12 +75,12 @@ cargo test --workspace --features yolop-yep/schema
 ```
 
 Heuristics: the schema drift guard is the first witness. A schema change
-without a regenerated artifact is a finding. The protocol version, the
-`yolop-yep` crate version, and the first-party extension manifests agree,
-proven by the manifest pin test asserting `plugin.json` matches `Cargo.toml`.
-Exercise the extension server matrix (enumerate, start, tools, resources, UI
-affordances) when the wire moved. Publish order holds: `yolop-yep` first,
-then the binary, then the extensions.
+without a regenerated artifact is a finding. Package versions are independent;
+the manifest pin test compares each extension with its own Cargo package.
+Protocol compatibility is a separate host contract. Exercise the extension
+server matrix (enumerate, start, tools, resources, UI affordances) when the
+wire moves. Derive publish order from `scripts/publish_order.py`, with
+supporting packages before the root binary.
 
 ## Local inference, metal, CUDA matrix
 
@@ -95,8 +95,10 @@ CARGO_TARGET_DIR=target-cuda CUDA_COMPUTE_CAP=80 \
   cargo check -p yolop --locked --features cuda
 ```
 
-`cuda` needs `nvcc` installed. Distribution stays split: the default portable
-build never absorbs the engine, accelerated builds stay per target.
+While inference is suspended, `metal` and `cuda` enable downloads only.
+Restoring a CUDA engine requires `nvcc` and backend qualification again; see
+[local inference](../../../knowledge/specs/local-inference.md). The portable
+build must remain independent of an inference engine.
 
 ## Knowledge and docs alignment
 

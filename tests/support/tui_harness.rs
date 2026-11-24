@@ -358,7 +358,7 @@ pub fn spawn_tui_llmsim_with_settings(
                     continue;
                 }
                 if reply_budget
-                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |budget| {
+                    .try_update(Ordering::SeqCst, Ordering::SeqCst, |budget| {
                         (budget > 0).then(|| budget.saturating_sub(1))
                     })
                     .is_err()

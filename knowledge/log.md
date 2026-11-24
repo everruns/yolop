@@ -1,5 +1,10 @@
 # Knowledge Log
 
+## 2026-11-23, Current Rust and download-client migration
+
+- [Local inference](specs/local-inference.md): weight pulls use the async hf-hub 1.0 client with atomic per-file installation and cumulative Xet progress accounting. Inference remains suspended independently of the downloader.
+- [Maintenance](specs/maintenance.md): Rust 1.100.0 is synchronized across CI and local build gates. The standalone studies move to Mira 0.5 and SQLite 0.43, with both included in the offline CI gate. The host SQLite native-link constraint and MXC fallback requirement remain explicit upgrade pins.
+
 ## 2026-11-23, Terminal workflow views
 
 - [Terminal workflow views](specs/terminal-workflows.md): review comparisons, visual restoration, session switching with private drafts, inspectable attachments, scoped approval, recovery, and action discovery share existing runtime controls and tuika views.

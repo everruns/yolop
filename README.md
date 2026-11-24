@@ -217,7 +217,7 @@ Fourteen backends, one switch. Set a key once with `/setup`, override per run wi
 | `cloudflare` | `@cf/meta/llama-3.3-70b-instruct-fp8-fast` | `CLOUDFLARE_API_TOKEN` plus `CLOUDFLARE_ACCOUNT_ID` |
 | `mai` | `mai-1-preview` | `AZURE_AI_API_KEY` plus `AZURE_AI_ENDPOINT` |
 | `ollama` | `llama3.2` | none; `OLLAMA_BASE_URL` / `OLLAMA_API_KEY` for remote servers |
-| `local` | Qwen3-30B-A3B, Q4 (`~19 GB`) | none; weights via `yolop weights pull` |
+| `local` | Qwen3-30B-A3B, Q4 (`~19 GB`); inference disabled | none; downloads require `local-inference` |
 | `custom` | provider default | `CUSTOM_BASE_URL` plus optional `CUSTOM_API_KEY` |
 
 ```bash
@@ -258,7 +258,7 @@ Invalid explicit selections fail without substituting another model.
 
 **Custom.** Point any OpenAI compatible endpoint at yolop via `CUSTOM_BASE_URL` (plus `CUSTOM_API_KEY` when needed), or store it in a profile. The model comes from your profile pick, falling back to the provider default.
 
-**Local (temporarily disabled for security).** `--provider local` currently fails with a disabled message: the mistralrs engine depended on zip 7.2.0 with unfixed advisories, with no fixed upstream release yet. `yolop weights pull` still downloads, but inference stays off until mistralrs ships candle-core 0.11.1+ / zip 9.0.5+.
+**Local (temporarily disabled for security).** The current engine has unfixed security advisories, so inference remains disabled. Listing and removing installed weights work in every build. Weight downloads require the `local-inference` feature, for example `cargo install yolop --locked --features local-inference`. The default Homebrew build omits weight downloads. Enabling this feature leaves inference disabled.
 
 </details>
 

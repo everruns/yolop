@@ -46,7 +46,7 @@ and [`docs/`](../docs/); it must not link back into this internal bundle.
 - [ACP](specs/acp.md), Agent Client Protocol support.
 - [AST editing](specs/ast_edit.md), previewed structural rewrites.
 - [Herdr](specs/herdr.md), cloud execution integration.
-- [Local inference](specs/local-inference.md), the in-process inference provider and its build gate.
+- [Local inference](specs/local-inference.md), weight downloads, the suspended engine and its restoration bar.
 - [Native edit tools](specs/native-edit-tools.md), opt-in model-native edit shapes (`apply_patch` for OpenAI models).
 - [LSP](specs/lsp.md), language-server integration.
 - [MCP](specs/mcp.md), Model Context Protocol client support.

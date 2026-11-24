@@ -1278,7 +1278,9 @@ impl CheckpointManager {
             bail!("invalid Git name-status output");
         }
         fields
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|pair| {
                 String::from_utf8(pair[1].to_vec())
                     .context("checkpoint restore does not support non-UTF-8 paths")
