@@ -42,6 +42,7 @@ impl ReviewScope {
 pub(super) struct ChangedFile {
     pub path: String,
     pub summary: String,
+    snapshot_blob: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -80,7 +81,8 @@ pub(super) async fn git(root: &Path, args: &[&str]) -> Result<Vec<u8>> {
             bail!("Git output exceeds the review limit; narrow the comparison");
         }
         let status = child.wait().await?;
-        if !status.success() {
+        let differences = args.contains(&"--no-index") && status.code() == Some(1);
+        if !status.success() && !differences {
             bail!("{}", String::from_utf8_lossy(&err).trim());
         }
         Ok(out)
@@ -140,6 +142,7 @@ pub(super) async fn collect(root: &Path, reference: &str) -> Result<ReviewSnapsh
                 String::from_utf8_lossy(added),
                 String::from_utf8_lossy(removed)
             ),
+            snapshot_blob: None,
         });
         if files.len() == MAX_FILES {
             break;
@@ -160,7 +163,6 @@ pub(super) async fn collect(root: &Path, reference: &str) -> Result<ReviewSnapsh
             "--literal-pathspecs",
             "ls-tree",
             "-r",
-            "--name-only",
             "-z",
             &reference,
             "--",
@@ -170,17 +172,39 @@ pub(super) async fn collect(root: &Path, reference: &str) -> Result<ReviewSnapsh
     };
     let captured = captured
         .split(|byte| *byte == 0)
-        .collect::<std::collections::HashSet<_>>();
+        .filter_map(|entry| {
+            let tab = entry.iter().position(|byte| *byte == b'\t')?;
+            let metadata = std::str::from_utf8(&entry[..tab]).ok()?;
+            let blob = metadata.split_whitespace().last()?;
+            Some((&entry[tab + 1..], blob))
+        })
+        .collect::<std::collections::HashMap<_, _>>();
     for path in untracked {
         if files.len() == MAX_FILES {
             break;
         }
-        if captured.contains(path.as_bytes()) {
+        if let Some(blob) = captured.get(path.as_bytes()) {
+            // Git's normal diff sees an index-untracked path as deleted even
+            // when the checkpoint captured it. Compare its actual bytes.
+            files.retain(|file| file.path != path);
+            let old = git(root, &["cat-file", "blob", blob]).await;
+            let new = read_working_file(root, &path).await;
+            let summary = match (old, new) {
+                (Ok(old), Ok(new)) if old == new => continue,
+                (Ok(_), Ok(_)) => "changed since snapshot",
+                _ => "snapshot file, comparison unavailable",
+            };
+            files.push(ChangedFile {
+                path,
+                summary: summary.into(),
+                snapshot_blob: Some((*blob).into()),
+            });
             continue;
         }
         files.push(ChangedFile {
             path,
             summary: "untracked".into(),
+            snapshot_blob: None,
         });
     }
     files.sort_by(|a, b| a.path.cmp(&b.path));
@@ -196,11 +220,55 @@ pub(super) async fn collect(root: &Path, reference: &str) -> Result<ReviewSnapsh
 }
 
 pub(super) async fn file_diff(root: &Path, reference: &str, file: &ChangedFile) -> Result<String> {
+    if let Some(blob) = &file.snapshot_blob {
+        let old = git(root, &["cat-file", "blob", blob]).await?;
+        let new = read_working_file(root, &file.path).await?;
+        if old.contains(&0) || new.contains(&0) {
+            return Ok("Binary file changed, text preview unavailable".into());
+        }
+        let temporary = tempfile::tempdir()?;
+        let before = temporary.path().join("before");
+        let after = temporary.path().join("after");
+        tokio::fs::write(&before, old).await?;
+        tokio::fs::write(&after, new).await?;
+        let bytes = git(
+            root,
+            &[
+                "diff",
+                "--no-index",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--no-color",
+                "--unified=3",
+                "--",
+                before.to_str().context("temporary path is not UTF-8")?,
+                after.to_str().context("temporary path is not UTF-8")?,
+            ],
+        )
+        .await?;
+        let path = file_display(&file.path);
+        let mut header = true;
+        return Ok(String::from_utf8_lossy(&bytes)
+            .lines()
+            .map(|line| {
+                if line.starts_with("@@ ") {
+                    header = false;
+                }
+                if header && line.starts_with("diff --git ") {
+                    format!("diff --git a/{path} b/{path}")
+                } else if header && line.starts_with("--- ") {
+                    format!("--- a/{path}")
+                } else if header && line.starts_with("+++ ") {
+                    format!("+++ b/{path}")
+                } else {
+                    line.to_owned()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n"));
+    }
     if file.summary == "untracked" {
-        let root = root.to_path_buf();
-        let path = file.path.clone();
-        let bytes =
-            tokio::task::spawn_blocking(move || super::attachment::read(&root, &path)).await??;
+        let bytes = read_working_file(root, &file.path).await?;
         if bytes.contains(&0) {
             return Ok("Binary file, text preview unavailable".into());
         }
@@ -230,6 +298,12 @@ pub(super) async fn file_diff(root: &Path, reference: &str, file: &ChangedFile) 
     )
     .await?;
     Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+async fn read_working_file(root: &Path, path: &str) -> Result<Vec<u8>> {
+    let root = root.to_path_buf();
+    let path = path.to_string();
+    tokio::task::spawn_blocking(move || super::attachment::read(&root, &path)).await?
 }
 
 pub(super) fn file_display(path: &str) -> String {
@@ -319,15 +393,18 @@ mod tests {
             collect(root, &tree).await.unwrap().files.is_empty(),
             "captured untracked files must not be reported twice or as new"
         );
-        std::fs::write(root.join("new.txt"), "changed after checkpoint\n").unwrap();
+        std::fs::write(
+            root.join("new.txt"),
+            "changed after checkpoint\n++ keep source\n",
+        )
+        .unwrap();
         let snapshot = collect(root, &tree).await.unwrap();
         assert_eq!(snapshot.files.len(), 1);
-        assert!(
-            file_diff(root, &tree, &snapshot.files[0])
-                .await
-                .unwrap()
-                .contains("-untracked")
-        );
+        let diff = file_diff(root, &tree, &snapshot.files[0]).await.unwrap();
+        assert!(diff.contains("-untracked"));
+        assert!(diff.contains("+++ keep source"));
+        assert!(diff.contains("+++ b/new.txt"));
+        assert!(!diff.contains("/before"));
     }
 
     #[tokio::test]
