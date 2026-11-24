@@ -5399,7 +5399,7 @@ mod tests {
 
     /// Drives the subject end-to-end: spawns the real yolop binary against its
     /// bundled offline llmsim provider (no key, no cost — llmsim is not a
-    /// matrix target, but it still proves the spawn → settings → events.jsonl →
+    /// matrix target, but it still proves the spawn → settings → canonical history →
     /// transcript pipeline). Skips when no yolop binary is built.
     #[tokio::test]
     async fn run_yolop_end_to_end_offline() {

@@ -1059,7 +1059,7 @@ mod tests {
 
     /// Drives the subject end-to-end: spawns the real yolop binary against its
     /// bundled offline llmsim provider (no key, no cost — llmsim is not a
-    /// matrix target, but it still proves the spawn → settings → events.jsonl →
+    /// matrix target, but it still proves the spawn → settings → canonical history →
     /// transcript pipeline, including booting with the lsp capability enabled).
     /// Skips when no yolop binary is built.
     #[tokio::test]

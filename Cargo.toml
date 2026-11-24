@@ -11,7 +11,6 @@ edition = "2024"
 authors = ["Everruns <support@everruns.com>"]
 license = "MIT"
 description = "Yolop, a terminal coding agent built on everruns-core"
-homepage = "https://github.com/everruns/yolop"
 repository = "https://github.com/everruns/yolop"
 readme = "README.md"
 keywords = ["cli", "agent", "coding", "terminal", "llm"]
@@ -36,7 +35,7 @@ cuda = ["local-inference"]
 [dependencies]
 tempfile = "3"
 similar = "3"
-agent-client-protocol = { version = "5.0.0", features = ["unstable_protocol_v2", "unstable_end_turn_token_usage"] }
+agent-client-protocol = { version = "5.5.1", features = ["unstable_protocol_v2", "unstable_end_turn_token_usage"] }
 anyhow = "1.0"
 async-trait = "0.1"
 base64 = "0.23"
@@ -52,7 +51,8 @@ tar = "0.4"
 # `.worktreeinclude` matching for copying ignored local files into worktrees.
 ignore = "0.4"
 include_dir = "0.7"
-jsonschema = { version = "0.61.2", default-features = false }
+# 0.63.1 is younger than the maintenance patch-age floor. Recheck after 2026-11-24.
+jsonschema = { version = "=0.63.0", default-features = false }
 # Local-model weight downloads behind the `local-inference` feature.
 # The inference engine (mistralrs -> candle-core -> zip 7.2.0) is
 # temporarily removed: mistralrs 0.8.1 pins candle-core 0.10.2 which
@@ -60,17 +60,16 @@ jsonschema = { version = "0.61.2", default-features = false }
 # 9.0.0/9.0.5, with no fixed mistralrs release on crates.io yet.
 # Re-enable the engine (and metal/cuda acceleration) once mistralrs
 # publishes a release on candle-core 0.11.1+ / zip 9.0.5+.
-hf-hub = { version = "0.4.3", default-features = false, features = [
-    "tokio",
-    "rustls-tls",
-], optional = true }
+hf-hub = { version = "1.0", default-features = false, features = ["rustls-tls"], optional = true }
 rand = "0.10"
 uuid = { version = "1", features = ["v5"] }
 # Descriptor-relative skill deletion refuses repository-controlled symlinks.
 rustix = { version = "1.1", features = ["fs"] }
 # Already present through the facade's local backend. Yolop uses the same SQLite handle for
 # its capability-owned local session coordination tables.
-rusqlite = "0.41"
+# Newer rusqlite links a different SQLite library and cannot coexist with the
+# published Everruns family. Recheck when that family upgrades its shared handle.
+rusqlite = "0.41.1"
 # Already in the tree via the everruns driver crates; used directly only for
 # the OpenAI-compatible `GET <base>/models` discovery fallback.
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "stream"] }
@@ -94,7 +93,7 @@ tuika-html = "=0.3.0"
 # Tree-sitter Highlighter impl for tuika's CodeBlock/Markdown; owns the grammar
 # deps so tuika core stays dependency-light. Published from the tuika repo.
 tuika-codeformatters = "=0.8.0"
-tokio = { version = "1.52", features = ["full"] }
+tokio = { version = "1.54", features = ["full"] }
 tokio-util = { version = "0.7", features = ["compat"] }
 tree-sitter = "0.27"
 tree-sitter-bash = "0.25"
@@ -125,11 +124,13 @@ urlencoding = "2"
 # Linux's default local sandbox uses Landlock for filesystem rights and
 # seccomp-BPF for network denial. Both are pure-Rust wrappers over kernel APIs.
 [target.'cfg(target_os = "linux")'.dependencies]
-landlock = "0.4.4"
+landlock = "0.4.8"
 seccompiler = "0.5.0"
 
 # Windows shell containment, run in-process: see src/exec/sandbox_windows.rs.
 [target.'cfg(windows)'.dependencies]
+# 1.1 removes tier2_bfs and the AppContainer fallback used on supported Windows
+# hosts. Recheck after native ProcessContainer is qualified for that baseline.
 mxc-sdk = { version = "=1.0.1", features = ["tier2_bfs"] }
 # The attached control endpoint's named-pipe ACL; see `control::control_pipe`.
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Isolation"] }
