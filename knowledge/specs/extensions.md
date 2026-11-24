@@ -82,7 +82,7 @@ spawned exactly as the runtime spawns it, is covered by
 Status bar: an extension that declares `status` in its manifest (the D4 opt-in)
 may push `status/changed` notifications carrying a short string the host shows
 in its status bar (empty clears it). The wire type is `StatusChangedParams`; the
-notification routes through an optional `StatusSink` created in `runtime.rs`
+notification routes through an optional `StatusSink` created in `runtime/mod.rs`
 into a `SetExtensionStatus` `UiCommand`, then `App.extension_status`, then
 `PresentationState`. It renders in the inline TUI (`status_contributions` /
 `expanded_status_lines`) and the full-screen renderer (`app/fullscreen.rs`); it
@@ -114,7 +114,7 @@ ui/ask: an extension that declares `ui_ask` (the D4 opt-in) may send a `ui/ask`
 *request* (server→host, the reverse-request direction) carrying
 `UiAskParams { prompt, placeholder? }`; the host prompts the user and answers
 with `UiAskResult { answer, cancelled }`. The client routes the request to an
-`AskSink` (built in `runtime.rs`, gated on the TUI client) that pushes an
+`AskSink` (built in `runtime/mod.rs`, gated on the TUI client) that pushes an
 `AskRequest` onto a dedicated channel; `App` shows a single-line overlay
 (`draw_ask_overlay`) that captures keys *before* the busy check so it works
 mid-turn, then resolves the request's oneshot with the typed answer (or

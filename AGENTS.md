@@ -17,12 +17,13 @@ thing without the AI tell. `knowledge/log.md` headings are `## DATE, Title`.
 
 ## Layout
 
-A Cargo workspace of two packages; root `cargo test` / `cargo clippy` cover
-both.
+A Cargo workspace of three packages; root `cargo test` / `cargo clippy` cover
+all three.
 
 - `.`, the `yolop` binary.
 - `crates/yolop-yep/`, the YEP extension protocol and server SDK, published
   separately for extension authors; the host depends on it for the wire types.
+- `extensions/yolop-extension-logfire/`, the independently versioned trace exporter.
 
 Both renderers are built on [tuika](https://github.com/everruns/tuika), a
 terminal-UI toolkit that lives in its own repository and is consumed from
@@ -72,12 +73,11 @@ needs variable inspection wants `cargo build --profile dev-debuginfo`.
 
 ## Checks
 
-`--features yolop-yep/schema`, not `--all-features`: the schema feature resolves
-to the same crates a default build does, while `--all-features` also turns on
-`local-inference` and its ~220-crate engine. Mixing the two feature sets in one
-`target/` compiles the whole graph twice; keep every routine command on the same
-one. `--workspace` is what makes the root commands cover both packages, and with
-it the wire-schema drift guard in `yolop-yep`.
+Routine checks use `--features yolop-yep/schema`. `--workspace` covers all
+three packages, including the wire-schema drift guard in `yolop-yep`.
+`local-inference` currently enables weight downloads only; the inference engine
+is suspended for security. Keep feature builds in separate target directories
+so restoring the engine does not duplicate its graph in the routine cache.
 
 ```bash
 cargo fmt --check
@@ -95,15 +95,11 @@ CARGO_TARGET_DIR=target-local-inference \
   cargo clippy --workspace --all-targets --features local-inference -- -D warnings
 ```
 
-The release ships an accelerated build per target (`metal` on macOS, `cuda` on
-Linux), so a change there wants the backend compiled too. `cuda` needs `nvcc`
-(`apt-get install nvidia-cuda-toolkit`) and `CUDA_COMPUTE_CAP` set, since the
-kernels are compiled for one capability and there is no GPU here to ask:
-
-```bash
-CARGO_TARGET_DIR=target-cuda CUDA_COMPUTE_CAP=80 \
-  cargo check -p yolop --locked --features cuda
-```
+Release artifacts retain the `metal` (macOS) and `cuda` (Linux) feature
+names, but both currently alias downloads only. If the engine is restored,
+compile the accelerated backend too. CUDA then needs `nvcc` and an explicit
+`CUDA_COMPUTE_CAP`, since CI has no GPU to query. The current status and
+historical build cost live in [Local inference](knowledge/specs/local-inference.md).
 
 ## Where things live
 

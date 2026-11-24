@@ -75,8 +75,9 @@ Linux cache keys carry the ABI baseline so incompatible build-host artifacts are
 not restored across a baseline change. Source installs use the host's libc.
 
 Every target ships twice: `yolop-<target>.tar.gz` built with default features,
-and `yolop-<target>-<backend>.tar.gz` carrying the local-inference engine and
-that backend. The plain one is what the Homebrew formula points at, because it
+and `yolop-<target>-<backend>.tar.gz` enabling the corresponding backend feature.
+While inference is suspended for security, backend features enable weight
+downloads only, with no inference engine or GPU acceleration. The plain one is what the Homebrew formula points at, because it
 is the only build that runs wherever the target does; see
 [Local inference](local-inference.md#distribution) for why the split exists.
 

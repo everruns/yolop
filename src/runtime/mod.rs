@@ -24,7 +24,6 @@ pub mod session;
 mod session_layout;
 pub mod session_log;
 pub(crate) mod speed;
-pub(crate) mod tool_cancel;
 pub(crate) mod turn_scope;
 
 use crate::capabilities::mcp::McpCapability as YolopMcpCapability;

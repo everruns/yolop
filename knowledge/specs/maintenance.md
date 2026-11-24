@@ -52,9 +52,10 @@ changes, update this spec.
   compatibility review. Critical security fixes are exempt.
 - Keep a single routine feature set per `target/` directory. The schema
   feature (`--features yolop-yep/schema`) resolves to the same crates a
-  default build does. `--all-features` also turns on `local-inference` and
-  its large engine graph, and mixing the two in one `target/` compiles the
-  whole graph twice. Anything behind `local-inference` or `cuda` gets its own
+  default build does. `local-inference` currently adds downloads only while
+  the engine is suspended for security. Keep optional builds separate so restoring the
+  engine cannot duplicate its large graph in the routine cache. Anything
+  behind `local-inference` or `cuda` gets its own
   `CARGO_TARGET_DIR` per `AGENTS.md`.
 - Risk proportional upgrades. Patch and minor bumps that preserve the
   `everruns` and `tuika` contracts go through the pass. Major bumps, facade
@@ -107,11 +108,11 @@ A release readiness verdict covers the release path in
   `--features yolop-yep/schema`.
 - The `everruns-*` family and the `tuika` family are current, with exact
   pins that still match `Cargo.lock`.
-- Versions agree: the root crate, `yolop-yep`, `Cargo.lock`, and the
-  first-party extension manifests. The extension manifest pin test proves the
-  agreement.
-- The publish order still holds: `yolop-yep` first, then the binary, then the
-  extensions.
+- Each independently versioned package agrees with its lockfile entry.
+  Extension manifest versions agree with their own packages, and their YEP
+  protocol declarations remain supported by the host.
+- Publishable supporting packages precede the binary, in the dependency-first
+  order computed by `scripts/publish_order.py`.
 - The release build starts, per the release spec, and the binary size section
   below has fresh numbers against a stated baseline.
 - Terminal verification tiers for the changed UI surfaces are green: the
@@ -134,7 +135,8 @@ Do not declare release-ready for surfaces the pass did not actually check.
   [Engine adoption](engine-execution.md) ended with the published 0.50.1 family.
 - Reviews consider the whole published family (`everruns`,
   `everruns-core`, `everruns-contracts`, `everruns-drivers`,
-  `everruns-integrations-duckduckgo`, `everruns-capabilities`), not only the
+  `everruns-integrations`, `everruns-capabilities`, `everruns-coding`,
+  `everruns-llmsim`), not only the
   crates named in the root manifest, since a stale transitive member can keep
   a known bug alive.
 - Patch and minor updates go through `cargo update -p <crate>` deliberately.
@@ -143,8 +145,11 @@ Do not declare release-ready for surfaces the pass did not actually check.
   rebuild) to prove the manifest pins are sufficient before restoring the
   lockfile if the experiment fails.
 - Updates must leave `cargo metadata --locked` clean, with no yanked crates,
-  no `cargo audit` findings when the tool is available, no duplicate crate
-  versions, and no unused dependencies.
+  no `cargo audit` vulnerabilities when the tool is available, no avoidable
+  duplicate crate versions, and no unused dependencies. Informational
+  unmaintained warnings need an explicit owner and migration boundary.
+  Record upstream constraints when
+  shared native libraries or incompatible public types prevent unification.
 - The Rust toolchain stays current and the minimum supported Rust version in
   `rust-toolchain.toml`, CI, and docs stays synchronized. Version drift
   between those three is itself a finding.
@@ -186,9 +191,9 @@ surprises. The changelog is the only cheap detector.
 
 Yolop is the framework demo host, so every module answers one question: does
 an upstream type already own this, is this the thin host adapter over that
-type, or is this genuinely host owned. The November 2026 audit verified each
-claim below against the upstream tree at Everruns 0.51.0. Re-check entries
-marked with a ticket when that ticket ships.
+type, or is this genuinely host owned. The November 2026 audit checked
+the boundaries below against the published Everruns 0.53.1 sources. Recheck
+these contracts when the pinned framework version changes.
 
 Already delegated, thin host adapters by design (nothing to drop):
 `capabilities/approval.rs`, `capabilities/tool_approval.rs`,
@@ -200,9 +205,9 @@ upstream capability or registry.
 Host owned, keep in yolop: `capabilities/apply_patch.rs` (edit experiment
 with its own evals), `models/download.rs` plus the weights store (visible
 weights directory is a host UX decision), `capabilities/progress_guard.rs`
-(4212 lines of custom heuristics versus 804 upstream),
-`capabilities/memory*` (host memory store versus the 229 line upstream
-capability), `capabilities/hooks.rs` plus `config/hooks.rs` (own settings
+(host trajectory and evidence-reuse policy),
+`capabilities/memory*` (host memory store and personalization policy),
+`capabilities/hooks.rs` plus `config/hooks.rs` (own settings
 store under a different capability ID), `exec/tools.rs` plus
 `exec/sandbox.rs` (bounded local execution: approval gates, timeouts,
 output caps, process groups; upstream containment shares the wire names by
@@ -212,22 +217,37 @@ design but owns only config, not spawn), `control.rs`,
 discovery and install loop over the host skill lifecycle tools), auth stores and login TUI, the YEP
 extension protocol, the ACP editor server, herdr, rex.
 
-Awaiting upstream work, delete or thin the yolop side when it ships:
-EVE-1339 native checkpoint and branch aware rewind API (replaces
-`session_state/checkpoint.rs` and thins `capabilities/checkpoint.rs`),
-EVE-1340 control attach pattern (thins `control.rs` to a consumer),
-EVE-1341 tool narration default on `core::Tool` (deletes
-`capabilities/narration.rs`). `capabilities/session_tasks_override.rs`
-(535 lines) stays until the runtime result contract exposes the
-post-cancellation state; upstream 0.51.0 `cancel_task` still returns the
-pre-wind-down snapshot, the same contract the override documents against
-0.17.8. Needs a fourth ticket before it can move.
+Published upstream support is not by itself a reason to delete host policy:
 
-Not yet audited, analyze before any deletion: `exec/worktree.rs` include
-policy, `runtime/mod.rs` agent loop layering, `config/*` versus facade
-config, `capabilities/mcp.rs` versus `user_hooks` and `user_mcp`,
-`capabilities/tool_reveal.rs` and `capabilities/tool_argument_validation.rs`
-versus upstream tool search and guardrails.
+- Tool cancellation uses `everruns_core::engine::tool_cancel` directly. Bash
+  retains its partial-output cancellation race and detached registration;
+  the engine's generic drop-on-cancel path cannot return bash's buffered output.
+  Registry identity and registration lifetime tests belong upstream. Yolop
+  tests editor cancellation, retained output and child-process cleanup.
+- `cancel_task` now returns the post-cancellation snapshot and message tail
+  upstream (EVE-1343). Yolop only augments that result with terminal/pending
+  summaries and keeps synchronous monitor schedule disarming.
+- EVE-1339 provides native conversation checkpoints, but Yolop checkpoints are
+  before-turn workspace/conversation pairs, with Git snapshots, prompt restore,
+  legacy timeline import and a recoverable two-store restore intent. A native
+  checkpoint migration must preserve those contracts and saved IDs; deleting
+  `session_state/checkpoint.rs` is not a safe mechanical replacement.
+- EVE-1340's control API lists, sends, cancels and attaches sessions. Yolop's
+  `control.rs` instead parses capability-owned CLI argv inside the owning host,
+  with command-scoped credentials and sandbox routing. Keep that adapter until
+  upstream exposes capability administration, rather than duplicating session
+  attachment here.
+- Upstream narration now supports tool defaults and built-in task narration.
+  Yolop's narration helpers retain its stable started/completed labels and
+  host argument detail. They are presentation policy, not a missing upstream API.
+- `tool_argument_validation` protects authoritative full schemas behind deferred
+  stubs, bounds compilation and diagnostics, and removes argument values from
+  errors. Upstream repair and tool search do not replace that execution gate.
+  `tool_reveal` supplies host how-to prompt gating using upstream disclosure.
+
+Further worktree, config and MCP simplification must preserve the host's trust,
+path, scoped-configuration and approval contracts. Compare those contracts with
+the published implementation before deleting an adapter or its integration tests.
 
 ## Tuika Boundary
 
@@ -238,8 +258,8 @@ markdown rendering, terminal escapes, and screen modes, belongs in the
 - `everruns-coding` and `tuika-codeformatters` must agree on the `tree-sitter`
   major line. The runtime links a native library, so Cargo allows one version
   per binary; bump them together, along with Yolop's own `tree-sitter` pin.
-- The `tuika`, `tuika-codeformatters`, and `tuika-mermaid` versions stay
-  current, move together where they are
+- The `tuika`, `tuika-codeformatters`, `tuika-mermaid` and `tuika-html`
+  versions stay current, move together where they are
   companion releases, and keep `Cargo.toml` and `Cargo.lock` in agreement.
   No path or git dependencies: a git dependency would make yolop
   unpublishable.
@@ -259,9 +279,10 @@ architecture. The boundary keeps fixes where they compound.
 - The wire schema drift guard stays green with
   `--features yolop-yep/schema`. A schema change without a regenerated
   artifact is a finding.
-- The protocol version, the `yolop-yep` crate version, and the first-party
-  extension manifests stay in agreement. The manifest pin test that asserts
-  `plugin.json` matches `Cargo.toml` is the proof.
+- Protocol compatibility and package versions are separate: `yolop-yep` and
+  extensions version independently from the host. The manifest pin test proves
+  each extension's `plugin.json` version matches its own `Cargo.toml`; protocol
+  declarations must separately remain supported by the host.
 - Extension servers in the matrix still enumerate, start, use tools and
   resources, and render their UI affordances per the extensions spec. A
   protocol bump ships as its own tested PR with the publish order preserved.
@@ -424,7 +445,7 @@ accident to the next reader.
 - `README.md` and `docs/` never link into `knowledge/` or `.agents/`. They
   are the public surface; the bundle is the working memory.
 - Provider and model lists, flag tables, and setup instructions match the
-  code that owns them (`runtime.rs`, the CLI definition, the extension
+  code that owns them (`runtime/mod.rs`, the CLI definition, the extension
   manifests). A table that disagrees with its source is a finding.
 - The README stays sound: its scope claim, install path, and quickstart
   reflect the current product, and its quickstart commands actually run. A

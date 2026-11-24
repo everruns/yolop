@@ -41,14 +41,14 @@ v1; [Protocol v2](#protocol-v2) lists what differs.
 | `initialize` | client → agent | Negotiates protocol version and advertises agent capabilities. Echoes the client's version when supported, else advertises v1. Detects the editor identity from `client_info.name` (Paseo sends `Paseo`), then `_meta` vendor keys, then `YOLOP_ACP_CLIENT`; stored per connection and rendered as the reserved `editor` context entry (`paseo/dev`, or `unknown`) in every later session. |
 | `authenticate` | client → agent | Runs an advertised agent-handled login. Yolop currently advertises browser-based ChatGPT/Codex OAuth and OpenRouter PKCE login; other API-key providers continue to use inherited environment variables or `/setup token`. |
 | `session/new` | client → agent | Builds a fresh runtime rooted at the client-supplied `cwd`; returns the everruns session id as the ACP `sessionId`. CLI `--env-context KEY=VALUE` entries apply as session defaults; the detected `editor` entry wins on its reserved key. |
-| `session/load` | client → agent | Rehydrates an existing yolop JSONL session for the supplied `sessionId` and `cwd`, replays persisted conversation history as `session/update` notifications, and then returns success. |
+| `session/load` | client → agent | Rehydrates an existing Yolop session for the supplied `sessionId` and `cwd`, replays persisted conversation history as `session/update` notifications, and then returns success. |
 | `session/prompt` | client → agent | Runs one turn, or executes a recognised `/command`; streams `session/update`s, and resolves a `stopReason`. |
 | `session/cancel` | client → agent | Notification. Abandons the in-flight turn for that session and resolves the prompt with `stopReason: "cancelled"`. |
 | `session/set_mode` | client → agent | Sets the approval level (session mode). See below. |
 | `session/request_permission` | agent → client | Issued before a tool the current level gates; the turn suspends on the answer. See Permissions. |
 | `session/update` | agent → client | Notification. Streams the turn (see below), including `current_mode_update` when the level changes out of band. |
 
-`loadSession` is advertised as `true`. `session/load` uses the same JSONL
+`loadSession` is advertised as `true`. `session/load` uses the same canonical-history
 replay path as CLI `--session`: prior user and assistant messages are streamed
 back to the editor before the response, and the loaded runtime then continues
 appending to the same session folder.
@@ -402,10 +402,10 @@ Tool activity v1 had no update for:
   command's process group; the model reads that the user cancelled it, with
   the output so far, and the turn goes on. The call ends `cancelled`, the
   terminal with `exitStatus.signal` `SIGKILL`, and both drop their controls.
-  An unknown, finished or non-shell call gets `-32602`. Decision: until the
-  aligned everruns release cancels any inline call in its act loop
-  (everruns#5384), only `bash` registers, through a local registry with the
-  same API (`src/runtime/tool_cancel.rs`, TODO markers name the switch).
+  An unknown, finished or non-shell call gets `-32602`. Yolop uses the
+  engine's shared cancellation registry for inline and detached bash. Bash
+  retains its own cancellation race to return bounded partial output; the
+  engine's generic cancellation path drops a tool future without those buffers.
 
 **Additional folders.** `session/new` and `session/resume` take
 `additionalDirectories`, existing absolute directories (else `-32602`). They

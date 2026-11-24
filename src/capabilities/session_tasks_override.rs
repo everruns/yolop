@@ -1,10 +1,8 @@
 //! Yolop-owned session-task cancellation semantics.
 //!
-//! Everruns 0.17.8 returns the snapshot captured before the task executor runs,
-//! so synchronous monitor cancellation is reported as merely requested even
-//! after its schedule is disabled and its task is terminal. Keep the upstream
-//! task surface, replacing only `cancel_task` until the runtime result contract
-//! exposes the post-cancellation state.
+//! Everruns owns executor cancellation and its post-cancellation task snapshot.
+//! Yolop disarms monitor schedules synchronously and adds its terminal/pending
+//! summary fields to the upstream result for other task kinds.
 
 use crate::capabilities::narration::narrate_session_task_tool;
 use async_trait::async_trait;
@@ -207,27 +205,22 @@ impl Tool for TruthfulCancelTaskTool {
             };
         }
 
-        let result = self.inner.execute_with_context(arguments, context).await;
-        if !matches!(result, ToolExecutionResult::Success(_)) {
-            return result;
-        }
-        let refreshed = match registry.get(context.session_id, &task_id).await {
-            Ok(Some(task)) => task,
-            Ok(None) => {
-                return ToolExecutionResult::tool_error(format!(
-                    "Task disappeared after cancellation: {task_id}"
-                ));
+        match self.inner.execute_with_context(arguments, context).await {
+            ToolExecutionResult::Success(mut value) => {
+                // Use the upstream post-cancel snapshot, preserving its task
+                // detail and message tail instead of reading the registry again.
+                let state: SessionTaskState = match serde_json::from_value(value["state"].clone()) {
+                    Ok(state) => state,
+                    Err(error) => return ToolExecutionResult::internal_error(error),
+                };
+                let requested = value["task"]["cancel_requested_at"].clone();
+                value["terminal"] = json!(state.is_terminal());
+                value["cancellation_pending"] = json!(!state.is_terminal() && !requested.is_null());
+                value["cancel_requested_at"] = requested;
+                ToolExecutionResult::success(value)
             }
-            Err(error) => return ToolExecutionResult::internal_error(error),
-        };
-        let terminal = refreshed.state.is_terminal();
-        ToolExecutionResult::success(json!({
-            "task_id": task_id,
-            "state": refreshed.state,
-            "terminal": terminal,
-            "cancellation_pending": !terminal && refreshed.cancel_requested_at.is_some(),
-            "cancel_requested_at": refreshed.cancel_requested_at,
-        }))
+            result => result,
+        }
     }
 }
 
@@ -530,6 +523,13 @@ mod tests {
         assert_eq!(value["state"], "running");
         assert_eq!(value["terminal"], false);
         assert_eq!(value["cancellation_pending"], true);
+        assert_eq!(value["task"]["id"], "task_external");
+        assert_eq!(value["task"]["state"], value["state"]);
+        assert_eq!(
+            value["cancel_requested_at"],
+            value["task"]["cancel_requested_at"]
+        );
+        assert!(value["messages"].is_array());
         assert!(value.get("disarmed").is_none());
     }
 }

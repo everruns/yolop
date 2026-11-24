@@ -319,8 +319,8 @@ impl BashTool {
             child.wait().await
         };
 
-        // TODO(everruns#5384): drop this race once the act loop cancels the
-        // call upstream; dropping the future then kills the group on its own.
+        // Bash handles the shared cancellation token here to retain partial
+        // stdout/stderr. Other inline tools use the engine's cancellation race.
         let cancelled = async {
             match cancel {
                 Some(token) => token.cancelled().await,
@@ -588,13 +588,14 @@ impl Tool for BashTool {
         arguments: Value,
         context: &ToolContext,
     ) -> ToolExecutionResult {
-        // TODO(everruns#5384): the act loop registers every call upstream;
-        // then this override goes and `execute` is enough.
+        // Override the engine registration while bash runs so cancellation
+        // preserves bounded partial output instead of dropping the command
+        // future before its buffers can be returned.
         let Some(tool_call_id) = context.tool_call_id.as_deref() else {
             return self.execute(arguments).await;
         };
         let registration =
-            crate::runtime::tool_cancel::shared().register(context.session_id, tool_call_id);
+            everruns_core::engine::tool_cancel::shared().register(context.session_id, tool_call_id);
         self.execute_cancellable(arguments, Some(registration.token()))
             .await
     }
@@ -660,7 +661,7 @@ impl BashTool {
         if output.cancelled {
             return ToolExecutionResult::tool_error(format!(
                 "{} Output before it stopped:\n{}",
-                crate::runtime::tool_cancel::CANCELLED_MESSAGE,
+                everruns_core::engine::tool_cancel::CANCELLED_MESSAGE,
                 json!({ "stdout": result["stdout"], "stderr": result["stderr"] })
             ));
         }
@@ -700,10 +701,10 @@ impl BackgroundExecutableTool for BashTool {
             == Some("require_escalated");
         let justification = arguments.get("justification").and_then(Value::as_str);
         // A detached call stays cancellable by its id, like a foreground one.
-        // TODO(everruns#5384): upstream registers only inline calls; keep this
-        // registration (through the upstream registry) after the switch.
+        // The engine registers only inline calls, so detached bash registers
+        // with the same upstream registry for its full execution lifetime.
         let registration = context.tool_call_id.as_deref().map(|tool_call_id| {
-            crate::runtime::tool_cancel::shared().register(context.session_id, tool_call_id)
+            everruns_core::engine::tool_cancel::shared().register(context.session_id, tool_call_id)
         });
         let output = self
             .execute_with_policy(
@@ -730,7 +731,7 @@ impl BackgroundExecutableTool for BashTool {
         if output.cancelled {
             return Err(ToolExecutionResult::tool_error(format!(
                 "{} Output before it stopped:\n{}",
-                crate::runtime::tool_cancel::CANCELLED_MESSAGE,
+                everruns_core::engine::tool_cancel::CANCELLED_MESSAGE,
                 json!({ "stdout": stdout, "stderr": stderr })
             )));
         }
@@ -948,7 +949,7 @@ mod tests {
         let session_id = everruns_contracts::typed_id::SessionId::new();
         let mut context = ToolContext::new(session_id);
         context.tool_call_id = Some("call_sleep".into());
-        let cancels = crate::runtime::tool_cancel::shared();
+        let cancels = everruns_core::engine::tool_cancel::shared();
         let canceller = tokio::spawn(async move {
             // Let the command print before it is stopped.
             tokio::time::sleep(Duration::from_millis(500)).await;
@@ -970,10 +971,10 @@ mod tests {
         let ToolExecutionResult::ToolError(message) = result else {
             panic!("a cancelled command is an error the model reads: {result:?}");
         };
-        assert!(message.starts_with(crate::runtime::tool_cancel::CANCELLED_MESSAGE));
+        assert!(message.starts_with(everruns_core::engine::tool_cancel::CANCELLED_MESSAGE));
         assert!(message.contains("before"), "{message}");
         assert!(
-            !crate::runtime::tool_cancel::shared().cancel(session_id, "call_sleep"),
+            !everruns_core::engine::tool_cancel::shared().cancel(session_id, "call_sleep"),
             "forgotten once finished"
         );
     }
@@ -1466,7 +1467,7 @@ mod tests {
         context.tool_call_id = Some("call_bg".into());
         let canceller = tokio::spawn(async move {
             for _ in 0..500 {
-                if crate::runtime::tool_cancel::shared().cancel(session_id, "call_bg") {
+                if everruns_core::engine::tool_cancel::shared().cancel(session_id, "call_bg") {
                     return true;
                 }
                 tokio::time::sleep(Duration::from_millis(10)).await;
@@ -1487,7 +1488,7 @@ mod tests {
         assert!(matches!(
             err,
             ToolExecutionResult::ToolError(message)
-                if message.starts_with(crate::runtime::tool_cancel::CANCELLED_MESSAGE)
+                if message.starts_with(everruns_core::engine::tool_cancel::CANCELLED_MESSAGE)
         ));
     }
 
