@@ -68,6 +68,13 @@ origin the engine keys on.
 See [background execution](background.md), [tool output](tool-output.md), and
 [progress guard](progress-guard.md).
 
+Recognized validation commands also produce bounded coding-evidence snapshots
+through the progress guard. These retain actual command outcomes and mark
+checks stale after later possible mutations, so a passing check before an edit
+cannot be described as checking that edit. They remain reference evidence for
+the agent and engine review, not another completion controller or an assertion
+that the selected tests establish the requested behavior.
+
 ## Background completion evidence
 
 Print mode retains its ten-minute deadline. A genuine timeout reports bounded blocking

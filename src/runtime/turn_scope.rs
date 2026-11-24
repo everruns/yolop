@@ -6,6 +6,44 @@ use std::collections::HashSet;
 
 pub(crate) const RUN_METADATA: &str = "yolop.frontend_run";
 
+#[derive(Clone)]
+pub(crate) struct SteeringTarget {
+    run: MessageId,
+    admission: Option<MessageId>,
+}
+
+impl SteeringTarget {
+    pub async fn assigned_turn(
+        &self,
+        session: &everruns::Session,
+        events: &[Event],
+    ) -> anyhow::Result<Option<TurnId>> {
+        let input = self.admission.or_else(|| {
+            events.iter().rev().find_map(|event| {
+                let EventData::InputMessage(input) = &event.data else {
+                    return None;
+                };
+                input
+                    .message
+                    .metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.get(RUN_METADATA))
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|run| *run == self.run.to_string())
+                    .map(|_| input.message.id)
+            })
+        });
+        let Some(input) = input else { return Ok(None) };
+        let Some(admission) = session.admission(input).await? else {
+            return Ok(None);
+        };
+        Ok(admission
+            .assignment()
+            .await?
+            .map(|assignment| assignment.turn_id))
+    }
+}
+
 pub(crate) struct TurnScope {
     pub id: MessageId,
     cancellation: everruns::CancellationToken,
@@ -14,6 +52,12 @@ pub(crate) struct TurnScope {
     turns: HashSet<TurnId>,
 }
 impl TurnScope {
+    pub fn steering_target(&self) -> SteeringTarget {
+        SteeringTarget {
+            run: self.id,
+            admission: self.admission,
+        }
+    }
     pub fn new(input: &mut InputMessage) -> Self {
         let id = MessageId::new();
         let admission = input

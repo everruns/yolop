@@ -16,26 +16,33 @@ add context or redirect the agent without first cancelling useful work.
 - The composer remains editable while an agent or shell turn is active.
 - `Enter` submits the draft as a steering message. The message appears in the
   transcript immediately and the composer clears for another message.
-- Submitted messages, expanded paste attachments, and images are retained in a
-  FIFO queue. The busy separator shows the queue length.
-- The embedded runtime accepts one foreground input at a time. Yolop therefore
-  delivers the oldest queued message immediately after the active turn settles,
-  then delivers later messages one turn at a time in submission order. This is
-  the local-runtime equivalent of Everruns consuming queued user messages at a
-  safe iteration boundary; messages are never injected into an in-flight model
-  call or tool execution.
-- Queued steering takes priority over automatic continuation and completion
-  review. Those post-turn actions run only after the steering queue drains,
-  so a new instruction is never evaluated against the preceding response.
-- Pressing `Esc` twice cancels only the active turn. Queued messages remain and
-  begin delivery when cancellation settles.
+- Submitted messages, expanded paste attachments, and images enter a FIFO
+  admission queue. The busy separator shows messages awaiting assignment.
+- Once the foreground input has an authoritative turn assignment, the oldest
+  queued message is admitted durably through Engine. The active turn consumes
+  it at its next safe reasoning boundary, after current tool calls finish.
+  The TUI reports receipt only after Engine assigns it to that turn. Delivery
+  never injects text into an in-flight provider call or interrupts a useful tool.
+- Startup and standalone shell commands retain the queue until an agent turn
+  can accept it. Each message keeps one admission identity and the exact input
+  used on its first attempt. Uncertain replies reuse them. If the original turn
+  finishes during admission, the TUI observes the accepted follow-up instead
+  of submitting the message again.
+- Engine owns the ordering of admitted steering, completion review and automatic
+  continuation. The TUI does not add a second execution loop.
+- Pressing `Esc` twice cancels the active turn and stops further steering into
+  it. Inputs not yet admitted remain queued for later delivery. Inputs already
+  assigned to the cancelled turn remain in its durable history and are not
+  automatically replayed as new work.
 - While busy, slash- and bang-prefixed drafts are steering messages, not
   immediate host commands. This prevents commands or shell processes from
   overlapping the active turn.
 
-The queue is session-local and process-local, matching the embedded runtime's
-turn lifecycle. Normal session persistence begins when each queued message is
-delivered to the runtime.
+Only inputs awaiting admission are process-local. An accepted input belongs to
+the session's durable engine authority, including if the TUI exits before the
+active command finishes. Failed admission leaves the message queued and reports
+the error without claiming receipt. A changed retry error is reported again;
+identical consecutive errors are suppressed.
 
 ## Hosts
 
