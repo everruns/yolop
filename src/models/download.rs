@@ -146,7 +146,9 @@ struct HubProgress {
 
 impl HubProgress {
     fn advance_to(&self, bytes: u64) {
-        let mut completed = self.completed.lock().expect("progress byte count");
+        let Ok(mut completed) = self.completed.lock() else {
+            return;
+        };
         let delta = bytes.saturating_sub(*completed);
         *completed = (*completed).max(bytes);
         if delta > 0
@@ -282,11 +284,15 @@ async fn pull_into(
             }
         };
 
-        let bytes = std::fs::metadata(&downloaded)?.len();
+        let bytes = std::fs::metadata(&downloaded)
+            .with_context(|| format!("inspect downloaded model file {}", downloaded.display()))?
+            .len();
         if let Some(parent) = target.parent() {
-            std::fs::create_dir_all(parent)?;
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("create model directory {}", parent.display()))?;
         }
-        std::fs::rename(downloaded, target).context("install completed model file")?;
+        std::fs::rename(&downloaded, &target)
+            .with_context(|| format!("install completed model file {}", target.display()))?;
         progress.advance_to(bytes);
         if let Ok(mut sink) = sink.lock() {
             sink.file_finished();
@@ -365,6 +371,29 @@ mod tests {
         assert_eq!(sink.started, [("model.safetensors".into(), Some(1024))]);
         assert_eq!(sink.bytes, 1024);
         assert_eq!(sink.finished, 0, "the successful pull owns completion");
+    }
+
+    #[test]
+    fn progress_continues_after_a_sink_panics() {
+        struct PanickingSink;
+        impl ProgressSink for PanickingSink {
+            fn file_started(&mut self, _: &str, _: Option<u64>) {}
+            fn bytes_advanced(&mut self, _: u64) {
+                panic!("failed progress display");
+            }
+            fn file_finished(&mut self) {}
+        }
+
+        let progress = HubProgress {
+            sink: Arc::new(Mutex::new(PanickingSink)),
+            filename: "model.safetensors".into(),
+            completed: Mutex::new(0),
+        };
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            progress.advance_to(512);
+        }));
+        assert!(result.is_err());
+        progress.advance_to(1024);
     }
 
     #[test]
