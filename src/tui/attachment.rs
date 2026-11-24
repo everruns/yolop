@@ -2,63 +2,14 @@
 
 use anyhow::{Context, Result, ensure};
 use std::io::Read;
-use std::path::{Component, Path};
+use std::path::Path;
 
 pub(super) const MAX_ATTACHMENT_BYTES: usize = 512 * 1024;
 
+pub(super) use crate::exec::workspace_file::open;
+
 pub(super) fn read(root: &Path, path: &str) -> Result<Vec<u8>> {
-    let relative = Path::new(path);
-    ensure!(
-        !relative.is_absolute(),
-        "attach a path relative to the workspace"
-    );
-    let components = relative
-        .components()
-        .map(|part| match part {
-            Component::Normal(name) => Ok(name.to_os_string()),
-            _ => anyhow::bail!("attachment paths cannot contain traversal or prefixes"),
-        })
-        .collect::<Result<Vec<_>>>()?;
-    ensure!(!components.is_empty(), "attachment path is required");
-    #[cfg(unix)]
-    let file = {
-        use rustix::fs::{Mode, OFlags, open, openat};
-        let mut directory = open(
-            root,
-            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
-            Mode::empty(),
-        )?;
-        for part in &components[..components.len() - 1] {
-            directory = openat(
-                &directory,
-                part,
-                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-                Mode::empty(),
-            )?;
-        }
-        std::fs::File::from(openat(
-            &directory,
-            components.last().unwrap(),
-            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
-            Mode::empty(),
-        )?)
-    };
-    #[cfg(not(unix))]
-    let file = {
-        let mut full = root.to_path_buf();
-        for part in &components {
-            full.push(part);
-            ensure!(
-                !std::fs::symlink_metadata(&full)?.file_type().is_symlink(),
-                "attachment symlinks are not followed"
-            );
-        }
-        std::fs::File::open(full)?
-    };
-    ensure!(
-        file.metadata()?.is_file(),
-        "only regular files can be attached"
-    );
+    let file = open(root, path)?;
     let mut bytes = Vec::new();
     file.take(MAX_ATTACHMENT_BYTES as u64 + 1)
         .read_to_end(&mut bytes)?;
@@ -69,16 +20,33 @@ pub(super) fn read(root: &Path, path: &str) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-pub(super) fn text(root: &Path, reference: &str) -> Result<(String, String)> {
-    let (path, range) = match reference.rsplit_once('#').and_then(|(path, range)| {
-        let (start, end) = range.split_once('-').unwrap_or((range, range));
-        Some((
-            path,
-            (start.parse::<usize>().ok()?, end.parse::<usize>().ok()?),
-        ))
+pub(super) fn range_suffix(reference: &str) -> &str {
+    let Some((_, range)) = reference.rsplit_once('#') else {
+        return "";
+    };
+    let (start, end) = range.split_once('-').unwrap_or((range, range));
+    if [start, end].iter().all(|part| {
+        !part.is_empty()
+            && part.bytes().all(|byte| byte.is_ascii_digit())
+            && part.parse::<usize>().is_ok()
     }) {
-        Some((path, range)) => (path, Some(range)),
-        None => (reference, None),
+        &reference[reference.len() - range.len() - 1..]
+    } else {
+        ""
+    }
+}
+
+pub(super) fn text(root: &Path, reference: &str) -> Result<(String, String)> {
+    let suffix = range_suffix(reference);
+    let (path, range) = if suffix.is_empty() {
+        (reference, None)
+    } else {
+        let range = &suffix[1..];
+        let (start, end) = range.split_once('-').unwrap_or((range, range));
+        (
+            &reference[..reference.len() - suffix.len()],
+            Some((start.parse::<usize>()?, end.parse::<usize>()?)),
+        )
     };
     let content = String::from_utf8(read(root, path)?).context("attachment is not UTF-8 text")?;
     ensure!(
@@ -109,6 +77,8 @@ mod tests {
         let repo = tempfile::tempdir().unwrap();
         std::fs::write(repo.path().join("code.rs"), "one\ntwo\nthree\n").unwrap();
         assert_eq!(text(repo.path(), "code.rs#2-3").unwrap().1, "two\nthree");
+        std::fs::write(repo.path().join("code.rs#1-2-3"), "literal").unwrap();
+        assert_eq!(text(repo.path(), "code.rs#1-2-3").unwrap().1, "literal");
         std::fs::write(repo.path().join("a#b.txt"), "one\ntwo\nthree\n").unwrap();
         assert_eq!(text(repo.path(), "a#b.txt").unwrap().1, "one\ntwo\nthree\n");
         assert_eq!(text(repo.path(), "a#b.txt#2-3").unwrap().1, "two\nthree");

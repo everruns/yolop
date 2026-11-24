@@ -436,15 +436,33 @@ pub(crate) fn search_sessions(
             let name = entry.file_name().to_str()?.to_string();
             let session = name.parse::<SessionId>().ok()?;
             let modified = crate::runtime::saved_sessions::modified(&entry.path(), session);
-            Some((Reverse(modified), name, entry.path()))
+            let labels = crate::runtime::session_labels::read(sessions_dir, session);
+            let warning = labels
+                .as_ref()
+                .err()
+                .map(|error| format!("Session labels ignored: {error:#}"));
+            Some((
+                Reverse(modified),
+                name,
+                entry.path(),
+                labels.unwrap_or_default(),
+                warning,
+            ))
         })
         .collect::<Vec<_>>();
-    candidates.sort_by_key(|candidate| candidate.0);
+    let archive_filter = arguments.get("archive").and_then(Value::as_str);
+    candidates.sort_by_key(|candidate| {
+        (
+            Reverse(archive_filter.is_some() && candidate.3.pinned),
+            candidate.0,
+        )
+    });
+    let mut labels_by_session = std::collections::HashMap::new();
 
     let mut scanned_sessions = 0;
     let mut ignored_session_shells = 0;
     let mut matches = Vec::new();
-    for (_, session_id, session_dir) in candidates {
+    for (_, session_id, session_dir, labels, warning) in candidates {
         let current = session_id == current_session_id.to_string();
         if current && !include_current {
             continue;
@@ -452,10 +470,19 @@ pub(crate) fn search_sessions(
         let id: SessionId = session_id
             .parse()
             .map_err(|error| format!("invalid saved session ID: {error}"))?;
+        labels_by_session.insert(id, (labels.clone(), warning));
+        if matches!(archive_filter, Some("active")) && labels.archived
+            || matches!(archive_filter, Some("archived")) && !labels.archived
+        {
+            continue;
+        }
         let metadata = crate::runtime::session_log::read_session_workspace_metadata(&session_dir)
             .ok()
             .flatten();
-        let title = metadata.as_ref().and_then(|meta| meta.title.clone());
+        let title = labels
+            .title
+            .clone()
+            .or_else(|| metadata.as_ref().and_then(|meta| meta.title.clone()));
         let workspace = metadata
             .as_ref()
             .map(|meta| meta.active_root.display().to_string());
@@ -521,14 +548,31 @@ pub(crate) fn search_sessions(
         }
     }
 
-    Ok(json!({
+    let mut value = json!({
         "query": query,
         "sessions": matches,
         "count": matches.len(),
         "scanned_sessions": scanned_sessions,
         "ignored_session_shells": ignored_session_shells,
         "truncated": scanned_sessions == MAX_SCANNED_SESSIONS || matches.len() == limit,
-    }))
+    });
+    for session in value["sessions"].as_array_mut().into_iter().flatten() {
+        if let Some(id) = session["session_id"]
+            .as_str()
+            .and_then(|id| id.parse().ok())
+        {
+            if let Some((labels, warning)) = labels_by_session.get(&id) {
+                session["pinned"] = json!(labels.pinned);
+                session["archived"] = json!(labels.archived);
+                session["ui_warning"] = json!(warning);
+            }
+            session["active_elsewhere"] = json!(crate::runtime::session_labels::active_elsewhere(
+                sessions_dir,
+                id
+            ));
+        }
+    }
+    Ok(value)
 }
 
 struct MessageHit {

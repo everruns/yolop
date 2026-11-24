@@ -627,6 +627,14 @@ impl BashTool {
         let request_full_access = arguments.get("sandbox_permissions").and_then(Value::as_str)
             == Some("require_escalated");
         let justification = arguments.get("justification").and_then(Value::as_str);
+        let evidence_root = crate::capabilities::progress_guard::is_check_command(&command)
+            .then(|| self.ws.host.active_root().ok())
+            .flatten();
+        let evidence_before = if let Some(root) = &evidence_root {
+            super::workspace_evidence::record(root).await
+        } else {
+            Value::Null
+        };
         let output = match self
             .execute_with_policy(&command, None, request_full_access, justification, cancel)
             .await
@@ -658,6 +666,10 @@ impl BashTool {
             "output_limited": output.out_truncated || output.err_truncated,
             "sandbox": output.sandbox_mode.as_str(),
         });
+        if let Some(root) = evidence_root {
+            let evidence_after = super::workspace_evidence::record(&root).await;
+            result["workspace_evidence"] = json!({"before": evidence_before, "after": evidence_after, "scope":"Git-visible files within the session workspace; ignored files, submodules and external dependencies excluded"});
+        }
         if output.cancelled {
             return ToolExecutionResult::tool_error(format!(
                 "{} Output before it stopped:\n{}",
@@ -700,6 +712,14 @@ impl BackgroundExecutableTool for BashTool {
         let request_full_access = arguments.get("sandbox_permissions").and_then(Value::as_str)
             == Some("require_escalated");
         let justification = arguments.get("justification").and_then(Value::as_str);
+        let evidence_root = crate::capabilities::progress_guard::is_check_command(&command)
+            .then(|| self.ws.host.active_root().ok())
+            .flatten();
+        let evidence_before = if let Some(root) = &evidence_root {
+            super::workspace_evidence::record(root).await
+        } else {
+            Value::Null
+        };
         // A detached call stays cancellable by its id, like a foreground one.
         // The engine registers only inline calls, so detached bash registers
         // with the same upstream registry for its full execution lifetime.
@@ -747,7 +767,7 @@ impl BackgroundExecutableTool for BashTool {
                 steps: Vec::new(),
             })
             .await;
-        let result = json!({
+        let mut result = json!({
             "command": command_result_preview(&command),
             "command_truncated": command.len() > COMMAND_RESULT_PREVIEW_BYTES,
             "exit_code": exit_code,
@@ -760,6 +780,9 @@ impl BackgroundExecutableTool for BashTool {
             "output_limited": output_limited,
             "sandbox": output.sandbox_mode.as_str(),
         });
+        if let Some(root) = evidence_root {
+            result["workspace_evidence"] = json!({"before":evidence_before,"after":super::workspace_evidence::record(&root).await,"scope":"Git-visible workspace files"});
+        }
         if success {
             Ok(BackgroundOutcome {
                 summary: format!(
@@ -794,6 +817,36 @@ impl BackgroundExecutableTool for BashTool {
 
 #[cfg(test)]
 mod tests {
+
+    #[tokio::test]
+    async fn validation_execution_records_real_workspace_stamps() {
+        let root = tempfile::tempdir().unwrap();
+        for args in [
+            vec!["init", "-q"],
+            vec!["config", "user.name", "Test User"],
+            vec!["config", "user.email", "test@example.com"],
+            vec!["commit", "--allow-empty", "-qm", "baseline"],
+        ] {
+            assert!(
+                std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(root.path())
+                    .args(args)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        let tool = BashTool::new(Workspace::from_path(root.path().to_path_buf()));
+        let result = tool.execute(json!({"command":"cargo test --help"})).await;
+        let ToolExecutionResult::Success(value) = result else {
+            panic!("Expected actual command result: {result:?}");
+        };
+        assert_eq!(value["exit_code"], 0);
+        let before = &value["workspace_evidence"]["before"];
+        assert!(before["head"].as_str().unwrap().len() >= 40);
+        assert_eq!(before, &value["workspace_evidence"]["after"]);
+    }
 
     #[tokio::test]
     async fn oversized_shell_approval_returns_a_length_error() {

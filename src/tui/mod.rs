@@ -1,4 +1,6 @@
 mod attachment;
+mod attention;
+mod dialog;
 mod draft;
 mod mcp_status;
 mod review;
@@ -162,7 +164,6 @@ struct CompactTurn {
     elapsed_secs: u64,
     outcome: CompactWorkOutcome,
     expanded: bool,
-    cancel_requested: bool,
 }
 
 fn compact_detail_line(line: &ChatLine) -> ChatLine {
@@ -186,6 +187,7 @@ fn compact_detail_line(line: &ChatLine) -> ChatLine {
 
 pub struct App {
     workflow: workflow::Workflow,
+    attention: attention::Attention,
     session: Session,
     startup: StartupInfo,
     model: ModelState,
@@ -232,6 +234,8 @@ pub struct App {
     stream_preview: Option<StreamPreview>,
     rx: Option<mpsc::UnboundedReceiver<TurnEvent>>,
     turn_cancel: Option<oneshot::Sender<()>>,
+    /// Cancellation belongs to the running turn, independent of its renderer.
+    turn_cancel_requested: bool,
     turn_steering: Option<crate::runtime::turn_scope::SteeringTarget>,
     /// Active setup overlay, if any. The overlay owns its own keyboard
     /// handling so provider, token, and model setup never echo through the
@@ -275,6 +279,14 @@ pub struct App {
     pending_sandbox_approval: Option<PendingSandboxApproval>,
     approval_scroll: ScrollState,
     approval_scroll_metrics: (usize, usize),
+    dialog_scroll: ScrollState,
+    dialog_scroll_metrics: (usize, usize),
+    dialog_list_area: Rect,
+    dialog_list_start: usize,
+    dialog_answer_visible: bool,
+    approval_body_visible: bool,
+    dialog_manual_scroll: bool,
+    dialog_title: String,
     /// Settings store shared with the runtime (same instance
     /// `ModelsCapability` writes). Used to resolve credentials when querying
     /// provider models APIs and to show per-provider connection status in
@@ -376,6 +388,7 @@ pub struct App {
     term_progress: TerminalProgress,
     native_progress: bool,
     program_status: Option<ProgramStatus>,
+    focus_reporting: Option<tuika::term::attention::FocusReporting<std::io::Stdout>>,
     /// Shell-style Up/Down recall of previously submitted composer prompts,
     /// persisted across sessions. See [`crate::tui::prompt_history`].
     history: crate::tui::prompt_history::PromptHistory,
@@ -772,6 +785,7 @@ impl App {
         let (mcp_login_tx, mcp_login_rx) = mpsc::unbounded_channel::<McpLoginEvent>();
         let mut app = Self {
             workflow: workflow::Workflow::default(),
+            attention: attention::Attention::default(),
             session,
             startup: runtime.startup,
             model: runtime.model,
@@ -801,6 +815,7 @@ impl App {
             stream_preview: None,
             rx: None,
             turn_cancel: None,
+            turn_cancel_requested: false,
             turn_steering: None,
             setup: None,
             codex_login: None,
@@ -829,6 +844,18 @@ impl App {
                 scroll
             },
             approval_scroll_metrics: (0, 0),
+            dialog_scroll: {
+                let mut scroll = ScrollState::new();
+                scroll.jump_to_top();
+                scroll
+            },
+            dialog_scroll_metrics: (0, 0),
+            dialog_list_area: Rect::ZERO,
+            dialog_list_start: 0,
+            dialog_answer_visible: true,
+            approval_body_visible: true,
+            dialog_manual_scroll: false,
+            dialog_title: String::new(),
             settings: runtime.settings,
             sandbox_mode_override: runtime.sandbox_mode_override,
             model_catalog: HashMap::new(),
@@ -871,6 +898,7 @@ impl App {
             term_progress: TerminalProgress::new(),
             native_progress: false,
             program_status: None,
+            focus_reporting: None,
             // Tests run in-memory so recall never reads or appends to the real
             // per-user history file.
             history: if cfg!(test) {
@@ -1306,6 +1334,7 @@ impl App {
         PresentationState {
             command_prefix: !self.keymap.pending().is_empty(),
             draft_attachments: self.pending_pastes.len() + self.pending_images.len(),
+            attention_unread: self.attention.items.len(),
             changes_open: self.workflow.panel == Some(workflow::WorkflowPanel::Changes),
             failure_available: self.workflow.failure.is_some(),
             startup: StartupPresentation {
@@ -1365,6 +1394,7 @@ impl App {
 
     fn apply_session_tasks(&mut self, tasks: crate::tui::session_tasks_view::TaskTree) {
         self.session_tasks = tasks;
+        self.observe_attention();
         let selectable = self
             .activity_rail()
             .map(|rail| rail.selectable_task_indices())
@@ -1486,7 +1516,6 @@ impl App {
             elapsed_secs: 0,
             outcome: CompactWorkOutcome::Active,
             expanded: false,
-            cancel_requested: false,
         });
         self.active_compact_turn = Some(self.compact_turns.len() - 1);
         self.refresh_active_compact_summary();
@@ -1959,10 +1988,7 @@ impl App {
                     return Ok(());
                 }
                 Ok(TurnEvent::Done { result, success }) => {
-                    let cancelled = self
-                        .active_compact_turn
-                        .and_then(|index| self.compact_turns.get(index))
-                        .is_some_and(|turn| turn.cancel_requested);
+                    let cancelled = self.turn_cancel_requested && !success;
                     let outcome = if cancelled {
                         CompactWorkOutcome::Cancelled
                     } else if !success {
@@ -1970,6 +1996,22 @@ impl App {
                     } else {
                         CompactWorkOutcome::Completed
                     };
+                    self.record_attention(
+                        format!("turn:{}", uuid::Uuid::new_v4()),
+                        if cancelled {
+                            "Turn cancelled"
+                        } else if success {
+                            "Turn completed"
+                        } else {
+                            "Turn failed"
+                        },
+                        "Open the conversation to inspect retained work and its result.".into(),
+                        if success || cancelled {
+                            attention::Target::Conversation
+                        } else {
+                            attention::Target::Recovery
+                        },
+                    );
                     self.finalize_compact_turn(outcome);
                     self.finish_busy();
                     if !success && !cancelled {
@@ -1977,7 +2019,9 @@ impl App {
                         self.push_system("Task failed. Open /recover for continuation, model, sign-in, and inspection actions.".into());
                     }
                     if let Some(status) = self.program_status.as_mut() {
-                        if success {
+                        if cancelled {
+                            status.clear();
+                        } else if success {
                             status.done();
                         } else {
                             status.error();
@@ -2012,6 +2056,12 @@ impl App {
                         status.error();
                     }
                     self.push_system(format!("turn failed: {err}"));
+                    self.record_attention(
+                        format!("failure:{}", uuid::Uuid::new_v4()),
+                        "Turn failed",
+                        err.clone(),
+                        attention::Target::Recovery,
+                    );
                     self.workflow.failure = Some(err);
                     self.push_system("Open /recover to continue, change model, sign in, or inspect completed work.".into());
                     self.start_next_queued_turn().await;
@@ -2063,6 +2113,8 @@ impl App {
                 continue;
             }
             self.push_system(format!("question: {}", request.prompt));
+            self.dialog_scroll.jump_to_top();
+            self.dialog_answer_visible = true;
             self.pending_ask = Some(PendingAsk {
                 prompt: request.prompt,
                 placeholder: request.placeholder,
@@ -2074,6 +2126,7 @@ impl App {
                 custom: false,
                 reply: Some(request.reply),
             });
+            self.record_attention(format!("question:{}", uuid::Uuid::new_v4()), "Question needs an answer", "The conversation is waiting for your answer. Close this view to return to the question.".into(), attention::Target::Conversation);
             applied_ui_command = true;
         }
         if self.poll_sandbox_approval() {
@@ -2153,6 +2206,10 @@ impl App {
                         continue;
                     }
                     if self.render_mode.is_fullscreen()
+                        && self.pending_ask.is_none()
+                        && self.setup.is_none()
+                        && self.pending_sandbox_approval.is_none()
+                        && self.workflow.panel.is_none()
                         && self.handle_fullscreen_selection_key(&key)
                     {
                         continue;
@@ -2160,7 +2217,20 @@ impl App {
                     self.handle_key(key).await;
                 }
                 CrosstermEvent::Mouse(mouse) => {
+                    if self.pending_sandbox_approval.is_none() && self.question_mouse(mouse) {
+                        continue;
+                    }
                     let area = terminal.get_frame().area();
+                    if self.setup.is_some() {
+                        match mouse.kind {
+                            MouseEventKind::ScrollUp => self.scroll_dialog(KeyCode::PageUp),
+                            MouseEventKind::ScrollDown => self.scroll_dialog(KeyCode::PageDown),
+                            _ => {
+                                self.handle_setup_mouse(mouse, area, &mut *terminal).await;
+                            }
+                        }
+                        continue;
+                    }
                     if self.handle_workflow_mouse(mouse, area).await {
                         continue;
                     }
@@ -2184,6 +2254,8 @@ impl App {
                         return Ok(());
                     }
                 }
+                CrosstermEvent::FocusGained => self.attention.focus = Some(true),
+                CrosstermEvent::FocusLost => self.attention.focus = Some(false),
                 // Every paste takes the same route; the setup wizard is one
                 // more surface on it, not a case checked before routing.
                 CrosstermEvent::Paste(pasted) => self.handle_paste(pasted).await,
@@ -2390,6 +2462,22 @@ impl App {
         };
 
         let surfaces = self.input_surfaces();
+        if matches!(surfaces.owner(&event), routing::ASK | routing::SETUP)
+            && matches!(key.code, KeyCode::PageUp | KeyCode::PageDown)
+        {
+            self.scroll_dialog(key.code);
+            return;
+        }
+        if matches!(surfaces.owner(&event), routing::ASK | routing::SETUP) {
+            self.dialog_manual_scroll = false;
+        }
+        if surfaces.owner(&event) == routing::SETUP
+            && !self.dialog_answer_visible
+            && !matches!(key.code, KeyCode::Esc)
+            && key.modifiers != KeyModifiers::CONTROL
+        {
+            return;
+        }
         // Reverse-history search owns the keyboard outright, Ctrl+C included,
         // which cancels the search rather than arming exit. So it runs ahead of
         // the global chord layer, and a keystroke inside it is not activity in
@@ -2418,6 +2506,14 @@ impl App {
                 return InputOutcome::Ignored;
             }
             match self.dispatch_global_key(key) {
+                Some(action)
+                    if matches!(surfaces.owner(&event), routing::ASK | routing::SETUP)
+                        && !matches!(action, GlobalAction::Quit | GlobalAction::PasteImage)
+                        && !(surfaces.owner(&event) == routing::SETUP
+                            && matches!(action, GlobalAction::Interrupt)) =>
+                {
+                    InputOutcome::Ignored
+                }
                 Some(action) => {
                     deferred = self.run_global_action(action);
                     InputOutcome::Consumed
@@ -2448,7 +2544,7 @@ impl App {
             InputOutcome::Consumed
         });
         router.target_fn(routing::ASK, |_| {
-            self.handle_ask_key(key);
+            self.handle_ask_key(dialog_key(key));
             InputOutcome::Consumed
         });
         router.target_fn(routing::TURN_CANCEL, |_| {
@@ -2456,7 +2552,7 @@ impl App {
             InputOutcome::Consumed
         });
         router.target_fn(routing::SETUP, |_| {
-            deferred = Some(Deferred::SetupKey(key));
+            deferred = Some(Deferred::SetupKey(dialog_key(key)));
             InputOutcome::Consumed
         });
         router.target_fn(routing::COMPOSER, |_| {
@@ -2562,7 +2658,9 @@ impl App {
                 request: Some(request),
                 reply,
             });
+            self.record_attention(format!("approval:{}", uuid::Uuid::new_v4()), "Permission needs review", "The conversation is waiting for an approval decision. Close this view to review the action.".into(), attention::Target::Conversation);
             self.approval_scroll.set_offset(0);
+            self.approval_body_visible = true;
             return true;
         }
         false
@@ -2592,7 +2690,8 @@ impl App {
                 });
             return;
         }
-        let is_plain_character = matches!(key.modifiers, KeyModifiers::NONE | KeyModifiers::SHIFT);
+        let is_plain_character = self.approval_body_visible
+            && matches!(key.modifiers, KeyModifiers::NONE | KeyModifiers::SHIFT);
         match key.code {
             KeyCode::Char('y') | KeyCode::Char('Y') if is_plain_character => {
                 if let Some(pending) = self.pending_sandbox_approval.take() {
@@ -2615,6 +2714,11 @@ impl App {
             }
             _ => {}
         }
+        if self.pending_sandbox_approval.is_none() {
+            self.attention
+                .items
+                .retain(|notice| !notice.key.starts_with("approval:"));
+        }
         if self.pending_sandbox_approval.is_none()
             && self.busy
             && let Some(status) = self.program_status.as_mut()
@@ -2626,6 +2730,19 @@ impl App {
     /// Keyboard handling for the composer, the surface under everything else.
     fn composer_key(&mut self, key: KeyEvent) -> Option<Deferred> {
         match key.code {
+            KeyCode::Char('@')
+                if key.modifiers.is_empty() && {
+                    let (row, col) = self.composer.cursor();
+                    self.composer
+                        .text()
+                        .lines()
+                        .nth(row)
+                        .and_then(|line| line.chars().take(col).last())
+                        .is_none_or(char::is_whitespace)
+                } =>
+            {
+                self.open_workflow(workflow::WorkflowPanel::Files)
+            }
             KeyCode::Enter => match self
                 .composer
                 .handle_enter(key.modifiers == KeyModifiers::SHIFT)
@@ -3094,6 +3211,12 @@ impl App {
     /// Keyboard handling while an extension `ui/ask` prompt is open: edit the
     /// answer, Enter to submit, Esc to cancel.
     fn handle_ask_key(&mut self, key: KeyEvent) {
+        if !self.dialog_answer_visible
+            && key.code != KeyCode::Esc
+            && !(key.code == KeyCode::Char('c') && key.modifiers == KeyModifiers::CONTROL)
+        {
+            return;
+        }
         let Some(ask) = self.pending_ask.as_mut() else {
             return;
         };
@@ -3173,6 +3296,9 @@ impl App {
 
     /// Deliver an answer to the extension and close the prompt.
     fn resolve_ask(&mut self, answer: crate::tui::host_ui::AskAnswer) {
+        self.attention
+            .items
+            .retain(|notice| !notice.key.starts_with("question:"));
         if let Some(mut ask) = self.pending_ask.take() {
             let shown = if answer.cancelled {
                 "(cancelled)".to_string()
@@ -3190,6 +3316,9 @@ impl App {
     }
 
     fn deny_pending_sandbox_approval(&mut self) {
+        self.attention
+            .items
+            .retain(|notice| !notice.key.starts_with("approval:"));
         if let Some(pending) = self.pending_sandbox_approval.take() {
             let _ = pending
                 .reply
@@ -3524,6 +3653,10 @@ impl App {
             .find(|c| c.name == name)
             .cloned()
         {
+            if name == "btw" {
+                self.ask_side_question(arg);
+                return;
+            }
             self.invoke_capability_command(descriptor, arg.to_string())
                 .await;
         } else {
@@ -4143,7 +4276,7 @@ impl App {
         help.push_str("\n\n## Keyboard shortcuts\n");
         for shortcut in help_shortcut_lines() {
             help.push_str("\n- ");
-            help.push_str(shortcut);
+            help.push_str(&shortcut);
         }
 
         help.push_str(
@@ -4264,7 +4397,7 @@ impl App {
     }
 
     fn handle_ctrl_c(&mut self) {
-        if !self.input_text().trim().is_empty() {
+        if self.setup.is_none() && !self.input_text().trim().is_empty() {
             self.reset_input();
             self.disarm_ctrl_c_pending_exit();
             return;
@@ -4301,11 +4434,9 @@ impl App {
         self.turn_steering = None;
         if let Some(cancel) = self.turn_cancel.take() {
             let _ = cancel.send(());
+            self.turn_cancel_requested = true;
             self.turn_activity = Some("cancelling".into());
-            if let Some(turn_index) = self.active_compact_turn {
-                self.compact_turns[turn_index].cancel_requested = true;
-                self.update_compact_activity("Cancelling");
-            }
+            self.update_compact_activity("Cancelling");
             self.stream_preview = None;
         }
     }
@@ -4318,6 +4449,7 @@ impl App {
         self.stream_preview = None;
         self.rx = None;
         self.turn_cancel = None;
+        self.turn_cancel_requested = false;
         self.turn_steering = None;
         if self.native_progress {
             self.term_progress.clear();
@@ -4795,14 +4927,33 @@ fn help_command_line(descriptor: &CommandDescriptor) -> String {
     format!("`{usage}`: {}", descriptor.description)
 }
 
-fn help_shortcut_lines() -> [&'static str; 5] {
-    [
-        "Send and edit: `Enter` send, `Shift-Enter` newline, `Tab` complete commands and `@files`, `↑`/`↓` history, `Ctrl+R` search",
-        "Paste and inspect: `Ctrl+V` paste image/text, `Ctrl+B` activity, `!<cmd>` shell alias",
-        "Exit: `Ctrl-C` twice or `Ctrl-D`",
-        "While busy: type and `Enter` to queue, `Esc` twice to cancel the turn",
-        "Scroll: use terminal scrollback; there are no in-app page keys",
-    ]
+fn dialog_key(key: KeyEvent) -> KeyEvent {
+    if key.code == KeyCode::Char('c') && key.modifiers == KeyModifiers::CONTROL {
+        KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)
+    } else {
+        key
+    }
+}
+
+fn help_shortcut_lines() -> Vec<String> {
+    let mut lines: Vec<_> = global_keymap()
+        .hints()
+        .iter()
+        .map(|hint| {
+            format!(
+                "`{}`: {}",
+                hint.keys,
+                hint.label.as_deref().unwrap_or("action")
+            )
+        })
+        .collect();
+    lines.extend([
+        "Enter sends a prompt, or steers the active turn. Shift-Enter adds a newline; Tab completes commands and @files.".into(),
+        "Esc closes the visible dialog. In the composer, press Esc twice to cancel the turn. Ctrl+C cancels a dialog or interrupts. Exit: `Ctrl+C` twice or `Ctrl+D`.".into(),
+        "Fullscreen: PageUp/PageDown scroll the transcript. In a panel they scroll its detail. Inline: use terminal scrollback for published history.".into(),
+        "Up/Down recalls prompts in the composer and selects rows in a focused picker. !<command> runs a shell command.".into(),
+    ]);
+    lines
 }
 
 fn capability_command_usage_with_prefix(descriptor: &CommandDescriptor, prefix: &str) -> String {
@@ -6737,6 +6888,7 @@ flowchart TD
         PresentationState {
             command_prefix: false,
             draft_attachments: 0,
+            attention_unread: 0,
             changes_open: false,
             failure_available: false,
             startup: StartupPresentation {
@@ -7843,7 +7995,9 @@ flowchart TD
         app_with_llmsim_options(crate::runtime::BuildOptions::default()).await
     }
 
-    async fn app_with_llmsim_options(mut options: crate::runtime::BuildOptions) -> TestApp {
+    pub(super) async fn app_with_llmsim_options(
+        mut options: crate::runtime::BuildOptions,
+    ) -> TestApp {
         let workspace = tempfile::tempdir().expect("workspace tempdir");
         let sessions = tempfile::tempdir().expect("sessions tempdir");
         let settings = std::sync::Arc::new(crate::config::SettingsStore::open(
@@ -8559,10 +8713,7 @@ flowchart TD
                             self.context_used_tokens = Some(used);
                         }
                         Ok(TurnEvent::Done { success, .. }) => {
-                            let cancelled = self
-                                .active_compact_turn
-                                .and_then(|index| self.compact_turns.get(index))
-                                .is_some_and(|turn| turn.cancel_requested);
+                            let cancelled = self.turn_cancel_requested && !success;
                             let outcome = if cancelled {
                                 CompactWorkOutcome::Cancelled
                             } else if !success {
@@ -9275,7 +9426,8 @@ flowchart TD
             .value
             .handle(&tuika::Event::Paste("pylf_v1".to_string()));
 
-        let (lines, cursor) = crate::tui::render::ask_overlay_content(&ask);
+        let content = crate::tui::render::ask_overlay_content(&ask);
+        let (lines, cursor) = (content.lines, content.cursor);
         let field = line_text(&lines[4]);
         assert_eq!(
             field, "> •••••••",
@@ -9292,7 +9444,7 @@ flowchart TD
         let _ = ask.value.handle(&tuika::Event::Key(tuika::event::Key::new(
             tuika::event::KeyCode::Left,
         )));
-        let (_, cursor) = crate::tui::render::ask_overlay_content(&ask);
+        let cursor = crate::tui::render::ask_overlay_content(&ask).cursor;
         assert_eq!(cursor, (4, "> ".len() + 6));
     }
 
@@ -9468,7 +9620,8 @@ flowchart TD
             custom: false,
             reply: Some(reply),
         };
-        let (lines, cursor) = crate::tui::render::ask_overlay_content(&ask);
+        let content = crate::tui::render::ask_overlay_content(&ask);
+        let (lines, cursor) = (content.lines, content.cursor);
         let text: Vec<String> = lines.iter().map(line_text).collect();
         assert_eq!(
             &text[2..5],
@@ -9496,7 +9649,8 @@ flowchart TD
             custom: false,
             reply: Some(reply),
         };
-        let (lines, cursor) = crate::tui::render::ask_overlay_content(&ask);
+        let content = crate::tui::render::ask_overlay_content(&ask);
+        let (lines, cursor) = (content.lines, content.cursor);
         let text: Vec<String> = lines.iter().map(line_text).collect();
         assert!(text.iter().any(|row| row == "Plan: Which plan?"));
         assert!(text.iter().any(|row| row == "Pick one."));
@@ -10064,9 +10218,9 @@ flowchart TD
         );
         assert!(
             help.contains("## Keyboard shortcuts\n")
-                && help.contains("Exit: `Ctrl-C` twice or `Ctrl-D`")
+                && help.contains("Exit: `Ctrl+C` twice or `Ctrl+D`")
                 && help.contains("to cancel the turn")
-                && help.contains("`Ctrl+V` paste image/text"),
+                && help.contains("`Ctrl+V`: paste image"),
             "help should describe keyboard shortcuts: {help}"
         );
         assert!(
@@ -11296,6 +11450,21 @@ flowchart TD
         assert_eq!(app.input_text(), "/cwd");
     }
 
+    async fn settle_file_picker(app: &mut App) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            app.poll_workflow();
+            if !app.workflow_presentation().is_some_and(|view| view.loading) {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "file picker did not finish loading"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn fullscreen_renders_at_mention_suggestions() {
         let mut fixture = app_with_llmsim().await;
@@ -11309,9 +11478,10 @@ flowchart TD
             app.handle_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::empty()))
                 .await;
         }
+        settle_file_picker(app).await;
         let rows = render_app_lines(app, 100, 24);
         assert!(
-            rows.iter().any(|row| row.contains("@hello.txt")),
+            rows.iter().any(|row| row.contains("hello.txt")),
             "fullscreen should render the @file hint row: {rows:?}"
         );
     }
@@ -11346,13 +11516,22 @@ flowchart TD
             app.handle_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::empty()))
                 .await;
         }
-        let suggestions = app.suggestions();
+        settle_file_picker(app).await;
+        let view = app.workflow_presentation().unwrap();
+        assert!(view.rows.iter().any(|row| row == "hello.txt"));
+        assert!(view.detail.contains("hi"));
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()))
+            .await;
+        settle_file_picker(app).await;
         assert!(
-            suggestions.iter().any(|s| s.label == "@hello.txt"),
-            "expected @hello.txt among {suggestions:?}"
+            app.pending_pastes
+                .iter()
+                .any(|(_, text)| text.contains("hi"))
         );
-
-        // Tab accepts the first suggestion, completing the mention in place.
+        app.close_workflow();
+        // Pasted references retain the inline completion path.
+        app.set_input_text(String::new());
+        app.handle_paste("@hel".into()).await;
         app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::empty()))
             .await;
         assert_eq!(app.input_text(), "@hello.txt");
@@ -12663,20 +12842,15 @@ flowchart TD
             width: 120,
             height: 36,
         };
-        let picker = render::setup_picker(app).expect("effort picker renders");
-        let panel = render::setup_panel_rect(area);
-        let mouse = MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
-            column: panel.x + 2,
-            row: panel.y + 1 + picker.header.len() as u16,
-            modifiers: KeyModifiers::empty(),
-        };
-
-        // A single click shows the new selection, then confirms: the handler
-        // paints the moved highlight into this terminal before proceeding.
         let mut terminal =
             Terminal::new(TestBackend::new(area.width, area.height)).expect("test terminal");
         terminal.draw(|f| draw(f, &mut *app)).expect("draw");
+        let mouse = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: app.dialog_list_area.x,
+            row: app.dialog_list_area.y,
+            modifiers: KeyModifiers::empty(),
+        };
         let style_of = |buffer: &tuika::ui::Buffer, x: u16, y: u16| {
             let cell = &buffer[(x, y)];
             (cell.fg, cell.bg, cell.modifier)
@@ -12699,8 +12873,8 @@ flowchart TD
             "click should paint the selected row before confirming"
         );
         let theme = fullscreen::yolop_theme();
-        assert_eq!(selected_style.0, theme.accent);
-        assert_eq!(selected_style.1, theme.surface);
+        assert_eq!(selected_style.0, theme.selection_fg);
+        assert_eq!(selected_style.1, theme.selection_bg);
         assert!(selected_style.2.contains(Modifier::BOLD));
         assert_eq!(clicked_style.0, theme.muted);
         assert_eq!(clicked_style.1, theme.surface);

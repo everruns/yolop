@@ -23,15 +23,15 @@ impl Author {
         match self {
             Author::User => ACCENT_BLUE,
             Author::Assistant => ACCENT_GOLD,
-            Author::Narration => TEXT_MUTED,
+            Author::Narration => super::fullscreen::yolop_theme().muted,
             Author::WorkSummary => ACCENT_GOLD,
-            Author::WorkDetail => TEXT_MUTED,
-            Author::Tool => TEXT_MUTED,
-            Author::ToolDetail => TEXT_MUTED,
+            Author::WorkDetail => super::fullscreen::yolop_theme().muted,
+            Author::Tool => super::fullscreen::yolop_theme().muted,
+            Author::ToolDetail => super::fullscreen::yolop_theme().muted,
             Author::Stderr | Author::Sandbox => ERROR_RED,
             Author::Diff => ACCENT_BLUE,
-            Author::Help => TEXT_DIM,
-            Author::System => TEXT_DIM,
+            Author::Help => super::fullscreen::yolop_theme().dim,
+            Author::System => super::fullscreen::yolop_theme().dim,
         }
     }
 }
@@ -40,7 +40,7 @@ impl StreamKind {
     fn color(self) -> Color {
         match self {
             StreamKind::Assistant => ACCENT_GOLD,
-            StreamKind::Tool => TEXT_MUTED,
+            StreamKind::Tool => super::fullscreen::yolop_theme().muted,
         }
     }
 }
@@ -258,48 +258,6 @@ fn paint_lines(f: &mut Frame<'_>, area: Rect, lines: Vec<Line<'static>>) {
     tuika::paint(f.buffer_mut(), area, &theme, &Text::new(lines), &[]);
 }
 
-/// Draw an overlay panel border pixel-identical to the old ratatui `Block`
-/// with `Borders::ALL`: square corners over a panel background fill.
-/// (Integration tests assert the corner glyphs, so the rounded `Boxed`
-/// component cannot be used here.)
-fn draw_panel_box(f: &mut Frame<'_>, panel: Rect, style: Style) {
-    let buf = f.buffer_mut();
-    buf.set_style(panel, style);
-    if panel.width >= 2 && panel.height >= 2 {
-        let x0 = panel.x;
-        let x1 = panel.x + panel.width - 1;
-        let y0 = panel.y;
-        let y1 = panel.y + panel.height - 1;
-        for x in x0..=x1 {
-            buf[Position::new(x, y0)].set_symbol("\u{2500}");
-            buf[Position::new(x, y1)].set_symbol("\u{2500}");
-        }
-        for y in y0..=y1 {
-            buf[Position::new(x0, y)].set_symbol("\u{2502}");
-            buf[Position::new(x1, y)].set_symbol("\u{2502}");
-        }
-        buf[Position::new(x0, y0)].set_symbol("\u{250c}");
-        buf[Position::new(x1, y0)].set_symbol("\u{2510}");
-        buf[Position::new(x0, y1)].set_symbol("\u{2514}");
-        buf[Position::new(x1, y1)].set_symbol("\u{2518}");
-    }
-}
-
-/// Paint panel body lines over the panel background, the way ratatui
-/// `Paragraph::new(lines).style(style)` did: the style sits beneath every
-/// span's own style.
-fn paint_panel_body(f: &mut Frame<'_>, inner: Rect, lines: Vec<Line<'static>>, style: Style) {
-    let theme = super::fullscreen::yolop_theme();
-    let lines: Vec<Line<'static>> = lines
-        .into_iter()
-        .map(|mut line| {
-            line.style = style.patch(line.style);
-            line
-        })
-        .collect();
-    tuika::paint(f.buffer_mut(), inner, &theme, &Text::new(lines), &[]);
-}
-
 pub(crate) fn clear_transcript_viewport(f: &mut Frame<'_>, area: Rect) {
     if area.width == 0 || area.height == 0 {
         return;
@@ -408,14 +366,14 @@ pub(crate) fn startup_screen_lines(state: &PresentationState, width: usize) -> V
         }
         let style = match line.tone {
             StartupLineTone::Primary => Style::default()
-                .fg(TEXT_PRIMARY)
+                .fg(super::fullscreen::yolop_theme().text)
                 .add_modifier(Modifier::BOLD),
             StartupLineTone::Good => Style::default().fg(DIFF_ADD),
             StartupLineTone::Warning if line.text.starts_with("DANGER:") => {
                 Style::default().fg(ERROR_RED)
             }
             StartupLineTone::Warning => Style::default().fg(ACCENT_GOLD),
-            StartupLineTone::Muted => Style::default().fg(TEXT_MUTED),
+            StartupLineTone::Muted => Style::default().fg(super::fullscreen::yolop_theme().muted),
         };
         append_wrapped_styled(
             &mut rendered,
@@ -542,61 +500,28 @@ pub(crate) fn draw_chrome_layout(f: &mut Frame<'_>, layout: ChromeLayout, state:
     draw_session_status(f, layout.session_status, state);
 }
 
-pub(crate) fn draw_setup_overlay(f: &mut Frame<'_>, area: Rect, app: &App) {
-    if app.setup.is_none() || area.width == 0 || area.height == 0 {
+pub(crate) fn draw_setup_overlay(f: &mut Frame<'_>, area: Rect, app: &mut App) {
+    if let Some(picker) = setup_picker(app) {
+        super::dialog::draw_setup_picker(f, area, app, picker);
         return;
     }
     let panel = setup_panel_rect(area);
-    if panel.width == 0 || panel.height == 0 {
-        return;
-    }
-    clear_rect(f.buffer_mut(), area);
-    clear_rect(f.buffer_mut(), panel);
-    draw_panel_box(
-        f,
-        panel,
-        Style::default()
-            .bg(super::fullscreen::yolop_theme().surface)
-            .fg(super::fullscreen::yolop_theme().text),
-    );
-    let inner = Rect {
-        x: panel.x.saturating_add(2),
-        y: panel.y.saturating_add(1),
-        width: panel.width.saturating_sub(4),
-        height: panel.height.saturating_sub(2),
-    };
-    // Provider rows fit what is left after the title, hint, spacer, and footer,
-    // so short viewports window the list instead of clipping the footer.
-    let provider_rows = usize::from(inner.height)
-        .saturating_sub(4)
-        .clamp(1, INLINE_PROVIDER_ROWS);
-    let (lines, cursor) = setup_overlay_content(app, Some(provider_rows));
-    paint_panel_body(
-        f,
-        inner,
-        lines,
-        Style::default().bg(super::fullscreen::yolop_theme().surface),
-    );
-    if let Some((row, col)) = cursor
-        && inner.height > 0
-        && inner.width > 0
-    {
-        f.set_cursor_position((
-            inner
-                .x
-                .saturating_add((col as u16).min(inner.width.saturating_sub(1))),
-            inner
-                .y
-                .saturating_add((row as u16).min(inner.height.saturating_sub(1))),
-        ));
-    }
+    let rows = usize::from(panel.height.saturating_sub(6)).clamp(1, INLINE_PROVIDER_ROWS);
+    let (lines, cursor) = setup_overlay_content(app, Some(rows));
+    super::dialog::draw_setup_text(f, area, app, lines, cursor);
 }
 
 /// The `ui/ask` overlay body: the question plus a live echo of the answer being
 /// typed, and the `(row, col)` cursor cell within the panel interior. Pure, so
 /// both the inline sheet renderer and the full-screen tuika overlay show the
 /// same content.
-pub(crate) fn ask_overlay_content(ask: &PendingAsk) -> (Vec<Line<'static>>, (usize, usize)) {
+pub(crate) struct AskOverlayContent {
+    pub lines: Vec<Line<'static>>,
+    pub question: Vec<Line<'static>>,
+    pub cursor: (usize, usize),
+}
+
+pub(crate) fn ask_overlay_content(ask: &PendingAsk) -> AskOverlayContent {
     let mut lines = vec![
         Line::from(Span::styled(
             "A question needs your answer:",
@@ -617,6 +542,7 @@ pub(crate) fn ask_overlay_content(ask: &PendingAsk) -> (Vec<Line<'static>>, (usi
     if prompt_rows == 0 {
         lines.push(Line::from(""));
     }
+    let question = lines[2..].to_vec();
     lines.push(Line::from(""));
     let body_row = lines.len();
     // Selector mode: a highlighted list of options. A selector the user
@@ -644,7 +570,11 @@ pub(crate) fn ask_overlay_content(ask: &PendingAsk) -> (Vec<Line<'static>>, (usi
             Style::default().add_modifier(Modifier::DIM),
         )));
         // No text cursor in selector mode; park it on the selected row.
-        return (lines, (body_row + ask.selected, 0));
+        return AskOverlayContent {
+            lines,
+            question,
+            cursor: (body_row + ask.selected, 0),
+        };
     }
     // Text / secret input. Secret input is masked; the placeholder (shown when
     // empty) is never masked.
@@ -673,53 +603,17 @@ pub(crate) fn ask_overlay_content(ask: &PendingAsk) -> (Vec<Line<'static>>, (usi
     // column follows the input state's cursor, so arrow keys move the caret
     // the user sees.
     let cursor = (body_row, "> ".len() + ask.value.cursor());
-    (lines, cursor)
+    AskOverlayContent {
+        lines,
+        question,
+        cursor,
+    }
 }
 
 /// Overlay for an extension `ui/ask` prompt: the question plus a live echo of
 /// the answer being typed. Owns the viewport like the setup overlay.
-pub(crate) fn draw_ask_overlay(f: &mut Frame<'_>, area: Rect, app: &App) {
-    let Some(ask) = app.pending_ask.as_ref() else {
-        return;
-    };
-    if area.width == 0 || area.height == 0 {
-        return;
-    }
-    let panel = setup_panel_rect(area);
-    if panel.width == 0 || panel.height == 0 {
-        return;
-    }
-    clear_rect(f.buffer_mut(), area);
-    clear_rect(f.buffer_mut(), panel);
-    draw_panel_box(
-        f,
-        panel,
-        Style::default()
-            .bg(super::fullscreen::yolop_theme().surface)
-            .fg(super::fullscreen::yolop_theme().text),
-    );
-    let inner = Rect {
-        x: panel.x.saturating_add(2),
-        y: panel.y.saturating_add(1),
-        width: panel.width.saturating_sub(4),
-        height: panel.height.saturating_sub(2),
-    };
-    let (lines, (cursor_row, cursor_col)) = ask_overlay_content(ask);
-    paint_panel_body(
-        f,
-        inner,
-        lines,
-        Style::default().bg(super::fullscreen::yolop_theme().surface),
-    );
-    // Park the cursor after the typed value.
-    if inner.width > 0 && inner.height > cursor_row as u16 {
-        f.set_cursor_position((
-            inner
-                .x
-                .saturating_add((cursor_col as u16).min(inner.width.saturating_sub(1))),
-            inner.y.saturating_add(cursor_row as u16),
-        ));
-    }
+pub(crate) fn draw_ask_overlay(f: &mut Frame<'_>, area: Rect, app: &mut App) {
+    super::dialog::draw_question(f, area, app);
 }
 
 /// Paint the flat activity rail shared by the inline and full-screen modes.
@@ -756,7 +650,7 @@ pub(crate) fn activity_rail_view(app: &mut App, width: u16, height: u16) -> Elem
                 } else {
                     "No activity"
                 },
-                Style::default().fg(TEXT_MUTED),
+                Style::default().fg(super::fullscreen::yolop_theme().muted),
             ))]
         });
     // Header and footer are the only fixed chrome. Keeping the body on the
@@ -774,7 +668,11 @@ pub(crate) fn activity_rail_view(app: &mut App, width: u16, height: u16) -> Elem
         Style::default()
             .fg(ACCENT_GOLD)
             .add_modifier(Modifier::BOLD),
-        Style::default().fg(if active > 0 { ACCENT_BLUE } else { TEXT_DIM }),
+        Style::default().fg(if active > 0 {
+            ACCENT_BLUE
+        } else {
+            super::fullscreen::yolop_theme().dim
+        }),
     );
     let footer_text = if app.background_panel_focused && app.selected_thread().is_some() {
         "↑↓ select · Enter open · x cancel · Esc"
@@ -785,12 +683,12 @@ pub(crate) fn activity_rail_view(app: &mut App, width: u16, height: u16) -> Elem
     };
     let footer = Line::from(Span::styled(
         truncate_end_chars(footer_text, content_width),
-        Style::default().fg(TEXT_MUTED),
+        Style::default().fg(super::fullscreen::yolop_theme().muted),
     ));
     let separator_style = Style::default().fg(if app.background_panel_focused {
         ACCENT_BLUE
     } else {
-        TEXT_DIM
+        super::fullscreen::yolop_theme().dim
     });
     let separator = vec![Line::from(Span::styled("│", separator_style)); height as usize];
     let body = Scroll::new(lines, &app.activity_scroll);
@@ -841,7 +739,10 @@ pub(crate) fn activity_rail_lines(
                         .fg(ACCENT_GOLD)
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(format!(" {}", counts.total), Style::default().fg(TEXT_DIM)),
+                Span::styled(
+                    format!(" {}", counts.total),
+                    Style::default().fg(super::fullscreen::yolop_theme().dim),
+                ),
             ]),
             ActivityRailRow::Warning(warning) => Line::from(Span::styled(
                 truncate_end_chars(&format!("! {warning}"), width),
@@ -850,16 +751,22 @@ pub(crate) fn activity_rail_lines(
             ActivityRailRow::Task(task) => {
                 let is_selected = selected == Some(task.task_index);
                 let base = if is_selected {
-                    Style::default().fg(TEXT_PRIMARY).bg(ACCENT_BLUE)
+                    Style::default()
+                        .fg(super::fullscreen::yolop_theme().text)
+                        .bg(ACCENT_BLUE)
                 } else {
-                    Style::default().fg(TEXT_PRIMARY)
+                    Style::default().fg(super::fullscreen::yolop_theme().text)
                 };
                 let icon_style = match (is_selected, task.status) {
-                    (true, _) => base.fg(TEXT_PRIMARY).add_modifier(Modifier::BOLD),
+                    (true, _) => base
+                        .fg(super::fullscreen::yolop_theme().text)
+                        .add_modifier(Modifier::BOLD),
                     (false, ActivityStatus::Succeeded) => base.fg(DIFF_ADD),
                     (false, ActivityStatus::Failed) => base.fg(ERROR_RED),
                     (false, ActivityStatus::AwaitingInput) => base.fg(ACCENT_GOLD),
-                    (false, ActivityStatus::Canceled) => base.fg(TEXT_DIM),
+                    (false, ActivityStatus::Canceled) => {
+                        base.fg(super::fullscreen::yolop_theme().dim)
+                    }
                     (false, ActivityStatus::Queued | ActivityStatus::Running) => {
                         base.fg(ACCENT_BLUE)
                     }
@@ -900,18 +807,18 @@ pub(crate) fn activity_rail_lines(
                 };
                 Line::from(vec![
                     Span::styled(cursor.to_string(), base),
-                    Span::styled(indent, base.fg(TEXT_DIM)),
+                    Span::styled(indent, base.fg(super::fullscreen::yolop_theme().dim)),
                     Span::styled(format!("{} ", task.status.icon(task.kind)), icon_style),
                     Span::styled(name, name_style),
                     Span::styled(" ".repeat(gap), base),
                     Span::styled(
                         right,
                         base.fg(if is_selected {
-                            TEXT_PRIMARY
+                            super::fullscreen::yolop_theme().text
                         } else if task.status == ActivityStatus::Failed {
                             ERROR_RED
                         } else {
-                            TEXT_MUTED
+                            super::fullscreen::yolop_theme().muted
                         }),
                     ),
                 ])
@@ -981,6 +888,9 @@ pub(crate) fn activity_rail_layout(area: Rect, visible: bool, focused: bool) -> 
 }
 
 pub(crate) fn setup_panel_rect(area: Rect) -> Rect {
+    if area.width < 50 || area.height < 12 {
+        return area;
+    }
     let width = area.width.saturating_sub(4).min(104).max(area.width.min(1));
     let height = area
         .height
@@ -1010,8 +920,8 @@ pub(crate) fn setup_panel_rect(area: Rect) -> Rect {
 /// gone; the hint line is the next candidate) over letting the list scroll by
 /// default.
 ///
-/// The full-screen renderer has no such limit — [`setup_picker`] hands the
-/// options to a scrolling `SelectList` with a scrollbar.
+/// Both renderers use [`setup_picker`] and a scrolling `SelectList`. This
+/// bound also serves the flattened setup-content model used by tests.
 const INLINE_PROVIDER_ROWS: usize = 15;
 
 /// Window a `len`-item list down to `capacity` rows, keeping `selected` in
@@ -1339,15 +1249,9 @@ pub(crate) struct SetupPicker {
 /// [`setup_row`] lines (item 4). The model list sets [`SetupPicker::viewport`] so
 /// the `SelectList` windows its (possibly huge) options with a scrollbar.
 ///
-/// NOTE (duplication): this intentionally mirrors the per-step option iteration
-/// in [`setup_overlay_content`] rather than refactoring it, so the inline sheet
-/// renderer stays byte-identical. The two share [`setup_option_line`] for the row
-/// formatting. The model picker's **custom-id input** sub-mode (`custom: Some`)
-/// returns `None` here so it falls back to the shared text-input panel path —
-/// that sub-mode is a `TextInput`, not a list. Other input steps and Codex login
-/// return `None` too (nothing to select). The inline `setup_overlay_content` also
-/// draws a "─── more models ───" divider between recommended and other models;
-/// the `SelectList` path omits it (the scrollbar conveys position instead).
+/// Input sub-modes return `None` and use the shared scrollable text sheet.
+/// The flattened setup-content model remains available for command and theme
+/// assertions; both on-screen renderers use this picker model for lists.
 pub(crate) fn setup_picker(app: &App) -> Option<SetupPicker> {
     match app.setup.as_ref()? {
         SetupStep::Provider { selected } => {
@@ -1697,7 +1601,10 @@ pub(crate) fn history_search_preview_line(search: &HistorySearchView, width: u16
                 .fg(ACCENT_BLUE)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(query, Style::default().fg(TEXT_PRIMARY)),
+        Span::styled(
+            query,
+            Style::default().fg(super::fullscreen::yolop_theme().text),
+        ),
     ];
     if !suffix.is_empty() {
         spans.push(Span::styled(suffix, Style::default().fg(DIFF_DELETE)));
@@ -1727,7 +1634,7 @@ pub(crate) fn suggestion_preview_line(
         ),
         Span::styled(
             truncate_end_chars(&body, max_body),
-            Style::default().fg(TEXT_MUTED),
+            Style::default().fg(super::fullscreen::yolop_theme().muted),
         ),
     ])
 }
@@ -1760,7 +1667,10 @@ pub(crate) fn stream_preview_line(state: &ViewState, width: u16) -> Option<Line<
                 .fg(preview.kind.color())
                 .add_modifier(Modifier::DIM),
         ),
-        Span::styled(truncated, Style::default().fg(TEXT_MUTED)),
+        Span::styled(
+            truncated,
+            Style::default().fg(super::fullscreen::yolop_theme().muted),
+        ),
     ]))
 }
 
@@ -1859,10 +1769,10 @@ pub(crate) fn append_chat_lines<'a>(
         append_wrapped_styled(
             lines,
             "    │ ",
-            Style::default().fg(TEXT_DIM),
+            Style::default().fg(super::fullscreen::yolop_theme().dim),
             &presented.text,
             inner_width,
-            Style::default().fg(TEXT_MUTED),
+            Style::default().fg(super::fullscreen::yolop_theme().muted),
         );
         return Vec::new();
     }
@@ -1870,7 +1780,7 @@ pub(crate) fn append_chat_lines<'a>(
         append_wrapped_plain(
             lines,
             "           ",
-            Style::default().fg(TEXT_MUTED),
+            Style::default().fg(super::fullscreen::yolop_theme().muted),
             &presented.text,
             inner_width,
         );
@@ -1906,7 +1816,7 @@ pub(crate) fn append_chat_lines<'a>(
             header_style,
             &presented.text,
             inner_width,
-            Style::default().fg(TEXT_MUTED),
+            Style::default().fg(super::fullscreen::yolop_theme().muted),
         );
         Vec::new()
     } else if matches!(presented.author, Author::Diff) {
@@ -1946,7 +1856,10 @@ fn append_work_summary<'a>(lines: &mut Vec<Line<'a>>, text: &str, inner_width: u
     let first = vec![
         Span::styled("  ", Style::default()),
         Span::styled(marker.to_string(), marker_style),
-        Span::styled(rest.to_string(), Style::default().fg(TEXT_MUTED)),
+        Span::styled(
+            rest.to_string(),
+            Style::default().fg(super::fullscreen::yolop_theme().muted),
+        ),
     ];
     let line = Line::from(first);
     if usize::from(line.width()) <= inner_width {
@@ -1959,7 +1872,7 @@ fn append_work_summary<'a>(lines: &mut Vec<Line<'a>>, text: &str, inner_width: u
         Style::default(),
         text,
         inner_width,
-        Style::default().fg(TEXT_MUTED),
+        Style::default().fg(super::fullscreen::yolop_theme().muted),
     );
 }
 
@@ -2096,7 +2009,7 @@ pub(crate) fn diff_line_style(line: &str) -> Style {
     } else if line.starts_with("@@") || line.starts_with('\\') {
         DIFF_META
     } else {
-        TEXT_PRIMARY
+        super::fullscreen::yolop_theme().text
     };
     Style::default().fg(color)
 }
@@ -2355,7 +2268,8 @@ pub(crate) fn draw_input(f: &mut Frame<'_>, area: Rect, app: &mut App) {
     // stay identical.
     let theme = crate::tui::fullscreen::yolop_theme();
     let view = tuika::element(
-        tuika::components::TextInput::new(&app.composer).style(Style::default().fg(TEXT_PRIMARY)),
+        tuika::components::TextInput::new(&app.composer)
+            .style(Style::default().fg(super::fullscreen::yolop_theme().text)),
     );
     tuika::paint(f.buffer_mut(), input_area, &theme, view.as_ref(), &[]);
     draw_input_cursor(f, input_area, app);
@@ -2394,7 +2308,7 @@ pub(crate) fn message_separator_title(state: &ViewState) -> Line<'static> {
                 state.presentation.composer_hint(),
                 newline_shortcut_hint()
             ),
-            Style::default().fg(TEXT_MUTED),
+            Style::default().fg(super::fullscreen::yolop_theme().muted),
         ),
     ])
 }
@@ -2412,7 +2326,9 @@ pub(crate) fn thinking_title(
     const SPINNER: [&str; 4] = ["-", "\\", "|", "/"];
     let spinner = SPINNER[((frame / 2) as usize) % SPINNER.len()];
     let text = format!("{activity}...");
-    let text_style = Style::default().fg(TEXT_MUTED).add_modifier(Modifier::BOLD);
+    let text_style = Style::default()
+        .fg(super::fullscreen::yolop_theme().muted)
+        .add_modifier(Modifier::BOLD);
     let mut spans = vec![
         Span::styled("─── ", Style::default().fg(ACCENT_BLUE)),
         Span::styled(spinner.to_string(), Style::default().fg(ACCENT_GOLD)),
@@ -2423,7 +2339,7 @@ pub(crate) fn thinking_title(
     if let Some(secs) = elapsed_secs {
         spans.push(Span::styled(
             format!(" {}", format_elapsed(secs)),
-            Style::default().fg(TEXT_DIM),
+            Style::default().fg(super::fullscreen::yolop_theme().dim),
         ));
     }
     let queue_hint = if queued_messages == 0 {
@@ -2431,7 +2347,10 @@ pub(crate) fn thinking_title(
     } else {
         format!(" ({queued_messages} queued · Enter to queue · Esc twice to cancel) ")
     };
-    spans.push(Span::styled(queue_hint, Style::default().fg(TEXT_DIM)));
+    spans.push(Span::styled(
+        queue_hint,
+        Style::default().fg(super::fullscreen::yolop_theme().dim),
+    ));
     Line::from(spans)
 }
 
@@ -2496,23 +2415,32 @@ fn linear_status_layout(lines: &[StatusLine], width: u16) -> FullscreenStatusLay
     let mut rendered = Vec::with_capacity(lines.len());
     let mut hits = Vec::new();
     for (row, line) in lines.iter().enumerate() {
-        let mut spans = vec![Span::styled(" ", Style::default().fg(TEXT_MUTED))];
+        let mut spans = vec![Span::styled(
+            " ",
+            Style::default().fg(super::fullscreen::yolop_theme().muted),
+        )];
         let mut col: u16 = 1;
         for (index, field) in line.fields.iter().enumerate() {
             if index > 0 {
-                spans.push(Span::styled("  ·  ", Style::default().fg(TEXT_DIM)));
+                spans.push(Span::styled(
+                    "  ·  ",
+                    Style::default().fg(super::fullscreen::yolop_theme().dim),
+                ));
                 col = col.saturating_add(5);
             }
             let start = col;
             if let Some(label) = field.label {
                 let label = format!("{label} ");
                 col = col.saturating_add(str_cols(&label));
-                spans.push(Span::styled(label, Style::default().fg(TEXT_DIM)));
+                spans.push(Span::styled(
+                    label,
+                    Style::default().fg(super::fullscreen::yolop_theme().dim),
+                ));
             }
             col = col.saturating_add(str_cols(&field.value));
             spans.push(Span::styled(
                 field.value.clone(),
-                Style::default().fg(TEXT_MUTED),
+                Style::default().fg(super::fullscreen::yolop_theme().muted),
             ));
             if let Some(action) = field.action
                 && start < width
@@ -2581,7 +2509,10 @@ fn section_status_layout(sections: &[StatusSection], width: u16) -> FullscreenSt
                     spans.push(Span::raw(" ".repeat(cell_width as usize)));
                 }
                 if column + 1 < group_columns {
-                    spans.push(Span::styled("│", Style::default().fg(TEXT_DIM)));
+                    spans.push(Span::styled(
+                        "│",
+                        Style::default().fg(super::fullscreen::yolop_theme().dim),
+                    ));
                 }
             }
             lines.push(Line::from(spans));
@@ -2614,7 +2545,7 @@ fn status_cell(section: &StatusSection, width: u16) -> StatusCell {
         Span::styled(title, Style::default().fg(ACCENT_GOLD)),
         Span::styled(
             "─".repeat(width.saturating_sub(title_width) as usize),
-            Style::default().fg(TEXT_DIM),
+            Style::default().fg(super::fullscreen::yolop_theme().dim),
         ),
     ]));
     for (row, field) in section.fields.iter().enumerate() {
@@ -2628,9 +2559,15 @@ fn status_cell(section: &StatusSection, width: u16) -> StatusCell {
         let end_col = prefix_width.saturating_add(str_cols(&value)).min(width);
         let mut spans = vec![Span::raw(" ")];
         if !label.is_empty() {
-            spans.push(Span::styled(label, Style::default().fg(TEXT_DIM)));
+            spans.push(Span::styled(
+                label,
+                Style::default().fg(super::fullscreen::yolop_theme().dim),
+            ));
         }
-        spans.push(Span::styled(value, Style::default().fg(TEXT_MUTED)));
+        spans.push(Span::styled(
+            value,
+            Style::default().fg(super::fullscreen::yolop_theme().muted),
+        ));
         lines.push(Line::from(spans));
         if let Some(action) = field.action
             && end_col > 1
@@ -2670,25 +2607,34 @@ fn fit_status_text(text: &str, width: u16) -> String {
 }
 
 fn status_line(line: &StatusLine) -> Line<'static> {
-    let mut spans = vec![Span::styled(" ", Style::default().fg(TEXT_MUTED))];
+    let mut spans = vec![Span::styled(
+        " ",
+        Style::default().fg(super::fullscreen::yolop_theme().muted),
+    )];
     let mut first = true;
     for field in &line.fields {
         if !first {
-            spans.push(Span::styled("  ·  ", Style::default().fg(TEXT_DIM)));
+            spans.push(Span::styled(
+                "  ·  ",
+                Style::default().fg(super::fullscreen::yolop_theme().dim),
+            ));
         }
         first = false;
         if let Some(label) = field.label {
             spans.push(Span::styled(
                 format!("{label} "),
-                Style::default().fg(TEXT_DIM),
+                Style::default().fg(super::fullscreen::yolop_theme().dim),
             ));
         }
         spans.push(Span::styled(
             field.value.clone(),
-            Style::default().fg(TEXT_MUTED),
+            Style::default().fg(super::fullscreen::yolop_theme().muted),
         ));
     }
-    spans.push(Span::styled(" ", Style::default().fg(TEXT_MUTED)));
+    spans.push(Span::styled(
+        " ",
+        Style::default().fg(super::fullscreen::yolop_theme().muted),
+    ));
     Line::from(spans)
 }
 

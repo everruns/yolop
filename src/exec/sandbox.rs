@@ -15,6 +15,10 @@ use tokio::process::Command;
 
 pub(crate) trait SandboxProvider: Send + Sync {
     fn mode(&self) -> SandboxMode;
+    fn additional_roots(&self) -> &[PathBuf] {
+        &[]
+    }
+
     /// `control` is the attached `yolop` endpoint for this execution, when one
     /// exists; a contained provider admits exactly that endpoint and nothing
     /// else on the network.
@@ -24,6 +28,42 @@ pub(crate) trait SandboxProvider: Send + Sync {
         script: &str,
         control: Option<&ControlEndpoint>,
     ) -> Result<SandboxCommand>;
+}
+
+/// Describe the active launch policy without treating a session grant as a
+/// replacement for kernel containment. Paths come from the same provider.
+pub(crate) fn access_summary(provider: &dyn SandboxProvider, cwd: &Path) -> String {
+    let mode = provider.mode();
+    if mode == SandboxMode::DangerFullAccess {
+        return "Reads/writes: host filesystem with your OS account permissions. Network: host access. No native containment.".into();
+    }
+    let temp = sandbox_temp_dir()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|error| format!("unavailable: {error}"));
+    let mut roots = vec![format!("private temporary root: {temp}")];
+    if mode == SandboxMode::WorkspaceWrite {
+        roots.push(format!("workspace: {}", cwd.display()));
+        roots.extend(
+            provider
+                .additional_roots()
+                .iter()
+                .map(|root| format!("additional workspace: {}", root.display())),
+        );
+        roots.push("shared /tmp (and /private/tmp on macOS)".into());
+        if let Some(skills) = global_skills_dir() {
+            roots.push(format!("global skills: {}", skills.display()));
+        }
+    }
+    let reads = if cfg!(windows) {
+        "native MXC system and mounted workspace read rules"
+    } else {
+        "host filesystem reads under your OS account permissions"
+    };
+    format!(
+        "Reads: {reads}.\nWrite roots:\n{}\nNetwork: {}. Per-command Yolop control endpoints are admitted only for that launch. Structured file tools additionally enforce their workspace write blocklist.",
+        roots.join("\n"),
+        network_access(mode)
+    )
 }
 
 /// A shell launch prepared by a provider.
@@ -247,6 +287,9 @@ struct NativeSandbox {
 }
 
 impl SandboxProvider for NativeSandbox {
+    fn additional_roots(&self) -> &[PathBuf] {
+        &self.extra_roots
+    }
     fn mode(&self) -> SandboxMode {
         self.mode
     }

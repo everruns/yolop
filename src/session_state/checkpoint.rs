@@ -347,6 +347,12 @@ pub struct RestorePreview {
     pub changed_paths: Vec<String>,
 }
 
+pub(crate) struct RestoreComparison {
+    pub root: PathBuf,
+    pub before: String,
+    pub after: String,
+}
+
 impl RestorePreview {
     pub fn render(&self) -> String {
         let mut lines = vec![match (&self.checkpoint_id, &self.prompt) {
@@ -755,6 +761,36 @@ impl CheckpointManager {
             mode,
             changed_paths,
         })
+    }
+
+    pub(crate) fn preview_comparison(&self, token: &str) -> Result<Option<RestoreComparison>> {
+        let prepared = self.prepared.lock().expect("prepared restore lock");
+        let prepared = prepared
+            .as_ref()
+            .context("restore preview is no longer available")?;
+        anyhow::ensure!(prepared.token == token, "restore preview token changed");
+        if !prepared.mode.includes_workspace() {
+            return Ok(None);
+        }
+        Ok(Some(RestoreComparison {
+            root: self
+                .worktree
+                .owned_worktree_info()
+                .context("workspace restore requires an owned worktree")?
+                .path,
+            before: prepared
+                .recovery_snapshot
+                .as_ref()
+                .context("recovery snapshot is missing")?
+                .tree
+                .clone(),
+            after: prepared
+                .workspace_target
+                .as_ref()
+                .context("target snapshot is missing")?
+                .tree
+                .clone(),
+        }))
     }
 
     pub(crate) fn attach_engine(&self, engine: &Arc<crate::runtime::engine::SessionHost>) {

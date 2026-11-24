@@ -1643,7 +1643,7 @@ fn tui_workflow_palette_context_and_recovery_keep_the_live_draft() {
             tui.output_text()
         );
         assert!(
-            tui.wait_for_output("Monetary cost: unknown", Duration::from_secs(5)),
+            tui.wait_for_output("Context occupancy: unknown", Duration::from_secs(5)),
             "{}",
             tui.output_text()
         );
@@ -2440,7 +2440,7 @@ fn tui_setup_overlay_renders_in_real_pty() {
     let screen = tui.screen_lines();
     let sheet: Vec<_> = screen
         .iter()
-        .filter(|row| row.contains('│') || row.contains('┌') || row.contains('└'))
+        .filter(|row| row.contains('│') || row.contains('╭') || row.contains('╰'))
         .collect();
     assert_eq!(
         sheet.len(),
@@ -2450,12 +2450,12 @@ fn tui_setup_overlay_renders_in_real_pty() {
     assert!(
         sheet
             .first()
-            .is_some_and(|row| row.trim_start().starts_with('┌'))
+            .is_some_and(|row| row.trim_start().starts_with('╭'))
     );
     assert!(
         sheet
             .last()
-            .is_some_and(|row| row.trim_start().starts_with('└'))
+            .is_some_and(|row| row.trim_start().starts_with('╰'))
     );
     assert!(
         !screen.iter().any(|row| row.contains("Enter to send")),
@@ -4775,4 +4775,77 @@ fn model_search_bounds_output_and_reports_all_matches() {
         assert!(serde_json::to_string(stdout.as_ref()).unwrap().len() < 20 * 1024);
         task.join().unwrap();
     }
+}
+
+#[test]
+fn tui_attention_alerts_are_opt_in_generic_focus_aware_and_restore_reporting() {
+    let workspace = tempfile::tempdir().unwrap();
+    let mut tui = spawn_tui_llmsim_with(
+        &yolop_binary(),
+        TuiSpawnOptions {
+            inline: false,
+            workspace: Some(workspace.path().to_path_buf()),
+            rows: 24,
+            cols: 100,
+            ..Default::default()
+        },
+    );
+    let started = tui.wait_for_output("Enter to send", Duration::from_secs(10));
+    assert!(
+        started,
+        "binary={} child={:?} output={}",
+        yolop_binary().display(),
+        tui.child.try_wait(),
+        tui.output_text()
+    );
+    assert!(!tui.output_text().contains("\x1b[?1004h"));
+    tui.write_input(b"/attention\r");
+    assert!(tui.wait_for_output("Needs attention", Duration::from_secs(5)));
+    tui.write_input(b"n");
+    assert!(tui.wait_for_output("\x1b[?1004h", Duration::from_secs(5)));
+    tui.write_input(b"\x1b");
+    let screen = tui.wait_for_screen(Duration::from_secs(5), |lines| {
+        lines.iter().any(|line| line.contains("Enter to send"))
+            && !lines.iter().any(|line| line.contains("Needs attention"))
+    });
+    assert!(screen.iter().any(|line| line.contains("Enter to send")));
+    tui.write_input(b"private-attention-probe\r\x1b[O");
+    assert!(
+        tui.wait_for_output("\x1b]9;Yolop:", Duration::from_secs(15)),
+        "{}",
+        tui.output_text()
+    );
+    let output = tui.output_text();
+    let notification = output
+        .split("\x1b]9;Yolop:")
+        .nth(1)
+        .unwrap()
+        .split("\x1b\\")
+        .next()
+        .unwrap();
+    assert!(notification.contains("Work needs attention"));
+    assert!(!notification.contains("private-attention-probe"));
+    tui.write_input(b"\x1b[I/attention\r");
+    let screen = tui.wait_for_screen(Duration::from_secs(5), |lines| {
+        lines.iter().any(|line| line.contains("Needs attention"))
+    });
+    assert!(screen.iter().any(|line| line.contains("Needs attention")));
+    tui.write_input(b"nn");
+    assert!(tui.wait_for_output("\x1b[?1004l", Duration::from_secs(5)));
+    tui.write_input(b"n");
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while tui.output_text().matches("\x1b[?1004h").count() < 2
+        && std::time::Instant::now() < deadline
+    {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(tui.output_text().matches("\x1b[?1004h").count(), 2);
+    tui.write_input(b"\x1b");
+    tui.wait_for_screen(Duration::from_secs(5), |lines| {
+        !lines.iter().any(|line| line.contains("Needs attention"))
+    });
+    tui.write_input(b"\x03\x03\x03");
+    assert!(tui.wait_or_kill(Duration::from_secs(5)).success());
+    let output = tui.output_text();
+    assert!(output.rfind("\x1b[?1004l") > output.rfind("\x1b[?1004h"));
 }

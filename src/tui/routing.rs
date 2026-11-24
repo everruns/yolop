@@ -53,26 +53,26 @@ impl InputSurfaces {
     /// other key still reaches the setup wizard or the composer under it. The
     /// remaining surfaces are true modals and ignore the event entirely.
     pub(crate) fn owner(&self, event: &Event) -> &'static str {
-        if self.searching {
-            return HISTORY_SEARCH;
-        }
         if self.awaiting_sandbox_approval {
             return SANDBOX_APPROVAL;
         }
-        if self.workflow_focused && !self.asking && !self.in_setup {
+        if self.asking {
+            return ASK;
+        }
+        if self.in_setup {
+            return SETUP;
+        }
+        if self.searching {
+            return HISTORY_SEARCH;
+        }
+        if self.workflow_focused {
             return WORKFLOW;
         }
         if self.background_panel_focused {
             return BACKGROUND_PANEL;
         }
-        if self.asking {
-            return ASK;
-        }
         if self.busy && is_escape(event) {
             return TURN_CANCEL;
-        }
-        if self.in_setup {
-            return SETUP;
         }
         COMPOSER
     }
@@ -150,7 +150,7 @@ mod tests {
     }
 
     #[test]
-    fn search_outranks_every_other_surface() {
+    fn the_rendered_approval_outranks_underlying_surfaces() {
         let all = InputSurfaces {
             workflow_focused: true,
             searching: true,
@@ -160,20 +160,18 @@ mod tests {
             busy: true,
             in_setup: true,
         };
-        assert_eq!(all.owner(&key(KeyCode::Esc)), HISTORY_SEARCH);
+        assert_eq!(all.owner(&key(KeyCode::Esc)), SANDBOX_APPROVAL);
     }
 
     #[test]
     fn a_running_turn_claims_escape_only() {
         let busy = InputSurfaces {
             busy: true,
-            in_setup: true,
             ..surfaces()
         };
         assert_eq!(busy.owner(&key(KeyCode::Esc)), TURN_CANCEL);
-        // Anything else falls through to the surface under the running turn.
-        assert_eq!(busy.owner(&key(KeyCode::Char('a'))), SETUP);
-        assert_eq!(busy.owner(&paste()), SETUP);
+        assert_eq!(busy.owner(&key(KeyCode::Char('a'))), COMPOSER);
+        assert_eq!(busy.owner(&paste()), COMPOSER);
     }
 
     #[test]
@@ -184,6 +182,21 @@ mod tests {
             ..surfaces()
         };
         assert_eq!(asking.owner(&key(KeyCode::Esc)), ASK);
+    }
+
+    #[test]
+    fn visible_question_and_setup_own_input_over_an_underlying_activity_rail() {
+        for event in [key(KeyCode::Esc), key(KeyCode::Char('a')), paste()] {
+            let mut modal = surfaces();
+            modal.background_panel_focused = true;
+            modal.workflow_focused = true;
+            modal.asking = true;
+            assert_eq!(modal.owner(&event), ASK);
+            modal.asking = false;
+            modal.in_setup = true;
+            modal.busy = true;
+            assert_eq!(modal.owner(&event), SETUP);
+        }
     }
 
     #[test]

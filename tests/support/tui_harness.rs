@@ -283,6 +283,10 @@ pub fn spawn_tui_llmsim_with_settings(
     cmd.env("XDG_CONFIG_HOME", home.path().join(".config"));
     cmd.env("XDG_DATA_HOME", home.path().join(".local/share"));
     cmd.env("TERM", "xterm-256color");
+    // A protocol fixture owns its palette; the invoking shell's preference
+    // must not change the bytes or contrast the tests exercise.
+    cmd.env("COLORTERM", "truecolor");
+    cmd.env_remove("NO_COLOR");
     cmd.env_remove("VISUAL");
     if let Some(editor) = options.editor {
         cmd.env("EDITOR", editor);
@@ -338,10 +342,13 @@ pub fn spawn_tui_llmsim_with_settings(
         // Carry the unmatched tail across reads so a query split between
         // chunks is still recognized.
         let mut pending: Vec<u8> = Vec::new();
-        while let Ok(n) = reader.read(&mut buf) {
-            if n == 0 {
-                break;
-            }
+        loop {
+            let n = match reader.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => n,
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(_) => break,
+            };
             let chunk = &buf[..n];
             update_tracked_cursor_from_output(chunk, &tracked_cursor_row, &tracked_cursor_col);
             pending.extend_from_slice(chunk);

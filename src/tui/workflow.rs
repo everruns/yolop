@@ -7,7 +7,9 @@ use crate::session_state::checkpoint::{RestoreMode, RestorePreview};
 use anyhow::Context;
 use serde_json::json;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+mod workbench;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum WorkflowPanel {
     Changes,
     Timeline,
@@ -17,10 +19,21 @@ pub enum WorkflowPanel {
     Actions,
     Search,
     Recovery,
+    SideQuestion,
+    Checks,
+    Tasks,
+    Files,
+    Attention,
+    Permissions,
 }
 
 #[derive(Clone, Debug)]
 enum Action {
+    None,
+    Attention(String, super::attention::Target),
+    AttachReference(String),
+    Task { owner: SessionId, id: String },
+    Revoke(crate::sandbox_approval::ApprovalScope),
     Command(String),
     File(String),
     Checkpoint(String),
@@ -42,6 +55,12 @@ struct Row {
 }
 
 enum Loaded {
+    Rows(Vec<Row>),
+    FilePreview(String, String),
+    TaskDetail(SessionId, String, String),
+    TaskMessage(SessionId, String, String),
+    SessionChanged(String),
+    SideAnswer(String),
     ReviewBase(String),
     Review(ReviewSnapshot, String, String),
     Diff(String, String),
@@ -54,6 +73,7 @@ enum Loaded {
 // either must cancel even when a blocking prepare finishes after cancellation.
 struct PreviewLease {
     preview: RestorePreview,
+    diff: String,
     manager: std::sync::Arc<crate::session_state::checkpoint::CheckpointManager>,
 }
 
@@ -75,7 +95,7 @@ pub(super) struct Workflow {
     pub focused: bool,
     pub scope: ReviewScope,
     pub base: String,
-    query: String,
+    pub(super) query: SingleLineInputState,
     command_input: Option<String>,
     rows: Vec<Row>,
     selected: usize,
@@ -99,6 +119,38 @@ pub(super) struct Workflow {
     pub list_viewport: tuika::components::SelectViewportState,
     pub list_area: Rect,
     pub list_start: usize,
+    side_question: String,
+    side_answer: String,
+    inspected_task: Option<(SessionId, String)>,
+    inspected_file: String,
+    session_archive: u8,
+    editing_session: Option<SessionId>,
+    session_grouped: bool,
+    pub(super) notice: String,
+    views: std::collections::HashMap<WorkflowPanel, ViewMemory>,
+    restore_selection: Option<String>,
+    task_filter: String,
+    message_reply: Option<String>,
+    message_context: String,
+    task_paused: bool,
+    pub task_follow: bool,
+    pub actionable: bool,
+}
+
+#[derive(Clone)]
+struct ViewMemory {
+    query: String,
+    selected: usize,
+    key: Option<String>,
+    action: Option<Action>,
+    offset: usize,
+}
+
+fn row_key(row: &Row) -> String {
+    match &row.action {
+        Action::None => row.label.clone(),
+        action => format!("{action:?}"),
+    }
 }
 
 impl Default for Workflow {
@@ -108,7 +160,7 @@ impl Default for Workflow {
             focused: false,
             scope: ReviewScope::WorkingTree,
             base: "origin/main".into(),
-            query: String::new(),
+            query: SingleLineInputState::new(),
             command_input: None,
             rows: Vec::new(),
             selected: 0,
@@ -136,6 +188,22 @@ impl Default for Workflow {
             list_viewport: tuika::components::SelectViewportState::new(),
             list_area: Rect::ZERO,
             list_start: 0,
+            side_question: String::new(),
+            side_answer: String::new(),
+            inspected_task: None,
+            inspected_file: String::new(),
+            session_archive: 0,
+            editing_session: None,
+            session_grouped: false,
+            notice: String::new(),
+            views: Default::default(),
+            restore_selection: None,
+            task_filter: String::new(),
+            message_reply: None,
+            message_context: String::new(),
+            task_paused: false,
+            task_follow: false,
+            actionable: true,
         }
     }
 }
@@ -151,7 +219,10 @@ impl Workflow {
         if self.command_input.is_some() {
             return Vec::new();
         }
-        let query = self.query.to_lowercase();
+        let query = self.query.text().to_lowercase();
+        if self.panel == Some(WorkflowPanel::Files) {
+            return workbench::matching_files(&self.rows, &query);
+        }
         self.rows
             .iter()
             .enumerate()
@@ -163,6 +234,22 @@ impl Workflow {
             .collect()
     }
 
+    fn replace_rows(&mut self, rows: Vec<Row>) {
+        let key = self
+            .restore_selection
+            .take()
+            .or_else(|| self.selected_row().map(row_key));
+        self.rows = rows;
+        let visible = self.visible();
+        self.selected = key
+            .and_then(|key| {
+                visible
+                    .iter()
+                    .position(|index| row_key(&self.rows[*index]) == key)
+            })
+            .unwrap_or(self.selected.min(visible.len().saturating_sub(1)));
+    }
+
     fn selected_row(&self) -> Option<&Row> {
         self.rows.get(*self.visible().get(self.selected)?)
     }
@@ -172,6 +259,22 @@ impl Workflow {
     }
 
     pub fn close(&mut self) {
+        if let Some(panel) = self.panel
+            && panel != WorkflowPanel::Actions
+            && self.command_input.is_none()
+            && self.preview.is_none()
+        {
+            self.views.insert(
+                panel,
+                ViewMemory {
+                    query: self.query.text().into(),
+                    selected: self.selected,
+                    key: self.selected_row().map(row_key),
+                    action: self.selected_row().map(|row| row.action.clone()),
+                    offset: self.scroll.offset(),
+                },
+            );
+        }
         self.cancel_load();
         self.panel = None;
         self.focused = false;
@@ -313,8 +416,17 @@ impl App {
         self.workflow.scroll.set_offset(0);
         self.workflow.preview = None;
         self.workflow.error = None;
+        self.workflow.notice.clear();
         self.workflow.image_preview = None;
         self.workflow.rows.clear();
+        if let Some(memory) = self.workflow.views.get(&panel).cloned() {
+            self.workflow.query.insert_str(&memory.query);
+            self.workflow.selected = memory.selected;
+            self.workflow.restore_selection = memory.key;
+            self.workflow.scroll.set_offset(memory.offset);
+        } else {
+            self.workflow.restore_selection = None;
+        }
         if panel == WorkflowPanel::Changes {
             self.workflow.snapshot = None;
             self.workflow.diff.clear();
@@ -404,7 +516,13 @@ impl App {
                     },
                 ];
             }
-            WorkflowPanel::Usage => {}
+            WorkflowPanel::Usage => self.load_context(),
+            WorkflowPanel::SideQuestion => {}
+            WorkflowPanel::Checks
+            | WorkflowPanel::Tasks
+            | WorkflowPanel::Files
+            | WorkflowPanel::Attention
+            | WorkflowPanel::Permissions => self.open_workbench(panel),
         }
     }
 
@@ -429,13 +547,20 @@ impl App {
                 return;
             }
         };
-        let selected_path = self.workflow.selected_row().and_then(|row| {
-            if let Action::File(path) = &row.action {
-                Some(path.clone())
-            } else {
-                None
-            }
-        });
+        let selected_path = self
+            .workflow
+            .selected_row()
+            .map(|row| row.action.clone())
+            .or_else(|| {
+                self.workflow
+                    .views
+                    .get(&WorkflowPanel::Changes)
+                    .and_then(|view| view.action.clone())
+            })
+            .and_then(|action| match action {
+                Action::File(path) => Some(path),
+                _ => None,
+            });
         let root = self.worktree.active_root();
         self.workflow.pending = Some(tokio::spawn(async move {
             let snapshot = super::review::collect(&root, &reference).await?;
@@ -497,12 +622,13 @@ impl App {
             .sessions_dir()
             .to_path_buf();
         let current = self.session_id();
-        let query = self.workflow.query.clone();
+        let query = self.workflow.query.text().to_string();
+        let archive = ["active", "archived", "all"][usize::from(self.workflow.session_archive)];
         self.workflow.pending = Some(tokio::task::spawn_blocking(move || {
             crate::capabilities::sessions::search_sessions(
                 &root,
                 current,
-                &json!({"query":query,"limit":50}),
+                &json!({"query":query,"limit":50,"archive":archive}),
             )
             .map(Loaded::Sessions)
             .map_err(anyhow::Error::msg)
@@ -541,6 +667,24 @@ impl App {
                 Ok(Ok(loaded)) => {
                     self.workflow.error = None;
                     match loaded {
+                        Loaded::SessionChanged(message) => { self.workflow.notice = message; self.load_sessions(); }
+                        Loaded::Rows(rows) => {
+                            self.workflow.replace_rows(rows);
+                            if self.workflow.panel == Some(WorkflowPanel::Files) { self.load_file_preview(); }
+                        }
+                        Loaded::TaskMessage(owner, id, detail) => {
+                            self.workflow.notice = detail.lines().next().unwrap_or_default().to_string();
+                            self.workflow.task_filter.clear();
+                            if let Some(row) = self.workflow.rows.iter_mut().find(|row| matches!(&row.action, Action::Task { owner: row_owner, id: row_id } if owner == *row_owner && id == *row_id)) { row.detail = detail; }
+                        }
+                        Loaded::TaskDetail(owner, id, detail) => {
+                            if let Some(row) = self.workflow.rows.iter_mut().find(|row| matches!(&row.action, Action::Task { owner: row_owner, id: row_id } if owner == *row_owner && id == *row_id)) { row.detail = detail; }
+                        }
+                        Loaded::FilePreview(path, text) => {
+                            self.workflow.inspected_file = path.clone();
+                            if let Some(row) = self.workflow.rows.iter_mut().find(|row| matches!(&row.action, Action::AttachReference(reference) if reference == &path)) { row.detail = text; }
+                        }
+                        Loaded::SideAnswer(answer) => self.workflow.side_answer = answer,
                         Loaded::ReviewBase(reference) => {
                             self.workflow.base = reference;
                             self.workflow.scope = ReviewScope::Base;
@@ -577,19 +721,22 @@ impl App {
                             self.attach_text(&label, &text);
                             self.refresh_attachments();
                         }
-                        Loaded::Sessions(value) => {
-                            self.workflow.rows = value["sessions"].as_array().into_iter().flatten().filter_map(|session| {
+                        Loaded::Sessions(mut value) => {
+                            if self.workflow.session_grouped && let Some(sessions) = value["sessions"].as_array_mut() {
+                                sessions.sort_by_key(|session| (session["pinned"].as_bool() != Some(true), session["workspace"].as_str().unwrap_or_default().to_owned()));
+                            }
+                            let rows = value["sessions"].as_array().into_iter().flatten().filter_map(|session| {
                                 let id = session["session_id"].as_str()?.parse().ok()?;
                                 let title = session["title"].as_str().or_else(|| session["snippet"].as_str()).unwrap_or("Untitled session");
                                 let workspace = session["workspace"].as_str().unwrap_or("workspace unknown");
                                 let branch = session["branch"].as_str().unwrap_or("branch unknown");
-                                let state = if session["failed"].as_bool()==Some(true) {"recorded failure"} else {"saved"};
+                                let state = if session["active_elsewhere"].as_bool() == Some(true) { "active elsewhere" } else if session["failed"].as_bool()==Some(true) {"recorded failure"} else {"saved"};
                                 Some(Row {
-                                    label:format!("{} · {} · {}", first_line(title,80),branch,state),
-                                    detail:format!("{title}\n{workspace}\nBranch: {branch}\nState: {state}\n\nLast matching message:\n{}\n\nSaved recap:\n{}\n\nOpening resumes the existing session. Live sessions retain their exclusive lease.", session["snippet"].as_str().unwrap_or("unknown"),session["recap"].as_str().unwrap_or("No saved recap")), action:Action::Session(id),
+                                    label:format!("{}{}{} · {} · {} · {}", if session["pinned"].as_bool() == Some(true) {"★ "} else {""}, if session["archived"].as_bool() == Some(true) {"[archived] "} else {""}, first_line(title,80), Path::new(workspace).file_name().and_then(|name| name.to_str()).unwrap_or(workspace), branch,state),
+                                    detail:format!("{title}\n{workspace}\nBranch: {branch}\nState: {state}\n\nLast matching message:\n{}\n\nSaved recap:\n{}\n{}\nOpening resumes the existing session. Live sessions retain their exclusive lease.", session["snippet"].as_str().unwrap_or("unknown"),session["recap"].as_str().unwrap_or("No saved recap"), session["ui_warning"].as_str().unwrap_or_default()), action:Action::Session(id),
                                 })
                             }).collect();
-                            self.workflow.selected = 0;
+                            self.workflow.replace_rows(rows);
                         }
                     }
                 }
@@ -607,6 +754,19 @@ impl App {
                 .is_some_and(|due| Instant::now() >= due)
         {
             self.load_sessions();
+        }
+        if self.workflow.panel == Some(WorkflowPanel::Tasks)
+            && self.workflow.command_input.is_none()
+            && !self.workflow.task_paused
+            && self.workflow.pending.is_none()
+            && self.workflow.refreshed.elapsed() >= Duration::from_secs(2)
+        {
+            self.open_workbench(WorkflowPanel::Tasks);
+            if let Some(Action::Task { owner, id }) =
+                self.workflow.selected_row().map(|row| row.action.clone())
+            {
+                self.inspect_task(owner, id);
+            }
         }
         if self.workflow.panel == Some(WorkflowPanel::Changes)
             && self.workflow.pending.is_none()
@@ -629,13 +789,37 @@ impl App {
             ),
             WorkflowPanel::Sessions => (
                 "Sessions",
-                "Type to search title, repository, branch or messages · Up/Down select · Enter resume · Esc close",
+                "Type to search · Enter resume · Ctrl+S pin · Alt+R rename · Ctrl+Delete archive · Tab archive filter · Alt+G group projects · Esc close",
             ),
             WorkflowPanel::Attachments => (
                 "Attachments",
                 "Up/Down select · Enter preview image · Delete remove · Esc composer · /attach path#start-end",
             ),
             WorkflowPanel::Usage => ("Context and usage", "PgUp/PgDn scroll · Esc close"),
+            WorkflowPanel::SideQuestion => (
+                "Side question",
+                "PgUp/PgDn scroll · c copy answer · s attach to draft · Esc close",
+            ),
+            WorkflowPanel::Checks => (
+                "Checks and evidence",
+                "Type to filter · Up/Down select · PgUp/PgDn output · Ctrl+R refresh · Esc close",
+            ),
+            WorkflowPanel::Tasks => (
+                "Task inspector",
+                "Up/Down task · Enter inspect · PgUp/PgDn output · / find · t pause/live · x cancel · m message · r refresh · Esc close",
+            ),
+            WorkflowPanel::Files => (
+                "Attach workspace file",
+                "Type fuzzy path#start-end · Up/Down select · Enter attach · PgUp/PgDn preview · Esc cancel",
+            ),
+            WorkflowPanel::Attention => (
+                "Needs attention",
+                "Up/Down select · Enter open · Delete acknowledge · n desktop alerts · Esc close",
+            ),
+            WorkflowPanel::Permissions => (
+                "Effective permissions",
+                "Up/Down inspect · Delete revoke selected session grant · Esc close",
+            ),
             WorkflowPanel::Actions => (
                 "Actions",
                 "Type to search · Up/Down select · Enter run · Esc close",
@@ -655,7 +839,7 @@ impl App {
             } else {
                 "Ctrl+X P focus".into()
             },
-            query: self.workflow.query.clone(),
+            query: self.workflow.query.text().to_string(),
             footer: footer.into(),
             selected: self.workflow.selected,
             rows: self
@@ -667,7 +851,11 @@ impl App {
             loading: self.workflow.pending.is_some(),
             query_label: if matches!(
                 panel,
-                WorkflowPanel::Actions | WorkflowPanel::Search | WorkflowPanel::Sessions
+                WorkflowPanel::Actions
+                    | WorkflowPanel::Search
+                    | WorkflowPanel::Sessions
+                    | WorkflowPanel::Files
+                    | WorkflowPanel::Checks
             ) {
                 "Search".into()
             } else {
@@ -700,12 +888,29 @@ impl App {
                 "Local views stay available. Runtime commands wait until the active turn settles."
                     .into()
             }
+            WorkflowPanel::Sessions => format!(
+                "{} sessions · {}",
+                ["Active", "Archived", "All"][usize::from(self.workflow.session_archive)],
+                view.rows.len()
+            ),
             _ => format!("{} results", view.rows.len()),
         };
         view.detail = if let Some(command) = self.workflow.command_input.as_ref() {
-            view.title = format!("Arguments: /{command}");
-            view.query_label = "Arguments".into();
-            view.footer = "Type arguments · Enter run · Esc return to actions".into();
+            view.title = match command.as_str() {
+                "rename-session" => "Rename session".into(),
+                "task-message" => "Message agent".into(),
+                "task-find" => "Find in task output".into(),
+                "btw" => "Ask a side question".into(),
+                _ => format!("Arguments: /{command}"),
+            };
+            view.query_label = match command.as_str() {
+                "rename-session" => "Name",
+                "task-message" | "btw" => "Message",
+                "task-find" => "Find",
+                _ => "Arguments",
+            }
+            .into();
+            view.footer = "Type text · Enter submit · Esc cancel".into();
             self.startup
                 .capability_commands
                 .iter()
@@ -717,22 +922,45 @@ impl App {
                         .collect::<Vec<_>>()
                         .join("\n")
                 })
-                .unwrap_or_default()
+                .unwrap_or_else(|| match command.as_str() {
+                    "rename-session" => "Enter a short session name. Enter saves; Esc returns without renaming.".into(),
+                    "task-message" => format!("{}\n\nEnter records and attempts delivery to this agent. Delivery status is shown separately; Esc cancels.",self.workflow.message_context),
+                    "btw" => "Ask about the current conversation. The answer uses existing context without tools or changes to history.".into(),
+                    _ => String::new(),
+                })
         } else if let Some(preview) = &self.workflow.preview {
             view.title = "Confirm restore".into();
             view.footer = "Enter confirm this preview · Esc return without restoring".into();
             format!(
-                "Mode: {:?}\nBefore: {}\n\nWorkspace: {} captured path(s) will change\n{}\n\nOnly captured workspace files are restored. Git commits, external services, and ignored files are unchanged.",
+                "Mode: {:?}\nBefore: {}\n\nWorkspace: {} captured path(s) will change\n{}\n\nOnly captured workspace files are restored. Git commits, external services, and ignored files are unchanged.\n\nRestoration diff, current snapshot to target:\n{}",
                 preview.mode,
                 preview
                     .prompt
                     .as_deref()
                     .unwrap_or("the most recently abandoned branch"),
                 preview.changed_paths.len(),
-                preview.changed_paths.join("\n")
+                preview.changed_paths.join("\n"),
+                preview.diff,
             )
         } else if panel == WorkflowPanel::Usage {
-            present::usage_detail(&self.presentation_state())
+            self.workflow
+                .selected_row()
+                .map(|row| row.detail.clone())
+                .unwrap_or_else(|| present::usage_detail(&self.presentation_state()))
+        } else if panel == WorkflowPanel::SideQuestion {
+            format!(
+                "{}\n\n{}\n\nSide questions use current context, have no tools, and stay outside conversation history.",
+                self.workflow.side_question,
+                if self.workflow.side_answer.is_empty() {
+                    if self.workflow.pending.is_some() {
+                        "Asking…"
+                    } else {
+                        "No answer was returned. Press r to retry, or close and ask a new /btw question."
+                    }
+                } else {
+                    &self.workflow.side_answer
+                }
+            )
         } else if panel == WorkflowPanel::Changes {
             self.workflow.diff.clone()
         } else if panel == WorkflowPanel::Recovery {
@@ -748,6 +976,29 @@ impl App {
                 .map(|row| row.detail.clone())
                 .unwrap_or_else(|| "No matching entries.".into())
         };
+        if panel == WorkflowPanel::Tasks
+            && self.workflow.command_input.is_none()
+            && !self.workflow.task_filter.is_empty()
+        {
+            let needle = self.workflow.task_filter.to_lowercase();
+            let matches = view
+                .detail
+                .lines()
+                .enumerate()
+                .filter(|(_, line)| line.to_lowercase().contains(&needle))
+                .map(|(line, text)| format!("{}: {text}", line + 1))
+                .collect::<Vec<_>>();
+            view.detail = format!(
+                "Output filter: {} · {} matching lines. / changes or clears filter.\n\n{}",
+                self.workflow.task_filter,
+                matches.len(),
+                matches.join("\n")
+            );
+        }
+        if !self.workflow.notice.is_empty() {
+            view.subtitle
+                .push_str(&format!(" · {}", self.workflow.notice));
+        }
         if let Some(error) = &self.workflow.error {
             view.detail = format!("{error}\n\n{}", view.detail);
         }
@@ -792,19 +1043,58 @@ impl App {
         let manager = self.session.handles().checkpoints.clone();
         let mode = self.workflow.restore_mode;
         self.workflow.cancel_load();
-        self.workflow.pending = Some(tokio::task::spawn_blocking(move || {
-            let preview = if redo {
-                manager.prepare_redo(mode)?
-            } else if let Some(Action::Checkpoint(id)) = selected {
-                manager.prepare_rewind(&id, mode)?
-            } else {
-                anyhow::bail!("Select a checkpoint first")
-            };
-            Ok(Loaded::Preview(PreviewLease { preview, manager }))
+        self.workflow.pending = Some(tokio::spawn(async move {
+            let mut lease = tokio::task::spawn_blocking(move || -> anyhow::Result<PreviewLease> {
+                let preview = if redo {
+                    manager.prepare_redo(mode)?
+                } else if let Some(Action::Checkpoint(id)) = selected {
+                    manager.prepare_rewind(&id, mode)?
+                } else {
+                    anyhow::bail!("Select a checkpoint first")
+                };
+                Ok(PreviewLease {
+                    preview,
+                    manager,
+                    diff: String::new(),
+                })
+            })
+            .await??;
+            lease.diff =
+                match lease.manager.preview_comparison(&lease.token)? {
+                    Some(comparison) => {
+                        match super::review::git(
+                            &comparison.root,
+                            &[
+                                "diff",
+                                "--no-ext-diff",
+                                "--no-textconv",
+                                "--relative",
+                                "--no-renames",
+                                &comparison.before,
+                                &comparison.after,
+                                "--",
+                            ],
+                        )
+                        .await
+                        {
+                            Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+                            Err(error) => return Err(error.context(
+                                "Restore preview cancelled because its diff could not be loaded",
+                            )),
+                        }
+                    }
+                    None => "Conversation-only restore: workspace files stay as they are.".into(),
+                };
+            Ok(Loaded::Preview(lease))
         }));
     }
 
     pub(super) async fn handle_workflow_key(&mut self, key: KeyEvent) {
+        if !self.workflow.actionable && key.code == KeyCode::Enter {
+            self.workflow.error =
+                Some("Resize the terminal to review this action before continuing.".into());
+            return;
+        }
         if key.code == KeyCode::Char('c') && key.modifiers == KeyModifiers::CONTROL {
             self.close_workflow();
             return;
@@ -817,26 +1107,42 @@ impl App {
                     self.workflow.error = None;
                 }
                 KeyCode::Enter => {
-                    let arguments = self.workflow.query.trim().to_string();
+                    let arguments = self.workflow.query.text().trim().to_string();
+                    if command == "task-find" {
+                        self.workflow.task_filter = arguments;
+                        self.workflow.command_input = None;
+                        self.workflow.query.clear();
+                        self.workflow.scroll.jump_to_top();
+                        self.workflow.task_follow = false;
+                        return;
+                    }
                     if arguments.is_empty() {
                         self.workflow.error = Some("An argument is required.".into());
+                        return;
+                    }
+                    if command == "task-message" {
+                        self.send_task_message(arguments);
+                        return;
+                    }
+                    if command == "rename-session" {
+                        self.update_session_labels(Some(arguments));
                         return;
                     }
                     self.close_workflow();
                     Box::pin(self.handle_command(&format!("{command} {arguments}"))).await;
                 }
                 KeyCode::Backspace => {
-                    self.workflow.query.pop();
+                    self.edit_workflow_query(key);
                 }
                 KeyCode::Char(ch)
                     if !key
                         .modifiers
                         .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
-                        && self.workflow.query.len() < 4096 =>
+                        && self.workflow.query.text().len() < 4096 =>
                 {
-                    self.workflow.query.push(ch);
+                    self.workflow.query.insert_char(ch);
                 }
-                _ => {}
+                _ => self.edit_workflow_query(key),
             }
             return;
         }
@@ -864,6 +1170,13 @@ impl App {
             return;
         }
         if let Some(preview) = self.workflow.preview.as_ref() {
+            if matches!(
+                key.code,
+                KeyCode::PageUp | KeyCode::PageDown | KeyCode::Home | KeyCode::End
+            ) {
+                self.scroll_workflow_detail(key.code);
+                return;
+            }
             if key.code == KeyCode::Enter && key.modifiers.is_empty() {
                 let token = preview.token.clone();
                 match self.session.handles().checkpoints.confirm(&token).await {
@@ -881,7 +1194,22 @@ impl App {
         }
         let panel = self.workflow.panel;
         match key.code {
+            KeyCode::Home | KeyCode::End
+                if !matches!(
+                    panel,
+                    Some(
+                        WorkflowPanel::Actions
+                            | WorkflowPanel::Search
+                            | WorkflowPanel::Sessions
+                            | WorkflowPanel::Files
+                            | WorkflowPanel::Checks
+                    )
+                ) =>
+            {
+                self.scroll_workflow_detail(key.code)
+            }
             KeyCode::PageUp | KeyCode::PageDown => {
+                self.workflow.task_follow = false;
                 let amount = self.workflow.scroll_metrics.1.max(1);
                 let offset = self.workflow.scroll.offset();
                 self.workflow
@@ -909,7 +1237,63 @@ impl App {
                 self.workflow.image_preview = None;
                 if panel == Some(WorkflowPanel::Changes) {
                     self.load_selected_diff();
+                } else if panel == Some(WorkflowPanel::Files) {
+                    self.load_file_preview();
                 }
+            }
+            KeyCode::Char('r')
+                if panel == Some(WorkflowPanel::Checks)
+                    && key.modifiers == KeyModifiers::CONTROL
+                    || matches!(
+                        panel,
+                        Some(
+                            WorkflowPanel::Tasks
+                                | WorkflowPanel::Permissions
+                                | WorkflowPanel::Attention
+                        )
+                    ) && key.modifiers.is_empty() =>
+            {
+                self.open_workbench(panel.unwrap());
+            }
+            KeyCode::Char('r')
+                if panel == Some(WorkflowPanel::SideQuestion)
+                    && self.workflow.pending.is_none() =>
+            {
+                let question = self.workflow.side_question.clone();
+                self.ask_side_question(&question);
+            }
+            KeyCode::Char('x') if panel == Some(WorkflowPanel::Tasks) => {
+                if let Some(Action::Task { owner, id }) =
+                    self.workflow.selected_row().map(|row| row.action.clone())
+                    && let Some(index) = self
+                        .session_tasks
+                        .rows
+                        .iter()
+                        .position(|row| row.task.session_id == owner && row.task.id == id)
+                {
+                    self.background_selected = index;
+                    self.cancel_selected_task().await;
+                    self.workflow.notice = self
+                        .lines
+                        .last()
+                        .map(|line| line.text.clone())
+                        .unwrap_or_default();
+                    self.open_workbench(WorkflowPanel::Tasks);
+                }
+            }
+            KeyCode::Char('m') if panel == Some(WorkflowPanel::Tasks) => self.begin_task_message(),
+            KeyCode::Char('/') if panel == Some(WorkflowPanel::Tasks) => {
+                self.workflow.command_input = Some("task-find".into());
+                self.workflow.query.clear();
+            }
+            KeyCode::Char('t') if panel == Some(WorkflowPanel::Tasks) => {
+                self.workflow.task_paused = !self.workflow.task_paused;
+                self.workflow.notice = if self.workflow.task_paused {
+                    "Live output paused"
+                } else {
+                    "Live output refreshes every 2 seconds"
+                }
+                .into();
             }
             KeyCode::Tab if panel == Some(WorkflowPanel::Changes) => {
                 self.workflow.scope = self.workflow.scope.next();
@@ -923,6 +1307,39 @@ impl App {
                 self.workflow.hunk = 0;
                 self.load_review();
             }
+            KeyCode::Tab if panel == Some(WorkflowPanel::Sessions) => {
+                self.workflow.session_archive = (self.workflow.session_archive + 1) % 3;
+                self.load_sessions();
+            }
+            KeyCode::Char('s')
+                if panel == Some(WorkflowPanel::Sessions)
+                    && key.modifiers == KeyModifiers::CONTROL =>
+            {
+                self.toggle_session_label(false)
+            }
+            KeyCode::Delete
+                if panel == Some(WorkflowPanel::Sessions)
+                    && key.modifiers == KeyModifiers::CONTROL =>
+            {
+                self.toggle_session_label(true)
+            }
+            KeyCode::Char('r')
+                if panel == Some(WorkflowPanel::Sessions) && key.modifiers == KeyModifiers::ALT =>
+            {
+                if let Some(Action::Session(id)) =
+                    self.workflow.selected_row().map(|row| row.action.clone())
+                {
+                    self.workflow.editing_session = Some(id);
+                    self.workflow.command_input = Some("rename-session".into());
+                    self.workflow.query.clear();
+                }
+            }
+            KeyCode::Char('g')
+                if panel == Some(WorkflowPanel::Sessions) && key.modifiers == KeyModifiers::ALT =>
+            {
+                self.workflow.session_grouped = !self.workflow.session_grouped;
+                self.load_sessions();
+            }
             KeyCode::Char('c' | 'w' | 'b') if panel == Some(WorkflowPanel::Timeline) => {
                 self.workflow.restore_mode = match key.code {
                     KeyCode::Char('w') => RestoreMode::Workspace,
@@ -932,6 +1349,26 @@ impl App {
             }
             KeyCode::Char('r') if panel == Some(WorkflowPanel::Timeline) => {
                 self.prepare_visual_restore(true)
+            }
+            KeyCode::Char('c') if panel == Some(WorkflowPanel::SideQuestion) => {
+                if let Err(error) = tuika::term::clipboard::write(
+                    &mut std::io::stdout(),
+                    &self.workflow.side_answer,
+                ) {
+                    self.workflow.error = Some(format!("Copy failed: {error}"));
+                } else {
+                    self.workflow.notice = "Copy requested through the terminal clipboard. Terminal support is required.".into();
+                }
+            }
+            KeyCode::Char('s') if panel == Some(WorkflowPanel::SideQuestion) => {
+                if !self.workflow.side_answer.is_empty() {
+                    let text = format!(
+                        "Question: {}\nAnswer: {}",
+                        self.workflow.side_question, self.workflow.side_answer
+                    );
+                    self.attach_text("Side question", &text);
+                    self.workflow.focused = false;
+                }
             }
             KeyCode::Char('h') if panel == Some(WorkflowPanel::Changes) => {
                 let hunks = diff_hunks(&self.workflow.diff);
@@ -979,9 +1416,33 @@ impl App {
                     .selected
                     .min(self.workflow.rows.len().saturating_sub(1));
             }
+            KeyCode::Char('n') if panel == Some(WorkflowPanel::Attention) => {
+                self.attention.protocol = (self.attention.protocol + 1) % 3;
+                self.workflow.notice = format!(
+                    "Desktop alerts for this process: {}. Only new events while focus is known to be elsewhere notify. Terminal support is required.",
+                    ["Off", "OSC 9", "OSC 777"][usize::from(self.attention.protocol)]
+                );
+                self.set_attention_protocol();
+            }
+            KeyCode::Delete if panel == Some(WorkflowPanel::Attention) => {
+                if let Some(Action::Attention(key, _)) =
+                    self.workflow.selected_row().map(|row| row.action.clone())
+                {
+                    self.attention.acknowledge(&key);
+                    self.open_workbench(WorkflowPanel::Attention);
+                }
+            }
+            KeyCode::Delete if panel == Some(WorkflowPanel::Permissions) => {
+                if let Some(Action::Revoke(scope)) =
+                    self.workflow.selected_row().map(|row| row.action.clone())
+                {
+                    self.session.handles().sandbox_approval_gate.revoke(scope);
+                    self.open_workbench(WorkflowPanel::Permissions);
+                }
+            }
             KeyCode::Enter => self.activate_workflow_row().await,
             KeyCode::Backspace => {
-                self.workflow.query.pop();
+                self.edit_workflow_query(key);
                 self.workflow.selected = 0;
                 self.workflow_query_changed();
             }
@@ -989,27 +1450,78 @@ impl App {
                 if !key
                     .modifiers
                     .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                    && self.workflow.query.text().len() < 4096
                     && matches!(
                         panel,
                         Some(
                             WorkflowPanel::Actions
                                 | WorkflowPanel::Search
                                 | WorkflowPanel::Sessions
+                                | WorkflowPanel::Files
+                                | WorkflowPanel::Checks
                         )
                     ) =>
             {
-                self.workflow.query.push(ch);
+                self.workflow.query.insert_char(ch);
                 self.workflow.selected = 0;
                 self.workflow_query_changed();
             }
+            _ if matches!(
+                panel,
+                Some(
+                    WorkflowPanel::Actions
+                        | WorkflowPanel::Search
+                        | WorkflowPanel::Sessions
+                        | WorkflowPanel::Files
+                        | WorkflowPanel::Checks
+                )
+            ) =>
+            {
+                self.edit_workflow_query(key)
+            }
             _ => {}
         }
+    }
+
+    fn edit_workflow_query(&mut self, key: KeyEvent) {
+        if let Some(event) = tuika::translate_event(CrosstermEvent::Key(key)) {
+            if self.workflow.query.text().len() >= 4096
+                && matches!(key.code, KeyCode::Char(_))
+                && key.modifiers.is_empty()
+            {
+                return;
+            }
+            if self.workflow.query.handle(&event) == InputOutcome::Changed
+                && self.workflow.command_input.is_none()
+            {
+                self.workflow.selected = 0;
+                self.workflow_query_changed();
+            }
+        }
+    }
+
+    fn scroll_workflow_detail(&mut self, key: KeyCode) {
+        self.workflow.task_follow = key == KeyCode::End;
+        let (content, viewport) = self.workflow.scroll_metrics;
+        let offset = self.workflow.scroll.offset();
+        self.workflow.scroll.set_offset(match key {
+            KeyCode::PageUp => offset.saturating_sub(viewport.max(1)),
+            KeyCode::PageDown => offset
+                .saturating_add(viewport.max(1))
+                .min(ScrollState::max_offset(content, viewport)),
+            KeyCode::Home => 0,
+            KeyCode::End => ScrollState::max_offset(content, viewport),
+            _ => offset,
+        });
     }
 
     fn workflow_query_changed(&mut self) {
         if self.workflow.panel == Some(WorkflowPanel::Sessions) {
             self.workflow.cancel_load();
             self.workflow.search_due = Some(Instant::now() + Duration::from_millis(200));
+        }
+        if self.workflow.panel == Some(WorkflowPanel::Files) {
+            self.load_file_preview();
         }
         self.workflow.scroll.set_offset(0);
     }
@@ -1018,12 +1530,23 @@ impl App {
         if self.workflow.command_input.is_some()
             || matches!(
                 self.workflow.panel,
-                Some(WorkflowPanel::Actions | WorkflowPanel::Search | WorkflowPanel::Sessions)
+                Some(
+                    WorkflowPanel::Actions
+                        | WorkflowPanel::Search
+                        | WorkflowPanel::Sessions
+                        | WorkflowPanel::Files
+                        | WorkflowPanel::Checks
+                )
             )
         {
-            self.workflow
-                .query
-                .extend(text.chars().filter(|ch| !ch.is_control()).take(1000));
+            let text: String = text
+                .chars()
+                .filter(|ch| !ch.is_control())
+                .take(1000)
+                .collect();
+            let available = 4096usize.saturating_sub(self.workflow.query.text().len());
+            let text = &text[..text.floor_char_boundary(available.min(text.len()))];
+            self.workflow.query.insert_str(text);
             self.workflow.selected = 0;
             self.workflow_query_changed();
         }
@@ -1034,6 +1557,34 @@ impl App {
             return;
         };
         match action {
+            Action::None | Action::Revoke(_) => {}
+            Action::Attention(key, target) => {
+                self.attention.acknowledge(&key);
+                match target {
+                    super::attention::Target::Task(owner, id) => {
+                        self.open_workflow(WorkflowPanel::Tasks);
+                        if let Some(selected) = self.workflow.visible().iter().position(|index| matches!(&self.workflow.rows[*index].action, Action::Task { owner: row_owner, id: row_id } if *row_owner == owner && row_id == &id)) { self.workflow.selected = selected; }
+                        self.inspect_task(owner, id);
+                    }
+                    super::attention::Target::Recovery => {
+                        self.open_workflow(WorkflowPanel::Recovery)
+                    }
+                    super::attention::Target::Conversation => {
+                        self.close_workflow();
+                        self.scroll
+                            .jump_to_bottom(self.scroll_metrics.0, self.scroll_metrics.1);
+                    }
+                }
+            }
+            Action::AttachReference(path) => {
+                let reference = format!(
+                    "{}{}",
+                    path,
+                    workbench::range_suffix(self.workflow.query.text())
+                );
+                self.attach_file(reference);
+            }
+            Action::Task { owner, id } => self.inspect_task(owner, id),
             Action::Checkpoint(_) => self.prepare_visual_restore(false),
             Action::Session(id) => {
                 if self.busy || !self.queued_messages.is_empty() {
@@ -1170,6 +1721,7 @@ pub(super) fn is_local_view_command(name: &str) -> bool {
     matches!(
         name,
         "attach"
+            | "btw"
             | "diff-base"
             | "diff"
             | "timeline"
@@ -1179,6 +1731,11 @@ pub(super) fn is_local_view_command(name: &str) -> bool {
             | "actions"
             | "find"
             | "recover"
+            | "checks"
+            | "tasks"
+            | "files"
+            | "attention"
+            | "permissions"
     )
 }
 

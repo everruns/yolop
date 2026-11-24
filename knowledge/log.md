@@ -1,5 +1,13 @@
 # Knowledge Log
 
+## 2026-11-24, Inspectable terminal workspace
+
+Added recorded check evidence and freshness, native task inspection, effective
+context browsing, fuzzy attachments, asynchronous side questions, attention,
+session labels and permission revocation. Dialogs reserve visible body content
+and route input according to visible ownership. Tuika 0.14 supplies notification
+encoders and scoped focus reporting. See [Terminal workflows](specs/terminal-workflows.md).
+
 ## 2026-11-23, Retained coding evidence
 
 - [Progress guard](specs/progress-guard.md): bounded command outcomes and accepted investigation checkpoints survive context replacement and session reopen. Later possible mutations mark checks stale; native history revisions prevent evidence from returning from abandoned branches.

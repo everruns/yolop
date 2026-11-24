@@ -25,13 +25,11 @@
 use tuika::term::terminal::Frame;
 use tuika::ui::{Color, Line, Modifier, Position, Rect, Span, Style};
 
-use tuika::components::{
-    Boxed, Rule, Scroll, SelectList, SelectState, Spacer, Text, TextInput, TextInputState,
-};
+use tuika::components::{Rule, Scroll, Text, TextInput, TextInputState};
 use tuika::probe::RectProbe;
 use tuika::term::clipboard;
 use tuika::term::hyperlink::{self, BufferLink};
-use tuika::{Element, Overlay, Padding, element, view};
+use tuika::{Element, Padding, element, view};
 
 use super::render;
 use super::{
@@ -407,110 +405,13 @@ fn composer_row(composer: &TextInputState, probe: &RectProbe) -> Element {
 
 // ---- overlays (setup / ask / background) as tuika overlays ----------------
 
-/// Paint `lines` inside a centered bordered panel, composited as a tuika
-/// [`Overlay`] over a blank base — the "sheet" that owns the viewport. Places
-/// the terminal cursor at `cursor` (a `(row, col)` inside the panel interior)
-/// when given.
-///
-/// The panel uses the shared [`render::setup_panel_rect`] geometry, and
-/// [`Boxed`]'s default border + `symmetric(1, 0)` padding reproduces the inline
-/// overlay's interior rect exactly, so the two modes place content identically.
-fn draw_panel_overlay(
-    f: &mut Frame,
-    area: Rect,
-    lines: Vec<Line<'static>>,
-    cursor: Option<(usize, usize)>,
-) {
-    panel_overlay(f, area, element(Text::new(lines)), cursor);
+/// Both screen modes share dialog composition and measured click bounds.
+fn draw_setup_overlay(f: &mut Frame, area: Rect, app: &mut App) {
+    render::draw_setup_overlay(f, area, app);
 }
 
-/// Composite `content` inside the centered bordered panel as a tuika [`Overlay`]
-/// over a blank base, placing the terminal cursor at `cursor` when given.
-///
-/// The panel uses the shared [`render::setup_panel_rect`] geometry, and
-/// [`Boxed`]'s default border + `symmetric(1, 0)` padding reproduces the inline
-/// overlay's interior rect exactly, so the two modes place content identically.
-fn panel_overlay(f: &mut Frame, area: Rect, content: Element, cursor: Option<(usize, usize)>) {
-    let panel = render::setup_panel_rect(area);
-    if panel.width == 0 || panel.height == 0 {
-        return;
-    }
-    let theme = yolop_theme();
-    let boxed = Boxed::new(content).background(Style::default().bg(theme.surface).fg(theme.text));
-    let overlay = Overlay {
-        area: panel,
-        view: &boxed,
-        clear: true,
-    };
-    tuika::paint(f.buffer_mut(), area, &theme, &Spacer, &[overlay]);
-
-    if let Some((row, col)) = cursor {
-        let inner_x = panel.x.saturating_add(2);
-        let inner_y = panel.y.saturating_add(1);
-        let inner_w = panel.width.saturating_sub(4);
-        let inner_h = panel.height.saturating_sub(2);
-        if inner_w > 0 && inner_h > row as u16 {
-            f.set_cursor_position((
-                inner_x.saturating_add((col as u16).min(inner_w.saturating_sub(1))),
-                inner_y.saturating_add(row as u16),
-            ));
-        }
-    }
-}
-
-fn draw_setup_overlay(f: &mut Frame, area: Rect, app: &App) {
-    if app.setup.is_none() || area.width == 0 || area.height == 0 {
-        return;
-    }
-    // Bounded list steps (provider / credential / effort) render through a real
-    // tuika SelectList (item 4); other steps (input fields, Codex login, the
-    // windowed model picker) fall back to the styled-Line Text path.
-    if let Some(picker) = render::setup_picker(app) {
-        draw_setup_picker(f, area, picker);
-    } else {
-        let (lines, cursor) = render::setup_overlay_content(app, None);
-        draw_panel_overlay(f, area, lines, cursor);
-    }
-}
-
-/// Render a bounded setup step as `header · SelectList · footer` inside the
-/// panel. The `SelectState`'s index is driven from the step's own `selected`
-/// field for rendering; the arrow-key transitions in `App::handle_setup_key`
-/// step that field through `SelectState`'s (clamping) `move_up`/`move_down`, so
-/// the pickers share one tested navigation source.
-fn draw_setup_picker(f: &mut Frame, area: Rect, picker: render::SetupPicker) {
-    let render::SetupPicker {
-        header,
-        options,
-        selected,
-        footer,
-        viewport,
-    } = picker;
-    let mut state = SelectState::new();
-    state.select(Some(selected));
-    let mut list = SelectList::new(options, &state);
-    if let Some(rows) = viewport {
-        list = list.viewport(rows);
-    }
-    let content = view! {
-        col {
-            node(Text::new(header))
-            node(list)
-            node(Text::new(footer))
-        }
-    };
-    panel_overlay(f, area, content, None);
-}
-
-fn draw_ask_overlay(f: &mut Frame, area: Rect, app: &App) {
-    let Some(ask) = app.pending_ask.as_ref() else {
-        return;
-    };
-    if area.width == 0 || area.height == 0 {
-        return;
-    }
-    let (lines, cursor) = render::ask_overlay_content(ask);
-    draw_panel_overlay(f, area, lines, Some(cursor));
+fn draw_ask_overlay(f: &mut Frame, area: Rect, app: &mut App) {
+    render::draw_ask_overlay(f, area, app);
 }
 
 #[cfg(test)]

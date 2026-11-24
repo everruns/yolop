@@ -1561,7 +1561,7 @@ fn append_bounded_diagnostic(diagnostic: &mut String, text: &str) {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-enum ToolClass {
+pub(crate) enum ToolClass {
     Exploration,
     Mutation,
     Validation(String),
@@ -1573,7 +1573,7 @@ enum ToolClass {
     Other,
 }
 
-fn classify_tool_call(tool_call: &ToolCall) -> ToolClass {
+pub(crate) fn classify_tool_call(tool_call: &ToolCall) -> ToolClass {
     if let Some(class) = static_tool_class(&tool_call.name) {
         return class;
     }
@@ -1631,6 +1631,10 @@ fn classify_bash_command(command: &str) -> ToolClass {
         return ToolClass::Exploration;
     }
     ToolClass::Other
+}
+
+pub(crate) fn is_check_command(command: &str) -> bool {
+    matches!(classify_bash_command(command), ToolClass::Validation(_))
 }
 
 struct MutationHashTransition {

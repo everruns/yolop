@@ -92,6 +92,32 @@ const FULL_ACCESS_SCOPE: u8 = 1 << 1;
 const MEMORY_SCOPE: u8 = 1 << 2;
 
 impl ApprovalGate {
+    pub(crate) fn granted_scopes(&self) -> Vec<ApprovalScope> {
+        let mask = match self {
+            Self::Channel {
+                approved_scopes, ..
+            } => approved_scopes.load(Ordering::Acquire),
+            Self::Deny => 0,
+        };
+        [
+            ApprovalScope::Sandboxed,
+            ApprovalScope::FullAccess,
+            ApprovalScope::Memory,
+        ]
+        .into_iter()
+        .filter(|scope| mask & scope.mask() != 0)
+        .collect()
+    }
+
+    pub(crate) fn revoke(&self, scope: ApprovalScope) {
+        if let Self::Channel {
+            approved_scopes, ..
+        } = self
+        {
+            approved_scopes.fetch_and(!scope.mask(), Ordering::AcqRel);
+        }
+    }
+
     pub(crate) fn deny() -> Arc<Self> {
         Arc::new(Self::Deny)
     }

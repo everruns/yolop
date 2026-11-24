@@ -118,6 +118,11 @@ impl everruns_core::tool_hooks::PostToolExecHook for RecoverableOutputHook {
                 };
             }
         }
+        if let Some(evidence) = value.get("workspace_evidence")
+            && serde_json::to_vec(evidence).is_ok_and(|bytes| bytes.len() <= 4096)
+        {
+            envelope["workspace_evidence"] = evidence.clone();
+        }
         result.result = Some(envelope);
     }
 }
@@ -163,7 +168,7 @@ mod tests {
         let store = Arc::new(everruns_core::host::RealDiskFileStore::new(dir.path()).unwrap());
         let id = SessionId::new();
         let context = ToolContext::with_file_store(id, store.clone());
-        let original = serde_json::json!({"content":"line\n".repeat(30_000), "error":"diagnostic ".repeat(20_000), "exit_code":101, "success":false});
+        let original = serde_json::json!({"content":"line\n".repeat(30_000), "error":"diagnostic ".repeat(20_000), "exit_code":101, "success":false,"workspace_evidence":{"before":{"head":"abc","fingerprint":"def"},"after":null}});
         let call = ToolCall {
             id: "large-call".into(),
             name: "read_file".into(),
@@ -189,6 +194,7 @@ mod tests {
         let value = result.result.as_ref().unwrap();
         assert!(serde_json::to_vec(value).unwrap().len() < 32 * 1024);
         assert_eq!(value["exit_code"], 101);
+        assert_eq!(value["workspace_evidence"], original["workspace_evidence"]);
         assert!(value["error"].as_str().unwrap().len() <= 2000);
         let path = value["full_output"].as_str().expect("recovery path");
         let file = store.read_file(id, path).await.unwrap().unwrap();

@@ -76,6 +76,7 @@ fn compact_elapsed(secs: u64) -> String {
 pub(crate) struct PresentationState {
     pub command_prefix: bool,
     pub draft_attachments: usize,
+    pub attention_unread: usize,
     pub changes_open: bool,
     pub failure_available: bool,
     pub startup: StartupPresentation,
@@ -228,6 +229,9 @@ impl PresentationState {
                 " · {} attachments (/attachments)",
                 self.draft_attachments
             ));
+        }
+        if self.attention_unread > 0 {
+            hint.push_str(&format!(" · /attention {} new", self.attention_unread));
         }
         if self.failure_available && !self.busy {
             hint.push_str(" · /recover");
@@ -679,6 +683,7 @@ mod tests {
         PresentationState {
             command_prefix: false,
             draft_attachments: 0,
+            attention_unread: 0,
             changes_open: false,
             failure_available: false,
             startup: StartupPresentation {
