@@ -665,7 +665,7 @@ pub(crate) struct CredentialOption {
 struct QueuedMessage {
     id: everruns_contracts::typed_id::MessageId,
     expected_turn: Option<everruns_contracts::typed_id::TurnId>,
-    error_reported: bool,
+    last_error: Option<String>,
     input: Option<everruns_core::InputMessage>,
     prompt: String,
     display: String,
@@ -3101,7 +3101,7 @@ impl App {
             self.queued_messages.push_back(QueuedMessage {
                 id: everruns_contracts::typed_id::MessageId::new(),
                 expected_turn: None,
-                error_reported: false,
+                last_error: None,
                 input: None,
                 prompt: text,
                 display,
@@ -4171,10 +4171,11 @@ impl App {
     }
 
     fn queued_input_error(&mut self, error: impl std::fmt::Display) {
+        let error = error.to_string();
         if let Some(message) = self.queued_messages.front_mut()
-            && !message.error_reported
+            && message.last_error.as_deref() != Some(error.as_str())
         {
-            message.error_reported = true;
+            message.last_error = Some(error.clone());
             self.push_system(format!("Message remains queued: {error}"));
         }
     }
@@ -4249,6 +4250,8 @@ impl App {
                 self.push_system("Steering received for the active turn.".into());
                 continue;
             }
+            // Preflight only new admissions. Engine-owned work must remain
+            // observable even if the current provider selection later changes.
             if matches!(state, QueuedInputState::Missing) {
                 if let Err(error) = self.session.prepare_queued_turn().await {
                     self.queued_input_error(error);
@@ -10091,6 +10094,42 @@ flowchart TD
             "second Esc should notify the turn worker"
         );
         assert_eq!(app.turn_activity.as_deref(), Some("cancelling"));
+    }
+
+    #[tokio::test]
+    async fn queued_message_reports_changed_errors_without_repeating_same_error() {
+        let mut fixture = app_with_llmsim().await;
+        let app = &mut fixture.app;
+        let id = everruns_contracts::typed_id::MessageId::new();
+        app.queued_messages.push_back(QueuedMessage {
+            id,
+            expected_turn: None,
+            last_error: None,
+            input: None,
+            prompt: "Preserve the public API.".into(),
+            display: "Preserve the public API.".into(),
+            images: Vec::new(),
+        });
+        app.queued_input_error("temporary admission failure");
+        app.queued_input_error("temporary admission failure");
+        app.queued_input_error("a different assignment failure");
+        let notices = app
+            .lines
+            .iter()
+            .filter(|line| {
+                line.author == Author::System && line.text.starts_with("Message remains queued:")
+            })
+            .map(|line| line.text.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            notices,
+            vec![
+                "Message remains queued: temporary admission failure",
+                "Message remains queued: a different assignment failure",
+            ]
+        );
+        assert_eq!(app.queued_messages.front().unwrap().id, id);
+        assert_eq!(app.queued_messages.len(), 1);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

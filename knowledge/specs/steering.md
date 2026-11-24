@@ -41,7 +41,8 @@ add context or redirect the agent without first cancelling useful work.
 Only inputs awaiting admission are process-local. An accepted input belongs to
 the session's durable engine authority, including if the TUI exits before the
 active command finishes. Failed admission leaves the message queued and reports
-the error without claiming receipt.
+the error without claiming receipt. A changed retry error is reported again;
+identical consecutive errors are suppressed.
 
 ## Hosts
 
