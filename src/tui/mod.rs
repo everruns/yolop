@@ -164,7 +164,6 @@ struct CompactTurn {
     elapsed_secs: u64,
     outcome: CompactWorkOutcome,
     expanded: bool,
-    cancel_requested: bool,
 }
 
 fn compact_detail_line(line: &ChatLine) -> ChatLine {
@@ -235,6 +234,8 @@ pub struct App {
     stream_preview: Option<StreamPreview>,
     rx: Option<mpsc::UnboundedReceiver<TurnEvent>>,
     turn_cancel: Option<oneshot::Sender<()>>,
+    /// Cancellation belongs to the running turn, independent of its renderer.
+    turn_cancel_requested: bool,
     turn_steering: Option<crate::runtime::turn_scope::SteeringTarget>,
     /// Active setup overlay, if any. The overlay owns its own keyboard
     /// handling so provider, token, and model setup never echo through the
@@ -814,6 +815,7 @@ impl App {
             stream_preview: None,
             rx: None,
             turn_cancel: None,
+            turn_cancel_requested: false,
             turn_steering: None,
             setup: None,
             codex_login: None,
@@ -1514,7 +1516,6 @@ impl App {
             elapsed_secs: 0,
             outcome: CompactWorkOutcome::Active,
             expanded: false,
-            cancel_requested: false,
         });
         self.active_compact_turn = Some(self.compact_turns.len() - 1);
         self.refresh_active_compact_summary();
@@ -1987,10 +1988,7 @@ impl App {
                     return Ok(());
                 }
                 Ok(TurnEvent::Done { result, success }) => {
-                    let cancelled = self
-                        .active_compact_turn
-                        .and_then(|index| self.compact_turns.get(index))
-                        .is_some_and(|turn| turn.cancel_requested);
+                    let cancelled = self.turn_cancel_requested && !success;
                     let outcome = if cancelled {
                         CompactWorkOutcome::Cancelled
                     } else if !success {
@@ -2000,13 +1998,15 @@ impl App {
                     };
                     self.record_attention(
                         format!("turn:{}", uuid::Uuid::new_v4()),
-                        if success {
+                        if cancelled {
+                            "Turn cancelled"
+                        } else if success {
                             "Turn completed"
                         } else {
                             "Turn failed"
                         },
                         "Open the conversation to inspect retained work and its result.".into(),
-                        if success {
+                        if success || cancelled {
                             attention::Target::Conversation
                         } else {
                             attention::Target::Recovery
@@ -2019,7 +2019,9 @@ impl App {
                         self.push_system("Task failed. Open /recover for continuation, model, sign-in, and inspection actions.".into());
                     }
                     if let Some(status) = self.program_status.as_mut() {
-                        if success {
+                        if cancelled {
+                            status.clear();
+                        } else if success {
                             status.done();
                         } else {
                             status.error();
@@ -4432,11 +4434,9 @@ impl App {
         self.turn_steering = None;
         if let Some(cancel) = self.turn_cancel.take() {
             let _ = cancel.send(());
+            self.turn_cancel_requested = true;
             self.turn_activity = Some("cancelling".into());
-            if let Some(turn_index) = self.active_compact_turn {
-                self.compact_turns[turn_index].cancel_requested = true;
-                self.update_compact_activity("Cancelling");
-            }
+            self.update_compact_activity("Cancelling");
             self.stream_preview = None;
         }
     }
@@ -4449,6 +4449,7 @@ impl App {
         self.stream_preview = None;
         self.rx = None;
         self.turn_cancel = None;
+        self.turn_cancel_requested = false;
         self.turn_steering = None;
         if self.native_progress {
             self.term_progress.clear();
@@ -8712,10 +8713,7 @@ flowchart TD
                             self.context_used_tokens = Some(used);
                         }
                         Ok(TurnEvent::Done { success, .. }) => {
-                            let cancelled = self
-                                .active_compact_turn
-                                .and_then(|index| self.compact_turns.get(index))
-                                .is_some_and(|turn| turn.cancel_requested);
+                            let cancelled = self.turn_cancel_requested && !success;
                             let outcome = if cancelled {
                                 CompactWorkOutcome::Cancelled
                             } else if !success {

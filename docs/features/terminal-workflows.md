@@ -120,7 +120,9 @@ Closing the view cancels an outstanding read-only request and preserves the draf
 `/attention` collects questions, approvals, failed turns and completed background
 work. **Enter** jumps to the conversation, task or recovery view. **Delete**
 acknowledges an item; refreshing task state does not recreate it. The composer
-shows the unread count. Resolved foreground questions and approvals clear their
+shows the unread count. Cancelled turns are labelled cancelled in both work
+display modes and return to the conversation instead of offering failure recovery.
+Resolved foreground questions and approvals clear their
 waiting items automatically.
 
 Desktop alerts start **Off**. In the inbox, **n** cycles Off, OSC 9 and OSC 777

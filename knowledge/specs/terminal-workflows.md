@@ -142,3 +142,7 @@ real PTY tests cover navigation, drafts, and the external-editor lifecycle.
 - [Session discovery](session-history.md)
 - [Steering](steering.md)
 - [Tuika](tuika.md)
+
+Foreground cancellation state belongs to the active turn, not a compact transcript
+row. A failed completion after a user cancellation is shown as cancelled in both
+work display modes; successful completion still wins a cancellation race.

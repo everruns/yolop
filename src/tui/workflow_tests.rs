@@ -1586,3 +1586,48 @@ async fn attention_after_clearing_the_transcript_keeps_new_approval_requests() {
         assert!(test.app.attention.items.is_empty());
     }
 }
+
+#[tokio::test]
+async fn cancelled_turn_notices_follow_the_actual_cancel_action_in_both_display_modes() {
+    for (mode, success) in [
+        (WorkDisplayMode::Compact, false),
+        (WorkDisplayMode::Detailed, false),
+        (WorkDisplayMode::Compact, true),
+        (WorkDisplayMode::Detailed, true),
+    ] {
+        let mut test = app_with_llmsim().await;
+        let app = &mut test.app;
+        app.set_render_mode(RenderMode::Fullscreen);
+        app.work_display = mode;
+        app.busy = true;
+        app.begin_compact_turn(Instant::now());
+        let (cancel, cancelled) = oneshot::channel();
+        app.turn_cancel = Some(cancel);
+        app.handle_key(key(KeyCode::Esc)).await;
+        app.handle_key(key(KeyCode::Esc)).await;
+        cancelled.await.unwrap();
+        let (events, receiver) = mpsc::unbounded_channel();
+        app.rx = Some(receiver);
+        events
+            .send(TurnEvent::Done {
+                result: None,
+                success,
+            })
+            .unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        app.run_loop_iteration(&mut terminal).await.unwrap();
+        let notice = app.attention.items.front().unwrap();
+        assert_eq!(
+            notice.title,
+            if success {
+                "Turn completed"
+            } else {
+                "Turn cancelled"
+            }
+        );
+        assert!(matches!(notice.target, attention::Target::Conversation));
+        assert!(app.workflow.failure.is_none());
+        assert!(!app.busy);
+        assert!(!app.turn_cancel_requested);
+    }
+}
