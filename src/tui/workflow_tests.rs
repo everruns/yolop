@@ -1554,3 +1554,35 @@ async fn setup_exit_chord_is_visible_and_preserves_the_underlying_draft() {
     app.handle_key(interrupt).await;
     assert!(app.should_quit);
 }
+
+#[tokio::test]
+async fn attention_after_clearing_the_transcript_keeps_new_approval_requests() {
+    let mut test = app_with_llmsim().await;
+    let (gate, receiver) = crate::sandbox_approval::ApprovalGate::channel();
+    test.app.sandbox_approval_rx = receiver;
+    for _ in 0..2 {
+        test.app.lines.clear();
+        let gate = gate.clone();
+        let answer = tokio::spawn(async move {
+            gate.ask(crate::sandbox_approval::ApprovalRequest {
+                command: "git push".into(),
+                reason: "Publish the branch".into(),
+                scope: crate::sandbox_approval::ApprovalScope::FullAccess,
+            })
+            .await
+        });
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !test.app.poll_sandbox_approval() {
+            assert!(Instant::now() < deadline);
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(
+            test.app.attention.items.len(),
+            1,
+            "a new request must survive transcript clearing"
+        );
+        test.app.handle_key(key(KeyCode::Esc)).await;
+        answer.await.unwrap();
+        assert!(test.app.attention.items.is_empty());
+    }
+}

@@ -1999,7 +1999,7 @@ impl App {
                         CompactWorkOutcome::Completed
                     };
                     self.record_attention(
-                        format!("turn:{}", self.lines.len()),
+                        format!("turn:{}", uuid::Uuid::new_v4()),
                         if success {
                             "Turn completed"
                         } else {
@@ -2055,7 +2055,7 @@ impl App {
                     }
                     self.push_system(format!("turn failed: {err}"));
                     self.record_attention(
-                        format!("failure:{}", self.lines.len()),
+                        format!("failure:{}", uuid::Uuid::new_v4()),
                         "Turn failed",
                         err.clone(),
                         attention::Target::Recovery,
@@ -2124,7 +2124,7 @@ impl App {
                 custom: false,
                 reply: Some(request.reply),
             });
-            self.record_attention(format!("question:{}", self.lines.len()), "Question needs an answer", "The conversation is waiting for your answer. Close this view to return to the question.".into(), attention::Target::Conversation);
+            self.record_attention(format!("question:{}", uuid::Uuid::new_v4()), "Question needs an answer", "The conversation is waiting for your answer. Close this view to return to the question.".into(), attention::Target::Conversation);
             applied_ui_command = true;
         }
         if self.poll_sandbox_approval() {
@@ -2656,7 +2656,7 @@ impl App {
                 request: Some(request),
                 reply,
             });
-            self.record_attention(format!("approval:{}", self.lines.len()), "Permission needs review", "The conversation is waiting for an approval decision. Close this view to review the action.".into(), attention::Target::Conversation);
+            self.record_attention(format!("approval:{}", uuid::Uuid::new_v4()), "Permission needs review", "The conversation is waiting for an approval decision. Close this view to review the action.".into(), attention::Target::Conversation);
             self.approval_scroll.set_offset(0);
             self.approval_body_visible = true;
             return true;
