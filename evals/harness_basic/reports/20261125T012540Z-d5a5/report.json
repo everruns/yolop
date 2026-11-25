@@ -1,0 +1,734 @@
+{
+  "cases": [
+    {
+      "aggregate": 1.0,
+      "eval": "basic_coding",
+      "input": [
+        "Implement `clamp` in utils.js as described by the TODO comment, and remove the TODO comment once done. Make the edit directly; do not ask questions."
+      ],
+      "params": {
+        "binary": "candidate",
+        "effort": "default",
+        "harness": "default"
+      },
+      "passed": true,
+      "sample": "implement-todo",
+      "scores": [
+        {
+          "pass": true,
+          "reason": "no error",
+          "scorer": "succeeded",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "4 check(s) passed",
+          "scorer": "checks",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "independent functional and observed-action checks passed",
+          "scorer": "independent_correctness",
+          "value": 1.0
+        },
+        {
+          "na": true,
+          "pass": false,
+          "reason": "sample declares no budget checks",
+          "scorer": "declared_budget",
+          "value": 0.0
+        },
+        {
+          "pass": true,
+          "reason": "1 <= 32",
+          "scorer": "turns_within",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "7 <= 64",
+          "scorer": "tool_calls_within",
+          "value": 1.0
+        },
+        {
+          "na": true,
+          "pass": false,
+          "reason": "baseline variant; ast_edit not offered",
+          "scorer": "ast_edit_used",
+          "value": 0.0
+        },
+        {
+          "pass": true,
+          "reason": "$0.0054 <= $2",
+          "scorer": "cost_within",
+          "value": 1.0
+        }
+      ],
+      "seed": 20261124,
+      "skipped": false,
+      "target": "openrouter/muse-spark-1.3",
+      "transcript": {
+        "final_response": "Done. Implemented `clamp(value, min, max)` in `utils.js:1` as `Math.min(Math.max(value, min), max)` and removed the TODO comment.\n\nVerified with assertions: value in range returns value, below min returns min, above max returns max, plus boundary cases at min/max — all pass.",
+        "iterations": 8,
+        "metadata": {
+          "binary": "candidate",
+          "effort": "default",
+          "harness": "default",
+          "model": "meta/muse-spark-1.3-contributor",
+          "provider": "openrouter",
+          "reasoning_effort_applied": "medium",
+          "session_log": ".cache/sessions/implement-todo-openrouter-muse-spark-1.3-candidate-default-default-18eb2558f7fc66500001462600000001.events.jsonl",
+          "stop_reason": "completed",
+          "tool_invocations": [
+            {
+              "arguments": {
+                "query": "read file workspace"
+              },
+              "name": "tool_search",
+              "success": true
+            },
+            {
+              "arguments": {
+                "query": "list directory glob files"
+              },
+              "name": "tool_search",
+              "success": true
+            },
+            {
+              "arguments": {
+                "pattern": "**/utils.js"
+              },
+              "name": "glob",
+              "success": true
+            },
+            {
+              "arguments": {
+                "path": "/utils.js"
+              },
+              "name": "read_file",
+              "success": true
+            },
+            {
+              "arguments": {
+                "edits": [
+                  {
+                    "new_text": "function clamp(value, min, max) {\n  return Math.min(Math.max(value, min), max);\n}",
+                    "old_text": "// TODO: implement clamp(value, min, max): return value bounded to [min, max].\nfunction clamp(value, min, max) {\n  throw new Error(\"not implemented\");\n}"
+                  }
+                ],
+                "expected_hash": "sha256:b2914162ecf29c999a7635bc0d12b3592e8f5d1eb808a24c90905b105eade02c",
+                "path": "/utils.js"
+              },
+              "name": "edit_file",
+              "success": true
+            },
+            {
+              "arguments": {
+                "query": "run bash command shell"
+              },
+              "name": "tool_search",
+              "success": true
+            },
+            {
+              "arguments": {
+                "command": "node -e 'const {clamp}=require(\"./utils.js\"); const assert=require(\"assert\"); assert.strictEqual(clamp(5,0,10),5); assert.strictEqual(clamp(-1,0,10),0); assert.strictEqual(clamp(15,0,10),10); assert.strictEqual(clamp(0,0,10),0); assert.strictEqual(clamp(10,0,10),10); console.log(\"clamp OK\")'"
+              },
+              "name": "bash",
+              "success": true
+            }
+          ]
+        },
+        "metrics": {
+          "agent_reported_ms": 17623.0,
+          "apply_patch_tool_calls": 0.0,
+          "ast_edit_tool_calls": 0.0,
+          "ast_edit_tool_calls_failed": 0.0,
+          "automatic_background_wakes": 0.0,
+          "background_spawn_calls": 0.0,
+          "background_wake_llm_calls": 0.0,
+          "background_wake_responses": 0.0,
+          "background_wake_tool_calls": 0.0,
+          "bash_result_bytes": 577.0,
+          "bash_tool_calls": 1.0,
+          "batch_native_read_calls": 0.0,
+          "batched_tool_model_calls": 0.0,
+          "blocked_equivalent_failures": 0.0,
+          "bookkeeping_tool_calls": 0.0,
+          "cache_creation_tokens": 0.0,
+          "calls_after_checkpoint_recommended": 0.0,
+          "calls_after_progress_warning": 0.0,
+          "checkpoint_recommended_warnings": 0.0,
+          "contextual_grep_files_tool_calls": 0.0,
+          "cumulative_input_tokens": 113566.0,
+          "duplicate_exploration_calls": 0.0,
+          "edit_tool_calls": 1.0,
+          "edit_tool_calls_failed": 0.0,
+          "equivalent_failure_warnings": 0.0,
+          "exploration_tools_before_first_mutation": 1.0,
+          "first_request_input_tokens": 11984.0,
+          "first_request_total_input_tokens": 11984.0,
+          "git_grep_calls": 0.0,
+          "grep_files_tool_calls": 0.0,
+          "inner_tool_failures": 0.0,
+          "leading_marker_in_bash_result": 0.0,
+          "llm_calls": 8.0,
+          "max_exploration_tools_without_progress": 1.0,
+          "max_read_file_batch_width": 1.0,
+          "max_tool_batch_width": 1.0,
+          "max_tool_result_bytes": 4563.0,
+          "mean_tool_batch_width": 1.0,
+          "persisted_output_recovery_calls": 0.0,
+          "persisted_output_recovery_result_bytes": 0.0,
+          "progress_guard_warnings": 0.0,
+          "read_file_tool_calls": 1.0,
+          "redundant_validation_calls": 0.0,
+          "repo_map_max_result_bytes": 0.0,
+          "repo_map_narrowed_after_truncation": 0.0,
+          "repo_map_targeted_recovery_after_truncation": 0.0,
+          "repo_map_tool_calls": 0.0,
+          "repo_map_tool_calls_failed": 0.0,
+          "repo_symbols_tool_calls": 0.0,
+          "repo_symbols_tool_calls_failed": 0.0,
+          "session_extra_matches": 0.0,
+          "session_result_bytes": 0.0,
+          "session_useful_match_recall": 0.0,
+          "sessions_search_calls": 0.0,
+          "sessions_search_first_exploration": 0.0,
+          "single_tool_model_calls": 7.0,
+          "standalone_bookkeeping_rounds": 0.0,
+          "successful_progress_checkpoints": 0.0,
+          "task_llm_calls": 8.0,
+          "task_tool_calls": 7.0,
+          "tool_calls": 7.0,
+          "tool_calls_failed": 0.0,
+          "tool_emitting_model_calls": 7.0,
+          "total_tool_result_bytes": 10969.0,
+          "turns": 1.0,
+          "unchanged_reuse_responses": 0.0,
+          "validation_tool_calls": 0.0,
+          "workspace_state_revisits": 0.0
+        },
+        "timing": {
+          "duration_ms": 19647
+        },
+        "tool_calls": [
+          "tool_search",
+          "tool_search",
+          "glob",
+          "read_file",
+          "edit_file",
+          "tool_search",
+          "bash"
+        ],
+        "tool_calls_count": 7,
+        "usage": {
+          "cache_read_tokens": 62261,
+          "cost_usd": 0.005418821999999999,
+          "input_tokens": 51305,
+          "output_tokens": 819
+        }
+      },
+      "trials": 3
+    },
+    {
+      "aggregate": 1.0,
+      "eval": "basic_coding",
+      "input": [
+        "Implement `clamp` in utils.js as described by the TODO comment, and remove the TODO comment once done. Make the edit directly; do not ask questions."
+      ],
+      "params": {
+        "binary": "candidate",
+        "effort": "default",
+        "harness": "default"
+      },
+      "passed": true,
+      "sample": "implement-todo",
+      "scores": [
+        {
+          "pass": true,
+          "reason": "no error",
+          "scorer": "succeeded",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "4 check(s) passed",
+          "scorer": "checks",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "independent functional and observed-action checks passed",
+          "scorer": "independent_correctness",
+          "value": 1.0
+        },
+        {
+          "na": true,
+          "pass": false,
+          "reason": "sample declares no budget checks",
+          "scorer": "declared_budget",
+          "value": 0.0
+        },
+        {
+          "pass": true,
+          "reason": "1 <= 32",
+          "scorer": "turns_within",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "5 <= 64",
+          "scorer": "tool_calls_within",
+          "value": 1.0
+        },
+        {
+          "na": true,
+          "pass": false,
+          "reason": "baseline variant; ast_edit not offered",
+          "scorer": "ast_edit_used",
+          "value": 0.0
+        },
+        {
+          "pass": true,
+          "reason": "$0.0044 <= $2",
+          "scorer": "cost_within",
+          "value": 1.0
+        }
+      ],
+      "seed": 20261125,
+      "skipped": false,
+      "target": "openrouter/muse-spark-1.3",
+      "transcript": {
+        "final_response": "Done — implemented `clamp(value, min, max)` in `utils.js:1-3` as `Math.min(Math.max(value, min), max)` and removed the TODO comment.\n\nVerified with assertions for below-min, in-range, above-max, and boundary values — all pass.",
+        "iterations": 6,
+        "metadata": {
+          "binary": "candidate",
+          "effort": "default",
+          "harness": "default",
+          "model": "meta/muse-spark-1.3-contributor",
+          "provider": "openrouter",
+          "reasoning_effort_applied": "medium",
+          "session_log": ".cache/sessions/implement-todo-openrouter-muse-spark-1.3-candidate-default-default-18eb2558f7d1b8880001462600000000.events.jsonl",
+          "stop_reason": "completed",
+          "tool_invocations": [
+            {
+              "arguments": {
+                "query": "read file workspace"
+              },
+              "name": "tool_search",
+              "success": true
+            },
+            {
+              "arguments": {
+                "path": "utils.js"
+              },
+              "name": "read_file",
+              "success": true
+            },
+            {
+              "arguments": {
+                "edits": [
+                  {
+                    "new_text": "function clamp(value, min, max) {\n  return Math.min(Math.max(value, min), max);\n}",
+                    "old_text": "// TODO: implement clamp(value, min, max): return value bounded to [min, max].\nfunction clamp(value, min, max) {\n  throw new Error(\"not implemented\");\n}"
+                  }
+                ],
+                "expected_hash": "sha256:b2914162ecf29c999a7635bc0d12b3592e8f5d1eb808a24c90905b105eade02c",
+                "path": "utils.js"
+              },
+              "name": "edit_file",
+              "success": true
+            },
+            {
+              "arguments": {
+                "query": "run bash command"
+              },
+              "name": "tool_search",
+              "success": true
+            },
+            {
+              "arguments": {
+                "command": "node -e \"const {clamp}=require('./utils.js'); const assert=require('assert'); assert.strictEqual(clamp(5,0,10),5); assert.strictEqual(clamp(-1,0,10),0); assert.strictEqual(clamp(15,0,10),10); assert.strictEqual(clamp(0,0,10),0); assert.strictEqual(clamp(10,0,10),10); console.log('clamp OK')\""
+              },
+              "name": "bash",
+              "success": true
+            }
+          ]
+        },
+        "metrics": {
+          "agent_reported_ms": 22480.0,
+          "apply_patch_tool_calls": 0.0,
+          "ast_edit_tool_calls": 0.0,
+          "ast_edit_tool_calls_failed": 0.0,
+          "automatic_background_wakes": 0.0,
+          "background_spawn_calls": 0.0,
+          "background_wake_llm_calls": 0.0,
+          "background_wake_responses": 0.0,
+          "background_wake_tool_calls": 0.0,
+          "bash_result_bytes": 565.0,
+          "bash_tool_calls": 1.0,
+          "batch_native_read_calls": 0.0,
+          "batched_tool_model_calls": 0.0,
+          "blocked_equivalent_failures": 0.0,
+          "bookkeeping_tool_calls": 0.0,
+          "cache_creation_tokens": 0.0,
+          "calls_after_checkpoint_recommended": 0.0,
+          "calls_after_progress_warning": 0.0,
+          "checkpoint_recommended_warnings": 0.0,
+          "contextual_grep_files_tool_calls": 0.0,
+          "cumulative_input_tokens": 83822.0,
+          "duplicate_exploration_calls": 0.0,
+          "edit_tool_calls": 1.0,
+          "edit_tool_calls_failed": 0.0,
+          "equivalent_failure_warnings": 0.0,
+          "exploration_tools_before_first_mutation": 1.0,
+          "first_request_input_tokens": 11974.0,
+          "first_request_total_input_tokens": 11974.0,
+          "git_grep_calls": 0.0,
+          "grep_files_tool_calls": 0.0,
+          "inner_tool_failures": 0.0,
+          "leading_marker_in_bash_result": 0.0,
+          "llm_calls": 6.0,
+          "max_exploration_tools_without_progress": 1.0,
+          "max_read_file_batch_width": 1.0,
+          "max_tool_batch_width": 1.0,
+          "max_tool_result_bytes": 4563.0,
+          "mean_tool_batch_width": 1.0,
+          "persisted_output_recovery_calls": 0.0,
+          "persisted_output_recovery_result_bytes": 0.0,
+          "progress_guard_warnings": 0.0,
+          "read_file_tool_calls": 1.0,
+          "redundant_validation_calls": 0.0,
+          "repo_map_max_result_bytes": 0.0,
+          "repo_map_narrowed_after_truncation": 0.0,
+          "repo_map_targeted_recovery_after_truncation": 0.0,
+          "repo_map_tool_calls": 0.0,
+          "repo_map_tool_calls_failed": 0.0,
+          "repo_symbols_tool_calls": 0.0,
+          "repo_symbols_tool_calls_failed": 0.0,
+          "session_extra_matches": 0.0,
+          "session_result_bytes": 0.0,
+          "session_useful_match_recall": 0.0,
+          "sessions_search_calls": 0.0,
+          "sessions_search_first_exploration": 0.0,
+          "single_tool_model_calls": 5.0,
+          "standalone_bookkeeping_rounds": 0.0,
+          "successful_progress_checkpoints": 0.0,
+          "task_llm_calls": 6.0,
+          "task_tool_calls": 5.0,
+          "tool_calls": 5.0,
+          "tool_calls_failed": 0.0,
+          "tool_emitting_model_calls": 5.0,
+          "total_tool_result_bytes": 9540.0,
+          "turns": 1.0,
+          "unchanged_reuse_responses": 0.0,
+          "validation_tool_calls": 0.0,
+          "workspace_state_revisits": 0.0
+        },
+        "timing": {
+          "duration_ms": 24397
+        },
+        "tool_calls": [
+          "tool_search",
+          "read_file",
+          "edit_file",
+          "tool_search",
+          "bash"
+        ],
+        "tool_calls_count": 5,
+        "usage": {
+          "cache_read_tokens": 42195,
+          "cost_usd": 0.004410890000000001,
+          "input_tokens": 41627,
+          "output_tokens": 819
+        }
+      },
+      "trial": 1,
+      "trials": 3
+    },
+    {
+      "aggregate": 1.0,
+      "eval": "basic_coding",
+      "input": [
+        "Implement `clamp` in utils.js as described by the TODO comment, and remove the TODO comment once done. Make the edit directly; do not ask questions."
+      ],
+      "params": {
+        "binary": "candidate",
+        "effort": "default",
+        "harness": "default"
+      },
+      "passed": true,
+      "sample": "implement-todo",
+      "scores": [
+        {
+          "pass": true,
+          "reason": "no error",
+          "scorer": "succeeded",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "4 check(s) passed",
+          "scorer": "checks",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "independent functional and observed-action checks passed",
+          "scorer": "independent_correctness",
+          "value": 1.0
+        },
+        {
+          "na": true,
+          "pass": false,
+          "reason": "sample declares no budget checks",
+          "scorer": "declared_budget",
+          "value": 0.0
+        },
+        {
+          "pass": true,
+          "reason": "1 <= 32",
+          "scorer": "turns_within",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "9 <= 64",
+          "scorer": "tool_calls_within",
+          "value": 1.0
+        },
+        {
+          "na": true,
+          "pass": false,
+          "reason": "baseline variant; ast_edit not offered",
+          "scorer": "ast_edit_used",
+          "value": 0.0
+        },
+        {
+          "pass": true,
+          "reason": "$0.0059 <= $2",
+          "scorer": "cost_within",
+          "value": 1.0
+        }
+      ],
+      "seed": 20261126,
+      "skipped": false,
+      "target": "openrouter/muse-spark-1.3",
+      "transcript": {
+        "final_response": "Done: implemented `clamp(value, min, max)` in `utils.js:1-3` as `Math.min(Math.max(value, min), max)` and removed the TODO comment.\n\nVerified with assertions for in-range (5→5), below-min (-5→0), above-max (15→10), and boundary values (0→0, 10→10); confirmed no TODOs remain.",
+        "iterations": 10,
+        "metadata": {
+          "binary": "candidate",
+          "effort": "default",
+          "harness": "default",
+          "model": "meta/muse-spark-1.3-contributor",
+          "provider": "openrouter",
+          "reasoning_effort_applied": "medium",
+          "session_log": ".cache/sessions/implement-todo-openrouter-muse-spark-1.3-candidate-default-default-18eb255d917eff000001462600000002.events.jsonl",
+          "stop_reason": "completed",
+          "tool_invocations": [
+            {
+              "arguments": {
+                "title": "Implement clamp utility"
+              },
+              "name": "write_session_title",
+              "success": true
+            },
+            {
+              "arguments": {
+                "path": "/",
+                "query": "utils clamp"
+              },
+              "name": "repo_map",
+              "success": false
+            },
+            {
+              "arguments": {
+                "path": "/private/var/folders/8n/jwcv011j313c359z772kmjkw0000gn/T/.tmpUTjt45"
+              },
+              "name": "list_directory",
+              "success": true
+            },
+            {
+              "arguments": {
+                "path": "/private/var/folders/8n/jwcv011j313c359z772kmjkw0000gn/T/.tmpUTjt45/utils.js"
+              },
+              "name": "read_file",
+              "success": true
+            },
+            {
+              "arguments": {
+                "edits": "[{\"new_text\": \"function clamp(value, min, max) {\\n  return Math.min(Math.max(value, min), max);\\n}\", \"old_text\": \"// TODO: implement clamp(value, min, max): return value bounded to [min, max].\\nfunction clamp(value, min, max) {\\n  throw new Error(\\\"not implemented\\\");\\n}\"}]",
+                "path": "/private/var/folders/8n/jwcv011j313c359z772kmjkw0000gn/T/.tmpUTjt45/utils.js"
+              },
+              "name": "edit_file",
+              "success": false
+            },
+            {
+              "arguments": {
+                "query": "edit file"
+              },
+              "name": "tool_search",
+              "success": true
+            },
+            {
+              "arguments": {
+                "edits": [
+                  {
+                    "new_text": "function clamp(value, min, max) {\n  return Math.min(Math.max(value, min), max);\n}",
+                    "old_text": "// TODO: implement clamp(value, min, max): return value bounded to [min, max].\nfunction clamp(value, min, max) {\n  throw new Error(\"not implemented\");\n}"
+                  }
+                ],
+                "expected_hash": "sha256:b2914162ecf29c999a7635bc0d12b3592e8f5d1eb808a24c90905b105eade02c",
+                "path": "utils.js"
+              },
+              "name": "edit_file",
+              "success": true
+            },
+            {
+              "arguments": {
+                "query": "run bash command"
+              },
+              "name": "tool_search",
+              "success": true
+            },
+            {
+              "arguments": {
+                "command": "node -e 'const {clamp}=require(\"./utils.js\"); const assert=require(\"assert\"); assert.strictEqual(clamp(5,0,10),5); assert.strictEqual(clamp(-5,0,10),0); assert.strictEqual(clamp(15,0,10),10); assert.strictEqual(clamp(0,0,10),0); assert.strictEqual(clamp(10,0,10),10); console.log(\"clamp OK\")' && grep -r \"TODO\" . || echo \"no TODOs\""
+              },
+              "name": "bash",
+              "success": true
+            }
+          ]
+        },
+        "metrics": {
+          "agent_reported_ms": 23158.0,
+          "apply_patch_tool_calls": 0.0,
+          "ast_edit_tool_calls": 0.0,
+          "ast_edit_tool_calls_failed": 0.0,
+          "automatic_background_wakes": 0.0,
+          "background_spawn_calls": 0.0,
+          "background_wake_llm_calls": 0.0,
+          "background_wake_responses": 0.0,
+          "background_wake_tool_calls": 0.0,
+          "bash_result_bytes": 639.0,
+          "bash_tool_calls": 1.0,
+          "batch_native_read_calls": 0.0,
+          "batched_tool_model_calls": 0.0,
+          "blocked_equivalent_failures": 0.0,
+          "bookkeeping_tool_calls": 1.0,
+          "cache_creation_tokens": 0.0,
+          "calls_after_checkpoint_recommended": 0.0,
+          "calls_after_progress_warning": 0.0,
+          "checkpoint_recommended_warnings": 0.0,
+          "contextual_grep_files_tool_calls": 0.0,
+          "cumulative_input_tokens": 139976.0,
+          "duplicate_exploration_calls": 0.0,
+          "edit_tool_calls": 2.0,
+          "edit_tool_calls_failed": 1.0,
+          "equivalent_failure_warnings": 0.0,
+          "exploration_tools_before_first_mutation": 3.0,
+          "first_request_input_tokens": 11964.0,
+          "first_request_total_input_tokens": 11964.0,
+          "git_grep_calls": 0.0,
+          "grep_files_tool_calls": 0.0,
+          "inner_tool_failures": 0.0,
+          "leading_marker_in_bash_result": 0.0,
+          "llm_calls": 10.0,
+          "max_exploration_tools_without_progress": 3.0,
+          "max_read_file_batch_width": 1.0,
+          "max_tool_batch_width": 1.0,
+          "max_tool_result_bytes": 6843.0,
+          "mean_tool_batch_width": 1.0,
+          "persisted_output_recovery_calls": 0.0,
+          "persisted_output_recovery_result_bytes": 0.0,
+          "progress_guard_warnings": 0.0,
+          "read_file_tool_calls": 1.0,
+          "redundant_validation_calls": 0.0,
+          "repo_map_max_result_bytes": 0.0,
+          "repo_map_narrowed_after_truncation": 0.0,
+          "repo_map_targeted_recovery_after_truncation": 0.0,
+          "repo_map_tool_calls": 1.0,
+          "repo_map_tool_calls_failed": 1.0,
+          "repo_symbols_tool_calls": 0.0,
+          "repo_symbols_tool_calls_failed": 0.0,
+          "session_extra_matches": 0.0,
+          "session_result_bytes": 0.0,
+          "session_useful_match_recall": 0.0,
+          "sessions_search_calls": 0.0,
+          "sessions_search_first_exploration": 0.0,
+          "single_tool_model_calls": 9.0,
+          "standalone_bookkeeping_rounds": 1.0,
+          "successful_progress_checkpoints": 0.0,
+          "task_llm_calls": 9.0,
+          "task_tool_calls": 8.0,
+          "tool_calls": 9.0,
+          "tool_calls_failed": 2.0,
+          "tool_emitting_model_calls": 9.0,
+          "total_tool_result_bytes": 12374.0,
+          "turns": 1.0,
+          "unchanged_reuse_responses": 0.0,
+          "validation_tool_calls": 0.0,
+          "workspace_state_revisits": 0.0
+        },
+        "timing": {
+          "duration_ms": 25362
+        },
+        "tool_calls": [
+          "write_session_title",
+          "repo_map",
+          "list_directory",
+          "read_file",
+          "edit_file",
+          "tool_search",
+          "edit_file",
+          "tool_search",
+          "bash"
+        ],
+        "tool_calls_count": 9,
+        "usage": {
+          "cache_read_tokens": 85399,
+          "cost_usd": 0.005931898000000001,
+          "input_tokens": 54577,
+          "output_tokens": 1517
+        }
+      },
+      "trial": 2,
+      "trials": 3
+    }
+  ],
+  "summary": {
+    "failed": 0,
+    "na": 0,
+    "passed": 3,
+    "scored": 3,
+    "skipped": 0,
+    "total_cost_usd": 0.015761610000000002,
+    "total_duration_ms": 69406,
+    "total_tokens": 150664,
+    "total_tool_calls": 21
+  },
+  "trials": [
+    {
+      "eval": "basic_coding",
+      "failed": 0,
+      "key": "basic_coding/implement-todo@openrouter/muse-spark-1.3[binary=candidate,effort=default,harness=default]",
+      "mean": 1.0,
+      "na": 0,
+      "params": {
+        "binary": "candidate",
+        "effort": "default",
+        "harness": "default"
+      },
+      "pass_rate": 1.0,
+      "passed": 3,
+      "sample": "implement-todo",
+      "scored": 3,
+      "skipped": 0,
+      "std_dev": 0.0,
+      "target": "openrouter/muse-spark-1.3",
+      "total": 3
+    }
+  ]
+}

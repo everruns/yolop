@@ -1,0 +1,16 @@
+[
+  {
+    "purpose": "routing-before",
+    "run_id": "20261125T011454Z-abdb",
+    "report": "../20261125T011454Z-abdb/report.json",
+    "report_sha256": "fd84e66b0a6b4698cd4db63cb03af884ccadc6ce546a7832ca5e5357564d3e8c",
+    "included_in_matrix": false
+  },
+  {
+    "purpose": "routing-after",
+    "run_id": "20261125T011914Z-e7f8",
+    "report": "../20261125T011914Z-e7f8/report.json",
+    "report_sha256": "c8f729baada8880938c351e38abf56ca5e288d002746dfdc9acd0703dcca1747",
+    "included_in_matrix": false
+  }
+]

@@ -1785,6 +1785,36 @@ fn management_samples() -> Vec<Sample> {
     ]
 }
 
+fn task_continuity_samples() -> Vec<Sample> {
+    let mut validation = redundant_validation_sample();
+    validation.id = "continuity-validation".into();
+    validation.tags = vec!["task-continuity".into()];
+    // Both pinned revisions already have the advisory progress guard. Older
+    // baseline-specific assertions would incorrectly score working controls.
+    validation.metadata.insert(
+        "checks".into(),
+        json!([
+            {"response_contains": ["VALIDATION_COMPLETE"]}
+        ]),
+    );
+    let mut reads = independent_investigation_sample();
+    reads.id = "continuity-independent-read".into();
+    reads.tags = vec!["task-continuity".into()];
+    reads.metadata.insert(
+        "checks".into(),
+        json!([
+            {"response_contains": ["ALPHA-17", "BETA-28", "GAMMA-39"]}
+        ]),
+    );
+    let edit = Sample::new("continuity-late-edit",
+        "Run python3 -m unittest -q before editing and inspect the result. Then allow port 0 for automatic selection while preserving PORT_FALLBACK = 8123, the public parse_port name and the other range checks. Update the zero regression and rerun the tests after the final edit. Report the observed result. Do not use subagents or background work.")
+        .file("ports.py", "PORT_FALLBACK = 8123\n\ndef parse_port(value):\n    port = int(value)\n    if not 1 <= port <= 65535:\n        raise ValueError(value)\n    return port\n")
+        .file("test_ports.py", "import unittest\nfrom ports import parse_port, PORT_FALLBACK\nclass Ports(unittest.TestCase):\n    def test_valid(self):\n        self.assertEqual(parse_port('65535'), 65535)\n        self.assertEqual(PORT_FALLBACK, 8123)\n    def test_bounds(self):\n        for value in ('-1', '65536'):\n            with self.assertRaises(ValueError): parse_port(value)\n    def test_zero(self):\n        with self.assertRaises(ValueError): parse_port('0')\n")
+        .meta("kind", "validation-after-edit")
+        .meta("checks", json!([{"metric_at_least": {"validation_tool_calls": 2.0}}]));
+    vec![validation, reads, edit]
+}
+
 fn dataset() -> Dataset {
     let cargo_toml = "[package]\nname = \"seed\"\nversion = \"0.1.0\"\nedition = \"2021\"\n";
     let mut samples = vec![
@@ -2012,6 +2042,7 @@ fn dataset() -> Dataset {
         ),
     ];
     samples.extend(management_samples());
+    samples.extend(task_continuity_samples());
     Dataset::new(samples)
 }
 
@@ -2067,6 +2098,75 @@ fn checks_scorer() -> Box<dyn Scorer> {
             Score::pass("checks", format!("{passed} check(s) passed"))
         } else {
             Score::fail("checks", failures.join("; "))
+        }
+    })
+}
+
+/// Verify selected coding tasks while the full workspace files are available.
+fn independent_correctness_scorer() -> Box<dyn Scorer> {
+    scorer("independent_correctness", |sample, t| {
+        use std::io::Write;
+        let selected = [
+            "add-fn",
+            "fix-off-by-one",
+            "rename-across-files",
+            "implement-todo",
+            "find-constant",
+            "expected-diagnostic-failure-control",
+            "continuity-validation",
+            "untrusted-file-instructions",
+            "continuity-independent-read",
+            "continuity-late-edit",
+        ];
+        if !selected.contains(&sample.id.as_str()) {
+            return Score::na(
+                "independent_correctness",
+                "no held-out verifier for this sample",
+            );
+        }
+        let verifier = Path::new(env!("CARGO_MANIFEST_DIR")).join("verify_coding_result.py");
+        let mut command = std::process::Command::new("python3");
+        command.arg(verifier).env_clear();
+        for key in ["PATH", "TMPDIR", "RUSTUP_HOME", "CARGO_HOME"] {
+            if let Some(value) = std::env::var_os(key) {
+                command.env(key, value);
+            }
+        }
+        command
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        let result = (|| -> Result<Value, String> {
+            let mut child = command.spawn().map_err(|e| e.to_string())?;
+            let payload = json!({"sample": sample.id, "files": t.files, "response": t.final_response,
+                "error": t.error, "invocations": tool_invocations(t)});
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(payload.to_string().as_bytes())
+                .map_err(|e| e.to_string())?;
+            let output = child.wait_with_output().map_err(|e| e.to_string())?;
+            if !output.status.success() {
+                return Err(String::from_utf8_lossy(&output.stderr).into_owned());
+            }
+            serde_json::from_slice(&output.stdout).map_err(|e| e.to_string())
+        })();
+        match result {
+            Ok(value) if value["passed"] == true => Score::pass(
+                "independent_correctness",
+                value["reason"].as_str().unwrap_or("verified"),
+            ),
+            Ok(value) => Score::fail(
+                "independent_correctness",
+                value["reason"]
+                    .as_str()
+                    .unwrap_or("held-out verification failed"),
+            ),
+            Err(error) => Score::fail(
+                "independent_correctness",
+                format!("verifier infrastructure error: {error}"),
+            ),
         }
     })
 }
@@ -2454,6 +2554,16 @@ fn yolop_bin(binary: &str) -> Result<PathBuf, String> {
     )
 }
 
+fn cli_model_argument(target: &Target) -> String {
+    // Slash-bearing model IDs need the provider too: meta/... otherwise
+    // selects Meta even when --provider openrouter was passed separately.
+    if target.model.contains('/') {
+        format!("{}/{}", target.provider, target.model)
+    } else {
+        target.model.clone()
+    }
+}
+
 fn timeout_s() -> u64 {
     std::env::var("HARNESS_BASIC_TIMEOUT_S")
         .ok()
@@ -2743,6 +2853,7 @@ fn validation_command(data: &Value) -> Option<String> {
         "uv run",
         "go test",
         "python -m unittest",
+        "python3 -m unittest",
     ];
     validation_markers
         .iter()
@@ -2958,6 +3069,7 @@ fn classify_tool(data: &Value) -> ToolKind {
         "uv run",
         "go test",
         "python -m unittest",
+        "python3 -m unittest",
     ]
     .iter()
     .any(|prefix| command.starts_with(prefix))
@@ -3725,7 +3837,7 @@ async fn run_yolop(sample: Sample, cx: RunCx) -> Transcript {
         .arg("--provider")
         .arg(&cx.target.provider);
     if !cx.target.model.is_empty() {
-        cmd.arg("--model").arg(&cx.target.model);
+        cmd.arg("--model").arg(cli_model_argument(&cx.target));
     }
     // `default` leaves yolop's per-model default effort in place.
     if effort != "default" {
@@ -4272,6 +4384,7 @@ fn basic_coding() -> Eval {
         .axis("effort", EFFORTS.iter().copied())
         .scorer(succeeded())
         .scorer(checks_scorer())
+        .scorer(independent_correctness_scorer())
         .scorer(declared_budget_scorer())
         // Guardrails, not the comparison itself: the per-case numbers (turns,
         // tool calls, tokens, cost) surface in the report for A/B reading.
@@ -4296,6 +4409,38 @@ async fn main() -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn routed_model_ids_keep_the_selected_provider() {
+        for (provider, model, expected) in [
+            (
+                "openrouter",
+                "meta/muse-spark-1.3-contributor",
+                "openrouter/meta/muse-spark-1.3-contributor",
+            ),
+            (
+                "openrouter",
+                "openrouter/auto",
+                "openrouter/openrouter/auto",
+            ),
+            ("local", "owner/model", "local/owner/model"),
+            ("openai", "gpt-6-luna", "gpt-6-luna"),
+        ] {
+            assert_eq!(
+                cli_model_argument(&Target::new("test", provider, model)),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn continuity_controls_use_symmetric_checks() {
+        for sample in task_continuity_samples() {
+            for check in sample.metadata["checks"].as_array().unwrap() {
+                assert!(check.get("when_binary").is_none());
+            }
+        }
+    }
 
     #[test]
     fn dataset_samples_are_well_formed() {
@@ -4544,6 +4689,15 @@ mod tests {
         let m = parse_events(suffixed);
         assert_eq!(m.validation_tool_calls, 1);
         assert_eq!(m.inner_tool_failures, 1);
+    }
+
+    #[test]
+    fn python3_unittest_counts_as_validation() {
+        let jsonl = r#"
+{"type":"tool.completed","data":{"tool_name":"bash","success":true,"result":[{"type":"text","text":"{\"command\":\"python3 -m unittest -q\",\"exit_code\":0,\"success\":true}"}]}}
+"#;
+        let m = parse_events(jsonl);
+        assert_eq!(m.validation_tool_calls, 1);
     }
 
     #[test]

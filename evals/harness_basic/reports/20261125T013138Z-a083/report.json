@@ -1,0 +1,611 @@
+{
+  "cases": [
+    {
+      "aggregate": 1.0,
+      "eval": "basic_coding",
+      "input": [
+        "Read config/alpha.txt, config/beta.txt, and config/gamma.txt. These reads are independent. Reply with only the three CODE values in alpha-beta-gamma order, separated by colons."
+      ],
+      "params": {
+        "binary": "candidate",
+        "effort": "default",
+        "harness": "default"
+      },
+      "passed": true,
+      "sample": "continuity-independent-read",
+      "scores": [
+        {
+          "pass": true,
+          "reason": "no error",
+          "scorer": "succeeded",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "3 check(s) passed",
+          "scorer": "checks",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "independent functional and observed-action checks passed",
+          "scorer": "independent_correctness",
+          "value": 1.0
+        },
+        {
+          "na": true,
+          "pass": false,
+          "reason": "sample declares no budget checks",
+          "scorer": "declared_budget",
+          "value": 0.0
+        },
+        {
+          "pass": true,
+          "reason": "1 <= 32",
+          "scorer": "turns_within",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "3 <= 64",
+          "scorer": "tool_calls_within",
+          "value": 1.0
+        },
+        {
+          "na": true,
+          "pass": false,
+          "reason": "baseline variant; ast_edit not offered",
+          "scorer": "ast_edit_used",
+          "value": 0.0
+        },
+        {
+          "pass": true,
+          "reason": "$0.0016 <= $2",
+          "scorer": "cost_within",
+          "value": 1.0
+        }
+      ],
+      "seed": 20261124,
+      "skipped": false,
+      "target": "openrouter/muse-spark-1.3",
+      "transcript": {
+        "final_response": "ALPHA-17:BETA-28:GAMMA-39",
+        "iterations": 4,
+        "metadata": {
+          "binary": "candidate",
+          "effort": "default",
+          "harness": "default",
+          "model": "meta/muse-spark-1.3-contributor",
+          "provider": "openrouter",
+          "reasoning_effort_applied": "medium",
+          "session_log": ".cache/sessions/continuity-independent-read-openrouter-muse-spark-1.3-candidate-default-default-18eb25ac6a6890f80000073c00000000.events.jsonl",
+          "stop_reason": "completed",
+          "tool_invocations": [
+            {
+              "arguments": {
+                "title": "Read alpha beta gamma codes"
+              },
+              "name": "write_session_title",
+              "success": true
+            },
+            {
+              "arguments": {
+                "query": "read many files"
+              },
+              "name": "tool_search",
+              "success": true
+            },
+            {
+              "arguments": {
+                "paths": [
+                  "config/alpha.txt",
+                  "config/beta.txt",
+                  "config/gamma.txt"
+                ]
+              },
+              "name": "read_many_files",
+              "success": true
+            }
+          ]
+        },
+        "metrics": {
+          "agent_reported_ms": 19191.0,
+          "apply_patch_tool_calls": 0.0,
+          "ast_edit_tool_calls": 0.0,
+          "ast_edit_tool_calls_failed": 0.0,
+          "automatic_background_wakes": 0.0,
+          "background_spawn_calls": 0.0,
+          "background_wake_llm_calls": 0.0,
+          "background_wake_responses": 0.0,
+          "background_wake_tool_calls": 0.0,
+          "bash_result_bytes": 0.0,
+          "bash_tool_calls": 0.0,
+          "batch_native_read_calls": 1.0,
+          "batched_tool_model_calls": 0.0,
+          "blocked_equivalent_failures": 0.0,
+          "bookkeeping_tool_calls": 1.0,
+          "cache_creation_tokens": 0.0,
+          "calls_after_checkpoint_recommended": 0.0,
+          "calls_after_progress_warning": 0.0,
+          "checkpoint_recommended_warnings": 0.0,
+          "contextual_grep_files_tool_calls": 0.0,
+          "cumulative_input_tokens": 51131.0,
+          "duplicate_exploration_calls": 0.0,
+          "edit_tool_calls": 0.0,
+          "edit_tool_calls_failed": 0.0,
+          "equivalent_failure_warnings": 0.0,
+          "exploration_tools_before_first_mutation": 0.0,
+          "first_request_input_tokens": 11992.0,
+          "first_request_total_input_tokens": 11992.0,
+          "git_grep_calls": 0.0,
+          "grep_files_tool_calls": 0.0,
+          "inner_tool_failures": 0.0,
+          "leading_marker_in_bash_result": 0.0,
+          "llm_calls": 4.0,
+          "max_exploration_tools_without_progress": 0.0,
+          "max_read_file_batch_width": 3.0,
+          "max_tool_batch_width": 1.0,
+          "max_tool_result_bytes": 1587.0,
+          "mean_tool_batch_width": 1.0,
+          "persisted_output_recovery_calls": 0.0,
+          "persisted_output_recovery_result_bytes": 0.0,
+          "progress_guard_warnings": 0.0,
+          "read_file_tool_calls": 0.0,
+          "redundant_validation_calls": 0.0,
+          "repo_map_max_result_bytes": 0.0,
+          "repo_map_narrowed_after_truncation": 0.0,
+          "repo_map_targeted_recovery_after_truncation": 0.0,
+          "repo_map_tool_calls": 0.0,
+          "repo_map_tool_calls_failed": 0.0,
+          "repo_symbols_tool_calls": 0.0,
+          "repo_symbols_tool_calls_failed": 0.0,
+          "session_extra_matches": 0.0,
+          "session_result_bytes": 0.0,
+          "session_useful_match_recall": 0.0,
+          "sessions_search_calls": 0.0,
+          "sessions_search_first_exploration": 0.0,
+          "single_tool_model_calls": 3.0,
+          "standalone_bookkeeping_rounds": 1.0,
+          "successful_progress_checkpoints": 0.0,
+          "task_llm_calls": 3.0,
+          "task_tool_calls": 2.0,
+          "tool_calls": 3.0,
+          "tool_calls_failed": 0.0,
+          "tool_emitting_model_calls": 3.0,
+          "total_tool_result_bytes": 2854.0,
+          "turns": 1.0,
+          "unchanged_reuse_responses": 0.0,
+          "validation_tool_calls": 0.0,
+          "workspace_state_revisits": 0.0
+        },
+        "timing": {
+          "duration_ms": 21820
+        },
+        "tool_calls": [
+          "write_session_title",
+          "tool_search",
+          "read_many_files"
+        ],
+        "tool_calls_count": 3,
+        "usage": {
+          "cache_read_tokens": 37459,
+          "cost_usd": 0.001602118,
+          "input_tokens": 13672,
+          "output_tokens": 800
+        }
+      },
+      "trials": 3
+    },
+    {
+      "aggregate": 1.0,
+      "eval": "basic_coding",
+      "input": [
+        "Read config/alpha.txt, config/beta.txt, and config/gamma.txt. These reads are independent. Reply with only the three CODE values in alpha-beta-gamma order, separated by colons."
+      ],
+      "params": {
+        "binary": "candidate",
+        "effort": "default",
+        "harness": "default"
+      },
+      "passed": true,
+      "sample": "continuity-independent-read",
+      "scores": [
+        {
+          "pass": true,
+          "reason": "no error",
+          "scorer": "succeeded",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "3 check(s) passed",
+          "scorer": "checks",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "independent functional and observed-action checks passed",
+          "scorer": "independent_correctness",
+          "value": 1.0
+        },
+        {
+          "na": true,
+          "pass": false,
+          "reason": "sample declares no budget checks",
+          "scorer": "declared_budget",
+          "value": 0.0
+        },
+        {
+          "pass": true,
+          "reason": "1 <= 32",
+          "scorer": "turns_within",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "2 <= 64",
+          "scorer": "tool_calls_within",
+          "value": 1.0
+        },
+        {
+          "na": true,
+          "pass": false,
+          "reason": "baseline variant; ast_edit not offered",
+          "scorer": "ast_edit_used",
+          "value": 0.0
+        },
+        {
+          "pass": true,
+          "reason": "$0.0014 <= $2",
+          "scorer": "cost_within",
+          "value": 1.0
+        }
+      ],
+      "seed": 20261125,
+      "skipped": false,
+      "target": "openrouter/muse-spark-1.3",
+      "transcript": {
+        "final_response": "ALPHA-17:BETA-28:GAMMA-39",
+        "iterations": 3,
+        "metadata": {
+          "binary": "candidate",
+          "effort": "default",
+          "harness": "default",
+          "model": "meta/muse-spark-1.3-contributor",
+          "provider": "openrouter",
+          "reasoning_effort_applied": "medium",
+          "session_log": ".cache/sessions/continuity-independent-read-openrouter-muse-spark-1.3-candidate-default-default-18eb25ac6a893c400000073c00000001.events.jsonl",
+          "stop_reason": "completed",
+          "tool_invocations": [
+            {
+              "arguments": {
+                "title": "Read config code values"
+              },
+              "name": "write_session_title",
+              "success": true
+            },
+            {
+              "arguments": {
+                "paths": [
+                  "config/alpha.txt",
+                  "config/beta.txt",
+                  "config/gamma.txt"
+                ]
+              },
+              "name": "read_many_files",
+              "success": true
+            }
+          ]
+        },
+        "metrics": {
+          "agent_reported_ms": 7630.0,
+          "apply_patch_tool_calls": 0.0,
+          "ast_edit_tool_calls": 0.0,
+          "ast_edit_tool_calls_failed": 0.0,
+          "automatic_background_wakes": 0.0,
+          "background_spawn_calls": 0.0,
+          "background_wake_llm_calls": 0.0,
+          "background_wake_responses": 0.0,
+          "background_wake_tool_calls": 0.0,
+          "bash_result_bytes": 0.0,
+          "bash_tool_calls": 0.0,
+          "batch_native_read_calls": 1.0,
+          "batched_tool_model_calls": 0.0,
+          "blocked_equivalent_failures": 0.0,
+          "bookkeeping_tool_calls": 1.0,
+          "cache_creation_tokens": 0.0,
+          "calls_after_checkpoint_recommended": 0.0,
+          "calls_after_progress_warning": 0.0,
+          "checkpoint_recommended_warnings": 0.0,
+          "contextual_grep_files_tool_calls": 0.0,
+          "cumulative_input_tokens": 36851.0,
+          "duplicate_exploration_calls": 0.0,
+          "edit_tool_calls": 0.0,
+          "edit_tool_calls_failed": 0.0,
+          "equivalent_failure_warnings": 0.0,
+          "exploration_tools_before_first_mutation": 0.0,
+          "first_request_input_tokens": 11972.0,
+          "first_request_total_input_tokens": 11972.0,
+          "git_grep_calls": 0.0,
+          "grep_files_tool_calls": 0.0,
+          "inner_tool_failures": 0.0,
+          "leading_marker_in_bash_result": 0.0,
+          "llm_calls": 3.0,
+          "max_exploration_tools_without_progress": 0.0,
+          "max_read_file_batch_width": 3.0,
+          "max_tool_batch_width": 1.0,
+          "max_tool_result_bytes": 1120.0,
+          "mean_tool_batch_width": 1.0,
+          "persisted_output_recovery_calls": 0.0,
+          "persisted_output_recovery_result_bytes": 0.0,
+          "progress_guard_warnings": 0.0,
+          "read_file_tool_calls": 0.0,
+          "redundant_validation_calls": 0.0,
+          "repo_map_max_result_bytes": 0.0,
+          "repo_map_narrowed_after_truncation": 0.0,
+          "repo_map_targeted_recovery_after_truncation": 0.0,
+          "repo_map_tool_calls": 0.0,
+          "repo_map_tool_calls_failed": 0.0,
+          "repo_symbols_tool_calls": 0.0,
+          "repo_symbols_tool_calls_failed": 0.0,
+          "session_extra_matches": 0.0,
+          "session_result_bytes": 0.0,
+          "session_useful_match_recall": 0.0,
+          "sessions_search_calls": 0.0,
+          "sessions_search_first_exploration": 0.0,
+          "single_tool_model_calls": 2.0,
+          "standalone_bookkeeping_rounds": 1.0,
+          "successful_progress_checkpoints": 0.0,
+          "task_llm_calls": 2.0,
+          "task_tool_calls": 1.0,
+          "tool_calls": 2.0,
+          "tool_calls_failed": 0.0,
+          "tool_emitting_model_calls": 2.0,
+          "total_tool_result_bytes": 1263.0,
+          "turns": 1.0,
+          "unchanged_reuse_responses": 0.0,
+          "validation_tool_calls": 0.0,
+          "workspace_state_revisits": 0.0
+        },
+        "timing": {
+          "duration_ms": 10040
+        },
+        "tool_calls": [
+          "write_session_title",
+          "read_many_files"
+        ],
+        "tool_calls_count": 2,
+        "usage": {
+          "cache_read_tokens": 24034,
+          "cost_usd": 0.001399568,
+          "input_tokens": 12817,
+          "output_tokens": 349
+        }
+      },
+      "trial": 1,
+      "trials": 3
+    },
+    {
+      "aggregate": 1.0,
+      "eval": "basic_coding",
+      "input": [
+        "Read config/alpha.txt, config/beta.txt, and config/gamma.txt. These reads are independent. Reply with only the three CODE values in alpha-beta-gamma order, separated by colons."
+      ],
+      "params": {
+        "binary": "candidate",
+        "effort": "default",
+        "harness": "default"
+      },
+      "passed": true,
+      "sample": "continuity-independent-read",
+      "scores": [
+        {
+          "pass": true,
+          "reason": "no error",
+          "scorer": "succeeded",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "3 check(s) passed",
+          "scorer": "checks",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "independent functional and observed-action checks passed",
+          "scorer": "independent_correctness",
+          "value": 1.0
+        },
+        {
+          "na": true,
+          "pass": false,
+          "reason": "sample declares no budget checks",
+          "scorer": "declared_budget",
+          "value": 0.0
+        },
+        {
+          "pass": true,
+          "reason": "1 <= 32",
+          "scorer": "turns_within",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "2 <= 64",
+          "scorer": "tool_calls_within",
+          "value": 1.0
+        },
+        {
+          "na": true,
+          "pass": false,
+          "reason": "baseline variant; ast_edit not offered",
+          "scorer": "ast_edit_used",
+          "value": 0.0
+        },
+        {
+          "pass": true,
+          "reason": "$0.0016 <= $2",
+          "scorer": "cost_within",
+          "value": 1.0
+        }
+      ],
+      "seed": 20261126,
+      "skipped": false,
+      "target": "openrouter/muse-spark-1.3",
+      "transcript": {
+        "final_response": "ALPHA-17:BETA-28:GAMMA-39",
+        "iterations": 3,
+        "metadata": {
+          "binary": "candidate",
+          "effort": "default",
+          "harness": "default",
+          "model": "meta/muse-spark-1.3-contributor",
+          "provider": "openrouter",
+          "reasoning_effort_applied": "medium",
+          "session_log": ".cache/sessions/continuity-independent-read-openrouter-muse-spark-1.3-candidate-default-default-18eb25aec4878a880000073c00000002.events.jsonl",
+          "stop_reason": "completed",
+          "tool_invocations": [
+            {
+              "arguments": {
+                "title": "Read alpha beta gamma codes"
+              },
+              "name": "write_session_title",
+              "success": true
+            },
+            {
+              "arguments": {
+                "paths": [
+                  "config/alpha.txt",
+                  "config/beta.txt",
+                  "config/gamma.txt"
+                ]
+              },
+              "name": "read_many_files",
+              "success": true
+            }
+          ]
+        },
+        "metrics": {
+          "agent_reported_ms": 15056.0,
+          "apply_patch_tool_calls": 0.0,
+          "ast_edit_tool_calls": 0.0,
+          "ast_edit_tool_calls_failed": 0.0,
+          "automatic_background_wakes": 0.0,
+          "background_spawn_calls": 0.0,
+          "background_wake_llm_calls": 0.0,
+          "background_wake_responses": 0.0,
+          "background_wake_tool_calls": 0.0,
+          "bash_result_bytes": 0.0,
+          "bash_tool_calls": 0.0,
+          "batch_native_read_calls": 1.0,
+          "batched_tool_model_calls": 0.0,
+          "blocked_equivalent_failures": 0.0,
+          "bookkeeping_tool_calls": 1.0,
+          "cache_creation_tokens": 0.0,
+          "calls_after_checkpoint_recommended": 0.0,
+          "calls_after_progress_warning": 0.0,
+          "checkpoint_recommended_warnings": 0.0,
+          "contextual_grep_files_tool_calls": 0.0,
+          "cumulative_input_tokens": 37783.0,
+          "duplicate_exploration_calls": 0.0,
+          "edit_tool_calls": 0.0,
+          "edit_tool_calls_failed": 0.0,
+          "equivalent_failure_warnings": 0.0,
+          "exploration_tools_before_first_mutation": 0.0,
+          "first_request_input_tokens": 11992.0,
+          "first_request_total_input_tokens": 11992.0,
+          "git_grep_calls": 0.0,
+          "grep_files_tool_calls": 0.0,
+          "inner_tool_failures": 0.0,
+          "leading_marker_in_bash_result": 0.0,
+          "llm_calls": 3.0,
+          "max_exploration_tools_without_progress": 0.0,
+          "max_read_file_batch_width": 3.0,
+          "max_tool_batch_width": 1.0,
+          "max_tool_result_bytes": 1120.0,
+          "mean_tool_batch_width": 1.0,
+          "persisted_output_recovery_calls": 0.0,
+          "persisted_output_recovery_result_bytes": 0.0,
+          "progress_guard_warnings": 0.0,
+          "read_file_tool_calls": 0.0,
+          "redundant_validation_calls": 0.0,
+          "repo_map_max_result_bytes": 0.0,
+          "repo_map_narrowed_after_truncation": 0.0,
+          "repo_map_targeted_recovery_after_truncation": 0.0,
+          "repo_map_tool_calls": 0.0,
+          "repo_map_tool_calls_failed": 0.0,
+          "repo_symbols_tool_calls": 0.0,
+          "repo_symbols_tool_calls_failed": 0.0,
+          "session_extra_matches": 0.0,
+          "session_result_bytes": 0.0,
+          "session_useful_match_recall": 0.0,
+          "sessions_search_calls": 0.0,
+          "sessions_search_first_exploration": 0.0,
+          "single_tool_model_calls": 2.0,
+          "standalone_bookkeeping_rounds": 1.0,
+          "successful_progress_checkpoints": 0.0,
+          "task_llm_calls": 2.0,
+          "task_tool_calls": 1.0,
+          "tool_calls": 2.0,
+          "tool_calls_failed": 0.0,
+          "tool_emitting_model_calls": 2.0,
+          "total_tool_result_bytes": 1267.0,
+          "turns": 1.0,
+          "unchanged_reuse_responses": 0.0,
+          "validation_tool_calls": 0.0,
+          "workspace_state_revisits": 0.0
+        },
+        "timing": {
+          "duration_ms": 15991
+        },
+        "tool_calls": [
+          "write_session_title",
+          "read_many_files"
+        ],
+        "tool_calls_count": 2,
+        "usage": {
+          "cache_read_tokens": 24418,
+          "cost_usd": 0.001552736,
+          "input_tokens": 13365,
+          "output_tokens": 837
+        }
+      },
+      "trial": 2,
+      "trials": 3
+    }
+  ],
+  "summary": {
+    "failed": 0,
+    "na": 0,
+    "passed": 3,
+    "scored": 3,
+    "skipped": 0,
+    "total_cost_usd": 0.004554422,
+    "total_duration_ms": 47851,
+    "total_tokens": 41840,
+    "total_tool_calls": 7
+  },
+  "trials": [
+    {
+      "eval": "basic_coding",
+      "failed": 0,
+      "key": "basic_coding/continuity-independent-read@openrouter/muse-spark-1.3[binary=candidate,effort=default,harness=default]",
+      "mean": 1.0,
+      "na": 0,
+      "params": {
+        "binary": "candidate",
+        "effort": "default",
+        "harness": "default"
+      },
+      "pass_rate": 1.0,
+      "passed": 3,
+      "sample": "continuity-independent-read",
+      "scored": 3,
+      "skipped": 0,
+      "std_dev": 0.0,
+      "target": "openrouter/muse-spark-1.3",
+      "total": 3
+    }
+  ]
+}

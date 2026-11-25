@@ -1,0 +1,7 @@
+{
+  "evals/harness_basic/src/main.rs": "50aa9d925371827182ebae6769273594356e85e6350cc9eff76d39d67d89911f",
+  "evals/harness_basic/verify_coding_result.py": "b5aa858c304879f3466987e0fb2c08fad638c44c6267e604a775b49874c99b80",
+  "evals/harness_basic/run_task_continuity.py": "1effb4d4b9da1a0188dac5dbae594b97ccd55d4cf79b7a44a2d7229c3ba0fe9a",
+  "evals/harness_basic/mira.toml": "98a6c36254ba43352275adeaeee19cad8bcaf1b88cf0df227faa6aa4aa61adfc",
+  ".local/task-continuity-ab/study-target/debug/harness_basic": "ac2a7e42b08c53aa06673a0648dcf69ae3d953892665eeaeee8a4daaa01fbb5d"
+}

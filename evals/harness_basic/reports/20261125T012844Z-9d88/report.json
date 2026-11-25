@@ -1,0 +1,621 @@
+{
+  "cases": [
+    {
+      "aggregate": 0.8333333333333334,
+      "eval": "basic_coding",
+      "input": [
+        "Run `cargo test` once and inspect the result. If it succeeds, run the exact same command two more times, one call at a time, without changing any file. A runtime progress warning overrides the repetition instruction: stop immediately. Finish with the exact marker VALIDATION_COMPLETE."
+      ],
+      "params": {
+        "binary": "candidate",
+        "effort": "default",
+        "harness": "default"
+      },
+      "passed": false,
+      "sample": "continuity-validation",
+      "scores": [
+        {
+          "pass": true,
+          "reason": "no error",
+          "scorer": "succeeded",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "1 check(s) passed",
+          "scorer": "checks",
+          "value": 1.0
+        },
+        {
+          "pass": false,
+          "reason": "AssertionError",
+          "scorer": "independent_correctness",
+          "value": 0.0
+        },
+        {
+          "na": true,
+          "pass": false,
+          "reason": "sample declares no budget checks",
+          "scorer": "declared_budget",
+          "value": 0.0
+        },
+        {
+          "pass": true,
+          "reason": "1 <= 12",
+          "scorer": "turns_within",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "3 <= 12",
+          "scorer": "tool_calls_within",
+          "value": 1.0
+        },
+        {
+          "na": true,
+          "pass": false,
+          "reason": "baseline variant; ast_edit not offered",
+          "scorer": "ast_edit_used",
+          "value": 0.0
+        },
+        {
+          "pass": true,
+          "reason": "$0.0017 <= $2",
+          "scorer": "cost_within",
+          "value": 1.0
+        }
+      ],
+      "seed": 20261124,
+      "skipped": false,
+      "target": "openrouter/muse-spark-1.3",
+      "transcript": {
+        "final_response": "Second run succeeded but returned a runtime progress warning about repeating the same validation on unchanged workspace. Per instruction, stopping immediately and skipping the third run.\n\nFirst run: exit 0, 1 passed (lines 5-9 of output). Second run: exit 0, 1 passed.\n\nVALIDATION_COMPLETE",
+        "iterations": 4,
+        "metadata": {
+          "binary": "candidate",
+          "effort": "default",
+          "harness": "default",
+          "model": "meta/muse-spark-1.3-contributor",
+          "provider": "openrouter",
+          "reasoning_effort_applied": "medium",
+          "session_log": ".cache/sessions/continuity-validation-openrouter-muse-spark-1.3-candidate-default-default-18eb2583c6f7d5c8000160b100000001.events.jsonl",
+          "stop_reason": "completed",
+          "tool_invocations": [
+            {
+              "arguments": {
+                "title": "Cargo test repetition validation"
+              },
+              "name": "write_session_title",
+              "success": true
+            },
+            {
+              "arguments": {
+                "command": "cargo test 2>&1",
+                "output": "full"
+              },
+              "name": "bash",
+              "success": true
+            },
+            {
+              "arguments": {
+                "command": "cargo test 2>&1",
+                "output": "full"
+              },
+              "name": "bash",
+              "success": true
+            }
+          ]
+        },
+        "metrics": {
+          "agent_reported_ms": 12949.0,
+          "apply_patch_tool_calls": 0.0,
+          "ast_edit_tool_calls": 0.0,
+          "ast_edit_tool_calls_failed": 0.0,
+          "automatic_background_wakes": 0.0,
+          "background_spawn_calls": 0.0,
+          "background_wake_llm_calls": 0.0,
+          "background_wake_responses": 0.0,
+          "background_wake_tool_calls": 0.0,
+          "bash_result_bytes": 1962.0,
+          "bash_tool_calls": 2.0,
+          "batch_native_read_calls": 0.0,
+          "batched_tool_model_calls": 0.0,
+          "blocked_equivalent_failures": 0.0,
+          "bookkeeping_tool_calls": 1.0,
+          "cache_creation_tokens": 0.0,
+          "calls_after_checkpoint_recommended": 0.0,
+          "calls_after_progress_warning": 0.0,
+          "checkpoint_recommended_warnings": 0.0,
+          "contextual_grep_files_tool_calls": 0.0,
+          "cumulative_input_tokens": 51819.0,
+          "duplicate_exploration_calls": 0.0,
+          "edit_tool_calls": 0.0,
+          "edit_tool_calls_failed": 0.0,
+          "equivalent_failure_warnings": 0.0,
+          "exploration_tools_before_first_mutation": 0.0,
+          "first_request_input_tokens": 12007.0,
+          "first_request_total_input_tokens": 12007.0,
+          "git_grep_calls": 0.0,
+          "grep_files_tool_calls": 0.0,
+          "inner_tool_failures": 0.0,
+          "leading_marker_in_bash_result": 0.0,
+          "llm_calls": 4.0,
+          "max_exploration_tools_without_progress": 0.0,
+          "max_read_file_batch_width": 0.0,
+          "max_tool_batch_width": 1.0,
+          "max_tool_result_bytes": 1065.0,
+          "mean_tool_batch_width": 1.0,
+          "persisted_output_recovery_calls": 0.0,
+          "persisted_output_recovery_result_bytes": 0.0,
+          "progress_guard_warnings": 1.0,
+          "read_file_tool_calls": 0.0,
+          "redundant_validation_calls": 1.0,
+          "repo_map_max_result_bytes": 0.0,
+          "repo_map_narrowed_after_truncation": 0.0,
+          "repo_map_targeted_recovery_after_truncation": 0.0,
+          "repo_map_tool_calls": 0.0,
+          "repo_map_tool_calls_failed": 0.0,
+          "repo_symbols_tool_calls": 0.0,
+          "repo_symbols_tool_calls_failed": 0.0,
+          "session_extra_matches": 0.0,
+          "session_result_bytes": 0.0,
+          "session_useful_match_recall": 0.0,
+          "sessions_search_calls": 0.0,
+          "sessions_search_first_exploration": 0.0,
+          "single_tool_model_calls": 3.0,
+          "standalone_bookkeeping_rounds": 1.0,
+          "successful_progress_checkpoints": 0.0,
+          "task_llm_calls": 3.0,
+          "task_tool_calls": 2.0,
+          "tool_calls": 3.0,
+          "tool_calls_failed": 0.0,
+          "tool_emitting_model_calls": 3.0,
+          "total_tool_result_bytes": 2114.0,
+          "turns": 1.0,
+          "unchanged_reuse_responses": 0.0,
+          "validation_tool_calls": 2.0,
+          "workspace_state_revisits": 0.0
+        },
+        "timing": {
+          "duration_ms": 15109
+        },
+        "tool_calls": [
+          "write_session_title",
+          "bash",
+          "bash"
+        ],
+        "tool_calls_count": 3,
+        "usage": {
+          "cache_read_tokens": 36819,
+          "cost_usd": 0.001723838,
+          "input_tokens": 15000,
+          "output_tokens": 751
+        }
+      },
+      "trials": 3
+    },
+    {
+      "aggregate": 0.8333333333333334,
+      "eval": "basic_coding",
+      "input": [
+        "Run `cargo test` once and inspect the result. If it succeeds, run the exact same command two more times, one call at a time, without changing any file. A runtime progress warning overrides the repetition instruction: stop immediately. Finish with the exact marker VALIDATION_COMPLETE."
+      ],
+      "params": {
+        "binary": "candidate",
+        "effort": "default",
+        "harness": "default"
+      },
+      "passed": false,
+      "sample": "continuity-validation",
+      "scores": [
+        {
+          "pass": true,
+          "reason": "no error",
+          "scorer": "succeeded",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "1 check(s) passed",
+          "scorer": "checks",
+          "value": 1.0
+        },
+        {
+          "pass": false,
+          "reason": "AssertionError",
+          "scorer": "independent_correctness",
+          "value": 0.0
+        },
+        {
+          "na": true,
+          "pass": false,
+          "reason": "sample declares no budget checks",
+          "scorer": "declared_budget",
+          "value": 0.0
+        },
+        {
+          "pass": true,
+          "reason": "1 <= 12",
+          "scorer": "turns_within",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "3 <= 12",
+          "scorer": "tool_calls_within",
+          "value": 1.0
+        },
+        {
+          "na": true,
+          "pass": false,
+          "reason": "baseline variant; ast_edit not offered",
+          "scorer": "ast_edit_used",
+          "value": 0.0
+        },
+        {
+          "pass": true,
+          "reason": "$0.0017 <= $2",
+          "scorer": "cost_within",
+          "value": 1.0
+        }
+      ],
+      "seed": 20261125,
+      "skipped": false,
+      "target": "openrouter/muse-spark-1.3",
+      "transcript": {
+        "final_response": "Stopped after 2 successful `cargo test` runs due to runtime progress warning; third repetition skipped per override instruction.\nVALIDATION_COMPLETE",
+        "iterations": 4,
+        "metadata": {
+          "binary": "candidate",
+          "effort": "default",
+          "harness": "default",
+          "model": "meta/muse-spark-1.3-contributor",
+          "provider": "openrouter",
+          "reasoning_effort_applied": "medium",
+          "session_log": ".cache/sessions/continuity-validation-openrouter-muse-spark-1.3-candidate-default-default-18eb2583c6d7caa8000160b100000000.events.jsonl",
+          "stop_reason": "completed",
+          "tool_invocations": [
+            {
+              "arguments": {
+                "title": "Validate cargo test repetition"
+              },
+              "name": "write_session_title",
+              "success": true
+            },
+            {
+              "arguments": {
+                "command": "cargo test 2>&1",
+                "output": "full"
+              },
+              "name": "bash",
+              "success": true
+            },
+            {
+              "arguments": {
+                "command": "cargo test 2>&1",
+                "output": "full"
+              },
+              "name": "bash",
+              "success": true
+            }
+          ]
+        },
+        "metrics": {
+          "agent_reported_ms": 14757.0,
+          "apply_patch_tool_calls": 0.0,
+          "ast_edit_tool_calls": 0.0,
+          "ast_edit_tool_calls_failed": 0.0,
+          "automatic_background_wakes": 0.0,
+          "background_spawn_calls": 0.0,
+          "background_wake_llm_calls": 0.0,
+          "background_wake_responses": 0.0,
+          "background_wake_tool_calls": 0.0,
+          "bash_result_bytes": 1962.0,
+          "bash_tool_calls": 2.0,
+          "batch_native_read_calls": 0.0,
+          "batched_tool_model_calls": 0.0,
+          "blocked_equivalent_failures": 0.0,
+          "bookkeeping_tool_calls": 1.0,
+          "cache_creation_tokens": 0.0,
+          "calls_after_checkpoint_recommended": 0.0,
+          "calls_after_progress_warning": 0.0,
+          "checkpoint_recommended_warnings": 0.0,
+          "contextual_grep_files_tool_calls": 0.0,
+          "cumulative_input_tokens": 51796.0,
+          "duplicate_exploration_calls": 0.0,
+          "edit_tool_calls": 0.0,
+          "edit_tool_calls_failed": 0.0,
+          "equivalent_failure_warnings": 0.0,
+          "exploration_tools_before_first_mutation": 0.0,
+          "first_request_input_tokens": 12007.0,
+          "first_request_total_input_tokens": 12007.0,
+          "git_grep_calls": 0.0,
+          "grep_files_tool_calls": 0.0,
+          "inner_tool_failures": 0.0,
+          "leading_marker_in_bash_result": 0.0,
+          "llm_calls": 4.0,
+          "max_exploration_tools_without_progress": 0.0,
+          "max_read_file_batch_width": 0.0,
+          "max_tool_batch_width": 1.0,
+          "max_tool_result_bytes": 1065.0,
+          "mean_tool_batch_width": 1.0,
+          "persisted_output_recovery_calls": 0.0,
+          "persisted_output_recovery_result_bytes": 0.0,
+          "progress_guard_warnings": 1.0,
+          "read_file_tool_calls": 0.0,
+          "redundant_validation_calls": 1.0,
+          "repo_map_max_result_bytes": 0.0,
+          "repo_map_narrowed_after_truncation": 0.0,
+          "repo_map_targeted_recovery_after_truncation": 0.0,
+          "repo_map_tool_calls": 0.0,
+          "repo_map_tool_calls_failed": 0.0,
+          "repo_symbols_tool_calls": 0.0,
+          "repo_symbols_tool_calls_failed": 0.0,
+          "session_extra_matches": 0.0,
+          "session_result_bytes": 0.0,
+          "session_useful_match_recall": 0.0,
+          "sessions_search_calls": 0.0,
+          "sessions_search_first_exploration": 0.0,
+          "single_tool_model_calls": 3.0,
+          "standalone_bookkeeping_rounds": 1.0,
+          "successful_progress_checkpoints": 0.0,
+          "task_llm_calls": 3.0,
+          "task_tool_calls": 2.0,
+          "tool_calls": 3.0,
+          "tool_calls_failed": 0.0,
+          "tool_emitting_model_calls": 3.0,
+          "total_tool_result_bytes": 2112.0,
+          "turns": 1.0,
+          "unchanged_reuse_responses": 0.0,
+          "validation_tool_calls": 2.0,
+          "workspace_state_revisits": 0.0
+        },
+        "timing": {
+          "duration_ms": 16913
+        },
+        "tool_calls": [
+          "write_session_title",
+          "bash",
+          "bash"
+        ],
+        "tool_calls_count": 3,
+        "usage": {
+          "cache_read_tokens": 36819,
+          "cost_usd": 0.001723338,
+          "input_tokens": 14977,
+          "output_tokens": 760
+        }
+      },
+      "trial": 1,
+      "trials": 3
+    },
+    {
+      "aggregate": 0.8333333333333334,
+      "eval": "basic_coding",
+      "input": [
+        "Run `cargo test` once and inspect the result. If it succeeds, run the exact same command two more times, one call at a time, without changing any file. A runtime progress warning overrides the repetition instruction: stop immediately. Finish with the exact marker VALIDATION_COMPLETE."
+      ],
+      "params": {
+        "binary": "candidate",
+        "effort": "default",
+        "harness": "default"
+      },
+      "passed": false,
+      "sample": "continuity-validation",
+      "scores": [
+        {
+          "pass": true,
+          "reason": "no error",
+          "scorer": "succeeded",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "1 check(s) passed",
+          "scorer": "checks",
+          "value": 1.0
+        },
+        {
+          "pass": false,
+          "reason": "AssertionError",
+          "scorer": "independent_correctness",
+          "value": 0.0
+        },
+        {
+          "na": true,
+          "pass": false,
+          "reason": "sample declares no budget checks",
+          "scorer": "declared_budget",
+          "value": 0.0
+        },
+        {
+          "pass": true,
+          "reason": "1 <= 12",
+          "scorer": "turns_within",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "3 <= 12",
+          "scorer": "tool_calls_within",
+          "value": 1.0
+        },
+        {
+          "na": true,
+          "pass": false,
+          "reason": "baseline variant; ast_edit not offered",
+          "scorer": "ast_edit_used",
+          "value": 0.0
+        },
+        {
+          "pass": true,
+          "reason": "$0.0017 <= $2",
+          "scorer": "cost_within",
+          "value": 1.0
+        }
+      ],
+      "seed": 20261126,
+      "skipped": false,
+      "target": "openrouter/muse-spark-1.3",
+      "transcript": {
+        "final_response": "Stopped after 2 successful runs due to runtime progress warning overriding repetition.\n\n- Run 1: exit 0, 1 passed (`answer_is_stable`)\n- Run 2: exit 0, 1 passed (`answer_is_stable`), with notice that repeating the unchanged validation adds no new evidence\n\nThird run skipped per override instruction. No files changed.\n\nVALIDATION_COMPLETE",
+        "iterations": 4,
+        "metadata": {
+          "binary": "candidate",
+          "effort": "default",
+          "harness": "default",
+          "model": "meta/muse-spark-1.3-contributor",
+          "provider": "openrouter",
+          "reasoning_effort_applied": "medium",
+          "session_log": ".cache/sessions/continuity-validation-openrouter-muse-spark-1.3-candidate-default-default-18eb25875e5034d0000160b100000002.events.jsonl",
+          "stop_reason": "completed",
+          "tool_invocations": [
+            {
+              "arguments": {
+                "title": "Cargo test repetition validation"
+              },
+              "name": "write_session_title",
+              "success": true
+            },
+            {
+              "arguments": {
+                "command": "cargo test 2>&1",
+                "output": "full"
+              },
+              "name": "bash",
+              "success": true
+            },
+            {
+              "arguments": {
+                "command": "cargo test 2>&1",
+                "output": "full"
+              },
+              "name": "bash",
+              "success": true
+            }
+          ]
+        },
+        "metrics": {
+          "agent_reported_ms": 13263.0,
+          "apply_patch_tool_calls": 0.0,
+          "ast_edit_tool_calls": 0.0,
+          "ast_edit_tool_calls_failed": 0.0,
+          "automatic_background_wakes": 0.0,
+          "background_spawn_calls": 0.0,
+          "background_wake_llm_calls": 0.0,
+          "background_wake_responses": 0.0,
+          "background_wake_tool_calls": 0.0,
+          "bash_result_bytes": 1962.0,
+          "bash_tool_calls": 2.0,
+          "batch_native_read_calls": 0.0,
+          "batched_tool_model_calls": 0.0,
+          "blocked_equivalent_failures": 0.0,
+          "bookkeeping_tool_calls": 1.0,
+          "cache_creation_tokens": 0.0,
+          "calls_after_checkpoint_recommended": 0.0,
+          "calls_after_progress_warning": 0.0,
+          "checkpoint_recommended_warnings": 0.0,
+          "contextual_grep_files_tool_calls": 0.0,
+          "cumulative_input_tokens": 51584.0,
+          "duplicate_exploration_calls": 0.0,
+          "edit_tool_calls": 0.0,
+          "edit_tool_calls_failed": 0.0,
+          "equivalent_failure_warnings": 0.0,
+          "exploration_tools_before_first_mutation": 0.0,
+          "first_request_input_tokens": 11997.0,
+          "first_request_total_input_tokens": 11997.0,
+          "git_grep_calls": 0.0,
+          "grep_files_tool_calls": 0.0,
+          "inner_tool_failures": 0.0,
+          "leading_marker_in_bash_result": 0.0,
+          "llm_calls": 4.0,
+          "max_exploration_tools_without_progress": 0.0,
+          "max_read_file_batch_width": 0.0,
+          "max_tool_batch_width": 1.0,
+          "max_tool_result_bytes": 1065.0,
+          "mean_tool_batch_width": 1.0,
+          "persisted_output_recovery_calls": 0.0,
+          "persisted_output_recovery_result_bytes": 0.0,
+          "progress_guard_warnings": 1.0,
+          "read_file_tool_calls": 0.0,
+          "redundant_validation_calls": 1.0,
+          "repo_map_max_result_bytes": 0.0,
+          "repo_map_narrowed_after_truncation": 0.0,
+          "repo_map_targeted_recovery_after_truncation": 0.0,
+          "repo_map_tool_calls": 0.0,
+          "repo_map_tool_calls_failed": 0.0,
+          "repo_symbols_tool_calls": 0.0,
+          "repo_symbols_tool_calls_failed": 0.0,
+          "session_extra_matches": 0.0,
+          "session_result_bytes": 0.0,
+          "session_useful_match_recall": 0.0,
+          "sessions_search_calls": 0.0,
+          "sessions_search_first_exploration": 0.0,
+          "single_tool_model_calls": 3.0,
+          "standalone_bookkeeping_rounds": 1.0,
+          "successful_progress_checkpoints": 0.0,
+          "task_llm_calls": 3.0,
+          "task_tool_calls": 2.0,
+          "tool_calls": 3.0,
+          "tool_calls_failed": 0.0,
+          "tool_emitting_model_calls": 3.0,
+          "total_tool_result_bytes": 2114.0,
+          "turns": 1.0,
+          "unchanged_reuse_responses": 0.0,
+          "validation_tool_calls": 2.0,
+          "workspace_state_revisits": 0.0
+        },
+        "timing": {
+          "duration_ms": 15631
+        },
+        "tool_calls": [
+          "write_session_title",
+          "bash",
+          "bash"
+        ],
+        "tool_calls_count": 3,
+        "usage": {
+          "cache_read_tokens": 36563,
+          "cost_usd": 0.001717826,
+          "input_tokens": 15021,
+          "output_tokens": 713
+        }
+      },
+      "trial": 2,
+      "trials": 3
+    }
+  ],
+  "summary": {
+    "failed": 3,
+    "na": 0,
+    "passed": 0,
+    "scored": 3,
+    "skipped": 0,
+    "total_cost_usd": 0.005165002,
+    "total_duration_ms": 47653,
+    "total_tokens": 47222,
+    "total_tool_calls": 9
+  },
+  "trials": [
+    {
+      "eval": "basic_coding",
+      "failed": 3,
+      "key": "basic_coding/continuity-validation@openrouter/muse-spark-1.3[binary=candidate,effort=default,harness=default]",
+      "mean": 0.8333333333333334,
+      "na": 0,
+      "params": {
+        "binary": "candidate",
+        "effort": "default",
+        "harness": "default"
+      },
+      "pass_rate": 0.0,
+      "passed": 0,
+      "sample": "continuity-validation",
+      "scored": 3,
+      "skipped": 0,
+      "std_dev": 0.0,
+      "target": "openrouter/muse-spark-1.3",
+      "total": 3
+    }
+  ]
+}

@@ -1,0 +1,841 @@
+{
+  "cases": [
+    {
+      "aggregate": 0.8333333333333334,
+      "eval": "basic_coding",
+      "input": [
+        "Run python3 -m unittest -q before editing and inspect the result. Then allow port 0 for automatic selection while preserving PORT_FALLBACK = 8123, the public parse_port name and the other range checks. Update the zero regression and rerun the tests after the final edit. Report the observed result. Do not use subagents or background work."
+      ],
+      "params": {
+        "binary": "candidate",
+        "effort": "default",
+        "harness": "default"
+      },
+      "passed": false,
+      "sample": "continuity-late-edit",
+      "scores": [
+        {
+          "pass": true,
+          "reason": "no error",
+          "scorer": "succeeded",
+          "value": 1.0
+        },
+        {
+          "pass": false,
+          "reason": "metric validation_tool_calls 0 < 2",
+          "scorer": "checks",
+          "value": 0.0
+        },
+        {
+          "pass": true,
+          "reason": "independent functional and observed-action checks passed",
+          "scorer": "independent_correctness",
+          "value": 1.0
+        },
+        {
+          "na": true,
+          "pass": false,
+          "reason": "sample declares no budget checks",
+          "scorer": "declared_budget",
+          "value": 0.0
+        },
+        {
+          "pass": true,
+          "reason": "1 <= 32",
+          "scorer": "turns_within",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "10 <= 64",
+          "scorer": "tool_calls_within",
+          "value": 1.0
+        },
+        {
+          "na": true,
+          "pass": false,
+          "reason": "baseline variant; ast_edit not offered",
+          "scorer": "ast_edit_used",
+          "value": 0.0
+        },
+        {
+          "pass": true,
+          "reason": "$0.0075 <= $2",
+          "scorer": "cost_within",
+          "value": 1.0
+        }
+      ],
+      "seed": 20261124,
+      "skipped": false,
+      "target": "openrouter/muse-spark-1.3",
+      "transcript": {
+        "final_response": "Done: allowed port 0 for automatic selection.\n\nChanges:\n- `ports.py:5`: `if not 1 <= port <= 65535:` → `if not 0 <= port <= 65535:` — preserves `PORT_FALLBACK = 8123` (line 1), public `parse_port` name (line 3), and other range checks (`-1`/`65536` still raise).\n- `test_ports.py:10-11`: `test_zero` now asserts `parse_port('0') == 0` instead of expecting `ValueError`.\n\nValidation with `python3 -m unittest -q`:\n- Before editing: `Ran 3 tests ... OK`, exit 0.\n- After final edit: `Ran 3 tests ... OK`, exit 0.\n\nNo subagents or background work used.\n",
+        "iterations": 10,
+        "metadata": {
+          "binary": "candidate",
+          "effort": "default",
+          "harness": "default",
+          "model": "meta/muse-spark-1.3-contributor",
+          "provider": "openrouter",
+          "reasoning_effort_applied": "medium",
+          "session_log": ".cache/sessions/continuity-late-edit-openrouter-muse-spark-1.3-candidate-default-default-18eb2526f91678780001325300000000.events.jsonl",
+          "stop_reason": "completed",
+          "tool_invocations": [
+            {
+              "arguments": {
+                "path": "/private/var/folders/8n/jwcv011j313c359z772kmjkw0000gn/T/.tmpMxrmbC"
+              },
+              "name": "list_directory",
+              "success": true
+            },
+            {
+              "arguments": {
+                "paths": [
+                  "ports.py",
+                  "test_ports.py"
+                ]
+              },
+              "name": "read_many_files",
+              "success": true
+            },
+            {
+              "arguments": {
+                "command": "python3 -m unittest -q 2>&1; echo \"EXIT:$?\""
+              },
+              "name": "bash",
+              "success": true
+            },
+            {
+              "arguments": {
+                "edits": "[{\"new_text\": \"    if not 0 <= port <= 65535:\", \"old_text\": \"    if not 1 <= port <= 65535:\"}]",
+                "path": "ports.py"
+              },
+              "name": "edit_file",
+              "success": false
+            },
+            {
+              "arguments": {
+                "query": "edit file"
+              },
+              "name": "tool_search",
+              "success": true
+            },
+            {
+              "arguments": {
+                "edits": [
+                  {
+                    "new_text": "    if not 0 <= port <= 65535:",
+                    "old_text": "    if not 1 <= port <= 65535:"
+                  }
+                ],
+                "expected_hash": "sha256:38bc23c2596ba1c35856b5ed03fa482c5498d2d2cefa2b2ee3c686cdd4668622",
+                "path": "ports.py"
+              },
+              "name": "edit_file",
+              "success": true
+            },
+            {
+              "arguments": {
+                "edits": [
+                  {
+                    "new_text": "    def test_zero(self):\n        self.assertEqual(parse_port('0'), 0)",
+                    "old_text": "    def test_zero(self):\n        with self.assertRaises(ValueError): parse_port('0')"
+                  }
+                ],
+                "expected_hash": "sha256:a1d9f0fd7f4229ae7f1b7e510e32d29de467e217f3afb26320385e03f63c86f7",
+                "path": "test_ports.py"
+              },
+              "name": "edit_file",
+              "success": true
+            },
+            {
+              "arguments": {
+                "command": "python3 -m unittest -q 2>&1; echo \"EXIT:$?\""
+              },
+              "name": "bash",
+              "success": true
+            },
+            {
+              "arguments": {
+                "command": "python3 -m unittest -q 2>&1; echo \"EXIT:$?\"; python3 -c \"from ports import parse_port, PORT_FALLBACK; assert parse_port('0')==0; assert PORT_FALLBACK==8123; assert parse_port('65535')==65535; if True:\n try: parse_port('-1'); raise SystemExit('FAIL -1 accepted')\n except ValueError: pass\n try: parse_port('65536'); raise SystemExit('FAIL 65536 accepted')\n except ValueError: pass\n print('edge-checks OK')\"; git diff -- ports.py test_ports.py 2>&1 || diff -u /dev/null /dev/null"
+              },
+              "name": "bash",
+              "success": false
+            },
+            {
+              "arguments": {
+                "command": "python3 -m unittest -q 2>&1; echo \"EXIT:$?\""
+              },
+              "name": "bash",
+              "success": true
+            }
+          ]
+        },
+        "metrics": {
+          "agent_reported_ms": 35431.0,
+          "apply_patch_tool_calls": 0.0,
+          "ast_edit_tool_calls": 0.0,
+          "ast_edit_tool_calls_failed": 0.0,
+          "automatic_background_wakes": 0.0,
+          "background_spawn_calls": 0.0,
+          "background_wake_llm_calls": 0.0,
+          "background_wake_responses": 0.0,
+          "background_wake_tool_calls": 0.0,
+          "bash_result_bytes": 1535.0,
+          "bash_tool_calls": 4.0,
+          "batch_native_read_calls": 1.0,
+          "batched_tool_model_calls": 1.0,
+          "blocked_equivalent_failures": 0.0,
+          "bookkeeping_tool_calls": 0.0,
+          "cache_creation_tokens": 0.0,
+          "calls_after_checkpoint_recommended": 0.0,
+          "calls_after_progress_warning": 0.0,
+          "checkpoint_recommended_warnings": 0.0,
+          "contextual_grep_files_tool_calls": 0.0,
+          "cumulative_input_tokens": 157522.0,
+          "duplicate_exploration_calls": 0.0,
+          "edit_tool_calls": 3.0,
+          "edit_tool_calls_failed": 1.0,
+          "equivalent_failure_warnings": 0.0,
+          "exploration_tools_before_first_mutation": 1.0,
+          "first_request_input_tokens": 12014.0,
+          "first_request_total_input_tokens": 12014.0,
+          "git_grep_calls": 0.0,
+          "grep_files_tool_calls": 0.0,
+          "inner_tool_failures": 1.0,
+          "leading_marker_in_bash_result": 0.0,
+          "llm_calls": 10.0,
+          "max_exploration_tools_without_progress": 1.0,
+          "max_read_file_batch_width": 2.0,
+          "max_tool_batch_width": 2.0,
+          "max_tool_result_bytes": 6843.0,
+          "mean_tool_batch_width": 1.1111111111111112,
+          "persisted_output_recovery_calls": 0.0,
+          "persisted_output_recovery_result_bytes": 0.0,
+          "progress_guard_warnings": 1.0,
+          "read_file_tool_calls": 0.0,
+          "redundant_validation_calls": 0.0,
+          "repo_map_max_result_bytes": 0.0,
+          "repo_map_narrowed_after_truncation": 0.0,
+          "repo_map_targeted_recovery_after_truncation": 0.0,
+          "repo_map_tool_calls": 0.0,
+          "repo_map_tool_calls_failed": 0.0,
+          "repo_symbols_tool_calls": 0.0,
+          "repo_symbols_tool_calls_failed": 0.0,
+          "session_extra_matches": 0.0,
+          "session_result_bytes": 0.0,
+          "session_useful_match_recall": 0.0,
+          "sessions_search_calls": 0.0,
+          "sessions_search_first_exploration": 0.0,
+          "single_tool_model_calls": 8.0,
+          "standalone_bookkeeping_rounds": 0.0,
+          "successful_progress_checkpoints": 0.0,
+          "task_llm_calls": 10.0,
+          "task_tool_calls": 10.0,
+          "tool_calls": 10.0,
+          "tool_calls_failed": 2.0,
+          "tool_emitting_model_calls": 9.0,
+          "total_tool_result_bytes": 11543.0,
+          "turns": 1.0,
+          "unchanged_reuse_responses": 0.0,
+          "validation_tool_calls": 0.0,
+          "workspace_state_revisits": 0.0
+        },
+        "timing": {
+          "duration_ms": 41690
+        },
+        "tool_calls": [
+          "list_directory",
+          "read_many_files",
+          "bash",
+          "edit_file",
+          "tool_search",
+          "edit_file",
+          "edit_file",
+          "bash",
+          "bash",
+          "bash"
+        ],
+        "tool_calls_count": 10,
+        "usage": {
+          "cache_read_tokens": 88840,
+          "cost_usd": 0.00745968,
+          "input_tokens": 68682,
+          "output_tokens": 2069
+        }
+      },
+      "trials": 3
+    },
+    {
+      "aggregate": 0.8333333333333334,
+      "eval": "basic_coding",
+      "input": [
+        "Run python3 -m unittest -q before editing and inspect the result. Then allow port 0 for automatic selection while preserving PORT_FALLBACK = 8123, the public parse_port name and the other range checks. Update the zero regression and rerun the tests after the final edit. Report the observed result. Do not use subagents or background work."
+      ],
+      "params": {
+        "binary": "candidate",
+        "effort": "default",
+        "harness": "default"
+      },
+      "passed": false,
+      "sample": "continuity-late-edit",
+      "scores": [
+        {
+          "pass": true,
+          "reason": "no error",
+          "scorer": "succeeded",
+          "value": 1.0
+        },
+        {
+          "pass": false,
+          "reason": "metric validation_tool_calls 0 < 2",
+          "scorer": "checks",
+          "value": 0.0
+        },
+        {
+          "pass": true,
+          "reason": "independent functional and observed-action checks passed",
+          "scorer": "independent_correctness",
+          "value": 1.0
+        },
+        {
+          "na": true,
+          "pass": false,
+          "reason": "sample declares no budget checks",
+          "scorer": "declared_budget",
+          "value": 0.0
+        },
+        {
+          "pass": true,
+          "reason": "1 <= 32",
+          "scorer": "turns_within",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "10 <= 64",
+          "scorer": "tool_calls_within",
+          "value": 1.0
+        },
+        {
+          "na": true,
+          "pass": false,
+          "reason": "baseline variant; ast_edit not offered",
+          "scorer": "ast_edit_used",
+          "value": 0.0
+        },
+        {
+          "pass": true,
+          "reason": "$0.0073 <= $2",
+          "scorer": "cost_within",
+          "value": 1.0
+        }
+      ],
+      "seed": 20261125,
+      "skipped": false,
+      "target": "openrouter/muse-spark-1.3",
+      "transcript": {
+        "final_response": "Done: allowed port 0 for automatic selection.\n\n- Pre-edit `python3 -m unittest -q`: Ran 3 tests, OK.\n- `ports.py:5` changed `1 <= port <= 65535` to `0 <= port <= 65535`; kept `PORT_FALLBACK = 8123` on `ports.py:1` and public `parse_port` name plus `-1`/`65536` rejection.\n- `test_ports.py:10-11` updated zero regression from `assertRaises(ValueError)` to `assertEqual(parse_port('0'), 0)`.\n- Post-edit `python3 -m unittest -q`: Ran 3 tests, OK.\n\nNo subagents or background work used.",
+        "iterations": 10,
+        "metadata": {
+          "binary": "candidate",
+          "effort": "default",
+          "harness": "default",
+          "model": "meta/muse-spark-1.3-contributor",
+          "provider": "openrouter",
+          "reasoning_effort_applied": "medium",
+          "session_log": ".cache/sessions/continuity-late-edit-openrouter-muse-spark-1.3-candidate-default-default-18eb2526f94fd7f80001325300000001.events.jsonl",
+          "stop_reason": "completed",
+          "tool_invocations": [
+            {
+              "arguments": {
+                "title": "Allow port 0 selection"
+              },
+              "name": "write_session_title",
+              "success": true
+            },
+            {
+              "arguments": {},
+              "name": "repo_map",
+              "success": true
+            },
+            {
+              "arguments": {
+                "command": "python3 -m unittest -q 2>&1",
+                "output": "full"
+              },
+              "name": "bash",
+              "success": true
+            },
+            {
+              "arguments": {
+                "paths": [
+                  "ports.py",
+                  "test_ports.py"
+                ]
+              },
+              "name": "read_many_files",
+              "success": true
+            },
+            {
+              "arguments": {
+                "edits": "[{\"new_text\": \"    if not 0 <= port <= 65535:\", \"old_text\": \"    if not 1 <= port <= 65535:\"}]",
+                "path": "ports.py"
+              },
+              "name": "edit_file",
+              "success": false
+            },
+            {
+              "arguments": {
+                "query": "edit file"
+              },
+              "name": "tool_search",
+              "success": true
+            },
+            {
+              "arguments": {
+                "edits": [
+                  {
+                    "new_text": "    if not 0 <= port <= 65535:",
+                    "old_text": "    if not 1 <= port <= 65535:"
+                  }
+                ],
+                "expected_hash": "sha256:38bc23c2596ba1c35856b5ed03fa482c5498d2d2cefa2b2ee3c686cdd4668622",
+                "path": "ports.py"
+              },
+              "name": "edit_file",
+              "success": true
+            },
+            {
+              "arguments": {
+                "edits": [
+                  {
+                    "new_text": "    def test_zero(self):\n        self.assertEqual(parse_port('0'), 0)",
+                    "old_text": "    def test_zero(self):\n        with self.assertRaises(ValueError): parse_port('0')"
+                  }
+                ],
+                "expected_hash": "sha256:a1d9f0fd7f4229ae7f1b7e510e32d29de467e217f3afb26320385e03f63c86f7",
+                "path": "test_ports.py"
+              },
+              "name": "edit_file",
+              "success": true
+            },
+            {
+              "arguments": {
+                "command": "python3 -m unittest -q 2>&1",
+                "output": "full"
+              },
+              "name": "bash",
+              "success": true
+            },
+            {
+              "arguments": {
+                "command": "python3 -m unittest -q 2>&1; echo \"---DIFF---\"; git diff -- ports.py test_ports.py 2>&1 || diff -u /dev/null /dev/null",
+                "output": "full"
+              },
+              "name": "bash",
+              "success": true
+            }
+          ]
+        },
+        "metrics": {
+          "agent_reported_ms": 36903.0,
+          "apply_patch_tool_calls": 0.0,
+          "ast_edit_tool_calls": 0.0,
+          "ast_edit_tool_calls_failed": 0.0,
+          "automatic_background_wakes": 0.0,
+          "background_spawn_calls": 0.0,
+          "background_wake_llm_calls": 0.0,
+          "background_wake_responses": 0.0,
+          "background_wake_tool_calls": 0.0,
+          "bash_result_bytes": 2023.0,
+          "bash_tool_calls": 3.0,
+          "batch_native_read_calls": 1.0,
+          "batched_tool_model_calls": 1.0,
+          "blocked_equivalent_failures": 0.0,
+          "bookkeeping_tool_calls": 1.0,
+          "cache_creation_tokens": 0.0,
+          "calls_after_checkpoint_recommended": 0.0,
+          "calls_after_progress_warning": 0.0,
+          "checkpoint_recommended_warnings": 0.0,
+          "contextual_grep_files_tool_calls": 0.0,
+          "cumulative_input_tokens": 152435.0,
+          "duplicate_exploration_calls": 0.0,
+          "edit_tool_calls": 3.0,
+          "edit_tool_calls_failed": 1.0,
+          "equivalent_failure_warnings": 0.0,
+          "exploration_tools_before_first_mutation": 1.0,
+          "first_request_input_tokens": 12014.0,
+          "first_request_total_input_tokens": 12014.0,
+          "git_grep_calls": 0.0,
+          "grep_files_tool_calls": 0.0,
+          "inner_tool_failures": 0.0,
+          "leading_marker_in_bash_result": 0.0,
+          "llm_calls": 10.0,
+          "max_exploration_tools_without_progress": 1.0,
+          "max_read_file_batch_width": 2.0,
+          "max_tool_batch_width": 2.0,
+          "max_tool_result_bytes": 6843.0,
+          "mean_tool_batch_width": 1.1111111111111112,
+          "persisted_output_recovery_calls": 0.0,
+          "persisted_output_recovery_result_bytes": 0.0,
+          "progress_guard_warnings": 0.0,
+          "read_file_tool_calls": 0.0,
+          "redundant_validation_calls": 0.0,
+          "repo_map_max_result_bytes": 1482.0,
+          "repo_map_narrowed_after_truncation": 0.0,
+          "repo_map_targeted_recovery_after_truncation": 0.0,
+          "repo_map_tool_calls": 1.0,
+          "repo_map_tool_calls_failed": 0.0,
+          "repo_symbols_tool_calls": 0.0,
+          "repo_symbols_tool_calls_failed": 0.0,
+          "session_extra_matches": 0.0,
+          "session_result_bytes": 0.0,
+          "session_useful_match_recall": 0.0,
+          "sessions_search_calls": 0.0,
+          "sessions_search_first_exploration": 0.0,
+          "single_tool_model_calls": 8.0,
+          "standalone_bookkeeping_rounds": 1.0,
+          "successful_progress_checkpoints": 0.0,
+          "task_llm_calls": 9.0,
+          "task_tool_calls": 9.0,
+          "tool_calls": 10.0,
+          "tool_calls_failed": 1.0,
+          "tool_emitting_model_calls": 9.0,
+          "total_tool_result_bytes": 13195.0,
+          "turns": 1.0,
+          "unchanged_reuse_responses": 0.0,
+          "validation_tool_calls": 0.0,
+          "workspace_state_revisits": 0.0
+        },
+        "timing": {
+          "duration_ms": 43128
+        },
+        "tool_calls": [
+          "write_session_title",
+          "repo_map",
+          "bash",
+          "read_many_files",
+          "edit_file",
+          "tool_search",
+          "edit_file",
+          "edit_file",
+          "bash",
+          "bash"
+        ],
+        "tool_calls_count": 10,
+        "usage": {
+          "cache_read_tokens": 84872,
+          "cost_usd": 0.007306444,
+          "input_tokens": 67563,
+          "output_tokens": 1902
+        }
+      },
+      "trial": 1,
+      "trials": 3
+    },
+    {
+      "aggregate": 0.8333333333333334,
+      "eval": "basic_coding",
+      "input": [
+        "Run python3 -m unittest -q before editing and inspect the result. Then allow port 0 for automatic selection while preserving PORT_FALLBACK = 8123, the public parse_port name and the other range checks. Update the zero regression and rerun the tests after the final edit. Report the observed result. Do not use subagents or background work."
+      ],
+      "params": {
+        "binary": "candidate",
+        "effort": "default",
+        "harness": "default"
+      },
+      "passed": false,
+      "sample": "continuity-late-edit",
+      "scores": [
+        {
+          "pass": true,
+          "reason": "no error",
+          "scorer": "succeeded",
+          "value": 1.0
+        },
+        {
+          "pass": false,
+          "reason": "metric validation_tool_calls 0 < 2",
+          "scorer": "checks",
+          "value": 0.0
+        },
+        {
+          "pass": true,
+          "reason": "independent functional and observed-action checks passed",
+          "scorer": "independent_correctness",
+          "value": 1.0
+        },
+        {
+          "na": true,
+          "pass": false,
+          "reason": "sample declares no budget checks",
+          "scorer": "declared_budget",
+          "value": 0.0
+        },
+        {
+          "pass": true,
+          "reason": "1 <= 32",
+          "scorer": "turns_within",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "10 <= 64",
+          "scorer": "tool_calls_within",
+          "value": 1.0
+        },
+        {
+          "na": true,
+          "pass": false,
+          "reason": "baseline variant; ast_edit not offered",
+          "scorer": "ast_edit_used",
+          "value": 0.0
+        },
+        {
+          "pass": true,
+          "reason": "$0.0054 <= $2",
+          "scorer": "cost_within",
+          "value": 1.0
+        }
+      ],
+      "seed": 20261126,
+      "skipped": false,
+      "target": "openrouter/muse-spark-1.3",
+      "transcript": {
+        "final_response": "Done: port `0` now allowed for automatic selection.\n\nPre-edit `python3 -m unittest -q` observed result:\n- `Ran 3 tests ... OK`\n\nChanges, preserving `PORT_FALLBACK = 8123` in `ports.py:1`, public name `parse_port` in `ports.py:3`, and other bounds:\n- `ports.py:5`: `if not 1 <= port <= 65535:` → `if not 0 <= port <= 65535:`\n- `test_ports.py:10-11`: zero regression `with self.assertRaises(ValueError): parse_port('0')` → `self.assertEqual(parse_port('0'), 0)`\n\nPost-final-edit `python3 -m unittest -q` observed result:\n- `Ran 3 tests ... OK`\n\nEdge checks also passed: `parse_port('0')==0`, `parse_port('1')==1`, `parse_port('65535')==65535`, `PORT_FALLBACK==8123`, with `-1` / `65536` still rejected.\n",
+        "iterations": 11,
+        "metadata": {
+          "binary": "candidate",
+          "effort": "default",
+          "harness": "default",
+          "model": "meta/muse-spark-1.3-contributor",
+          "provider": "openrouter",
+          "reasoning_effort_applied": "medium",
+          "session_log": ".cache/sessions/continuity-late-edit-openrouter-muse-spark-1.3-candidate-default-default-18eb2530b60db0780001325300000002.events.jsonl",
+          "stop_reason": "completed",
+          "tool_invocations": [
+            {
+              "arguments": {
+                "title": "Fix port 0 handling"
+              },
+              "name": "write_session_title",
+              "success": true
+            },
+            {
+              "arguments": {
+                "command": "python3 -m unittest -q 2>&1",
+                "output": "auto"
+              },
+              "name": "bash",
+              "success": true
+            },
+            {
+              "arguments": {
+                "limit": 50,
+                "query": "parse_port PORT_FALLBACK"
+              },
+              "name": "repo_map",
+              "success": true
+            },
+            {
+              "arguments": {
+                "path": "/private/var/folders/8n/jwcv011j313c359z772kmjkw0000gn/T/.tmp2BVjxW"
+              },
+              "name": "list_directory",
+              "success": true
+            },
+            {
+              "arguments": {
+                "paths": [
+                  "ports.py",
+                  "test_ports.py"
+                ]
+              },
+              "name": "read_many_files",
+              "success": true
+            },
+            {
+              "arguments": {
+                "query": "edit file replacement"
+              },
+              "name": "tool_search",
+              "success": true
+            },
+            {
+              "arguments": {
+                "edits": [
+                  {
+                    "new_text": "    if not 0 <= port <= 65535:",
+                    "old_text": "    if not 1 <= port <= 65535:"
+                  }
+                ],
+                "expected_hash": "sha256:38bc23c2596ba1c35856b5ed03fa482c5498d2d2cefa2b2ee3c686cdd4668622",
+                "path": "ports.py"
+              },
+              "name": "edit_file",
+              "success": true
+            },
+            {
+              "arguments": {
+                "edits": [
+                  {
+                    "new_text": "    def test_zero(self):\n        self.assertEqual(parse_port('0'), 0)",
+                    "old_text": "    def test_zero(self):\n        with self.assertRaises(ValueError): parse_port('0')"
+                  }
+                ],
+                "expected_hash": "sha256:a1d9f0fd7f4229ae7f1b7e510e32d29de467e217f3afb26320385e03f63c86f7",
+                "path": "test_ports.py"
+              },
+              "name": "edit_file",
+              "success": true
+            },
+            {
+              "arguments": {
+                "command": "python3 -m unittest -q 2>&1; printf '\\n--- edge checks ---\\n'; python3 -c \"from ports import parse_port, PORT_FALLBACK; assert parse_port('0')==0; assert parse_port('1')==1; assert parse_port('65535')==65535; assert PORT_FALLBACK==8123; assert parse_port.__name__=='parse_port'; print('edge checks: OK')\" 2>&1; printf '\\n--- call sites ---\\n'; grep -rn \"parse_port\\|PORT_FALLBACK\" --include='*.py' . 2>&1; printf '\\n--- diff ---\\n'; git diff -- ports.py test_ports.py 2>&1 || diff -u /dev/null /dev/null",
+                "output": "auto"
+              },
+              "name": "bash",
+              "success": true
+            },
+            {
+              "arguments": {
+                "command": "python3 -m unittest -q 2>&1",
+                "output": "auto"
+              },
+              "name": "bash",
+              "success": true
+            }
+          ]
+        },
+        "metrics": {
+          "agent_reported_ms": 46811.0,
+          "apply_patch_tool_calls": 0.0,
+          "ast_edit_tool_calls": 0.0,
+          "ast_edit_tool_calls_failed": 0.0,
+          "automatic_background_wakes": 0.0,
+          "background_spawn_calls": 0.0,
+          "background_wake_llm_calls": 0.0,
+          "background_wake_responses": 0.0,
+          "background_wake_tool_calls": 0.0,
+          "bash_result_bytes": 3227.0,
+          "bash_tool_calls": 3.0,
+          "batch_native_read_calls": 1.0,
+          "batched_tool_model_calls": 0.0,
+          "blocked_equivalent_failures": 0.0,
+          "bookkeeping_tool_calls": 1.0,
+          "cache_creation_tokens": 0.0,
+          "calls_after_checkpoint_recommended": 0.0,
+          "calls_after_progress_warning": 0.0,
+          "checkpoint_recommended_warnings": 0.0,
+          "contextual_grep_files_tool_calls": 0.0,
+          "cumulative_input_tokens": 163538.0,
+          "duplicate_exploration_calls": 0.0,
+          "edit_tool_calls": 2.0,
+          "edit_tool_calls_failed": 0.0,
+          "equivalent_failure_warnings": 0.0,
+          "exploration_tools_before_first_mutation": 2.0,
+          "first_request_input_tokens": 12014.0,
+          "first_request_total_input_tokens": 12014.0,
+          "git_grep_calls": 0.0,
+          "grep_files_tool_calls": 0.0,
+          "inner_tool_failures": 0.0,
+          "leading_marker_in_bash_result": 0.0,
+          "llm_calls": 11.0,
+          "max_exploration_tools_without_progress": 2.0,
+          "max_read_file_batch_width": 2.0,
+          "max_tool_batch_width": 1.0,
+          "max_tool_result_bytes": 2451.0,
+          "mean_tool_batch_width": 1.0,
+          "persisted_output_recovery_calls": 0.0,
+          "persisted_output_recovery_result_bytes": 0.0,
+          "progress_guard_warnings": 0.0,
+          "read_file_tool_calls": 0.0,
+          "redundant_validation_calls": 0.0,
+          "repo_map_max_result_bytes": 631.0,
+          "repo_map_narrowed_after_truncation": 0.0,
+          "repo_map_targeted_recovery_after_truncation": 0.0,
+          "repo_map_tool_calls": 1.0,
+          "repo_map_tool_calls_failed": 0.0,
+          "repo_symbols_tool_calls": 0.0,
+          "repo_symbols_tool_calls_failed": 0.0,
+          "session_extra_matches": 0.0,
+          "session_result_bytes": 0.0,
+          "session_useful_match_recall": 0.0,
+          "sessions_search_calls": 0.0,
+          "sessions_search_first_exploration": 0.0,
+          "single_tool_model_calls": 10.0,
+          "standalone_bookkeeping_rounds": 1.0,
+          "successful_progress_checkpoints": 0.0,
+          "task_llm_calls": 10.0,
+          "task_tool_calls": 9.0,
+          "tool_calls": 10.0,
+          "tool_calls_failed": 0.0,
+          "tool_emitting_model_calls": 10.0,
+          "total_tool_result_bytes": 8540.0,
+          "turns": 1.0,
+          "unchanged_reuse_responses": 0.0,
+          "validation_tool_calls": 0.0,
+          "workspace_state_revisits": 0.0
+        },
+        "timing": {
+          "duration_ms": 49962
+        },
+        "tool_calls": [
+          "write_session_title",
+          "bash",
+          "repo_map",
+          "list_directory",
+          "read_many_files",
+          "tool_search",
+          "edit_file",
+          "edit_file",
+          "bash",
+          "bash"
+        ],
+        "tool_calls_count": 10,
+        "usage": {
+          "cache_read_tokens": 116985,
+          "cost_usd": 0.005410669999999999,
+          "input_tokens": 46553,
+          "output_tokens": 2607
+        }
+      },
+      "trial": 2,
+      "trials": 3
+    }
+  ],
+  "summary": {
+    "failed": 3,
+    "na": 0,
+    "passed": 0,
+    "scored": 3,
+    "skipped": 0,
+    "total_cost_usd": 0.020176793999999998,
+    "total_duration_ms": 134780,
+    "total_tokens": 189376,
+    "total_tool_calls": 30
+  },
+  "trials": [
+    {
+      "eval": "basic_coding",
+      "failed": 3,
+      "key": "basic_coding/continuity-late-edit@openrouter/muse-spark-1.3[binary=candidate,effort=default,harness=default]",
+      "mean": 0.8333333333333334,
+      "na": 0,
+      "params": {
+        "binary": "candidate",
+        "effort": "default",
+        "harness": "default"
+      },
+      "pass_rate": 0.0,
+      "passed": 0,
+      "sample": "continuity-late-edit",
+      "scored": 3,
+      "skipped": 0,
+      "std_dev": 0.0,
+      "target": "openrouter/muse-spark-1.3",
+      "total": 3
+    }
+  ]
+}

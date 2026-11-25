@@ -1,0 +1,11 @@
+{
+  "checked_client_date": "2026-11-24",
+  "repository": "everruns/everruns",
+  "path": "crates/core/src/host/command_host.rs",
+  "ref": "default branch at read time",
+  "blob_sha": "6922b7ada179e2b77b8a5d9a637d6b86cd55166b",
+  "start_line": 310,
+  "end_line": 338,
+  "source_url": "https://github.com/everruns/everruns/blob/main/crates/core/src/host/command_host.rs",
+  "finding": "SessionCompletion contains response text without propagating provider usage, consistent with the 0.53.1 dependency and loopback probe."
+}

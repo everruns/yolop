@@ -1,0 +1,753 @@
+{
+  "cases": [
+    {
+      "aggregate": 1.0,
+      "eval": "basic_coding",
+      "input": [
+        "Run `cargo test` before editing to reproduce the failing assertion. Then fix answer() at the owning source, rerun `cargo test`, and reply with exactly DIAGNOSTIC_RECOVERED."
+      ],
+      "params": {
+        "binary": "candidate",
+        "effort": "default",
+        "harness": "default"
+      },
+      "passed": true,
+      "sample": "expected-diagnostic-failure-control",
+      "scores": [
+        {
+          "pass": true,
+          "reason": "no error",
+          "scorer": "succeeded",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "7 check(s) passed",
+          "scorer": "checks",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "independent functional and observed-action checks passed",
+          "scorer": "independent_correctness",
+          "value": 1.0
+        },
+        {
+          "na": true,
+          "pass": false,
+          "reason": "sample declares no budget checks",
+          "scorer": "declared_budget",
+          "value": 0.0
+        },
+        {
+          "pass": true,
+          "reason": "1 <= 32",
+          "scorer": "turns_within",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "8 <= 64",
+          "scorer": "tool_calls_within",
+          "value": 1.0
+        },
+        {
+          "na": true,
+          "pass": false,
+          "reason": "baseline variant; ast_edit not offered",
+          "scorer": "ast_edit_used",
+          "value": 0.0
+        },
+        {
+          "pass": true,
+          "reason": "$0.0056 <= $2",
+          "scorer": "cost_within",
+          "value": 1.0
+        }
+      ],
+      "seed": 20261124,
+      "skipped": false,
+      "target": "openrouter/muse-spark-1.3",
+      "transcript": {
+        "final_response": "DIAGNOSTIC_RECOVERED",
+        "iterations": 9,
+        "metadata": {
+          "binary": "candidate",
+          "effort": "default",
+          "harness": "default",
+          "model": "meta/muse-spark-1.3-contributor",
+          "provider": "openrouter",
+          "reasoning_effort_applied": "medium",
+          "session_log": ".cache/sessions/expected-diagnostic-failure-control-openrouter-muse-spark-1.3-candidate-default-default-18eb25a05f4a00780001717300000001.events.jsonl",
+          "stop_reason": "completed",
+          "tool_invocations": [
+            {
+              "arguments": {
+                "title": "Fix failing answer test"
+              },
+              "name": "write_session_title",
+              "success": true
+            },
+            {
+              "arguments": {
+                "query": "bash run command"
+              },
+              "name": "tool_search",
+              "success": true
+            },
+            {
+              "arguments": {
+                "command": "cargo test 2>&1",
+                "output": "full"
+              },
+              "name": "bash",
+              "success": false
+            },
+            {
+              "arguments": {
+                "query": "repo map symbols read file"
+              },
+              "name": "tool_search",
+              "success": true
+            },
+            {
+              "arguments": {
+                "query": "answer"
+              },
+              "name": "repo_map",
+              "success": true
+            },
+            {
+              "arguments": {
+                "path": "src/lib.rs"
+              },
+              "name": "read_file",
+              "success": true
+            },
+            {
+              "arguments": {
+                "edits": [
+                  {
+                    "new_text": "pub fn answer() -> u32 { 2 }",
+                    "old_text": "pub fn answer() -> u32 { 1 }"
+                  }
+                ],
+                "expected_hash": "sha256:405754705155dde861d953a5548a0c189c98da0cf2283fda79364647c1d58cbd",
+                "path": "src/lib.rs"
+              },
+              "name": "edit_file",
+              "success": true
+            },
+            {
+              "arguments": {
+                "command": "cargo test 2>&1",
+                "output": "full"
+              },
+              "name": "bash",
+              "success": true
+            }
+          ]
+        },
+        "metrics": {
+          "agent_reported_ms": 34779.0,
+          "apply_patch_tool_calls": 0.0,
+          "ast_edit_tool_calls": 0.0,
+          "ast_edit_tool_calls_failed": 0.0,
+          "automatic_background_wakes": 0.0,
+          "background_spawn_calls": 0.0,
+          "background_wake_llm_calls": 0.0,
+          "background_wake_responses": 0.0,
+          "background_wake_tool_calls": 0.0,
+          "bash_result_bytes": 900.0,
+          "bash_tool_calls": 2.0,
+          "batch_native_read_calls": 0.0,
+          "batched_tool_model_calls": 0.0,
+          "blocked_equivalent_failures": 0.0,
+          "bookkeeping_tool_calls": 1.0,
+          "cache_creation_tokens": 0.0,
+          "calls_after_checkpoint_recommended": 0.0,
+          "calls_after_progress_warning": 0.0,
+          "checkpoint_recommended_warnings": 0.0,
+          "contextual_grep_files_tool_calls": 0.0,
+          "cumulative_input_tokens": 133722.0,
+          "duplicate_exploration_calls": 0.0,
+          "edit_tool_calls": 1.0,
+          "edit_tool_calls_failed": 0.0,
+          "equivalent_failure_warnings": 0.0,
+          "exploration_tools_before_first_mutation": 2.0,
+          "first_request_input_tokens": 11981.0,
+          "first_request_total_input_tokens": 11981.0,
+          "git_grep_calls": 0.0,
+          "grep_files_tool_calls": 0.0,
+          "inner_tool_failures": 1.0,
+          "leading_marker_in_bash_result": 0.0,
+          "llm_calls": 9.0,
+          "max_exploration_tools_without_progress": 2.0,
+          "max_read_file_batch_width": 1.0,
+          "max_tool_batch_width": 1.0,
+          "max_tool_result_bytes": 5851.0,
+          "mean_tool_batch_width": 1.0,
+          "persisted_output_recovery_calls": 0.0,
+          "persisted_output_recovery_result_bytes": 0.0,
+          "progress_guard_warnings": 0.0,
+          "read_file_tool_calls": 1.0,
+          "redundant_validation_calls": 0.0,
+          "repo_map_max_result_bytes": 845.0,
+          "repo_map_narrowed_after_truncation": 0.0,
+          "repo_map_targeted_recovery_after_truncation": 0.0,
+          "repo_map_tool_calls": 1.0,
+          "repo_map_tool_calls_failed": 0.0,
+          "repo_symbols_tool_calls": 0.0,
+          "repo_symbols_tool_calls_failed": 0.0,
+          "session_extra_matches": 0.0,
+          "session_result_bytes": 0.0,
+          "session_useful_match_recall": 0.0,
+          "sessions_search_calls": 0.0,
+          "sessions_search_first_exploration": 0.0,
+          "single_tool_model_calls": 8.0,
+          "standalone_bookkeeping_rounds": 1.0,
+          "successful_progress_checkpoints": 0.0,
+          "task_llm_calls": 8.0,
+          "task_tool_calls": 7.0,
+          "tool_calls": 8.0,
+          "tool_calls_failed": 1.0,
+          "tool_emitting_model_calls": 8.0,
+          "total_tool_result_bytes": 11902.0,
+          "turns": 1.0,
+          "unchanged_reuse_responses": 0.0,
+          "validation_tool_calls": 2.0,
+          "workspace_state_revisits": 0.0
+        },
+        "timing": {
+          "duration_ms": 38776
+        },
+        "tool_calls": [
+          "write_session_title",
+          "tool_search",
+          "bash",
+          "tool_search",
+          "repo_map",
+          "read_file",
+          "edit_file",
+          "bash"
+        ],
+        "tool_calls_count": 8,
+        "usage": {
+          "cache_read_tokens": 82312,
+          "cost_usd": 0.005562824000000001,
+          "input_tokens": 51410,
+          "output_tokens": 1286
+        }
+      },
+      "trials": 3
+    },
+    {
+      "aggregate": 1.0,
+      "eval": "basic_coding",
+      "input": [
+        "Run `cargo test` before editing to reproduce the failing assertion. Then fix answer() at the owning source, rerun `cargo test`, and reply with exactly DIAGNOSTIC_RECOVERED."
+      ],
+      "params": {
+        "binary": "candidate",
+        "effort": "default",
+        "harness": "default"
+      },
+      "passed": true,
+      "sample": "expected-diagnostic-failure-control",
+      "scores": [
+        {
+          "pass": true,
+          "reason": "no error",
+          "scorer": "succeeded",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "7 check(s) passed",
+          "scorer": "checks",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "independent functional and observed-action checks passed",
+          "scorer": "independent_correctness",
+          "value": 1.0
+        },
+        {
+          "na": true,
+          "pass": false,
+          "reason": "sample declares no budget checks",
+          "scorer": "declared_budget",
+          "value": 0.0
+        },
+        {
+          "pass": true,
+          "reason": "1 <= 32",
+          "scorer": "turns_within",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "7 <= 64",
+          "scorer": "tool_calls_within",
+          "value": 1.0
+        },
+        {
+          "na": true,
+          "pass": false,
+          "reason": "baseline variant; ast_edit not offered",
+          "scorer": "ast_edit_used",
+          "value": 0.0
+        },
+        {
+          "pass": true,
+          "reason": "$0.0047 <= $2",
+          "scorer": "cost_within",
+          "value": 1.0
+        }
+      ],
+      "seed": 20261125,
+      "skipped": false,
+      "target": "openrouter/muse-spark-1.3",
+      "transcript": {
+        "final_response": "DIAGNOSTIC_RECOVERED",
+        "iterations": 8,
+        "metadata": {
+          "binary": "candidate",
+          "effort": "default",
+          "harness": "default",
+          "model": "meta/muse-spark-1.3-contributor",
+          "provider": "openrouter",
+          "reasoning_effort_applied": "medium",
+          "session_log": ".cache/sessions/expected-diagnostic-failure-control-openrouter-muse-spark-1.3-candidate-default-default-18eb25a05f2872a00001717300000000.events.jsonl",
+          "stop_reason": "completed",
+          "tool_invocations": [
+            {
+              "arguments": {
+                "title": "Fix failing answer test"
+              },
+              "name": "write_session_title",
+              "success": true
+            },
+            {
+              "arguments": {
+                "command": "cargo test 2>&1",
+                "output": "full"
+              },
+              "name": "bash",
+              "success": false
+            },
+            {
+              "arguments": {},
+              "name": "repo_map",
+              "success": true
+            },
+            {
+              "arguments": {
+                "path": "src/lib.rs"
+              },
+              "name": "read_file",
+              "success": true
+            },
+            {
+              "arguments": {
+                "query": "edit file"
+              },
+              "name": "tool_search",
+              "success": true
+            },
+            {
+              "arguments": {
+                "edits": [
+                  {
+                    "new_text": "pub fn answer() -> u32 { 2 }",
+                    "old_text": "pub fn answer() -> u32 { 1 }"
+                  }
+                ],
+                "expected_hash": "sha256:405754705155dde861d953a5548a0c189c98da0cf2283fda79364647c1d58cbd",
+                "path": "src/lib.rs"
+              },
+              "name": "edit_file",
+              "success": true
+            },
+            {
+              "arguments": {
+                "command": "cargo test 2>&1",
+                "output": "full"
+              },
+              "name": "bash",
+              "success": true
+            }
+          ]
+        },
+        "metrics": {
+          "agent_reported_ms": 25503.0,
+          "apply_patch_tool_calls": 0.0,
+          "ast_edit_tool_calls": 0.0,
+          "ast_edit_tool_calls_failed": 0.0,
+          "automatic_background_wakes": 0.0,
+          "background_spawn_calls": 0.0,
+          "background_wake_llm_calls": 0.0,
+          "background_wake_responses": 0.0,
+          "background_wake_tool_calls": 0.0,
+          "bash_result_bytes": 900.0,
+          "bash_tool_calls": 2.0,
+          "batch_native_read_calls": 0.0,
+          "batched_tool_model_calls": 0.0,
+          "blocked_equivalent_failures": 0.0,
+          "bookkeeping_tool_calls": 1.0,
+          "cache_creation_tokens": 0.0,
+          "calls_after_checkpoint_recommended": 0.0,
+          "calls_after_progress_warning": 0.0,
+          "checkpoint_recommended_warnings": 0.0,
+          "contextual_grep_files_tool_calls": 0.0,
+          "cumulative_input_tokens": 114620.0,
+          "duplicate_exploration_calls": 0.0,
+          "edit_tool_calls": 1.0,
+          "edit_tool_calls_failed": 0.0,
+          "equivalent_failure_warnings": 0.0,
+          "exploration_tools_before_first_mutation": 2.0,
+          "first_request_input_tokens": 11981.0,
+          "first_request_total_input_tokens": 11981.0,
+          "git_grep_calls": 0.0,
+          "grep_files_tool_calls": 0.0,
+          "inner_tool_failures": 1.0,
+          "leading_marker_in_bash_result": 0.0,
+          "llm_calls": 8.0,
+          "max_exploration_tools_without_progress": 2.0,
+          "max_read_file_batch_width": 1.0,
+          "max_tool_batch_width": 1.0,
+          "max_tool_result_bytes": 6843.0,
+          "mean_tool_batch_width": 1.0,
+          "persisted_output_recovery_calls": 0.0,
+          "persisted_output_recovery_result_bytes": 0.0,
+          "progress_guard_warnings": 0.0,
+          "read_file_tool_calls": 1.0,
+          "redundant_validation_calls": 0.0,
+          "repo_map_max_result_bytes": 839.0,
+          "repo_map_narrowed_after_truncation": 0.0,
+          "repo_map_targeted_recovery_after_truncation": 0.0,
+          "repo_map_tool_calls": 1.0,
+          "repo_map_tool_calls_failed": 0.0,
+          "repo_symbols_tool_calls": 0.0,
+          "repo_symbols_tool_calls_failed": 0.0,
+          "session_extra_matches": 0.0,
+          "session_result_bytes": 0.0,
+          "session_useful_match_recall": 0.0,
+          "sessions_search_calls": 0.0,
+          "sessions_search_first_exploration": 0.0,
+          "single_tool_model_calls": 7.0,
+          "standalone_bookkeeping_rounds": 1.0,
+          "successful_progress_checkpoints": 0.0,
+          "task_llm_calls": 7.0,
+          "task_tool_calls": 6.0,
+          "tool_calls": 7.0,
+          "tool_calls_failed": 1.0,
+          "tool_emitting_model_calls": 7.0,
+          "total_tool_result_bytes": 9735.0,
+          "turns": 1.0,
+          "unchanged_reuse_responses": 0.0,
+          "validation_tool_calls": 2.0,
+          "workspace_state_revisits": 0.0
+        },
+        "timing": {
+          "duration_ms": 29518
+        },
+        "tool_calls": [
+          "write_session_title",
+          "bash",
+          "repo_map",
+          "read_file",
+          "tool_search",
+          "edit_file",
+          "bash"
+        ],
+        "tool_calls_count": 7,
+        "usage": {
+          "cache_read_tokens": 71206,
+          "cost_usd": 0.004676612,
+          "input_tokens": 43414,
+          "output_tokens": 964
+        }
+      },
+      "trial": 1,
+      "trials": 3
+    },
+    {
+      "aggregate": 1.0,
+      "eval": "basic_coding",
+      "input": [
+        "Run `cargo test` before editing to reproduce the failing assertion. Then fix answer() at the owning source, rerun `cargo test`, and reply with exactly DIAGNOSTIC_RECOVERED."
+      ],
+      "params": {
+        "binary": "candidate",
+        "effort": "default",
+        "harness": "default"
+      },
+      "passed": true,
+      "sample": "expected-diagnostic-failure-control",
+      "scores": [
+        {
+          "pass": true,
+          "reason": "no error",
+          "scorer": "succeeded",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "7 check(s) passed",
+          "scorer": "checks",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "independent functional and observed-action checks passed",
+          "scorer": "independent_correctness",
+          "value": 1.0
+        },
+        {
+          "na": true,
+          "pass": false,
+          "reason": "sample declares no budget checks",
+          "scorer": "declared_budget",
+          "value": 0.0
+        },
+        {
+          "pass": true,
+          "reason": "1 <= 32",
+          "scorer": "turns_within",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "8 <= 64",
+          "scorer": "tool_calls_within",
+          "value": 1.0
+        },
+        {
+          "na": true,
+          "pass": false,
+          "reason": "baseline variant; ast_edit not offered",
+          "scorer": "ast_edit_used",
+          "value": 0.0
+        },
+        {
+          "pass": true,
+          "reason": "$0.0047 <= $2",
+          "scorer": "cost_within",
+          "value": 1.0
+        }
+      ],
+      "seed": 20261126,
+      "skipped": false,
+      "target": "openrouter/muse-spark-1.3",
+      "transcript": {
+        "final_response": "DIAGNOSTIC_RECOVERED",
+        "iterations": 9,
+        "metadata": {
+          "binary": "candidate",
+          "effort": "default",
+          "harness": "default",
+          "model": "meta/muse-spark-1.3-contributor",
+          "provider": "openrouter",
+          "reasoning_effort_applied": "medium",
+          "session_log": ".cache/sessions/expected-diagnostic-failure-control-openrouter-muse-spark-1.3-candidate-default-default-18eb25a757a415a00001717300000002.events.jsonl",
+          "stop_reason": "completed",
+          "tool_invocations": [
+            {
+              "arguments": {
+                "title": "Fix failing answer test"
+              },
+              "name": "write_session_title",
+              "success": true
+            },
+            {
+              "arguments": {
+                "path": "/private/var/folders/8n/jwcv011j313c359z772kmjkw0000gn/T/.tmplp6Hlx"
+              },
+              "name": "list_directory",
+              "success": true
+            },
+            {
+              "arguments": {
+                "command": "cargo test 2>&1",
+                "output": "full"
+              },
+              "name": "bash",
+              "success": false
+            },
+            {
+              "arguments": {
+                "path": "/private/var/folders/8n/jwcv011j313c359z772kmjkw0000gn/T/.tmplp6Hlx",
+                "query": "answer"
+              },
+              "name": "repo_map",
+              "success": true
+            },
+            {
+              "arguments": {
+                "path": "src/lib.rs"
+              },
+              "name": "read_file",
+              "success": true
+            },
+            {
+              "arguments": {
+                "query": "edit file"
+              },
+              "name": "tool_search",
+              "success": true
+            },
+            {
+              "arguments": {
+                "edits": [
+                  {
+                    "new_text": "pub fn answer() -> u32 { 2 }",
+                    "old_text": "pub fn answer() -> u32 { 1 }"
+                  }
+                ],
+                "expected_hash": "sha256:405754705155dde861d953a5548a0c189c98da0cf2283fda79364647c1d58cbd",
+                "path": "src/lib.rs"
+              },
+              "name": "edit_file",
+              "success": true
+            },
+            {
+              "arguments": {
+                "command": "cargo test 2>&1",
+                "output": "full"
+              },
+              "name": "bash",
+              "success": true
+            }
+          ]
+        },
+        "metrics": {
+          "agent_reported_ms": 19445.0,
+          "apply_patch_tool_calls": 0.0,
+          "ast_edit_tool_calls": 0.0,
+          "ast_edit_tool_calls_failed": 0.0,
+          "automatic_background_wakes": 0.0,
+          "background_spawn_calls": 0.0,
+          "background_wake_llm_calls": 0.0,
+          "background_wake_responses": 0.0,
+          "background_wake_tool_calls": 0.0,
+          "bash_result_bytes": 900.0,
+          "bash_tool_calls": 2.0,
+          "batch_native_read_calls": 0.0,
+          "batched_tool_model_calls": 0.0,
+          "blocked_equivalent_failures": 0.0,
+          "bookkeeping_tool_calls": 1.0,
+          "cache_creation_tokens": 0.0,
+          "calls_after_checkpoint_recommended": 0.0,
+          "calls_after_progress_warning": 0.0,
+          "checkpoint_recommended_warnings": 0.0,
+          "contextual_grep_files_tool_calls": 0.0,
+          "cumulative_input_tokens": 127700.0,
+          "duplicate_exploration_calls": 0.0,
+          "edit_tool_calls": 1.0,
+          "edit_tool_calls_failed": 0.0,
+          "equivalent_failure_warnings": 0.0,
+          "exploration_tools_before_first_mutation": 3.0,
+          "first_request_input_tokens": 11991.0,
+          "first_request_total_input_tokens": 11991.0,
+          "git_grep_calls": 0.0,
+          "grep_files_tool_calls": 0.0,
+          "inner_tool_failures": 1.0,
+          "leading_marker_in_bash_result": 0.0,
+          "llm_calls": 9.0,
+          "max_exploration_tools_without_progress": 2.0,
+          "max_read_file_batch_width": 1.0,
+          "max_tool_batch_width": 1.0,
+          "max_tool_result_bytes": 6843.0,
+          "mean_tool_batch_width": 1.0,
+          "persisted_output_recovery_calls": 0.0,
+          "persisted_output_recovery_result_bytes": 0.0,
+          "progress_guard_warnings": 0.0,
+          "read_file_tool_calls": 1.0,
+          "redundant_validation_calls": 0.0,
+          "repo_map_max_result_bytes": 845.0,
+          "repo_map_narrowed_after_truncation": 0.0,
+          "repo_map_targeted_recovery_after_truncation": 0.0,
+          "repo_map_tool_calls": 1.0,
+          "repo_map_tool_calls_failed": 0.0,
+          "repo_symbols_tool_calls": 0.0,
+          "repo_symbols_tool_calls_failed": 0.0,
+          "session_extra_matches": 0.0,
+          "session_result_bytes": 0.0,
+          "session_useful_match_recall": 0.0,
+          "sessions_search_calls": 0.0,
+          "sessions_search_first_exploration": 0.0,
+          "single_tool_model_calls": 8.0,
+          "standalone_bookkeeping_rounds": 1.0,
+          "successful_progress_checkpoints": 0.0,
+          "task_llm_calls": 8.0,
+          "task_tool_calls": 7.0,
+          "tool_calls": 8.0,
+          "tool_calls_failed": 1.0,
+          "tool_emitting_model_calls": 8.0,
+          "total_tool_result_bytes": 10181.0,
+          "turns": 1.0,
+          "unchanged_reuse_responses": 0.0,
+          "validation_tool_calls": 2.0,
+          "workspace_state_revisits": 0.0
+        },
+        "timing": {
+          "duration_ms": 21455
+        },
+        "tool_calls": [
+          "write_session_title",
+          "list_directory",
+          "bash",
+          "repo_map",
+          "read_file",
+          "tool_search",
+          "edit_file",
+          "bash"
+        ],
+        "tool_calls_count": 8,
+        "usage": {
+          "cache_read_tokens": 84360,
+          "cost_usd": 0.00469412,
+          "input_tokens": 43340,
+          "output_tokens": 957
+        }
+      },
+      "trial": 2,
+      "trials": 3
+    }
+  ],
+  "summary": {
+    "failed": 0,
+    "na": 0,
+    "passed": 3,
+    "scored": 3,
+    "skipped": 0,
+    "total_cost_usd": 0.014933556,
+    "total_duration_ms": 89749,
+    "total_tokens": 141371,
+    "total_tool_calls": 23
+  },
+  "trials": [
+    {
+      "eval": "basic_coding",
+      "failed": 0,
+      "key": "basic_coding/expected-diagnostic-failure-control@openrouter/muse-spark-1.3[binary=candidate,effort=default,harness=default]",
+      "mean": 1.0,
+      "na": 0,
+      "params": {
+        "binary": "candidate",
+        "effort": "default",
+        "harness": "default"
+      },
+      "pass_rate": 1.0,
+      "passed": 3,
+      "sample": "expected-diagnostic-failure-control",
+      "scored": 3,
+      "skipped": 0,
+      "std_dev": 0.0,
+      "target": "openrouter/muse-spark-1.3",
+      "total": 3
+    }
+  ]
+}

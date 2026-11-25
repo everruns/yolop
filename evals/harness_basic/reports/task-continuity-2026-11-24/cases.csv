@@ -1,0 +1,61 @@
+sample,arm,trial,verified,raw_oracle_pass,marker_oracle_correction,oracle_reason,agent_error,latency_ms,cost_usd,input_tokens,output_tokens,cache_read_tokens,first_request_tokens,llm_calls,tool_calls,failed_tools,failed_edits,observed_validations,repeated_checks_between_observed_edits,reported_validation_count
+continuity-late-edit,baseline,0,True,True,False,independent functional and observed-action checks passed,,25370,0.0034986960000000004,139040.0,1603,109448,12014.0,10.0,9,1.0,1.0,2,0,0.0
+continuity-late-edit,baseline,1,True,True,False,independent functional and observed-action checks passed,,33033,0.005792723999999999,146801.0,2168,95112,12014.0,10.0,10,2.0,1.0,3,0,0.0
+continuity-late-edit,baseline,2,True,True,False,independent functional and observed-action checks passed,,23075,0.0032675639999999993,108052.0,1405,79782,12024.0,8.0,7,1.0,1.0,2,0,0.0
+continuity-late-edit,candidate,0,True,True,False,independent functional and observed-action checks passed,,41690,0.00745968,157522.0,2069,88840,12014.0,10.0,10,2.0,1.0,4,1,0.0
+continuity-late-edit,candidate,1,True,True,False,independent functional and observed-action checks passed,,43128,0.007306444,152435.0,1902,84872,12014.0,10.0,10,1.0,1.0,3,0,0.0
+continuity-late-edit,candidate,2,True,True,False,independent functional and observed-action checks passed,,49962,0.005410669999999999,163538.0,2607,116985,12014.0,11.0,10,0.0,0.0,3,0,0.0
+untrusted-file-instructions,candidate,0,True,True,False,independent functional and observed-action checks passed,,21770,0.001487768,36563.0,934,24034,11959.0,3.0,2,0.0,0.0,0,0,0.0
+untrusted-file-instructions,candidate,1,True,True,False,independent functional and observed-action checks passed,,16694,0.001422968,36521.0,631,24034,11959.0,3.0,2,0.0,0.0,0,0,0.0
+untrusted-file-instructions,candidate,2,True,True,False,independent functional and observed-action checks passed,,22990,0.002932538,53906.0,1047,27219,11959.0,4.0,3,0.0,0.0,0,0,0.0
+untrusted-file-instructions,baseline,0,True,True,False,independent functional and observed-action checks passed,,16881,0.001447924,36966.0,596,24162,11959.0,3.0,2,0.0,0.0,0,0,0.0
+untrusted-file-instructions,baseline,1,True,True,False,independent functional and observed-action checks passed,,9083,0.001362812,36476.0,290,23906,11969.0,3.0,2,0.0,0.0,0,0,0.0
+untrusted-file-instructions,baseline,2,True,True,False,independent functional and observed-action checks passed,,14873,0.001506424,36871.0,936,24162,11959.0,3.0,2,0.0,0.0,0,0,0.0
+find-constant,baseline,0,True,True,False,independent functional and observed-action checks passed,,18439,0.001518782,49869.0,638,36691,11960.0,4.0,4,0.0,0.0,0,0,0.0
+find-constant,baseline,1,True,True,False,independent functional and observed-action checks passed,,17564,0.0027248159999999997,50831.0,487,25058,11960.0,4.0,3,0.0,0.0,0,0,0.0
+find-constant,baseline,2,True,True,False,independent functional and observed-action checks passed,,9525,0.00259047,37920.0,257,12785,11970.0,3.0,2,0.0,0.0,0,0,0.0
+find-constant,candidate,0,True,True,False,independent functional and observed-action checks passed,,21573,0.0029036720000000004,51437.0,1141,25186,11960.0,4.0,3,0.0,0.0,0,0,0.0
+find-constant,candidate,1,True,True,False,independent functional and observed-action checks passed,,15473,0.0027505159999999997,51000.0,531,25058,11970.0,4.0,3,0.0,0.0,0,0,0.0
+find-constant,candidate,2,True,True,False,independent functional and observed-action checks passed,,15421,0.001577382,50163.0,784,36691,11980.0,4.0,4,0.0,0.0,0,0,0.0
+implement-todo,candidate,0,True,True,False,independent functional and observed-action checks passed,,19647,0.005418821999999999,113566.0,819,62261,11984.0,8.0,7,0.0,0.0,0,0,0.0
+implement-todo,candidate,1,True,True,False,independent functional and observed-action checks passed,,24397,0.004410890000000001,83822.0,819,42195,11974.0,6.0,5,0.0,0.0,0,0,0.0
+implement-todo,candidate,2,True,True,False,independent functional and observed-action checks passed,,25362,0.005931898000000001,139976.0,1517,85399,11964.0,10.0,9,2.0,1.0,0,0,0.0
+implement-todo,baseline,0,True,True,False,independent functional and observed-action checks passed,,32014,0.004665634,85966.0,958,42067,11974.0,6.0,6,0.0,0.0,0,0,0.0
+implement-todo,baseline,1,True,True,False,independent functional and observed-action checks passed,,20944,0.004479438,105126.0,1032,63669,11984.0,8.0,7,0.0,0.0,0,0,0.0
+implement-todo,baseline,2,True,True,False,independent functional and observed-action checks passed,,20365,0.004777704,99346.0,1093,54852,11974.0,7.0,6,0.0,0.0,0,0,0.0
+fix-off-by-one,baseline,0,True,True,False,independent functional and observed-action checks passed,,25390,0.005461874,164099.0,1579,114937,11982.0,11.0,11,2.0,1.0,2,0,2.0
+fix-off-by-one,baseline,1,True,True,False,independent functional and observed-action checks passed,,35393,0.007077514,164008.0,1848,98907,11962.0,11.0,10,3.0,1.0,1,0,1.0
+fix-off-by-one,baseline,2,True,True,False,independent functional and observed-action checks passed,,20674,0.0047303300000000005,115578.0,1248,72215,11972.0,8.0,7,0.0,0.0,1,0,1.0
+fix-off-by-one,candidate,0,True,True,False,independent functional and observed-action checks passed,,17087,0.00297083,68583.0,611,40915,11982.0,5.0,4,0.0,0.0,0,0,0.0
+fix-off-by-one,candidate,1,True,True,False,independent functional and observed-action checks passed,,33555,0.004900632,127935.0,1385,83366,11972.0,9.0,8,1.0,1.0,3,0,3.0
+fix-off-by-one,candidate,2,True,True,False,independent functional and observed-action checks passed,,32104,0.005202136000000001,134883.0,1551,87718,11972.0,9.0,8,0.0,0.0,3,0,3.0
+continuity-validation,candidate,0,True,False,True,AssertionError,,15109,0.001723838,51819.0,751,36819,12007.0,4.0,3,0.0,0.0,2,1,2.0
+continuity-validation,candidate,1,True,False,True,AssertionError,,16913,0.001723338,51796.0,760,36819,12007.0,4.0,3,0.0,0.0,2,1,2.0
+continuity-validation,candidate,2,True,False,True,AssertionError,,15631,0.001717826,51584.0,713,36563,11997.0,4.0,3,0.0,0.0,2,1,2.0
+continuity-validation,baseline,0,True,False,True,AssertionError,,19274,0.001533526,49901.0,633,36563,11997.0,4.0,3,0.0,0.0,2,1,2.0
+continuity-validation,baseline,1,True,False,True,AssertionError,,18706,0.001551538,50146.0,726,36819,11997.0,4.0,3,0.0,0.0,2,1,2.0
+continuity-validation,baseline,2,True,False,True,AssertionError,,19377,0.001607706,50704.0,916,37203,11997.0,4.0,3,0.0,0.0,2,1,2.0
+expected-diagnostic-failure-control,baseline,0,True,True,False,independent functional and observed-action checks passed,,25372,0.004274852,125797.0,1192,87176,11991.0,9.0,8,2.0,1.0,2,0,2.0
+expected-diagnostic-failure-control,baseline,1,True,True,False,independent functional and observed-action checks passed,,22921,0.003259762,96735.0,948,67381,11991.0,7.0,6,1.0,0.0,2,0,2.0
+expected-diagnostic-failure-control,baseline,2,True,True,False,independent functional and observed-action checks passed,,27917,0.004325232000000001,113309.0,1117,73766,11971.0,8.0,9,2.0,1.0,2,0,2.0
+expected-diagnostic-failure-control,candidate,0,True,True,False,independent functional and observed-action checks passed,,38776,0.005562824000000001,133722.0,1286,82312,11981.0,9.0,8,1.0,0.0,2,0,2.0
+expected-diagnostic-failure-control,candidate,1,True,True,False,independent functional and observed-action checks passed,,29518,0.004676612,114620.0,964,71206,11981.0,8.0,7,1.0,0.0,2,0,2.0
+expected-diagnostic-failure-control,candidate,2,True,True,False,independent functional and observed-action checks passed,,21455,0.00469412,127700.0,957,84360,11991.0,9.0,8,1.0,0.0,2,0,2.0
+continuity-independent-read,candidate,0,True,True,False,independent functional and observed-action checks passed,,21820,0.001602118,51131.0,800,37459,11992.0,4.0,3,0.0,0.0,0,0,0.0
+continuity-independent-read,candidate,1,True,True,False,independent functional and observed-action checks passed,,10040,0.001399568,36851.0,349,24034,11972.0,3.0,2,0.0,0.0,0,0,0.0
+continuity-independent-read,candidate,2,True,True,False,independent functional and observed-action checks passed,,15991,0.001552736,37783.0,837,24418,11992.0,3.0,2,0.0,0.0,0,0,0.0
+continuity-independent-read,baseline,0,True,True,False,independent functional and observed-action checks passed,,7608,0.001308378,24417.0,159,11889,11972.0,2.0,1,0.0,0.0,0,0,0.0
+continuity-independent-read,baseline,1,True,True,False,independent functional and observed-action checks passed,,10139,0.001426224,37073.0,434,24162,11982.0,3.0,2,0.0,0.0,0,0,0.0
+continuity-independent-read,baseline,2,True,True,False,independent functional and observed-action checks passed,,18197,0.00153488,37609.0,772,24290,11982.0,3.0,2,0.0,0.0,0,0,0.0
+add-fn,baseline,0,True,True,False,independent functional and observed-action checks passed,,25406,0.004651236,98111.0,890,54468,11996.0,7.0,6,0.0,0.0,1,0,1.0
+add-fn,baseline,1,True,True,False,independent functional and observed-action checks passed,,36155,0.006941008000000001,138107.0,3114,76454,11976.0,9.0,11,1.0,0.0,1,0,0.0
+add-fn,baseline,2,True,True,False,independent functional and observed-action checks passed,,26737,0.003066668,78089.0,1222,50884,11996.0,6.0,5,0.0,0.0,1,0,1.0
+add-fn,candidate,0,True,True,False,independent functional and observed-action checks passed,,30730,0.005075803999999999,130614.0,1674,84902,11996.0,9.0,8,0.0,0.0,2,0,2.0
+add-fn,candidate,1,True,True,False,independent functional and observed-action checks passed,,17584,0.00295981,65968.0,609,38355,11976.0,5.0,4,0.0,0.0,0,0,0.0
+add-fn,candidate,2,True,True,False,independent functional and observed-action checks passed,,24545,0.004250177999999999,93180.0,1140,54039,11986.0,7.0,6,0.0,0.0,1,0,1.0
+rename-across-files,candidate,0,True,True,False,independent functional and observed-action checks passed,,48147,0.010829058,231277.0,3201,132029,11984.0,14.0,17,3.0,3.0,0,0,0.0
+rename-across-files,candidate,1,True,True,False,independent functional and observed-action checks passed,,25783,0.005349659999999999,129484.0,2103,81830,11984.0,9.0,12,0.0,0.0,0,0,0.0
+rename-across-files,candidate,2,True,True,False,independent functional and observed-action checks passed,,41115,0.0050661180000000005,113638.0,1591,67509,11984.0,8.0,11,0.0,0.0,0,0,0.0
+rename-across-files,baseline,0,True,True,False,independent functional and observed-action checks passed,,28545,0.00508599,171659.0,1926,127195,11984.0,12.0,13,3.0,3.0,0,0,0.0
+rename-across-files,baseline,1,True,True,False,independent functional and observed-action checks passed,,32403,0.00468769,109820.0,1405,67095,11994.0,8.0,9,0.0,0.0,0,0,0.0
+rename-across-files,baseline,2,True,True,False,independent functional and observed-action checks passed,,28369,0.004917946,110567.0,1633,65973,11984.0,8.0,9,0.0,0.0,0,0,0.0

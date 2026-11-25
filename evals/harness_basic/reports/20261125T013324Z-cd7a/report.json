@@ -1,0 +1,711 @@
+{
+  "cases": [
+    {
+      "aggregate": 1.0,
+      "eval": "basic_coding",
+      "input": [
+        "In src/lib.rs, add a public function `greet` that returns the string \"hello, yolop\" as `&'static str`. Keep the existing contents. Make the edit directly; do not ask questions."
+      ],
+      "params": {
+        "binary": "candidate",
+        "effort": "default",
+        "harness": "default"
+      },
+      "passed": true,
+      "sample": "add-fn",
+      "scores": [
+        {
+          "pass": true,
+          "reason": "no error",
+          "scorer": "succeeded",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "2 check(s) passed",
+          "scorer": "checks",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "independent functional and observed-action checks passed",
+          "scorer": "independent_correctness",
+          "value": 1.0
+        },
+        {
+          "na": true,
+          "pass": false,
+          "reason": "sample declares no budget checks",
+          "scorer": "declared_budget",
+          "value": 0.0
+        },
+        {
+          "pass": true,
+          "reason": "1 <= 32",
+          "scorer": "turns_within",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "8 <= 64",
+          "scorer": "tool_calls_within",
+          "value": 1.0
+        },
+        {
+          "na": true,
+          "pass": false,
+          "reason": "baseline variant; ast_edit not offered",
+          "scorer": "ast_edit_used",
+          "value": 0.0
+        },
+        {
+          "pass": true,
+          "reason": "$0.0051 <= $2",
+          "scorer": "cost_within",
+          "value": 1.0
+        }
+      ],
+      "seed": 20261124,
+      "skipped": false,
+      "target": "openrouter/muse-spark-1.3",
+      "transcript": {
+        "final_response": "Done — added `greet` to `src/lib.rs:3-5`, keeping the existing contents:\n\n```rust\n// Library entry point.\n\npub fn greet() -> &'static str {\n    \"hello, yolop\"\n}\n```\n\nVerified with `cargo test` (0 passed, 0 failed) and `cargo check` — both passed.",
+        "iterations": 9,
+        "metadata": {
+          "binary": "candidate",
+          "effort": "default",
+          "harness": "default",
+          "model": "meta/muse-spark-1.3-contributor",
+          "provider": "openrouter",
+          "reasoning_effort_applied": "medium",
+          "session_log": ".cache/sessions/add-fn-openrouter-muse-spark-1.3-candidate-default-default-18eb25c4f378a3700000264300000000.events.jsonl",
+          "stop_reason": "completed",
+          "tool_invocations": [
+            {
+              "arguments": {
+                "title": "Add greet function to lib"
+              },
+              "name": "write_session_title",
+              "success": true
+            },
+            {
+              "arguments": {
+                "path": "src/lib.rs"
+              },
+              "name": "read_file",
+              "success": true
+            },
+            {
+              "arguments": {
+                "query": "edit file text replacement"
+              },
+              "name": "tool_search",
+              "success": true
+            },
+            {
+              "arguments": {
+                "edits": [
+                  {
+                    "new_text": "// Library entry point.\n\npub fn greet() -> &'static str {\n    \"hello, yolop\"\n}",
+                    "old_text": "// Library entry point."
+                  }
+                ],
+                "expected_hash": "sha256:19055908ce553fd7a354ab7421429de62c0e470bf79b889e2a8fc304e816baaf",
+                "path": "src/lib.rs"
+              },
+              "name": "edit_file",
+              "success": true
+            },
+            {
+              "arguments": {
+                "query": "run bash command"
+              },
+              "name": "tool_search",
+              "success": true
+            },
+            {
+              "arguments": {
+                "command": "cargo test --quiet 2>&1; echo \"---\"; cat src/lib.rs",
+                "output": "normal"
+              },
+              "name": "bash",
+              "success": true
+            },
+            {
+              "arguments": {
+                "path": "src/lib.rs"
+              },
+              "name": "read_file",
+              "success": true
+            },
+            {
+              "arguments": {
+                "command": "cargo test 2>&1 && cargo check -p $(grep -m1 '^name' Cargo.toml | cut -d'\"' -f2) 2>&1 || cargo check 2>&1; echo \"---\"; cat src/lib.rs",
+                "output": "normal"
+              },
+              "name": "bash",
+              "success": true
+            }
+          ]
+        },
+        "metrics": {
+          "agent_reported_ms": 27495.0,
+          "apply_patch_tool_calls": 0.0,
+          "ast_edit_tool_calls": 0.0,
+          "ast_edit_tool_calls_failed": 0.0,
+          "automatic_background_wakes": 0.0,
+          "background_spawn_calls": 0.0,
+          "background_wake_llm_calls": 0.0,
+          "background_wake_responses": 0.0,
+          "background_wake_tool_calls": 0.0,
+          "bash_result_bytes": 1778.0,
+          "bash_tool_calls": 2.0,
+          "batch_native_read_calls": 0.0,
+          "batched_tool_model_calls": 0.0,
+          "blocked_equivalent_failures": 0.0,
+          "bookkeeping_tool_calls": 1.0,
+          "cache_creation_tokens": 0.0,
+          "calls_after_checkpoint_recommended": 0.0,
+          "calls_after_progress_warning": 0.0,
+          "checkpoint_recommended_warnings": 0.0,
+          "contextual_grep_files_tool_calls": 0.0,
+          "cumulative_input_tokens": 130614.0,
+          "duplicate_exploration_calls": 1.0,
+          "edit_tool_calls": 1.0,
+          "edit_tool_calls_failed": 0.0,
+          "equivalent_failure_warnings": 0.0,
+          "exploration_tools_before_first_mutation": 1.0,
+          "first_request_input_tokens": 11996.0,
+          "first_request_total_input_tokens": 11996.0,
+          "git_grep_calls": 0.0,
+          "grep_files_tool_calls": 0.0,
+          "inner_tool_failures": 0.0,
+          "leading_marker_in_bash_result": 0.0,
+          "llm_calls": 9.0,
+          "max_exploration_tools_without_progress": 1.0,
+          "max_read_file_batch_width": 1.0,
+          "max_tool_batch_width": 1.0,
+          "max_tool_result_bytes": 5136.0,
+          "mean_tool_batch_width": 1.0,
+          "persisted_output_recovery_calls": 0.0,
+          "persisted_output_recovery_result_bytes": 0.0,
+          "progress_guard_warnings": 0.0,
+          "read_file_tool_calls": 2.0,
+          "redundant_validation_calls": 0.0,
+          "repo_map_max_result_bytes": 0.0,
+          "repo_map_narrowed_after_truncation": 0.0,
+          "repo_map_targeted_recovery_after_truncation": 0.0,
+          "repo_map_tool_calls": 0.0,
+          "repo_map_tool_calls_failed": 0.0,
+          "repo_symbols_tool_calls": 0.0,
+          "repo_symbols_tool_calls_failed": 0.0,
+          "session_extra_matches": 0.0,
+          "session_result_bytes": 0.0,
+          "session_useful_match_recall": 0.0,
+          "sessions_search_calls": 0.0,
+          "sessions_search_first_exploration": 0.0,
+          "single_tool_model_calls": 8.0,
+          "standalone_bookkeeping_rounds": 1.0,
+          "successful_progress_checkpoints": 0.0,
+          "task_llm_calls": 8.0,
+          "task_tool_calls": 7.0,
+          "tool_calls": 8.0,
+          "tool_calls_failed": 0.0,
+          "tool_emitting_model_calls": 8.0,
+          "total_tool_result_bytes": 11628.0,
+          "turns": 1.0,
+          "unchanged_reuse_responses": 0.0,
+          "validation_tool_calls": 2.0,
+          "workspace_state_revisits": 0.0
+        },
+        "timing": {
+          "duration_ms": 30730
+        },
+        "tool_calls": [
+          "write_session_title",
+          "read_file",
+          "tool_search",
+          "edit_file",
+          "tool_search",
+          "bash",
+          "read_file",
+          "bash"
+        ],
+        "tool_calls_count": 8,
+        "usage": {
+          "cache_read_tokens": 84902,
+          "cost_usd": 0.005075803999999999,
+          "input_tokens": 45712,
+          "output_tokens": 1674
+        }
+      },
+      "trials": 3
+    },
+    {
+      "aggregate": 1.0,
+      "eval": "basic_coding",
+      "input": [
+        "In src/lib.rs, add a public function `greet` that returns the string \"hello, yolop\" as `&'static str`. Keep the existing contents. Make the edit directly; do not ask questions."
+      ],
+      "params": {
+        "binary": "candidate",
+        "effort": "default",
+        "harness": "default"
+      },
+      "passed": true,
+      "sample": "add-fn",
+      "scores": [
+        {
+          "pass": true,
+          "reason": "no error",
+          "scorer": "succeeded",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "2 check(s) passed",
+          "scorer": "checks",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "independent functional and observed-action checks passed",
+          "scorer": "independent_correctness",
+          "value": 1.0
+        },
+        {
+          "na": true,
+          "pass": false,
+          "reason": "sample declares no budget checks",
+          "scorer": "declared_budget",
+          "value": 0.0
+        },
+        {
+          "pass": true,
+          "reason": "1 <= 32",
+          "scorer": "turns_within",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "4 <= 64",
+          "scorer": "tool_calls_within",
+          "value": 1.0
+        },
+        {
+          "na": true,
+          "pass": false,
+          "reason": "baseline variant; ast_edit not offered",
+          "scorer": "ast_edit_used",
+          "value": 0.0
+        },
+        {
+          "pass": true,
+          "reason": "$0.0030 <= $2",
+          "scorer": "cost_within",
+          "value": 1.0
+        }
+      ],
+      "seed": 20261125,
+      "skipped": false,
+      "target": "openrouter/muse-spark-1.3",
+      "transcript": {
+        "final_response": "Added `pub fn greet() -> &'static str` returning `\"hello, yolop\"` in `src/lib.rs:3-5`, keeping the existing `// Library entry point.` on line 1.",
+        "iterations": 5,
+        "metadata": {
+          "binary": "candidate",
+          "effort": "default",
+          "harness": "default",
+          "model": "meta/muse-spark-1.3-contributor",
+          "provider": "openrouter",
+          "reasoning_effort_applied": "medium",
+          "session_log": ".cache/sessions/add-fn-openrouter-muse-spark-1.3-candidate-default-default-18eb25c4f38eb3e00000264300000001.events.jsonl",
+          "stop_reason": "completed",
+          "tool_invocations": [
+            {
+              "arguments": {
+                "title": "Add greet function"
+              },
+              "name": "write_session_title",
+              "success": true
+            },
+            {
+              "arguments": {
+                "path": "src/lib.rs"
+              },
+              "name": "read_file",
+              "success": true
+            },
+            {
+              "arguments": {
+                "query": "edit file"
+              },
+              "name": "tool_search",
+              "success": true
+            },
+            {
+              "arguments": {
+                "edits": [
+                  {
+                    "new_text": "// Library entry point.\n\npub fn greet() -> &'static str {\n    \"hello, yolop\"\n}",
+                    "old_text": "// Library entry point."
+                  }
+                ],
+                "expected_hash": "sha256:19055908ce553fd7a354ab7421429de62c0e470bf79b889e2a8fc304e816baaf",
+                "path": "src/lib.rs"
+              },
+              "name": "edit_file",
+              "success": true
+            }
+          ]
+        },
+        "metrics": {
+          "agent_reported_ms": 14535.0,
+          "apply_patch_tool_calls": 0.0,
+          "ast_edit_tool_calls": 0.0,
+          "ast_edit_tool_calls_failed": 0.0,
+          "automatic_background_wakes": 0.0,
+          "background_spawn_calls": 0.0,
+          "background_wake_llm_calls": 0.0,
+          "background_wake_responses": 0.0,
+          "background_wake_tool_calls": 0.0,
+          "bash_result_bytes": 0.0,
+          "bash_tool_calls": 0.0,
+          "batch_native_read_calls": 0.0,
+          "batched_tool_model_calls": 0.0,
+          "blocked_equivalent_failures": 0.0,
+          "bookkeeping_tool_calls": 1.0,
+          "cache_creation_tokens": 0.0,
+          "calls_after_checkpoint_recommended": 0.0,
+          "calls_after_progress_warning": 0.0,
+          "checkpoint_recommended_warnings": 0.0,
+          "contextual_grep_files_tool_calls": 0.0,
+          "cumulative_input_tokens": 65968.0,
+          "duplicate_exploration_calls": 0.0,
+          "edit_tool_calls": 1.0,
+          "edit_tool_calls_failed": 0.0,
+          "equivalent_failure_warnings": 0.0,
+          "exploration_tools_before_first_mutation": 1.0,
+          "first_request_input_tokens": 11976.0,
+          "first_request_total_input_tokens": 11976.0,
+          "git_grep_calls": 0.0,
+          "grep_files_tool_calls": 0.0,
+          "inner_tool_failures": 0.0,
+          "leading_marker_in_bash_result": 0.0,
+          "llm_calls": 5.0,
+          "max_exploration_tools_without_progress": 1.0,
+          "max_read_file_batch_width": 1.0,
+          "max_tool_batch_width": 1.0,
+          "max_tool_result_bytes": 6843.0,
+          "mean_tool_batch_width": 1.0,
+          "persisted_output_recovery_calls": 0.0,
+          "persisted_output_recovery_result_bytes": 0.0,
+          "progress_guard_warnings": 0.0,
+          "read_file_tool_calls": 1.0,
+          "redundant_validation_calls": 0.0,
+          "repo_map_max_result_bytes": 0.0,
+          "repo_map_narrowed_after_truncation": 0.0,
+          "repo_map_targeted_recovery_after_truncation": 0.0,
+          "repo_map_tool_calls": 0.0,
+          "repo_map_tool_calls_failed": 0.0,
+          "repo_symbols_tool_calls": 0.0,
+          "repo_symbols_tool_calls_failed": 0.0,
+          "session_extra_matches": 0.0,
+          "session_result_bytes": 0.0,
+          "session_useful_match_recall": 0.0,
+          "sessions_search_calls": 0.0,
+          "sessions_search_first_exploration": 0.0,
+          "single_tool_model_calls": 4.0,
+          "standalone_bookkeeping_rounds": 1.0,
+          "successful_progress_checkpoints": 0.0,
+          "task_llm_calls": 4.0,
+          "task_tool_calls": 3.0,
+          "tool_calls": 4.0,
+          "tool_calls_failed": 0.0,
+          "tool_emitting_model_calls": 4.0,
+          "total_tool_result_bytes": 7934.0,
+          "turns": 1.0,
+          "unchanged_reuse_responses": 0.0,
+          "validation_tool_calls": 0.0,
+          "workspace_state_revisits": 0.0
+        },
+        "timing": {
+          "duration_ms": 17584
+        },
+        "tool_calls": [
+          "write_session_title",
+          "read_file",
+          "tool_search",
+          "edit_file"
+        ],
+        "tool_calls_count": 4,
+        "usage": {
+          "cache_read_tokens": 38355,
+          "cost_usd": 0.00295981,
+          "input_tokens": 27613,
+          "output_tokens": 609
+        }
+      },
+      "trial": 1,
+      "trials": 3
+    },
+    {
+      "aggregate": 1.0,
+      "eval": "basic_coding",
+      "input": [
+        "In src/lib.rs, add a public function `greet` that returns the string \"hello, yolop\" as `&'static str`. Keep the existing contents. Make the edit directly; do not ask questions."
+      ],
+      "params": {
+        "binary": "candidate",
+        "effort": "default",
+        "harness": "default"
+      },
+      "passed": true,
+      "sample": "add-fn",
+      "scores": [
+        {
+          "pass": true,
+          "reason": "no error",
+          "scorer": "succeeded",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "2 check(s) passed",
+          "scorer": "checks",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "independent functional and observed-action checks passed",
+          "scorer": "independent_correctness",
+          "value": 1.0
+        },
+        {
+          "na": true,
+          "pass": false,
+          "reason": "sample declares no budget checks",
+          "scorer": "declared_budget",
+          "value": 0.0
+        },
+        {
+          "pass": true,
+          "reason": "1 <= 32",
+          "scorer": "turns_within",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "6 <= 64",
+          "scorer": "tool_calls_within",
+          "value": 1.0
+        },
+        {
+          "na": true,
+          "pass": false,
+          "reason": "baseline variant; ast_edit not offered",
+          "scorer": "ast_edit_used",
+          "value": 0.0
+        },
+        {
+          "pass": true,
+          "reason": "$0.0043 <= $2",
+          "scorer": "cost_within",
+          "value": 1.0
+        }
+      ],
+      "seed": 20261126,
+      "skipped": false,
+      "target": "openrouter/muse-spark-1.3",
+      "transcript": {
+        "final_response": "Done — added `pub fn greet() -> &'static str` returning `\"hello, yolop\"` in `src/lib.rs:3-5`, keeping `// Library entry point.` on line 1.\n\nChecked with `cargo test --quiet` (0 tests, ok) and `rustc` lib check passed.\n",
+        "iterations": 7,
+        "metadata": {
+          "binary": "candidate",
+          "effort": "default",
+          "harness": "default",
+          "model": "meta/muse-spark-1.3-contributor",
+          "provider": "openrouter",
+          "reasoning_effort_applied": "medium",
+          "session_log": ".cache/sessions/add-fn-openrouter-muse-spark-1.3-candidate-default-default-18eb25c927c1ff100000264300000002.events.jsonl",
+          "stop_reason": "completed",
+          "tool_invocations": [
+            {
+              "arguments": {
+                "title": "Add greet function"
+              },
+              "name": "write_session_title",
+              "success": true
+            },
+            {
+              "arguments": {
+                "path": "src/lib.rs"
+              },
+              "name": "read_file",
+              "success": true
+            },
+            {
+              "arguments": {
+                "query": "edit file replacement"
+              },
+              "name": "tool_search",
+              "success": true
+            },
+            {
+              "arguments": {
+                "edits": [
+                  {
+                    "new_text": "// Library entry point.\n\npub fn greet() -> &'static str {\n    \"hello, yolop\"\n}",
+                    "old_text": "// Library entry point."
+                  }
+                ],
+                "expected_hash": "sha256:19055908ce553fd7a354ab7421429de62c0e470bf79b889e2a8fc304e816baaf",
+                "path": "src/lib.rs"
+              },
+              "name": "edit_file",
+              "success": true
+            },
+            {
+              "arguments": {
+                "query": "run bash command"
+              },
+              "name": "tool_search",
+              "success": true
+            },
+            {
+              "arguments": {
+                "command": "cat src/lib.rs && cargo test --quiet 2>&1 | tail -20 || rustc --crate-type lib src/lib.rs -o /tmp/libcheck.rlib && echo \"rustc check passed\"",
+                "output": "concise"
+              },
+              "name": "bash",
+              "success": true
+            }
+          ]
+        },
+        "metrics": {
+          "agent_reported_ms": 22508.0,
+          "apply_patch_tool_calls": 0.0,
+          "ast_edit_tool_calls": 0.0,
+          "ast_edit_tool_calls_failed": 0.0,
+          "automatic_background_wakes": 0.0,
+          "background_spawn_calls": 0.0,
+          "background_wake_llm_calls": 0.0,
+          "background_wake_responses": 0.0,
+          "background_wake_tool_calls": 0.0,
+          "bash_result_bytes": 765.0,
+          "bash_tool_calls": 1.0,
+          "batch_native_read_calls": 0.0,
+          "batched_tool_model_calls": 0.0,
+          "blocked_equivalent_failures": 0.0,
+          "bookkeeping_tool_calls": 1.0,
+          "cache_creation_tokens": 0.0,
+          "calls_after_checkpoint_recommended": 0.0,
+          "calls_after_progress_warning": 0.0,
+          "checkpoint_recommended_warnings": 0.0,
+          "contextual_grep_files_tool_calls": 0.0,
+          "cumulative_input_tokens": 93180.0,
+          "duplicate_exploration_calls": 0.0,
+          "edit_tool_calls": 1.0,
+          "edit_tool_calls_failed": 0.0,
+          "equivalent_failure_warnings": 0.0,
+          "exploration_tools_before_first_mutation": 1.0,
+          "first_request_input_tokens": 11233.0,
+          "first_request_total_input_tokens": 11986.0,
+          "git_grep_calls": 0.0,
+          "grep_files_tool_calls": 0.0,
+          "inner_tool_failures": 0.0,
+          "leading_marker_in_bash_result": 0.0,
+          "llm_calls": 7.0,
+          "max_exploration_tools_without_progress": 1.0,
+          "max_read_file_batch_width": 1.0,
+          "max_tool_batch_width": 1.0,
+          "max_tool_result_bytes": 3153.0,
+          "mean_tool_batch_width": 1.0,
+          "persisted_output_recovery_calls": 0.0,
+          "persisted_output_recovery_result_bytes": 0.0,
+          "progress_guard_warnings": 0.0,
+          "read_file_tool_calls": 1.0,
+          "redundant_validation_calls": 0.0,
+          "repo_map_max_result_bytes": 0.0,
+          "repo_map_narrowed_after_truncation": 0.0,
+          "repo_map_targeted_recovery_after_truncation": 0.0,
+          "repo_map_tool_calls": 0.0,
+          "repo_map_tool_calls_failed": 0.0,
+          "repo_symbols_tool_calls": 0.0,
+          "repo_symbols_tool_calls_failed": 0.0,
+          "session_extra_matches": 0.0,
+          "session_result_bytes": 0.0,
+          "session_useful_match_recall": 0.0,
+          "sessions_search_calls": 0.0,
+          "sessions_search_first_exploration": 0.0,
+          "single_tool_model_calls": 6.0,
+          "standalone_bookkeeping_rounds": 1.0,
+          "successful_progress_checkpoints": 0.0,
+          "task_llm_calls": 6.0,
+          "task_tool_calls": 5.0,
+          "tool_calls": 6.0,
+          "tool_calls_failed": 0.0,
+          "tool_emitting_model_calls": 6.0,
+          "total_tool_result_bytes": 6387.0,
+          "turns": 1.0,
+          "unchanged_reuse_responses": 0.0,
+          "validation_tool_calls": 1.0,
+          "workspace_state_revisits": 0.0
+        },
+        "timing": {
+          "duration_ms": 24545
+        },
+        "tool_calls": [
+          "write_session_title",
+          "read_file",
+          "tool_search",
+          "edit_file",
+          "tool_search",
+          "bash"
+        ],
+        "tool_calls_count": 6,
+        "usage": {
+          "cache_read_tokens": 54039,
+          "cost_usd": 0.004250177999999999,
+          "input_tokens": 39141,
+          "output_tokens": 1140
+        }
+      },
+      "trial": 2,
+      "trials": 3
+    }
+  ],
+  "summary": {
+    "failed": 0,
+    "na": 0,
+    "passed": 3,
+    "scored": 3,
+    "skipped": 0,
+    "total_cost_usd": 0.012285791999999997,
+    "total_duration_ms": 72859,
+    "total_tokens": 115889,
+    "total_tool_calls": 18
+  },
+  "trials": [
+    {
+      "eval": "basic_coding",
+      "failed": 0,
+      "key": "basic_coding/add-fn@openrouter/muse-spark-1.3[binary=candidate,effort=default,harness=default]",
+      "mean": 1.0,
+      "na": 0,
+      "params": {
+        "binary": "candidate",
+        "effort": "default",
+        "harness": "default"
+      },
+      "pass_rate": 1.0,
+      "passed": 3,
+      "sample": "add-fn",
+      "scored": 3,
+      "skipped": 0,
+      "std_dev": 0.0,
+      "target": "openrouter/muse-spark-1.3",
+      "total": 3
+    }
+  ]
+}

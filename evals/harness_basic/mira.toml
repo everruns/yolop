@@ -253,3 +253,9 @@ axes = { binary = ["candidate"], harness = ["default"], effort = ["default"] }
 tag = "self-writing"
 targets = ["anthropic/claude-sonnet-5-5"]
 axes = { binary = ["candidate"], effort = ["default"], harness = ["default"] }
+
+# Symmetric controls for the matched task-continuity comparison.
+[presets.task-continuity]
+samples = ["add-fn", "fix-off-by-one", "rename-across-files", "implement-todo", "find-constant", "expected-diagnostic-failure-control", "continuity-validation", "untrusted-file-instructions", "continuity-independent-read", "continuity-late-edit"]
+targets = ["openrouter/muse-spark-1.3"]
+axes = { binary = ["baseline", "candidate"], effort = ["default"], harness = ["default"] }
