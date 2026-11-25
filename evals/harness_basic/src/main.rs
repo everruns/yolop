@@ -3056,24 +3056,7 @@ fn classify_tool(data: &Value) -> ToolKind {
     {
         return ToolKind::Exploration;
     }
-    if [
-        "cargo test",
-        "cargo clippy",
-        "cargo fmt --check",
-        "npm test",
-        "npm run test",
-        "pnpm test",
-        "pnpm run test",
-        "yarn test",
-        "pytest",
-        "uv run",
-        "go test",
-        "python -m unittest",
-        "python3 -m unittest",
-    ]
-    .iter()
-    .any(|prefix| command.starts_with(prefix))
-    {
+    if validation_command(data).is_some() {
         return ToolKind::Validation;
     }
     if [
@@ -4693,11 +4676,16 @@ mod tests {
 
     #[test]
     fn python3_unittest_counts_as_validation() {
-        let jsonl = r#"
-{"type":"tool.completed","data":{"tool_name":"bash","success":true,"result":[{"type":"text","text":"{\"command\":\"python3 -m unittest -q\",\"exit_code\":0,\"success\":true}"}]}}
-"#;
-        let m = parse_events(jsonl);
-        assert_eq!(m.validation_tool_calls, 1);
+        for command in [
+            "python3 -m unittest -q",
+            "cd /tmp/x && python3 -m unittest -q",
+        ] {
+            let data = json!({"tool_name":"bash","success":true,"result":[{"type":"text",
+                "text":json!({"command":command,"exit_code":0,"success":true}).to_string()}]});
+            let event = json!({"type":"tool.completed","data":data});
+            assert_eq!(parse_events(&event.to_string()).validation_tool_calls, 1);
+            assert!(matches!(classify_tool(&data), ToolKind::Validation));
+        }
     }
 
     #[test]

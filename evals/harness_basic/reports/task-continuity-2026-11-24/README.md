@@ -85,6 +85,9 @@ Two evaluation defects surfaced and are retained rather than hidden:
 Both defects now have regression tests and fixes in the study. The model run
 finished before either executing verifier or study binary was changed. This is
 a documented post-execution correction, not a clean preregistered experiment.
+Review also reproduced a wrapped-shell progress-classification mismatch. The
+maintained classifier now reuses the validation detector. The validation count
+already recognized wrappers; this fix does not change the retained results.
 Repeated-check counts use observed edit epochs and conservative opaque shell
 boundaries; they are not a full filesystem freshness proof. Six of the seven
 repeated checks were deliberately requested by the guard-control prompt.
