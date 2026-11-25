@@ -236,7 +236,30 @@ pub fn trajectory_from_events(
         }
     }
 
-    let final_metrics = fold_final_metrics(&steps);
+    let mut final_metrics = fold_final_metrics(&steps);
+    // Conversation events already carry the main generation's usage. Only the
+    // marked tool-less calls lack a step, including in legacy session histories.
+    for event in events
+        .iter()
+        .filter(|event| crate::event_usage::is_auxiliary_generation(event))
+    {
+        if let EventData::LlmGeneration(data) = &event.data
+            && let Some(usage) = &data.metadata.usage
+        {
+            let metrics = step_metrics(usage);
+            let totals = final_metrics.get_or_insert_with(|| FinalMetrics {
+                total_steps: Some(steps.len() as u64),
+                ..Default::default()
+            });
+            add(&mut totals.total_prompt_tokens, metrics.prompt_tokens);
+            add(
+                &mut totals.total_completion_tokens,
+                metrics.completion_tokens,
+            );
+            add(&mut totals.total_cached_tokens, metrics.cached_tokens);
+            add_f64(&mut totals.total_cost_usd, metrics.cost_usd);
+        }
+    }
     Trajectory {
         schema_version: SCHEMA_VERSION.to_string(),
         session_id: Some(session_id.to_string()),
@@ -372,6 +395,59 @@ mod tests {
             version: "0.0.0-test".to_string(),
             model_name: Some("sim-model".to_string()),
         }
+    }
+
+    #[test]
+    fn auxiliary_calls_are_counted_once_without_conversation_steps() {
+        use everruns_core::LlmGenerationData;
+        let main = TokenUsage::new(100, 20).with_cost(Some(0.001), None);
+        let auxiliary = TokenUsage::new(900, 100).with_cost(Some(0.01), None);
+        let mut review = event(LlmGenerationData::success(
+            vec![],
+            vec![],
+            None,
+            vec![],
+            "model".into(),
+            None,
+            Some(auxiliary),
+            None,
+            None,
+        ));
+        review.metadata =
+            Some(serde_json::json!({"completion_operation_id":uuid::Uuid::now_v7().to_string()}));
+        let only_review = trajectory_from_events(agent_info(), session(), &[review.clone()]);
+        assert!(only_review.steps.is_empty());
+        let totals = only_review.final_metrics.unwrap();
+        assert_eq!(totals.total_steps, Some(0));
+        assert_eq!(totals.total_prompt_tokens, Some(900));
+        let events = vec![
+            event(LlmGenerationData::success(
+                vec![],
+                vec![],
+                Some("READY".into()),
+                vec![],
+                "model".into(),
+                None,
+                Some(main.clone()),
+                None,
+                None,
+            )),
+            event(
+                OutputMessageCompletedData::new(RuntimeMessage::assistant("READY"))
+                    .with_usage(main),
+            ),
+            review,
+        ];
+        let result = trajectory_from_events(agent_info(), session(), &events);
+        assert_eq!(
+            result.steps.len(),
+            1,
+            "billing does not create conversation steps"
+        );
+        let totals = result.final_metrics.unwrap();
+        assert_eq!(totals.total_prompt_tokens, Some(1000));
+        assert_eq!(totals.total_completion_tokens, Some(120));
+        assert!((totals.total_cost_usd.unwrap() - 0.011).abs() < 1e-10);
     }
 
     /// A full synthetic turn: user input, a reasoning+act iteration with one

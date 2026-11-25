@@ -3084,8 +3084,27 @@ fn classify_tool(data: &Value) -> ToolKind {
     ToolKind::Other
 }
 
+// Match the typed export/gauge predicate without serializing full coding prompts.
+fn is_auxiliary_generation(event: &Value) -> bool {
+    let Some(data) = event.get("data") else {
+        return false;
+    };
+    let empty_array = |value: &Value| value.as_array().is_some_and(Vec::is_empty);
+    event
+        .pointer("/metadata/completion_operation_id")
+        .and_then(Value::as_str)
+        .is_some_and(|id| uuid::Uuid::parse_str(id).is_ok())
+        && data.get("messages").is_some_and(empty_array)
+        && data.get("tools").is_none_or(empty_array)
+        && data.get("output").is_some_and(Value::is_object)
+        && data.pointer("/output/text").is_none_or(Value::is_null)
+        && data.pointer("/output/tool_calls").is_none_or(empty_array)
+        && data.get("request_body").is_none_or(Value::is_null)
+}
+
 fn parse_events(jsonl: &str) -> Mined {
     let mut m = Mined::default();
+    let mut saw_conversation_call = false;
     let mut current_exploration_without_progress = 0_u64;
     let mut saw_mutation = false;
     let mut saw_non_sessions_exploration = false;
@@ -3130,7 +3149,7 @@ fn parse_events(jsonl: &str) -> Mined {
                     m.background_wake_llm_calls += 1;
                 }
                 if let Some(usage) = data.get("usage") {
-                    if m.llm_calls == 1 {
+                    if !saw_conversation_call {
                         m.first_request_input_tokens = num(usage, "input_tokens");
                         m.first_request_total_input_tokens = m.first_request_input_tokens
                             + num(usage, "cache_read_tokens")
@@ -3148,6 +3167,7 @@ fn parse_events(jsonl: &str) -> Mined {
                         .and_then(Value::as_f64)
                         .unwrap_or(0.0);
                 }
+                saw_conversation_call = true;
                 if let Some(message) = data.get("message") {
                     let tool_calls = message
                         .get("content")
@@ -3250,6 +3270,22 @@ fn parse_events(jsonl: &str) -> Mined {
                     {
                         m.effort_applied = Some(effort.to_string());
                     }
+                }
+            }
+            "llm.generation" if is_auxiliary_generation(&ev) => {
+                // Main generations are already counted through their conversation
+                // event. Tool-less calls have no message and add only usage.
+                m.llm_calls += 1;
+                if let Some(usage) = data.pointer("/metadata/usage") {
+                    m.input_tokens += num(usage, "input_tokens");
+                    m.output_tokens += num(usage, "output_tokens");
+                    m.cache_read_tokens += num(usage, "cache_read_tokens");
+                    m.cache_creation_tokens += num(usage, "cache_creation_tokens");
+                    m.cost_usd += usage
+                        .get("actual_cost_usd")
+                        .and_then(Value::as_f64)
+                        .or_else(|| usage.get("estimated_cost_usd").and_then(Value::as_f64))
+                        .unwrap_or(0.0);
                 }
             }
             "tool.completed" => {
@@ -4506,6 +4542,47 @@ mod tests {
         assert_eq!(hex.len(), 32);
         assert!(hex.chars().all(|c| c.is_ascii_hexdigit()));
         assert_ne!(fresh_session_id(), id);
+    }
+
+    #[test]
+    fn parse_events_counts_auxiliary_usage_without_duplicating_main_calls() {
+        let mined = parse_events(
+            r#"{"type":"llm.generation","data":{"metadata":{"usage":{"input_tokens":100,"output_tokens":20}}}}
+{"type":"output.message.completed","data":{"message":{"role":"agent","content":[{"type":"text","text":"done"}]},"usage":{"input_tokens":100,"output_tokens":20,"actual_cost_usd":0.001}}}
+{"type":"llm.generation","metadata":{"completion_operation_id":"01900000-0000-7000-8000-000000000001"},"data":{"messages":[],"output":{"tool_calls":[]},"metadata":{"usage":{"input_tokens":900,"output_tokens":100,"actual_cost_usd":0.01}}}}
+"#,
+        );
+        assert_eq!(mined.llm_calls, 2);
+        assert_eq!(mined.input_tokens, 1000);
+        assert_eq!(mined.output_tokens, 120);
+        assert!((mined.cost_usd - 0.011).abs() < 1e-10);
+        assert_eq!(mined.first_request_input_tokens, 100);
+        assert_eq!(mined.final_response, "done");
+    }
+
+    #[test]
+    fn parse_events_rejects_malformed_or_payload_bearing_auxiliary_markers() {
+        let valid = json!({"type":"llm.generation",
+            "metadata":{"completion_operation_id":"01900000-0000-7000-8000-000000000001"},
+            "data":{"messages":[],"output":{"tool_calls":[]},
+                "metadata":{"usage":{"input_tokens":900,"output_tokens":100}}}});
+        assert_eq!(parse_events(&valid.to_string()).input_tokens, 900);
+        for (pointer, value) in [
+            ("/metadata/completion_operation_id", json!("invalid")),
+            ("/data/messages", json!([{"role":"user","content":[]}])),
+            ("/data/tools", json!([{"name":"tool"}])),
+            ("/data/output/text", json!("answer")),
+            ("/data/output/tool_calls", json!([{"name":"tool"}])),
+            ("/data/request_body", json!({"private":"payload"})),
+        ] {
+            let mut invalid = valid.clone();
+            // Insert optional fields before replacing through a JSON pointer.
+            let (parent, field) = pointer.rsplit_once('/').unwrap();
+            invalid.pointer_mut(parent).unwrap()[field] = value;
+            let mined = parse_events(&invalid.to_string());
+            assert_eq!(mined.input_tokens, 0, "{pointer}");
+            assert_eq!(mined.llm_calls, 0, "{pointer}");
+        }
     }
 
     #[test]

@@ -1,5 +1,11 @@
 # Knowledge Log
 
+## 2026-11-24, Auxiliary usage consumers
+
+Trajectory totals and Mira event accounting include tool-less completion usage
+without extra conversation steps. The context gauge retains the coding prompt's
+size. Old sessions retain their original accounting limits.
+
 ## 2026-11-24, Inspectable terminal workspace
 
 Added recorded check evidence and freshness, native task inspection, effective
