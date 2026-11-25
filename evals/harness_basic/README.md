@@ -570,6 +570,52 @@ Tests: `cargo test` from this directory (event mining, settings variants,
 checks scorer, matrix shape). Also `cargo fmt --check` and
 `cargo clippy --all-targets -- -D warnings` apply, as everywhere in the repo.
 
+### Matched task-continuity pilot
+
+The `task-continuity` preset compares explicit baseline and candidate binaries
+on ten synthetic tasks with Muse 1.3 Contributor. The three `continuity-*`
+controls use symmetric checks because both pinned revisions already include
+the progress guard. The independent scorer compiles or executes held-out
+functional checks before Mira drops workspace files from its saved summary.
+Agent-authored tests and lexical checks alone do not establish correctness.
+
+Use the counterbalanced runner for three fresh sessions per task and arm:
+
+```bash
+python3 run_task_continuity.py \
+  --client-date 2026-11-24 \
+  --mira /absolute/path/to/mira-0.5 \
+  --study /absolute/path/to/harness_basic \
+  --baseline /absolute/path/to/baseline-yolop \
+  --candidate /absolute/path/to/candidate-yolop \
+  --baseline-source /absolute/path/to/baseline-checkout \
+  --candidate-source /absolute/path/to/candidate-checkout \
+  --out /absolute/path/to/new-results
+```
+
+Supply `OPENROUTER_API_KEY` through the normal credential environment. Both
+binaries must be distinct artifacts built with identical lockfiles, toolchains
+and flags. The runner rejects changed identities or harness artifacts on resume.
+It uses two concurrent cases, alternating arm order by task, and no retries.
+The seed controls scheduling, not provider sampling. Timeouts do not impose a
+dollar cap. Do not rebuild the study or change its verifier during a run.
+
+The verifier executes generated Rust, JavaScript and Python from these synthetic
+fixtures without provider credentials. It is not an OS sandbox for arbitrary
+untrusted benchmark submissions. Rust 1.100, Node and Python 3 must be available.
+
+Replay retained evidence without paid calls:
+
+```bash
+python3 analyze_task_continuity.py reports/task-continuity-2026-11-24
+```
+
+The [pilot report](reports/task-continuity-2026-11-24/README.md) includes all 60
+cases, exact identities, corrections, limitations and evidence-gated next steps.
+Cost here is recorded generation cost, not complete provider billing. The
+loopback `probe_completion_accounting.py` independently measures auxiliary-call
+accounting without paid requests.
+
 ### Run-level cost attribution
 
 The manual search-efficiency workflow writes `eval-attribution.json` alongside

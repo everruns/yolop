@@ -1,0 +1,968 @@
+{
+  "cases": [
+    {
+      "aggregate": 1.0,
+      "eval": "basic_coding",
+      "input": [
+        "Rename the function `fetch_records` to `load_records` across the whole project — its definition, all imports, and all call sites. Behavior must not change. Make the edits directly; do not ask questions."
+      ],
+      "params": {
+        "binary": "candidate",
+        "effort": "default",
+        "harness": "default"
+      },
+      "passed": true,
+      "sample": "rename-across-files",
+      "scores": [
+        {
+          "pass": true,
+          "reason": "no error",
+          "scorer": "succeeded",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "6 check(s) passed",
+          "scorer": "checks",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "independent functional and observed-action checks passed",
+          "scorer": "independent_correctness",
+          "value": 1.0
+        },
+        {
+          "na": true,
+          "pass": false,
+          "reason": "sample declares no budget checks",
+          "scorer": "declared_budget",
+          "value": 0.0
+        },
+        {
+          "pass": true,
+          "reason": "1 <= 32",
+          "scorer": "turns_within",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "17 <= 64",
+          "scorer": "tool_calls_within",
+          "value": 1.0
+        },
+        {
+          "na": true,
+          "pass": false,
+          "reason": "baseline variant; ast_edit not offered",
+          "scorer": "ast_edit_used",
+          "value": 0.0
+        },
+        {
+          "pass": true,
+          "reason": "$0.0108 <= $2",
+          "scorer": "cost_within",
+          "value": 1.0
+        }
+      ],
+      "seed": 20261124,
+      "skipped": false,
+      "target": "openrouter/muse-spark-1.3",
+      "transcript": {
+        "final_response": "Renamed `fetch_records` to `load_records` with no behavior change.\n\n- `fetcher.py:1` — `def load_records(path):`\n- `app.py:1` — `from fetcher import load_records`\n- `app.py:5` — `for row in load_records(\"data.txt\"):`\n- `report.py:5` — `return len(fetcher.load_records(path))`\n\nVerification: `grep` finds zero `fetch_records` and four `load_records` occurrences; `from fetcher import load_records` imports successfully and all three files parse cleanly.",
+        "iterations": 14,
+        "metadata": {
+          "binary": "candidate",
+          "effort": "default",
+          "harness": "default",
+          "model": "meta/muse-spark-1.3-contributor",
+          "provider": "openrouter",
+          "reasoning_effort_applied": "medium",
+          "session_log": ".cache/sessions/rename-across-files-openrouter-muse-spark-1.3-candidate-default-default-18eb25cef20b82f000004f2700000000.events.jsonl",
+          "stop_reason": "completed",
+          "tool_invocations": [
+            {
+              "arguments": {
+                "title": "Rename fetch_records to load_records"
+              },
+              "name": "write_session_title",
+              "success": true
+            },
+            {
+              "arguments": {
+                "query": "fetch_records"
+              },
+              "name": "repo_map",
+              "success": true
+            },
+            {
+              "arguments": {
+                "query": "fetch_records"
+              },
+              "name": "repo_symbols",
+              "success": true
+            },
+            {
+              "arguments": {
+                "path": "/private/var/folders/8n/jwcv011j313c359z772kmjkw0000gn/T/.tmp1ylyCd"
+              },
+              "name": "list_directory",
+              "success": true
+            },
+            {
+              "arguments": {
+                "after_context": 2,
+                "before_context": 2,
+                "pattern": "fetch_records"
+              },
+              "name": "grep_files",
+              "success": true
+            },
+            {
+              "arguments": {
+                "paths": [
+                  "fetcher.py",
+                  "app.py",
+                  "report.py"
+                ]
+              },
+              "name": "read_many_files",
+              "success": true
+            },
+            {
+              "arguments": {
+                "language": "python",
+                "pattern": "fetch_records"
+              },
+              "name": "ast_grep",
+              "success": true
+            },
+            {
+              "arguments": {
+                "edits": "[{\"new_text\": \"def load_records(path):\", \"old_text\": \"def fetch_records(path):\"}]",
+                "path": "fetcher.py"
+              },
+              "name": "edit_file",
+              "success": false
+            },
+            {
+              "arguments": {
+                "edits": "[{\"new_text\": \"from fetcher import load_records\", \"old_text\": \"from fetcher import fetch_records\"}, {\"new_text\": \"    for row in load_records(\\\"data.txt\\\"):\", \"old_text\": \"    for row in fetch_records(\\\"data.txt\\\"):\"}]",
+                "path": "app.py"
+              },
+              "name": "edit_file",
+              "success": false
+            },
+            {
+              "arguments": {
+                "edits": "[{\"new_text\": \"    return len(fetcher.load_records(path))\", \"old_text\": \"    return len(fetcher.fetch_records(path))\"}]",
+                "path": "report.py"
+              },
+              "name": "edit_file",
+              "success": false
+            },
+            {
+              "arguments": {
+                "facts": [
+                  "fetch_records defined in fetcher.py:1",
+                  "app.py imports fetch_records and calls it on line 5",
+                  "report.py calls fetcher.fetch_records on line 5",
+                  "edit_file requires expected_hash which was omitted"
+                ],
+                "hypothesis": "Edits failed only due to missing expected_hash parameter; hashes are known from reads.",
+                "missing_evidence": [],
+                "next_decisive_action": {
+                  "description": "Retry the three renames with correct expected_hash values, then verify no fetch_records remains.",
+                  "kind": "mutation"
+                }
+              },
+              "name": "progress_checkpoint",
+              "success": true
+            },
+            {
+              "arguments": {
+                "query": "edit file"
+              },
+              "name": "tool_search",
+              "success": true
+            },
+            {
+              "arguments": {
+                "edits": [
+                  {
+                    "new_text": "def load_records(path):",
+                    "old_text": "def fetch_records(path):"
+                  }
+                ],
+                "expected_hash": "sha256:51c2da10bfbd7c0fc37db25736235c5744f825387f72a957d9cb852d74b3f8f1",
+                "path": "fetcher.py"
+              },
+              "name": "edit_file",
+              "success": true
+            },
+            {
+              "arguments": {
+                "edits": [
+                  {
+                    "new_text": "from fetcher import load_records",
+                    "old_text": "from fetcher import fetch_records"
+                  },
+                  {
+                    "new_text": "    for row in load_records(\"data.txt\"):",
+                    "old_text": "    for row in fetch_records(\"data.txt\"):"
+                  }
+                ],
+                "expected_hash": "sha256:20cf8d16ffa1b27e69cff8d49ef283c2f7c48b3fc6bccc2f22b087a447e9b8e6",
+                "path": "app.py"
+              },
+              "name": "edit_file",
+              "success": true
+            },
+            {
+              "arguments": {
+                "edits": [
+                  {
+                    "new_text": "    return len(fetcher.load_records(path))",
+                    "old_text": "    return len(fetcher.fetch_records(path))"
+                  }
+                ],
+                "expected_hash": "sha256:ecc7ca45db183bff9db3f75802f0c08d6d3687e5ffb885f58caf0cc419bb78a4",
+                "path": "report.py"
+              },
+              "name": "edit_file",
+              "success": true
+            },
+            {
+              "arguments": {
+                "query": "run bash command"
+              },
+              "name": "tool_search",
+              "success": true
+            },
+            {
+              "arguments": {
+                "command": "grep -rn \"fetch_records\" . || echo \"no old name\"; echo \"---\"; grep -rn \"load_records\" .; echo \"---\"; python3 -c \"from fetcher import load_records; import inspect; print(inspect.getsourcefile(load_records)); print('import ok')\"; python3 -c \"import ast; ast.parse(open('fetcher.py').read()); ast.parse(open('app.py').read()); ast.parse(open('report.py').read()); print('syntax ok')\"",
+                "output": "normal"
+              },
+              "name": "bash",
+              "success": true
+            }
+          ]
+        },
+        "metrics": {
+          "agent_reported_ms": 45828.0,
+          "apply_patch_tool_calls": 0.0,
+          "ast_edit_tool_calls": 0.0,
+          "ast_edit_tool_calls_failed": 0.0,
+          "automatic_background_wakes": 0.0,
+          "background_spawn_calls": 0.0,
+          "background_wake_llm_calls": 0.0,
+          "background_wake_responses": 0.0,
+          "background_wake_tool_calls": 0.0,
+          "bash_result_bytes": 1016.0,
+          "bash_tool_calls": 1.0,
+          "batch_native_read_calls": 1.0,
+          "batched_tool_model_calls": 2.0,
+          "blocked_equivalent_failures": 1.0,
+          "bookkeeping_tool_calls": 2.0,
+          "cache_creation_tokens": 0.0,
+          "calls_after_checkpoint_recommended": 0.0,
+          "calls_after_progress_warning": 0.0,
+          "checkpoint_recommended_warnings": 0.0,
+          "contextual_grep_files_tool_calls": 1.0,
+          "cumulative_input_tokens": 231277.0,
+          "duplicate_exploration_calls": 0.0,
+          "edit_tool_calls": 6.0,
+          "edit_tool_calls_failed": 3.0,
+          "equivalent_failure_warnings": 0.0,
+          "exploration_tools_before_first_mutation": 4.0,
+          "first_request_input_tokens": 11984.0,
+          "first_request_total_input_tokens": 11984.0,
+          "git_grep_calls": 0.0,
+          "grep_files_tool_calls": 1.0,
+          "inner_tool_failures": 0.0,
+          "leading_marker_in_bash_result": 0.0,
+          "llm_calls": 14.0,
+          "max_exploration_tools_without_progress": 4.0,
+          "max_read_file_batch_width": 3.0,
+          "max_tool_batch_width": 3.0,
+          "max_tool_result_bytes": 6843.0,
+          "mean_tool_batch_width": 1.3076923076923077,
+          "persisted_output_recovery_calls": 0.0,
+          "persisted_output_recovery_result_bytes": 0.0,
+          "progress_guard_warnings": 0.0,
+          "read_file_tool_calls": 0.0,
+          "redundant_validation_calls": 0.0,
+          "repo_map_max_result_bytes": 629.0,
+          "repo_map_narrowed_after_truncation": 0.0,
+          "repo_map_targeted_recovery_after_truncation": 0.0,
+          "repo_map_tool_calls": 1.0,
+          "repo_map_tool_calls_failed": 0.0,
+          "repo_symbols_tool_calls": 1.0,
+          "repo_symbols_tool_calls_failed": 0.0,
+          "session_extra_matches": 0.0,
+          "session_result_bytes": 0.0,
+          "session_useful_match_recall": 0.0,
+          "sessions_search_calls": 0.0,
+          "sessions_search_first_exploration": 0.0,
+          "single_tool_model_calls": 11.0,
+          "standalone_bookkeeping_rounds": 2.0,
+          "successful_progress_checkpoints": 1.0,
+          "task_llm_calls": 12.0,
+          "task_tool_calls": 15.0,
+          "tool_calls": 17.0,
+          "tool_calls_failed": 3.0,
+          "tool_emitting_model_calls": 13.0,
+          "total_tool_result_bytes": 19066.0,
+          "turns": 1.0,
+          "unchanged_reuse_responses": 0.0,
+          "validation_tool_calls": 0.0,
+          "workspace_state_revisits": 0.0
+        },
+        "timing": {
+          "duration_ms": 48147
+        },
+        "tool_calls": [
+          "write_session_title",
+          "repo_map",
+          "repo_symbols",
+          "list_directory",
+          "grep_files",
+          "read_many_files",
+          "ast_grep",
+          "edit_file",
+          "edit_file",
+          "edit_file",
+          "progress_checkpoint",
+          "tool_search",
+          "edit_file",
+          "edit_file",
+          "edit_file",
+          "tool_search",
+          "bash"
+        ],
+        "tool_calls_count": 17,
+        "usage": {
+          "cache_read_tokens": 132029,
+          "cost_usd": 0.010829058,
+          "input_tokens": 99248,
+          "output_tokens": 3201
+        }
+      },
+      "trials": 3
+    },
+    {
+      "aggregate": 1.0,
+      "eval": "basic_coding",
+      "input": [
+        "Rename the function `fetch_records` to `load_records` across the whole project — its definition, all imports, and all call sites. Behavior must not change. Make the edits directly; do not ask questions."
+      ],
+      "params": {
+        "binary": "candidate",
+        "effort": "default",
+        "harness": "default"
+      },
+      "passed": true,
+      "sample": "rename-across-files",
+      "scores": [
+        {
+          "pass": true,
+          "reason": "no error",
+          "scorer": "succeeded",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "6 check(s) passed",
+          "scorer": "checks",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "independent functional and observed-action checks passed",
+          "scorer": "independent_correctness",
+          "value": 1.0
+        },
+        {
+          "na": true,
+          "pass": false,
+          "reason": "sample declares no budget checks",
+          "scorer": "declared_budget",
+          "value": 0.0
+        },
+        {
+          "pass": true,
+          "reason": "1 <= 32",
+          "scorer": "turns_within",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "12 <= 64",
+          "scorer": "tool_calls_within",
+          "value": 1.0
+        },
+        {
+          "na": true,
+          "pass": false,
+          "reason": "baseline variant; ast_edit not offered",
+          "scorer": "ast_edit_used",
+          "value": 0.0
+        },
+        {
+          "pass": true,
+          "reason": "$0.0053 <= $2",
+          "scorer": "cost_within",
+          "value": 1.0
+        }
+      ],
+      "seed": 20261125,
+      "skipped": false,
+      "target": "openrouter/muse-spark-1.3",
+      "transcript": {
+        "final_response": "Done — renamed `fetch_records` to `load_records` with no behavior change.\n\n- `fetcher.py:1`: `def fetch_records(path):` → `def load_records(path):`\n- `app.py:1,5`: import and call updated to `load_records`\n- `report.py:5`: `fetcher.fetch_records(path)` → `fetcher.load_records(path)`\n\nChecked: no remaining `fetch_records` references, all 4 `load_records` references present, and `python3 -c` import assertion plus `py_compile` pass.",
+        "iterations": 9,
+        "metadata": {
+          "binary": "candidate",
+          "effort": "default",
+          "harness": "default",
+          "model": "meta/muse-spark-1.3-contributor",
+          "provider": "openrouter",
+          "reasoning_effort_applied": "medium",
+          "session_log": ".cache/sessions/rename-across-files-openrouter-muse-spark-1.3-candidate-default-default-18eb25cef2250e0000004f2700000001.events.jsonl",
+          "stop_reason": "completed",
+          "tool_invocations": [
+            {
+              "arguments": {
+                "title": "Rename fetch_records to load_records"
+              },
+              "name": "write_session_title",
+              "success": true
+            },
+            {
+              "arguments": {
+                "query": "fetch_records"
+              },
+              "name": "repo_map",
+              "success": true
+            },
+            {
+              "arguments": {
+                "query": "fetch_records"
+              },
+              "name": "repo_symbols",
+              "success": true
+            },
+            {
+              "arguments": {
+                "path": "/private/var/folders/8n/jwcv011j313c359z772kmjkw0000gn/T/.tmppKrflv"
+              },
+              "name": "list_directory",
+              "success": true
+            },
+            {
+              "arguments": {
+                "after_context": 2,
+                "before_context": 2,
+                "pattern": "fetch_records"
+              },
+              "name": "grep_files",
+              "success": true
+            },
+            {
+              "arguments": {
+                "paths": [
+                  "fetcher.py",
+                  "app.py",
+                  "report.py"
+                ]
+              },
+              "name": "read_many_files",
+              "success": true
+            },
+            {
+              "arguments": {
+                "query": "edit file replacement"
+              },
+              "name": "tool_search",
+              "success": true
+            },
+            {
+              "arguments": {
+                "edits": [
+                  {
+                    "new_text": "def load_records(path):",
+                    "old_text": "def fetch_records(path):"
+                  }
+                ],
+                "expected_hash": "sha256:51c2da10bfbd7c0fc37db25736235c5744f825387f72a957d9cb852d74b3f8f1",
+                "path": "fetcher.py"
+              },
+              "name": "edit_file",
+              "success": true
+            },
+            {
+              "arguments": {
+                "edits": [
+                  {
+                    "new_text": "from fetcher import load_records",
+                    "old_text": "from fetcher import fetch_records"
+                  },
+                  {
+                    "new_text": "    for row in load_records(\"data.txt\"):",
+                    "old_text": "    for row in fetch_records(\"data.txt\"):"
+                  }
+                ],
+                "expected_hash": "sha256:20cf8d16ffa1b27e69cff8d49ef283c2f7c48b3fc6bccc2f22b087a447e9b8e6",
+                "path": "app.py"
+              },
+              "name": "edit_file",
+              "success": true
+            },
+            {
+              "arguments": {
+                "edits": [
+                  {
+                    "new_text": "    return len(fetcher.load_records(path))",
+                    "old_text": "    return len(fetcher.fetch_records(path))"
+                  }
+                ],
+                "expected_hash": "sha256:ecc7ca45db183bff9db3f75802f0c08d6d3687e5ffb885f58caf0cc419bb78a4",
+                "path": "report.py"
+              },
+              "name": "edit_file",
+              "success": true
+            },
+            {
+              "arguments": {
+                "query": "run bash command"
+              },
+              "name": "tool_search",
+              "success": true
+            },
+            {
+              "arguments": {
+                "command": "grep -rn \"fetch_records\" . || echo \"NO_OLD_REFS\"; echo \"---\"; grep -rn \"load_records\" .; echo \"---\"; python3 -c \"import fetcher, app, report; assert hasattr(fetcher,'load_records'); assert not hasattr(fetcher,'fetch_records'); print('imports ok')\"; python3 -m py_compile fetcher.py app.py report.py && echo \"compile ok\""
+              },
+              "name": "bash",
+              "success": true
+            }
+          ]
+        },
+        "metrics": {
+          "agent_reported_ms": 23762.0,
+          "apply_patch_tool_calls": 0.0,
+          "ast_edit_tool_calls": 0.0,
+          "ast_edit_tool_calls_failed": 0.0,
+          "automatic_background_wakes": 0.0,
+          "background_spawn_calls": 0.0,
+          "background_wake_llm_calls": 0.0,
+          "background_wake_responses": 0.0,
+          "background_wake_tool_calls": 0.0,
+          "bash_result_bytes": 875.0,
+          "bash_tool_calls": 1.0,
+          "batch_native_read_calls": 1.0,
+          "batched_tool_model_calls": 3.0,
+          "blocked_equivalent_failures": 0.0,
+          "bookkeeping_tool_calls": 1.0,
+          "cache_creation_tokens": 0.0,
+          "calls_after_checkpoint_recommended": 0.0,
+          "calls_after_progress_warning": 0.0,
+          "checkpoint_recommended_warnings": 0.0,
+          "contextual_grep_files_tool_calls": 1.0,
+          "cumulative_input_tokens": 129484.0,
+          "duplicate_exploration_calls": 0.0,
+          "edit_tool_calls": 3.0,
+          "edit_tool_calls_failed": 0.0,
+          "equivalent_failure_warnings": 0.0,
+          "exploration_tools_before_first_mutation": 3.0,
+          "first_request_input_tokens": 11984.0,
+          "first_request_total_input_tokens": 11984.0,
+          "git_grep_calls": 0.0,
+          "grep_files_tool_calls": 1.0,
+          "inner_tool_failures": 0.0,
+          "leading_marker_in_bash_result": 0.0,
+          "llm_calls": 9.0,
+          "max_exploration_tools_without_progress": 3.0,
+          "max_read_file_batch_width": 3.0,
+          "max_tool_batch_width": 3.0,
+          "max_tool_result_bytes": 3153.0,
+          "mean_tool_batch_width": 1.5,
+          "persisted_output_recovery_calls": 0.0,
+          "persisted_output_recovery_result_bytes": 0.0,
+          "progress_guard_warnings": 0.0,
+          "read_file_tool_calls": 0.0,
+          "redundant_validation_calls": 0.0,
+          "repo_map_max_result_bytes": 629.0,
+          "repo_map_narrowed_after_truncation": 0.0,
+          "repo_map_targeted_recovery_after_truncation": 0.0,
+          "repo_map_tool_calls": 1.0,
+          "repo_map_tool_calls_failed": 0.0,
+          "repo_symbols_tool_calls": 1.0,
+          "repo_symbols_tool_calls_failed": 0.0,
+          "session_extra_matches": 0.0,
+          "session_result_bytes": 0.0,
+          "session_useful_match_recall": 0.0,
+          "sessions_search_calls": 0.0,
+          "sessions_search_first_exploration": 0.0,
+          "single_tool_model_calls": 5.0,
+          "standalone_bookkeeping_rounds": 1.0,
+          "successful_progress_checkpoints": 0.0,
+          "task_llm_calls": 8.0,
+          "task_tool_calls": 11.0,
+          "tool_calls": 12.0,
+          "tool_calls_failed": 0.0,
+          "tool_emitting_model_calls": 8.0,
+          "total_tool_result_bytes": 11999.0,
+          "turns": 1.0,
+          "unchanged_reuse_responses": 0.0,
+          "validation_tool_calls": 0.0,
+          "workspace_state_revisits": 0.0
+        },
+        "timing": {
+          "duration_ms": 25783
+        },
+        "tool_calls": [
+          "write_session_title",
+          "repo_map",
+          "repo_symbols",
+          "list_directory",
+          "grep_files",
+          "read_many_files",
+          "tool_search",
+          "edit_file",
+          "edit_file",
+          "edit_file",
+          "tool_search",
+          "bash"
+        ],
+        "tool_calls_count": 12,
+        "usage": {
+          "cache_read_tokens": 81830,
+          "cost_usd": 0.005349659999999999,
+          "input_tokens": 47654,
+          "output_tokens": 2103
+        }
+      },
+      "trial": 1,
+      "trials": 3
+    },
+    {
+      "aggregate": 1.0,
+      "eval": "basic_coding",
+      "input": [
+        "Rename the function `fetch_records` to `load_records` across the whole project — its definition, all imports, and all call sites. Behavior must not change. Make the edits directly; do not ask questions."
+      ],
+      "params": {
+        "binary": "candidate",
+        "effort": "default",
+        "harness": "default"
+      },
+      "passed": true,
+      "sample": "rename-across-files",
+      "scores": [
+        {
+          "pass": true,
+          "reason": "no error",
+          "scorer": "succeeded",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "6 check(s) passed",
+          "scorer": "checks",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "independent functional and observed-action checks passed",
+          "scorer": "independent_correctness",
+          "value": 1.0
+        },
+        {
+          "na": true,
+          "pass": false,
+          "reason": "sample declares no budget checks",
+          "scorer": "declared_budget",
+          "value": 0.0
+        },
+        {
+          "pass": true,
+          "reason": "1 <= 32",
+          "scorer": "turns_within",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "11 <= 64",
+          "scorer": "tool_calls_within",
+          "value": 1.0
+        },
+        {
+          "na": true,
+          "pass": false,
+          "reason": "baseline variant; ast_edit not offered",
+          "scorer": "ast_edit_used",
+          "value": 0.0
+        },
+        {
+          "pass": true,
+          "reason": "$0.0051 <= $2",
+          "scorer": "cost_within",
+          "value": 1.0
+        }
+      ],
+      "seed": 20261126,
+      "skipped": false,
+      "target": "openrouter/muse-spark-1.3",
+      "transcript": {
+        "final_response": "Renamed `fetch_records` → `load_records` with no behavior change:\n\n- `fetcher.py:1`: `def fetch_records(path):` → `def load_records(path):`\n- `app.py:1,5`: import and call site updated to `load_records`\n- `report.py:5`: `fetcher.fetch_records(path)` → `fetcher.load_records(path)`\n\nChecked: `grep` finds zero `fetch_records` and 4 `load_records` references, and `python3 -c \"import fetcher, app, report\"` confirms the new name resolves and the old name is gone.",
+        "iterations": 8,
+        "metadata": {
+          "binary": "candidate",
+          "effort": "default",
+          "harness": "default",
+          "model": "meta/muse-spark-1.3-contributor",
+          "provider": "openrouter",
+          "reasoning_effort_applied": "medium",
+          "session_log": ".cache/sessions/rename-across-files-openrouter-muse-spark-1.3-candidate-default-default-18eb25d4f8143d0800004f2700000002.events.jsonl",
+          "stop_reason": "completed",
+          "tool_invocations": [
+            {
+              "arguments": {
+                "title": "Rename fetch_records to load_records"
+              },
+              "name": "write_session_title",
+              "success": true
+            },
+            {
+              "arguments": {},
+              "name": "repo_map",
+              "success": true
+            },
+            {
+              "arguments": {
+                "query": "fetch_records"
+              },
+              "name": "repo_symbols",
+              "success": true
+            },
+            {
+              "arguments": {
+                "pattern": "fetch_records"
+              },
+              "name": "grep_files",
+              "success": true
+            },
+            {
+              "arguments": {
+                "paths": [
+                  "app.py",
+                  "fetcher.py",
+                  "report.py"
+                ]
+              },
+              "name": "read_many_files",
+              "success": true
+            },
+            {
+              "arguments": {
+                "query": "edit file replacement"
+              },
+              "name": "tool_search",
+              "success": true
+            },
+            {
+              "arguments": {
+                "edits": [
+                  {
+                    "new_text": "def load_records(path):",
+                    "old_text": "def fetch_records(path):"
+                  }
+                ],
+                "expected_hash": "sha256:51c2da10bfbd7c0fc37db25736235c5744f825387f72a957d9cb852d74b3f8f1",
+                "path": "fetcher.py"
+              },
+              "name": "edit_file",
+              "success": true
+            },
+            {
+              "arguments": {
+                "edits": [
+                  {
+                    "new_text": "from fetcher import load_records",
+                    "old_text": "from fetcher import fetch_records"
+                  },
+                  {
+                    "new_text": "    for row in load_records(\"data.txt\"):",
+                    "old_text": "    for row in fetch_records(\"data.txt\"):"
+                  }
+                ],
+                "expected_hash": "sha256:20cf8d16ffa1b27e69cff8d49ef283c2f7c48b3fc6bccc2f22b087a447e9b8e6",
+                "path": "app.py"
+              },
+              "name": "edit_file",
+              "success": true
+            },
+            {
+              "arguments": {
+                "edits": [
+                  {
+                    "new_text": "    return len(fetcher.load_records(path))",
+                    "old_text": "    return len(fetcher.fetch_records(path))"
+                  }
+                ],
+                "expected_hash": "sha256:ecc7ca45db183bff9db3f75802f0c08d6d3687e5ffb885f58caf0cc419bb78a4",
+                "path": "report.py"
+              },
+              "name": "edit_file",
+              "success": true
+            },
+            {
+              "arguments": {
+                "query": "run bash command"
+              },
+              "name": "tool_search",
+              "success": true
+            },
+            {
+              "arguments": {
+                "command": "grep -rn 'fetch_records' . || echo \"OK: no fetch_records left\"; echo \"---\"; grep -rn 'load_records' .; echo \"---\"; python3 -c \"import fetcher, app, report; assert hasattr(fetcher,'load_records'); assert not hasattr(fetcher,'fetch_records'); print('imports OK')\""
+              },
+              "name": "bash",
+              "success": true
+            }
+          ]
+        },
+        "metrics": {
+          "agent_reported_ms": 38486.0,
+          "apply_patch_tool_calls": 0.0,
+          "ast_edit_tool_calls": 0.0,
+          "ast_edit_tool_calls_failed": 0.0,
+          "automatic_background_wakes": 0.0,
+          "background_spawn_calls": 0.0,
+          "background_wake_llm_calls": 0.0,
+          "background_wake_responses": 0.0,
+          "background_wake_tool_calls": 0.0,
+          "bash_result_bytes": 800.0,
+          "bash_tool_calls": 1.0,
+          "batch_native_read_calls": 1.0,
+          "batched_tool_model_calls": 2.0,
+          "blocked_equivalent_failures": 0.0,
+          "bookkeeping_tool_calls": 1.0,
+          "cache_creation_tokens": 0.0,
+          "calls_after_checkpoint_recommended": 0.0,
+          "calls_after_progress_warning": 0.0,
+          "checkpoint_recommended_warnings": 0.0,
+          "contextual_grep_files_tool_calls": 0.0,
+          "cumulative_input_tokens": 113638.0,
+          "duplicate_exploration_calls": 0.0,
+          "edit_tool_calls": 3.0,
+          "edit_tool_calls_failed": 0.0,
+          "equivalent_failure_warnings": 0.0,
+          "exploration_tools_before_first_mutation": 2.0,
+          "first_request_input_tokens": 11984.0,
+          "first_request_total_input_tokens": 11984.0,
+          "git_grep_calls": 0.0,
+          "grep_files_tool_calls": 1.0,
+          "inner_tool_failures": 0.0,
+          "leading_marker_in_bash_result": 0.0,
+          "llm_calls": 8.0,
+          "max_exploration_tools_without_progress": 2.0,
+          "max_read_file_batch_width": 3.0,
+          "max_tool_batch_width": 3.0,
+          "max_tool_result_bytes": 3153.0,
+          "mean_tool_batch_width": 1.5714285714285714,
+          "persisted_output_recovery_calls": 0.0,
+          "persisted_output_recovery_result_bytes": 0.0,
+          "progress_guard_warnings": 0.0,
+          "read_file_tool_calls": 0.0,
+          "redundant_validation_calls": 0.0,
+          "repo_map_max_result_bytes": 1052.0,
+          "repo_map_narrowed_after_truncation": 0.0,
+          "repo_map_targeted_recovery_after_truncation": 0.0,
+          "repo_map_tool_calls": 1.0,
+          "repo_map_tool_calls_failed": 0.0,
+          "repo_symbols_tool_calls": 1.0,
+          "repo_symbols_tool_calls_failed": 0.0,
+          "session_extra_matches": 0.0,
+          "session_result_bytes": 0.0,
+          "session_useful_match_recall": 0.0,
+          "sessions_search_calls": 0.0,
+          "sessions_search_first_exploration": 0.0,
+          "single_tool_model_calls": 5.0,
+          "standalone_bookkeeping_rounds": 1.0,
+          "successful_progress_checkpoints": 0.0,
+          "task_llm_calls": 7.0,
+          "task_tool_calls": 10.0,
+          "tool_calls": 11.0,
+          "tool_calls_failed": 0.0,
+          "tool_emitting_model_calls": 7.0,
+          "total_tool_result_bytes": 10983.0,
+          "turns": 1.0,
+          "unchanged_reuse_responses": 0.0,
+          "validation_tool_calls": 0.0,
+          "workspace_state_revisits": 0.0
+        },
+        "timing": {
+          "duration_ms": 41115
+        },
+        "tool_calls": [
+          "write_session_title",
+          "repo_map",
+          "repo_symbols",
+          "grep_files",
+          "read_many_files",
+          "tool_search",
+          "edit_file",
+          "edit_file",
+          "edit_file",
+          "tool_search",
+          "bash"
+        ],
+        "tool_calls_count": 11,
+        "usage": {
+          "cache_read_tokens": 67509,
+          "cost_usd": 0.0050661180000000005,
+          "input_tokens": 46129,
+          "output_tokens": 1591
+        }
+      },
+      "trial": 2,
+      "trials": 3
+    }
+  ],
+  "summary": {
+    "failed": 0,
+    "na": 0,
+    "passed": 3,
+    "scored": 3,
+    "skipped": 0,
+    "total_cost_usd": 0.021244836000000003,
+    "total_duration_ms": 115045,
+    "total_tokens": 199926,
+    "total_tool_calls": 40
+  },
+  "trials": [
+    {
+      "eval": "basic_coding",
+      "failed": 0,
+      "key": "basic_coding/rename-across-files@openrouter/muse-spark-1.3[binary=candidate,effort=default,harness=default]",
+      "mean": 1.0,
+      "na": 0,
+      "params": {
+        "binary": "candidate",
+        "effort": "default",
+        "harness": "default"
+      },
+      "pass_rate": 1.0,
+      "passed": 3,
+      "sample": "rename-across-files",
+      "scored": 3,
+      "skipped": 0,
+      "std_dev": 0.0,
+      "target": "openrouter/muse-spark-1.3",
+      "total": 3
+    }
+  ]
+}

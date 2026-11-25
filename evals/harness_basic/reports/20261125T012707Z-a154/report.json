@@ -1,0 +1,801 @@
+{
+  "cases": [
+    {
+      "aggregate": 1.0,
+      "eval": "basic_coding",
+      "input": [
+        "`sum` in src/lib.rs skips the last element. Fix it so it sums every element. Make the edit directly; do not ask questions."
+      ],
+      "params": {
+        "binary": "baseline",
+        "effort": "default",
+        "harness": "default"
+      },
+      "passed": true,
+      "sample": "fix-off-by-one",
+      "scores": [
+        {
+          "pass": true,
+          "reason": "no error",
+          "scorer": "succeeded",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "2 check(s) passed",
+          "scorer": "checks",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "independent functional and observed-action checks passed",
+          "scorer": "independent_correctness",
+          "value": 1.0
+        },
+        {
+          "na": true,
+          "pass": false,
+          "reason": "sample declares no budget checks",
+          "scorer": "declared_budget",
+          "value": 0.0
+        },
+        {
+          "pass": true,
+          "reason": "1 <= 32",
+          "scorer": "turns_within",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "11 <= 64",
+          "scorer": "tool_calls_within",
+          "value": 1.0
+        },
+        {
+          "na": true,
+          "pass": false,
+          "reason": "baseline variant; ast_edit not offered",
+          "scorer": "ast_edit_used",
+          "value": 0.0
+        },
+        {
+          "pass": true,
+          "reason": "$0.0055 <= $2",
+          "scorer": "cost_within",
+          "value": 1.0
+        }
+      ],
+      "seed": 20261124,
+      "skipped": false,
+      "target": "openrouter/muse-spark-1.3",
+      "transcript": {
+        "final_response": "Fixed `sum` in `src/lib.rs:3` — replaced `xs.iter().take(xs.len().saturating_sub(1)).sum()` with `xs.iter().sum()` so every element is included.\n\nVerified with `cargo run --example check_sum`: `sum(&[]) == 0`, `sum(&[5]) == 5`, `sum(&[1,2,3]) == 6` all pass; existing `cargo test` has 0 tests and passes.",
+        "iterations": 11,
+        "metadata": {
+          "binary": "baseline",
+          "effort": "default",
+          "harness": "default",
+          "model": "meta/muse-spark-1.3-contributor",
+          "provider": "openrouter",
+          "reasoning_effort_applied": "medium",
+          "session_log": ".cache/sessions/fix-off-by-one-openrouter-muse-spark-1.3-baseline-default-default-18eb256d32eb548800014e5500000001.events.jsonl",
+          "stop_reason": "completed",
+          "tool_invocations": [
+            {
+              "arguments": {
+                "path": "src/lib.rs"
+              },
+              "name": "read_file",
+              "success": true
+            },
+            {
+              "arguments": {
+                "edits": "[{\"new_text\": \"    xs.iter().sum()\", \"old_text\": \"    xs.iter().take(xs.len().saturating_sub(1)).sum()\"}]",
+                "path": "src/lib.rs"
+              },
+              "name": "edit_file",
+              "success": false
+            },
+            {
+              "arguments": {
+                "query": "edit file"
+              },
+              "name": "tool_search",
+              "success": true
+            },
+            {
+              "arguments": {
+                "edits": [
+                  {
+                    "new_text": "    xs.iter().sum()",
+                    "old_text": "    xs.iter().take(xs.len().saturating_sub(1)).sum()"
+                  }
+                ],
+                "expected_hash": "sha256:481a5cb7760f26d895d3f1b08052a65a0de0d5f6fb4eb4d7f066bce79d00c9ae",
+                "path": "src/lib.rs"
+              },
+              "name": "edit_file",
+              "success": true
+            },
+            {
+              "arguments": {
+                "command": "cargo test 2>&1 | tail -20",
+                "output": "concise"
+              },
+              "name": "bash",
+              "success": true
+            },
+            {
+              "arguments": {
+                "command": "cargo test 2>&1 | tail -5; python3 -c \"print('skip')\"",
+                "output": "concise"
+              },
+              "name": "bash",
+              "success": true
+            },
+            {
+              "arguments": {
+                "limit": 20,
+                "offset": 0,
+                "path": "Cargo.toml"
+              },
+              "name": "read_file",
+              "success": true
+            },
+            {
+              "arguments": {
+                "limit": 10,
+                "offset": 0,
+                "path": "src/lib.rs"
+              },
+              "name": "read_file",
+              "success": true
+            },
+            {
+              "arguments": {
+                "command": "cat > /tmp/check_sum.rs <<'RS'\nfn main() {\n    assert_eq!(seed::sum(&[]), 0);\n    assert_eq!(seed::sum(&[5]), 5);\n    assert_eq!(seed::sum(&[1,2,3]), 6);\n    println!(\"sum checks passed\");\n}\nRS\nrustc --extern seed=$(ls target/debug/libseed*.rlib | head -1) -L target/debug --edition 2021 /tmp/check_sum.rs -o /tmp/check_sum 2>&1 || (mkdir -p examples && cp /tmp/check_sum.rs examples/check_sum.rs && cargo run --example check_sum 2>&1 | tail -5)",
+                "output": "concise"
+              },
+              "name": "bash",
+              "success": true
+            },
+            {
+              "arguments": {
+                "command": "rm -rf examples /tmp/check_sum.rs /tmp/check_sum && git diff --stat && git diff",
+                "output": "concise"
+              },
+              "name": "bash",
+              "success": false
+            },
+            {
+              "arguments": {
+                "command": "rm -rf examples /tmp/check_sum.rs /tmp/check_sum; ls src",
+                "output": "concise"
+              },
+              "name": "bash",
+              "success": true
+            }
+          ]
+        },
+        "metrics": {
+          "agent_reported_ms": 22834.0,
+          "apply_patch_tool_calls": 0.0,
+          "ast_edit_tool_calls": 0.0,
+          "ast_edit_tool_calls_failed": 0.0,
+          "automatic_background_wakes": 0.0,
+          "background_spawn_calls": 0.0,
+          "background_wake_llm_calls": 0.0,
+          "background_wake_responses": 0.0,
+          "background_wake_tool_calls": 0.0,
+          "bash_result_bytes": 2818.0,
+          "bash_tool_calls": 5.0,
+          "batch_native_read_calls": 0.0,
+          "batched_tool_model_calls": 1.0,
+          "blocked_equivalent_failures": 0.0,
+          "bookkeeping_tool_calls": 0.0,
+          "cache_creation_tokens": 0.0,
+          "calls_after_checkpoint_recommended": 0.0,
+          "calls_after_progress_warning": 0.0,
+          "checkpoint_recommended_warnings": 0.0,
+          "contextual_grep_files_tool_calls": 0.0,
+          "cumulative_input_tokens": 164099.0,
+          "duplicate_exploration_calls": 0.0,
+          "edit_tool_calls": 2.0,
+          "edit_tool_calls_failed": 1.0,
+          "equivalent_failure_warnings": 0.0,
+          "exploration_tools_before_first_mutation": 1.0,
+          "first_request_input_tokens": 11982.0,
+          "first_request_total_input_tokens": 11982.0,
+          "git_grep_calls": 0.0,
+          "grep_files_tool_calls": 0.0,
+          "inner_tool_failures": 1.0,
+          "leading_marker_in_bash_result": 0.0,
+          "llm_calls": 11.0,
+          "max_exploration_tools_without_progress": 3.0,
+          "max_read_file_batch_width": 2.0,
+          "max_tool_batch_width": 2.0,
+          "max_tool_result_bytes": 6843.0,
+          "mean_tool_batch_width": 1.1,
+          "persisted_output_recovery_calls": 0.0,
+          "persisted_output_recovery_result_bytes": 0.0,
+          "progress_guard_warnings": 0.0,
+          "read_file_tool_calls": 3.0,
+          "redundant_validation_calls": 0.0,
+          "repo_map_max_result_bytes": 0.0,
+          "repo_map_narrowed_after_truncation": 0.0,
+          "repo_map_targeted_recovery_after_truncation": 0.0,
+          "repo_map_tool_calls": 0.0,
+          "repo_map_tool_calls_failed": 0.0,
+          "repo_symbols_tool_calls": 0.0,
+          "repo_symbols_tool_calls_failed": 0.0,
+          "session_extra_matches": 0.0,
+          "session_result_bytes": 0.0,
+          "session_useful_match_recall": 0.0,
+          "sessions_search_calls": 0.0,
+          "sessions_search_first_exploration": 0.0,
+          "single_tool_model_calls": 9.0,
+          "standalone_bookkeeping_rounds": 0.0,
+          "successful_progress_checkpoints": 0.0,
+          "task_llm_calls": 11.0,
+          "task_tool_calls": 11.0,
+          "tool_calls": 11.0,
+          "tool_calls_failed": 2.0,
+          "tool_emitting_model_calls": 10.0,
+          "total_tool_result_bytes": 11688.0,
+          "turns": 1.0,
+          "unchanged_reuse_responses": 0.0,
+          "validation_tool_calls": 2.0,
+          "workspace_state_revisits": 0.0
+        },
+        "timing": {
+          "duration_ms": 25390
+        },
+        "tool_calls": [
+          "read_file",
+          "edit_file",
+          "tool_search",
+          "edit_file",
+          "bash",
+          "bash",
+          "read_file",
+          "read_file",
+          "bash",
+          "bash",
+          "bash"
+        ],
+        "tool_calls_count": 11,
+        "usage": {
+          "cache_read_tokens": 114937,
+          "cost_usd": 0.005461874,
+          "input_tokens": 49162,
+          "output_tokens": 1579
+        }
+      },
+      "trials": 3
+    },
+    {
+      "aggregate": 1.0,
+      "eval": "basic_coding",
+      "input": [
+        "`sum` in src/lib.rs skips the last element. Fix it so it sums every element. Make the edit directly; do not ask questions."
+      ],
+      "params": {
+        "binary": "baseline",
+        "effort": "default",
+        "harness": "default"
+      },
+      "passed": true,
+      "sample": "fix-off-by-one",
+      "scores": [
+        {
+          "pass": true,
+          "reason": "no error",
+          "scorer": "succeeded",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "2 check(s) passed",
+          "scorer": "checks",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "independent functional and observed-action checks passed",
+          "scorer": "independent_correctness",
+          "value": 1.0
+        },
+        {
+          "na": true,
+          "pass": false,
+          "reason": "sample declares no budget checks",
+          "scorer": "declared_budget",
+          "value": 0.0
+        },
+        {
+          "pass": true,
+          "reason": "1 <= 32",
+          "scorer": "turns_within",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "10 <= 64",
+          "scorer": "tool_calls_within",
+          "value": 1.0
+        },
+        {
+          "na": true,
+          "pass": false,
+          "reason": "baseline variant; ast_edit not offered",
+          "scorer": "ast_edit_used",
+          "value": 0.0
+        },
+        {
+          "pass": true,
+          "reason": "$0.0071 <= $2",
+          "scorer": "cost_within",
+          "value": 1.0
+        }
+      ],
+      "seed": 20261125,
+      "skipped": false,
+      "target": "openrouter/muse-spark-1.3",
+      "transcript": {
+        "final_response": "Fixed `sum` in `src/lib.rs:3` — replaced `xs.iter().take(xs.len().saturating_sub(1)).sum()` with `xs.iter().sum()` so all elements are included.\n\nChecked with `cargo test` (0 existing tests, pass) and direct assertions: `[]→0`, `[5]→5`, `[1,2,3]→6`, `[-1,1,10]→10` — all pass.",
+        "iterations": 11,
+        "metadata": {
+          "binary": "baseline",
+          "effort": "default",
+          "harness": "default",
+          "model": "meta/muse-spark-1.3-contributor",
+          "provider": "openrouter",
+          "reasoning_effort_applied": "medium",
+          "session_log": ".cache/sessions/fix-off-by-one-openrouter-muse-spark-1.3-baseline-default-default-18eb256d32c8113000014e5500000000.events.jsonl",
+          "stop_reason": "completed",
+          "tool_invocations": [
+            {
+              "arguments": {
+                "title": "Fix sum skipping last element"
+              },
+              "name": "write_session_title",
+              "success": true
+            },
+            {
+              "arguments": {
+                "path": "src/lib.rs"
+              },
+              "name": "read_file",
+              "success": true
+            },
+            {
+              "arguments": {
+                "edits": "[{\"new_text\": \"    xs.iter().sum()\", \"old_text\": \"    xs.iter().take(xs.len().saturating_sub(1)).sum()\"}]",
+                "path": "src/lib.rs"
+              },
+              "name": "edit_file",
+              "success": false
+            },
+            {
+              "arguments": {
+                "query": "edit file"
+              },
+              "name": "tool_search",
+              "success": true
+            },
+            {
+              "arguments": {
+                "edits": [
+                  {
+                    "new_text": "    xs.iter().sum()",
+                    "old_text": "    xs.iter().take(xs.len().saturating_sub(1)).sum()"
+                  }
+                ],
+                "expected_hash": "sha256:481a5cb7760f26d895d3f1b08052a65a0de0d5f6fb4eb4d7f066bce79d00c9ae",
+                "path": "src/lib.rs"
+              },
+              "name": "edit_file",
+              "success": true
+            },
+            {
+              "arguments": {
+                "query": "run bash command"
+              },
+              "name": "tool_search",
+              "success": true
+            },
+            {
+              "arguments": {
+                "command": "cargo test --quiet 2>&1; echo \"---\"; python3 -c \"import pathlib; print(pathlib.Path('src/lib.rs').read_text())\""
+              },
+              "name": "bash",
+              "success": true
+            },
+            {
+              "arguments": {
+                "command": "cat > /tmp/check_sum.rs <<'RS'\ninclude!(\"src/lib.rs\");\nfn main() {\n  assert_eq!(sum(&[]), 0);\n  assert_eq!(sum(&[5]), 5);\n  assert_eq!(sum(&[1,2,3]), 6);\n  assert_eq!(sum(&[-1,1,10]), 10);\n  println!(\"sum checks passed: []=0 [5]=5 [1,2,3]=6 [-1,1,10]=10\");\n}\nRS\nrustc --edition 2021 /tmp/check_sum.rs -o /tmp/check_sum && /tmp/check_sum"
+              },
+              "name": "bash",
+              "success": false
+            },
+            {
+              "arguments": {
+                "command": "pwd; ls src/lib.rs; cat > /tmp/check_sum.rs <<'RS'\ninclude!(\"/workspace/src/lib.rs\");\nfn main() {\n  assert_eq!(sum(&[]), 0);\n  assert_eq!(sum(&[5]), 5);\n  assert_eq!(sum(&[1,2,3]), 6);\n  assert_eq!(sum(&[-1,1,10]), 10);\n  println!(\"sum checks passed\");\n}\nRS\nrustc --edition 2021 /tmp/check_sum.rs -o /tmp/check_sum && /tmp/check_sum"
+              },
+              "name": "bash",
+              "success": false
+            },
+            {
+              "arguments": {
+                "command": "WS=$(pwd); cat > /tmp/check_sum.rs <<RS\ninclude!(\"$WS/src/lib.rs\");\nfn main() {\n  assert_eq!(sum(&[]), 0);\n  assert_eq!(sum(&[5]), 5);\n  assert_eq!(sum(&[1,2,3]), 6);\n  assert_eq!(sum(&[-1,1,10]), 10);\n  println!(\"sum checks passed\");\n}\nRS\nrustc --edition 2021 /tmp/check_sum.rs -o /tmp/check_sum && /tmp/check_sum"
+              },
+              "name": "bash",
+              "success": true
+            }
+          ]
+        },
+        "metrics": {
+          "agent_reported_ms": 32824.0,
+          "apply_patch_tool_calls": 0.0,
+          "ast_edit_tool_calls": 0.0,
+          "ast_edit_tool_calls_failed": 0.0,
+          "automatic_background_wakes": 0.0,
+          "background_spawn_calls": 0.0,
+          "background_wake_llm_calls": 0.0,
+          "background_wake_responses": 0.0,
+          "background_wake_tool_calls": 0.0,
+          "bash_result_bytes": 1350.0,
+          "bash_tool_calls": 4.0,
+          "batch_native_read_calls": 0.0,
+          "batched_tool_model_calls": 0.0,
+          "blocked_equivalent_failures": 0.0,
+          "bookkeeping_tool_calls": 1.0,
+          "cache_creation_tokens": 0.0,
+          "calls_after_checkpoint_recommended": 0.0,
+          "calls_after_progress_warning": 0.0,
+          "checkpoint_recommended_warnings": 0.0,
+          "contextual_grep_files_tool_calls": 0.0,
+          "cumulative_input_tokens": 164008.0,
+          "duplicate_exploration_calls": 0.0,
+          "edit_tool_calls": 2.0,
+          "edit_tool_calls_failed": 1.0,
+          "equivalent_failure_warnings": 0.0,
+          "exploration_tools_before_first_mutation": 1.0,
+          "first_request_input_tokens": 11209.0,
+          "first_request_total_input_tokens": 11962.0,
+          "git_grep_calls": 0.0,
+          "grep_files_tool_calls": 0.0,
+          "inner_tool_failures": 2.0,
+          "leading_marker_in_bash_result": 0.0,
+          "llm_calls": 11.0,
+          "max_exploration_tools_without_progress": 1.0,
+          "max_read_file_batch_width": 1.0,
+          "max_tool_batch_width": 1.0,
+          "max_tool_result_bytes": 6843.0,
+          "mean_tool_batch_width": 1.0,
+          "persisted_output_recovery_calls": 0.0,
+          "persisted_output_recovery_result_bytes": 0.0,
+          "progress_guard_warnings": 0.0,
+          "read_file_tool_calls": 1.0,
+          "redundant_validation_calls": 0.0,
+          "repo_map_max_result_bytes": 0.0,
+          "repo_map_narrowed_after_truncation": 0.0,
+          "repo_map_targeted_recovery_after_truncation": 0.0,
+          "repo_map_tool_calls": 0.0,
+          "repo_map_tool_calls_failed": 0.0,
+          "repo_symbols_tool_calls": 0.0,
+          "repo_symbols_tool_calls_failed": 0.0,
+          "session_extra_matches": 0.0,
+          "session_result_bytes": 0.0,
+          "session_useful_match_recall": 0.0,
+          "sessions_search_calls": 0.0,
+          "sessions_search_first_exploration": 0.0,
+          "single_tool_model_calls": 10.0,
+          "standalone_bookkeeping_rounds": 1.0,
+          "successful_progress_checkpoints": 0.0,
+          "task_llm_calls": 10.0,
+          "task_tool_calls": 9.0,
+          "tool_calls": 10.0,
+          "tool_calls_failed": 3.0,
+          "tool_emitting_model_calls": 10.0,
+          "total_tool_result_bytes": 12612.0,
+          "turns": 1.0,
+          "unchanged_reuse_responses": 0.0,
+          "validation_tool_calls": 1.0,
+          "workspace_state_revisits": 0.0
+        },
+        "timing": {
+          "duration_ms": 35393
+        },
+        "tool_calls": [
+          "write_session_title",
+          "read_file",
+          "edit_file",
+          "tool_search",
+          "edit_file",
+          "tool_search",
+          "bash",
+          "bash",
+          "bash",
+          "bash"
+        ],
+        "tool_calls_count": 10,
+        "usage": {
+          "cache_read_tokens": 98907,
+          "cost_usd": 0.007077514,
+          "input_tokens": 65101,
+          "output_tokens": 1848
+        }
+      },
+      "trial": 1,
+      "trials": 3
+    },
+    {
+      "aggregate": 1.0,
+      "eval": "basic_coding",
+      "input": [
+        "`sum` in src/lib.rs skips the last element. Fix it so it sums every element. Make the edit directly; do not ask questions."
+      ],
+      "params": {
+        "binary": "baseline",
+        "effort": "default",
+        "harness": "default"
+      },
+      "passed": true,
+      "sample": "fix-off-by-one",
+      "scores": [
+        {
+          "pass": true,
+          "reason": "no error",
+          "scorer": "succeeded",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "2 check(s) passed",
+          "scorer": "checks",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "independent functional and observed-action checks passed",
+          "scorer": "independent_correctness",
+          "value": 1.0
+        },
+        {
+          "na": true,
+          "pass": false,
+          "reason": "sample declares no budget checks",
+          "scorer": "declared_budget",
+          "value": 0.0
+        },
+        {
+          "pass": true,
+          "reason": "1 <= 32",
+          "scorer": "turns_within",
+          "value": 1.0
+        },
+        {
+          "pass": true,
+          "reason": "7 <= 64",
+          "scorer": "tool_calls_within",
+          "value": 1.0
+        },
+        {
+          "na": true,
+          "pass": false,
+          "reason": "baseline variant; ast_edit not offered",
+          "scorer": "ast_edit_used",
+          "value": 0.0
+        },
+        {
+          "pass": true,
+          "reason": "$0.0047 <= $2",
+          "scorer": "cost_within",
+          "value": 1.0
+        }
+      ],
+      "seed": 20261126,
+      "skipped": false,
+      "target": "openrouter/muse-spark-1.3",
+      "transcript": {
+        "final_response": "Fixed `sum` in `src/lib.rs:3` — replaced `xs.iter().take(xs.len().saturating_sub(1)).sum()` with `xs.iter().sum()` so the last element is no longer dropped.\n\nVerified with assertions for `[]` → `0`, `[5]` → `5`, `[1,2,3]` → `6`, and `[-1,1]` → `0`; all passed. `cargo test` also passes (0 tests).\n",
+        "iterations": 8,
+        "metadata": {
+          "binary": "baseline",
+          "effort": "default",
+          "harness": "default",
+          "model": "meta/muse-spark-1.3-contributor",
+          "provider": "openrouter",
+          "reasoning_effort_applied": "medium",
+          "session_log": ".cache/sessions/fix-off-by-one-openrouter-muse-spark-1.3-baseline-default-default-18eb25732ee8f76800014e5500000002.events.jsonl",
+          "stop_reason": "completed",
+          "tool_invocations": [
+            {
+              "arguments": {
+                "title": "Fix sum skipping last element"
+              },
+              "name": "write_session_title",
+              "success": true
+            },
+            {
+              "arguments": {
+                "path": "src/lib.rs"
+              },
+              "name": "read_file",
+              "success": true
+            },
+            {
+              "arguments": {
+                "query": "edit file"
+              },
+              "name": "tool_search",
+              "success": true
+            },
+            {
+              "arguments": {
+                "edits": [
+                  {
+                    "new_text": "    xs.iter().sum()",
+                    "old_text": "    xs.iter().take(xs.len().saturating_sub(1)).sum()"
+                  }
+                ],
+                "expected_hash": "sha256:481a5cb7760f26d895d3f1b08052a65a0de0d5f6fb4eb4d7f066bce79d00c9ae",
+                "path": "src/lib.rs"
+              },
+              "name": "edit_file",
+              "success": true
+            },
+            {
+              "arguments": {
+                "query": "run bash command"
+              },
+              "name": "tool_search",
+              "success": true
+            },
+            {
+              "arguments": {
+                "command": "cargo test 2>&1 | tail -n 30; echo \"---\"; python3 -c \"import subprocess; print('cargo test exit path done')\"",
+                "output": "normal"
+              },
+              "name": "bash",
+              "success": true
+            },
+            {
+              "arguments": {
+                "command": "cat src/lib.rs && echo \"===\" && cat > /tmp/check_sum.rs <<'RS'\ninclude!(\"/private/var/folders/8n/jwcv011j313c359z772kmjkw0000gn/T/.tmpie6eVK/src/lib.rs\");\nfn main() {\n    assert_eq!(sum(&[]), 0);\n    assert_eq!(sum(&[5]), 5);\n    assert_eq!(sum(&[1,2,3]), 6);\n    assert_eq!(sum(&[-1,1]), 0);\n    println!(\"all sum assertions passed\");\n}\nRS\nrustc --edition 2021 /tmp/check_sum.rs -o /tmp/check_sum && /tmp/check_sum",
+                "output": "normal"
+              },
+              "name": "bash",
+              "success": true
+            }
+          ]
+        },
+        "metrics": {
+          "agent_reported_ms": 18224.0,
+          "apply_patch_tool_calls": 0.0,
+          "ast_edit_tool_calls": 0.0,
+          "ast_edit_tool_calls_failed": 0.0,
+          "automatic_background_wakes": 0.0,
+          "background_spawn_calls": 0.0,
+          "background_wake_llm_calls": 0.0,
+          "background_wake_responses": 0.0,
+          "background_wake_tool_calls": 0.0,
+          "bash_result_bytes": 1790.0,
+          "bash_tool_calls": 2.0,
+          "batch_native_read_calls": 0.0,
+          "batched_tool_model_calls": 0.0,
+          "blocked_equivalent_failures": 0.0,
+          "bookkeeping_tool_calls": 1.0,
+          "cache_creation_tokens": 0.0,
+          "calls_after_checkpoint_recommended": 0.0,
+          "calls_after_progress_warning": 0.0,
+          "checkpoint_recommended_warnings": 0.0,
+          "contextual_grep_files_tool_calls": 0.0,
+          "cumulative_input_tokens": 115578.0,
+          "duplicate_exploration_calls": 0.0,
+          "edit_tool_calls": 1.0,
+          "edit_tool_calls_failed": 0.0,
+          "equivalent_failure_warnings": 0.0,
+          "exploration_tools_before_first_mutation": 1.0,
+          "first_request_input_tokens": 11972.0,
+          "first_request_total_input_tokens": 11972.0,
+          "git_grep_calls": 0.0,
+          "grep_files_tool_calls": 0.0,
+          "inner_tool_failures": 0.0,
+          "leading_marker_in_bash_result": 0.0,
+          "llm_calls": 8.0,
+          "max_exploration_tools_without_progress": 1.0,
+          "max_read_file_batch_width": 1.0,
+          "max_tool_batch_width": 1.0,
+          "max_tool_result_bytes": 6843.0,
+          "mean_tool_batch_width": 1.0,
+          "persisted_output_recovery_calls": 0.0,
+          "persisted_output_recovery_result_bytes": 0.0,
+          "progress_guard_warnings": 0.0,
+          "read_file_tool_calls": 1.0,
+          "redundant_validation_calls": 0.0,
+          "repo_map_max_result_bytes": 0.0,
+          "repo_map_narrowed_after_truncation": 0.0,
+          "repo_map_targeted_recovery_after_truncation": 0.0,
+          "repo_map_tool_calls": 0.0,
+          "repo_map_tool_calls_failed": 0.0,
+          "repo_symbols_tool_calls": 0.0,
+          "repo_symbols_tool_calls_failed": 0.0,
+          "session_extra_matches": 0.0,
+          "session_result_bytes": 0.0,
+          "session_useful_match_recall": 0.0,
+          "sessions_search_calls": 0.0,
+          "sessions_search_first_exploration": 0.0,
+          "single_tool_model_calls": 7.0,
+          "standalone_bookkeeping_rounds": 1.0,
+          "successful_progress_checkpoints": 0.0,
+          "task_llm_calls": 7.0,
+          "task_tool_calls": 6.0,
+          "tool_calls": 7.0,
+          "tool_calls_failed": 0.0,
+          "tool_emitting_model_calls": 7.0,
+          "total_tool_result_bytes": 13052.0,
+          "turns": 1.0,
+          "unchanged_reuse_responses": 0.0,
+          "validation_tool_calls": 1.0,
+          "workspace_state_revisits": 0.0
+        },
+        "timing": {
+          "duration_ms": 20674
+        },
+        "tool_calls": [
+          "write_session_title",
+          "read_file",
+          "tool_search",
+          "edit_file",
+          "tool_search",
+          "bash",
+          "bash"
+        ],
+        "tool_calls_count": 7,
+        "usage": {
+          "cache_read_tokens": 72215,
+          "cost_usd": 0.0047303300000000005,
+          "input_tokens": 43363,
+          "output_tokens": 1248
+        }
+      },
+      "trial": 2,
+      "trials": 3
+    }
+  ],
+  "summary": {
+    "failed": 0,
+    "na": 0,
+    "passed": 3,
+    "scored": 3,
+    "skipped": 0,
+    "total_cost_usd": 0.017269718,
+    "total_duration_ms": 81457,
+    "total_tokens": 162301,
+    "total_tool_calls": 28
+  },
+  "trials": [
+    {
+      "eval": "basic_coding",
+      "failed": 0,
+      "key": "basic_coding/fix-off-by-one@openrouter/muse-spark-1.3[binary=baseline,effort=default,harness=default]",
+      "mean": 1.0,
+      "na": 0,
+      "params": {
+        "binary": "baseline",
+        "effort": "default",
+        "harness": "default"
+      },
+      "pass_rate": 1.0,
+      "passed": 3,
+      "sample": "fix-off-by-one",
+      "scored": 3,
+      "skipped": 0,
+      "std_dev": 0.0,
+      "target": "openrouter/muse-spark-1.3",
+      "total": 3
+    }
+  ]
+}

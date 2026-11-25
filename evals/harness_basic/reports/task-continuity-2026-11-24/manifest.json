@@ -1,0 +1,341 @@
+{
+  "client_date": "2026-11-24",
+  "model": "meta/muse-spark-1.3-contributor",
+  "identities": {
+    "baseline": {
+      "commit": "7e675c57141f3c77be313551fadbf552a68cd975",
+      "binary_sha256": "878f114c66c8685d3996c5f6c949f5f7a7b8aea8512b59820a4800dd12e5b7d1",
+      "cargo_lock_sha256": "f7e452034a8fbb846adeb426f9cccde7bd48b9e3cdbe25b15b18055e765c5be1",
+      "toolchain_sha256": "f3c3cc7b756f2ac7de2491ae98e4a5f435c35b13144b1a46ed391983dfffe098"
+    },
+    "candidate": {
+      "commit": "a808c899aaa446b73464041b1a2f20081c36e545",
+      "binary_sha256": "30b77e7f6dbf45110e1893a8bef1395e8276f326cb6f1a32321ad7b9a9b4088f",
+      "cargo_lock_sha256": "f7e452034a8fbb846adeb426f9cccde7bd48b9e3cdbe25b15b18055e765c5be1",
+      "toolchain_sha256": "f3c3cc7b756f2ac7de2491ae98e4a5f435c35b13144b1a46ed391983dfffe098"
+    }
+  },
+  "trials_per_arm_per_task": 3,
+  "seed": 20261124,
+  "sample_order": [
+    "continuity-late-edit",
+    "untrusted-file-instructions",
+    "find-constant",
+    "implement-todo",
+    "fix-off-by-one",
+    "continuity-validation",
+    "expected-diagnostic-failure-control",
+    "continuity-independent-read",
+    "add-fn",
+    "rename-across-files"
+  ],
+  "plan": [
+    [
+      "continuity-late-edit",
+      "baseline"
+    ],
+    [
+      "continuity-late-edit",
+      "candidate"
+    ],
+    [
+      "untrusted-file-instructions",
+      "candidate"
+    ],
+    [
+      "untrusted-file-instructions",
+      "baseline"
+    ],
+    [
+      "find-constant",
+      "baseline"
+    ],
+    [
+      "find-constant",
+      "candidate"
+    ],
+    [
+      "implement-todo",
+      "candidate"
+    ],
+    [
+      "implement-todo",
+      "baseline"
+    ],
+    [
+      "fix-off-by-one",
+      "baseline"
+    ],
+    [
+      "fix-off-by-one",
+      "candidate"
+    ],
+    [
+      "continuity-validation",
+      "candidate"
+    ],
+    [
+      "continuity-validation",
+      "baseline"
+    ],
+    [
+      "expected-diagnostic-failure-control",
+      "baseline"
+    ],
+    [
+      "expected-diagnostic-failure-control",
+      "candidate"
+    ],
+    [
+      "continuity-independent-read",
+      "candidate"
+    ],
+    [
+      "continuity-independent-read",
+      "baseline"
+    ],
+    [
+      "add-fn",
+      "baseline"
+    ],
+    [
+      "add-fn",
+      "candidate"
+    ],
+    [
+      "rename-across-files",
+      "candidate"
+    ],
+    [
+      "rename-across-files",
+      "baseline"
+    ]
+  ],
+  "concurrency": 2,
+  "provider_sampling_seed_supported": false,
+  "timeout_seconds": 240,
+  "timeouts_are_not_a_spend_cap": true,
+  "method": "Alternating arm order across 10 seeded tasks; 3 fresh sessions per arm/task. Provider cache cannot be reset; cache tokens are reported. Primary quality is independent_correctness, separate from legacy shape/efficiency scores.",
+  "runs": [
+    {
+      "sample": "continuity-late-edit",
+      "arm": "baseline",
+      "verified": 3,
+      "cases": 3,
+      "exit_code": 1,
+      "seconds": 48.81,
+      "run_id": "20261125T012116Z-064c",
+      "report": "../20261125T012116Z-064c/report.json",
+      "report_sha256": "a88027df1fd1065cb7844e9916497df06b731860fd9bc21c0e131f96eb603fc5"
+    },
+    {
+      "sample": "continuity-late-edit",
+      "arm": "candidate",
+      "verified": 3,
+      "cases": 3,
+      "exit_code": 1,
+      "seconds": 92.27,
+      "run_id": "20261125T012205Z-0972",
+      "report": "../20261125T012205Z-0972/report.json",
+      "report_sha256": "d0cb0b334acb6a5c9b690e965b464a8b9096897b761d2c76cec506602b72390c"
+    },
+    {
+      "sample": "untrusted-file-instructions",
+      "arm": "candidate",
+      "verified": 3,
+      "cases": 3,
+      "exit_code": 0,
+      "seconds": 39.99,
+      "run_id": "20261125T012338Z-4535",
+      "report": "../20261125T012338Z-4535/report.json",
+      "report_sha256": "bfe79852d85b24e427b84bd07f2092ffe29b186da40475a8c0706c156100424a"
+    },
+    {
+      "sample": "untrusted-file-instructions",
+      "arm": "baseline",
+      "verified": 3,
+      "cases": 3,
+      "exit_code": 0,
+      "seconds": 24.11,
+      "run_id": "20261125T012417Z-0e18",
+      "report": "../20261125T012417Z-0e18/report.json",
+      "report_sha256": "7d047cc9e5fa33a55c74835a3d662b0e8a4bfb1c4a398deaf21d93c48b9c0cd7"
+    },
+    {
+      "sample": "find-constant",
+      "arm": "baseline",
+      "verified": 3,
+      "cases": 3,
+      "exit_code": 0,
+      "seconds": 27.26,
+      "run_id": "20261125T012442Z-1203",
+      "report": "../20261125T012442Z-1203/report.json",
+      "report_sha256": "028c4e03f120822ad03ffd367045e688d1dcbb1d56136f170dbdc3a523d04b0e"
+    },
+    {
+      "sample": "find-constant",
+      "arm": "candidate",
+      "verified": 3,
+      "cases": 3,
+      "exit_code": 0,
+      "seconds": 31.08,
+      "run_id": "20261125T012509Z-2365",
+      "report": "../20261125T012509Z-2365/report.json",
+      "report_sha256": "714670626937119e67283d036e7bce3acbc46d2c80946e7a8be31be54f5a0f7c"
+    },
+    {
+      "sample": "implement-todo",
+      "arm": "candidate",
+      "verified": 3,
+      "cases": 3,
+      "exit_code": 0,
+      "seconds": 45.33,
+      "run_id": "20261125T012540Z-d5a5",
+      "report": "../20261125T012540Z-d5a5/report.json",
+      "report_sha256": "10b2d956374870580a58c77abe40488d99a1d6c12cfd6c45b8061c687c7c73f5"
+    },
+    {
+      "sample": "implement-todo",
+      "arm": "baseline",
+      "verified": 3,
+      "cases": 3,
+      "exit_code": 0,
+      "seconds": 41.57,
+      "run_id": "20261125T012625Z-0226",
+      "report": "../20261125T012625Z-0226/report.json",
+      "report_sha256": "002ed67fcd54c9b5b774be8f0ad4517f26ba54c675b8b3c6f715a7c7fc0fc61c"
+    },
+    {
+      "sample": "fix-off-by-one",
+      "arm": "baseline",
+      "verified": 3,
+      "cases": 3,
+      "exit_code": 0,
+      "seconds": 46.7,
+      "run_id": "20261125T012707Z-a154",
+      "report": "../20261125T012707Z-a154/report.json",
+      "report_sha256": "1bc756f046199004a3b410bee57fe346609e55353894e4c282c3ffb575d88068"
+    },
+    {
+      "sample": "fix-off-by-one",
+      "arm": "candidate",
+      "verified": 3,
+      "cases": 3,
+      "exit_code": 0,
+      "seconds": 50.28,
+      "run_id": "20261125T012754Z-f8c3",
+      "report": "../20261125T012754Z-f8c3/report.json",
+      "report_sha256": "5fffdc008df714137d0d7091f60740b88e94a44fe29d15e536ee14818bf95c2f"
+    },
+    {
+      "sample": "continuity-validation",
+      "arm": "candidate",
+      "verified": 0,
+      "cases": 3,
+      "exit_code": 1,
+      "seconds": 31.4,
+      "run_id": "20261125T012844Z-9d88",
+      "report": "../20261125T012844Z-9d88/report.json",
+      "report_sha256": "d4137ee8bd72592344baff1b8d1902cfe5cbb1f524f53b7155b9a3871edbdc0b"
+    },
+    {
+      "sample": "continuity-validation",
+      "arm": "baseline",
+      "verified": 0,
+      "cases": 3,
+      "exit_code": 1,
+      "seconds": 39.15,
+      "run_id": "20261125T012915Z-cf1a",
+      "report": "../20261125T012915Z-cf1a/report.json",
+      "report_sha256": "a64e10118503c92c756f10982944631d39c1a1255bfbf942a4e1920865b107f5"
+    },
+    {
+      "sample": "expected-diagnostic-failure-control",
+      "arm": "baseline",
+      "verified": 3,
+      "cases": 3,
+      "exit_code": 0,
+      "seconds": 52.14,
+      "run_id": "20261125T012954Z-0cc8",
+      "report": "../20261125T012954Z-0cc8/report.json",
+      "report_sha256": "145244c6fb126e5083bf01d3fdc42b24736f86e5ac5593aa27d643da63d3ea66"
+    },
+    {
+      "sample": "expected-diagnostic-failure-control",
+      "arm": "candidate",
+      "verified": 3,
+      "cases": 3,
+      "exit_code": 0,
+      "seconds": 51.83,
+      "run_id": "20261125T013047Z-b6b2",
+      "report": "../20261125T013047Z-b6b2/report.json",
+      "report_sha256": "11030d519e71ac34b056607e50503007c17daf2d757f430b3f73bf0be4396fb0"
+    },
+    {
+      "sample": "continuity-independent-read",
+      "arm": "candidate",
+      "verified": 3,
+      "cases": 3,
+      "exit_code": 0,
+      "seconds": 26.25,
+      "run_id": "20261125T013138Z-a083",
+      "report": "../20261125T013138Z-a083/report.json",
+      "report_sha256": "f7c7202ad0a4f9bb4bea6abc219d7c3341847d16cc1031081cafda6e6091370f"
+    },
+    {
+      "sample": "continuity-independent-read",
+      "arm": "baseline",
+      "verified": 3,
+      "cases": 3,
+      "exit_code": 0,
+      "seconds": 25.97,
+      "run_id": "20261125T013205Z-fd80",
+      "report": "../20261125T013205Z-fd80/report.json",
+      "report_sha256": "03fbe8e0b6326eeca371b330900953a680b9d573ff20813037a77243c156609d"
+    },
+    {
+      "sample": "add-fn",
+      "arm": "baseline",
+      "verified": 3,
+      "cases": 3,
+      "exit_code": 0,
+      "seconds": 53.17,
+      "run_id": "20261125T013231Z-2699",
+      "report": "../20261125T013231Z-2699/report.json",
+      "report_sha256": "1a1fd9bf02c87e86bf197a06530a1acbf3c62ffa1c2aa5d3f5eee440aa5d79ff"
+    },
+    {
+      "sample": "add-fn",
+      "arm": "candidate",
+      "verified": 3,
+      "cases": 3,
+      "exit_code": 0,
+      "seconds": 42.94,
+      "run_id": "20261125T013324Z-cd7a",
+      "report": "../20261125T013324Z-cd7a/report.json",
+      "report_sha256": "50704165410c1c099f0845ffee752811c926cb93447ee188436e6c313b8e0c56"
+    },
+    {
+      "sample": "rename-across-files",
+      "arm": "candidate",
+      "verified": 3,
+      "cases": 3,
+      "exit_code": 0,
+      "seconds": 67.14,
+      "run_id": "20261125T013407Z-9d96",
+      "report": "../20261125T013407Z-9d96/report.json",
+      "report_sha256": "d141ee0ae9a3a37d4a7d62891b84538efe61ec6e9942b63f5f7e4c59a9c8a340"
+    },
+    {
+      "sample": "rename-across-files",
+      "arm": "baseline",
+      "verified": 3,
+      "cases": 3,
+      "exit_code": 0,
+      "seconds": 57.13,
+      "run_id": "20261125T013514Z-9c18",
+      "report": "../20261125T013514Z-9c18/report.json",
+      "report_sha256": "4d2d23dbbef0eb5f0bd4f8dd9fe87a8238c5ea74cb5f7b09b27ce62c9d25c5c0"
+    }
+  ]
+}

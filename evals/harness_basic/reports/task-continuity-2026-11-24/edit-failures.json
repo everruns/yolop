@@ -1,0 +1,121 @@
+[
+  {
+    "run_id": "20261125T012116Z-064c",
+    "arm": "baseline",
+    "sample": "continuity-late-edit",
+    "trial": null,
+    "error": "blocked by pre_tool_use hook: {\"error\":\"invalid_tool_arguments\",\"tool\":\"edit_file\",\"path\":\"/expected_hash\",\"message\":\"a required argument is missing\",\"expected\":{\"type\":\"string\",\"description\":\"Current content hash from read_file or write_file (format: 'sha256:...')\"},\"received\":\"missing\",\"retryable\":true,\"correction\":\"Correct the arguments to the expected shape and call this tool once more.\"}"
+  },
+  {
+    "run_id": "20261125T012116Z-064c",
+    "arm": "baseline",
+    "sample": "continuity-late-edit",
+    "trial": 1,
+    "error": "blocked by pre_tool_use hook: {\"error\":\"invalid_tool_arguments\",\"tool\":\"edit_file\",\"path\":\"/expected_hash\",\"message\":\"a required argument is missing\",\"expected\":{\"type\":\"string\",\"description\":\"Current content hash from read_file or write_file (format: 'sha256:...')\"},\"received\":\"missing\",\"retryable\":true,\"correction\":\"Correct the arguments to the expected shape and call this tool once more.\"}"
+  },
+  {
+    "run_id": "20261125T012116Z-064c",
+    "arm": "baseline",
+    "sample": "continuity-late-edit",
+    "trial": 2,
+    "error": "blocked by pre_tool_use hook: {\"error\":\"invalid_tool_arguments\",\"tool\":\"edit_file\",\"path\":\"/expected_hash\",\"message\":\"a required argument is missing\",\"expected\":{\"type\":\"string\",\"description\":\"Current content hash from read_file or write_file (format: 'sha256:...')\"},\"received\":\"missing\",\"retryable\":true,\"correction\":\"Correct the arguments to the expected shape and call this tool once more.\"}"
+  },
+  {
+    "run_id": "20261125T012205Z-0972",
+    "arm": "candidate",
+    "sample": "continuity-late-edit",
+    "trial": null,
+    "error": "blocked by pre_tool_use hook: {\"error\":\"invalid_tool_arguments\",\"tool\":\"edit_file\",\"path\":\"/expected_hash\",\"message\":\"a required argument is missing\",\"expected\":{\"type\":\"string\",\"description\":\"Current content hash from read_file or write_file (format: 'sha256:...')\"},\"received\":\"missing\",\"retryable\":true,\"correction\":\"Correct the arguments to the expected shape and call this tool once more.\"}"
+  },
+  {
+    "run_id": "20261125T012205Z-0972",
+    "arm": "candidate",
+    "sample": "continuity-late-edit",
+    "trial": 1,
+    "error": "blocked by pre_tool_use hook: {\"error\":\"invalid_tool_arguments\",\"tool\":\"edit_file\",\"path\":\"/expected_hash\",\"message\":\"a required argument is missing\",\"expected\":{\"type\":\"string\",\"description\":\"Current content hash from read_file or write_file (format: 'sha256:...')\"},\"received\":\"missing\",\"retryable\":true,\"correction\":\"Correct the arguments to the expected shape and call this tool once more.\"}"
+  },
+  {
+    "run_id": "20261125T012540Z-d5a5",
+    "arm": "candidate",
+    "sample": "implement-todo",
+    "trial": 2,
+    "error": "blocked by pre_tool_use hook: {\"error\":\"invalid_tool_arguments\",\"tool\":\"edit_file\",\"path\":\"/expected_hash\",\"message\":\"a required argument is missing\",\"expected\":{\"type\":\"string\",\"description\":\"Current content hash from read_file or write_file (format: 'sha256:...')\"},\"received\":\"missing\",\"retryable\":true,\"correction\":\"Correct the arguments to the expected shape and call this tool once more.\"}"
+  },
+  {
+    "run_id": "20261125T012707Z-a154",
+    "arm": "baseline",
+    "sample": "fix-off-by-one",
+    "trial": null,
+    "error": "blocked by pre_tool_use hook: {\"error\":\"invalid_tool_arguments\",\"tool\":\"edit_file\",\"path\":\"/expected_hash\",\"message\":\"a required argument is missing\",\"expected\":{\"type\":\"string\",\"description\":\"Current content hash from read_file or write_file (format: 'sha256:...')\"},\"received\":\"missing\",\"retryable\":true,\"correction\":\"Correct the arguments to the expected shape and call this tool once more.\"}"
+  },
+  {
+    "run_id": "20261125T012707Z-a154",
+    "arm": "baseline",
+    "sample": "fix-off-by-one",
+    "trial": 1,
+    "error": "blocked by pre_tool_use hook: {\"error\":\"invalid_tool_arguments\",\"tool\":\"edit_file\",\"path\":\"/expected_hash\",\"message\":\"a required argument is missing\",\"expected\":{\"type\":\"string\",\"description\":\"Current content hash from read_file or write_file (format: 'sha256:...')\"},\"received\":\"missing\",\"retryable\":true,\"correction\":\"Correct the arguments to the expected shape and call this tool once more.\"}"
+  },
+  {
+    "run_id": "20261125T012754Z-f8c3",
+    "arm": "candidate",
+    "sample": "fix-off-by-one",
+    "trial": 1,
+    "error": "blocked by pre_tool_use hook: {\"error\":\"invalid_tool_arguments\",\"tool\":\"edit_file\",\"path\":\"/expected_hash\",\"message\":\"a required argument is missing\",\"expected\":{\"type\":\"string\",\"description\":\"Current content hash from read_file or write_file (format: 'sha256:...')\"},\"received\":\"missing\",\"retryable\":true,\"correction\":\"Correct the arguments to the expected shape and call this tool once more.\"}"
+  },
+  {
+    "run_id": "20261125T012954Z-0cc8",
+    "arm": "baseline",
+    "sample": "expected-diagnostic-failure-control",
+    "trial": null,
+    "error": "blocked by pre_tool_use hook: {\"error\":\"invalid_tool_arguments\",\"tool\":\"edit_file\",\"path\":\"/expected_hash\",\"message\":\"a required argument is missing\",\"expected\":{\"type\":\"string\",\"description\":\"Current content hash from read_file or write_file (format: 'sha256:...')\"},\"received\":\"missing\",\"retryable\":true,\"correction\":\"Correct the arguments to the expected shape and call this tool once more.\"}"
+  },
+  {
+    "run_id": "20261125T012954Z-0cc8",
+    "arm": "baseline",
+    "sample": "expected-diagnostic-failure-control",
+    "trial": 2,
+    "error": "blocked by pre_tool_use hook: {\"error\":\"invalid_tool_arguments\",\"tool\":\"edit_file\",\"path\":\"/expected_hash\",\"message\":\"a required argument is missing\",\"expected\":{\"type\":\"string\",\"description\":\"Current content hash from read_file or write_file (format: 'sha256:...')\"},\"received\":\"missing\",\"retryable\":true,\"correction\":\"Correct the arguments to the expected shape and call this tool once more.\"}"
+  },
+  {
+    "run_id": "20261125T013407Z-9d96",
+    "arm": "candidate",
+    "sample": "rename-across-files",
+    "trial": null,
+    "error": "blocked by pre_tool_use hook: {\"error\":\"invalid_tool_arguments\",\"tool\":\"edit_file\",\"path\":\"/expected_hash\",\"message\":\"a required argument is missing\",\"expected\":{\"type\":\"string\",\"description\":\"Current content hash from read_file or write_file (format: 'sha256:...')\"},\"received\":\"missing\",\"retryable\":true,\"correction\":\"Correct the arguments to the expected shape and call this tool once more.\"}"
+  },
+  {
+    "run_id": "20261125T013407Z-9d96",
+    "arm": "candidate",
+    "sample": "rename-across-files",
+    "trial": null,
+    "error": "progress_guard: repeated an equivalent unknown failure on an unchanged workspace state. The full failure evidence remains above. Do not rewrite and retry the same invocation path: use a materially different tool/action that addresses the root cause, or call progress_checkpoint before another attempt.\n\nblocked by pre_tool_use hook: {\"error\":\"invalid_tool_arguments\",\"tool\":\"edit_file\",\"path\":\"/expected_hash\",\"message\":\"a required argument is missing\",\"expected\":{\"type\":\"string\",\"description\":\"Current content hash from read_file or write_file (format: 'sha256:...')\"},\"received\":\"missing\",\"retryable\":true,\"correction\":\"Correct the arguments to the expected shape and call this tool once more.\"}"
+  },
+  {
+    "run_id": "20261125T013407Z-9d96",
+    "arm": "candidate",
+    "sample": "rename-across-files",
+    "trial": null,
+    "error": "blocked by pre_tool_use hook: {\"error\":\"invalid_tool_arguments\",\"tool\":\"edit_file\",\"path\":\"/expected_hash\",\"message\":\"a required argument is missing\",\"expected\":{\"type\":\"string\",\"description\":\"Current content hash from read_file or write_file (format: 'sha256:...')\"},\"received\":\"missing\",\"retryable\":true,\"correction\":\"Correct the arguments to the expected shape and call this tool once more.\"}"
+  },
+  {
+    "run_id": "20261125T013514Z-9c18",
+    "arm": "baseline",
+    "sample": "rename-across-files",
+    "trial": null,
+    "error": "blocked by pre_tool_use hook: {\"error\":\"invalid_tool_arguments\",\"tool\":\"edit_file\",\"path\":\"/expected_hash\",\"message\":\"a required argument is missing\",\"expected\":{\"type\":\"string\",\"description\":\"Current content hash from read_file or write_file (format: 'sha256:...')\"},\"received\":\"missing\",\"retryable\":true,\"correction\":\"Correct the arguments to the expected shape and call this tool once more.\"}"
+  },
+  {
+    "run_id": "20261125T013514Z-9c18",
+    "arm": "baseline",
+    "sample": "rename-across-files",
+    "trial": null,
+    "error": "progress_guard: repeated an equivalent unknown failure on an unchanged workspace state. The full failure evidence remains above. Do not rewrite and retry the same invocation path: use a materially different tool/action that addresses the root cause, or call progress_checkpoint before another attempt.\n\nblocked by pre_tool_use hook: {\"error\":\"invalid_tool_arguments\",\"tool\":\"edit_file\",\"path\":\"/expected_hash\",\"message\":\"a required argument is missing\",\"expected\":{\"type\":\"string\",\"description\":\"Current content hash from read_file or write_file (format: 'sha256:...')\"},\"received\":\"missing\",\"retryable\":true,\"correction\":\"Correct the arguments to the expected shape and call this tool once more.\"}"
+  },
+  {
+    "run_id": "20261125T013514Z-9c18",
+    "arm": "baseline",
+    "sample": "rename-across-files",
+    "trial": null,
+    "error": "blocked by pre_tool_use hook: {\"error\":\"invalid_tool_arguments\",\"tool\":\"edit_file\",\"path\":\"/expected_hash\",\"message\":\"a required argument is missing\",\"expected\":{\"type\":\"string\",\"description\":\"Current content hash from read_file or write_file (format: 'sha256:...')\"},\"received\":\"missing\",\"retryable\":true,\"correction\":\"Correct the arguments to the expected shape and call this tool once more.\"}"
+  }
+]

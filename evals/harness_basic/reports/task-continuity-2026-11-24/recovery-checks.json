@@ -1,0 +1,27 @@
+{
+  "commit": "a808c899aaa446b73464041b1a2f20081c36e545",
+  "checks": [
+    {
+      "check": "progress_guard",
+      "passed": 60,
+      "failed": 0,
+      "ignored": 0,
+      "scope": "existing unit/integration tests, not a new live-provider fault matrix"
+    },
+    {
+      "check": "active_turn_steering",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "scope": "existing unit/integration tests, not a new live-provider fault matrix"
+    },
+    {
+      "check": "assigned_correction_cancellation",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "scope": "existing unit/integration tests, not a new live-provider fault matrix"
+    }
+  ],
+  "environment_note": "Both TUI checks first timed out before the first tool under the outer restricted runner. Both passed unchanged outside that restriction. Progress-guard tests passed under the restricted runner."
+}

@@ -1,0 +1,52 @@
+{
+  "baseline": {
+    "provider_calls": [
+      {
+        "purpose": "generation",
+        "usage": {
+          "prompt_tokens": 100,
+          "completion_tokens": 20,
+          "total_tokens": 120
+        }
+      },
+      {
+        "purpose": "completion_review",
+        "usage": {
+          "prompt_tokens": 900,
+          "completion_tokens": 100,
+          "total_tokens": 1000
+        }
+      }
+    ],
+    "served_total_tokens": 1120,
+    "trajectory_recorded_tokens": 120,
+    "unaccounted_tokens": 1000,
+    "fully_accounted": false,
+    "paid_requests": 0
+  },
+  "candidate": {
+    "provider_calls": [
+      {
+        "purpose": "generation",
+        "usage": {
+          "prompt_tokens": 100,
+          "completion_tokens": 20,
+          "total_tokens": 120
+        }
+      },
+      {
+        "purpose": "completion_review",
+        "usage": {
+          "prompt_tokens": 900,
+          "completion_tokens": 100,
+          "total_tokens": 1000
+        }
+      }
+    ],
+    "served_total_tokens": 1120,
+    "trajectory_recorded_tokens": 120,
+    "unaccounted_tokens": 1000,
+    "fully_accounted": false,
+    "paid_requests": 0
+  }
+}
