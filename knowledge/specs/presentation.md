@@ -222,3 +222,6 @@ Timed-out or cancelled prompts are dismissed when their reply channel closes.
 `--print` applies core unattended defaults immediately: declared defaults,
 or the first option when none is declared. Batches containing text or secret
 questions are declined. No stdin read or client-result wait is introduced.
+
+The context-window gauge follows the latest conversation generation. Auxiliary
+completion reviews contribute usage totals but cannot replace that context size.

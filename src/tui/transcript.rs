@@ -182,6 +182,9 @@ pub(crate) fn context_tokens_for_event(event: &RuntimeEvent) -> Option<u32> {
     let EventData::LlmGeneration(data) = &event.data else {
         return None;
     };
+    if crate::event_usage::is_auxiliary_generation(event) {
+        return None;
+    }
     let usage = data.metadata.usage.as_ref()?;
     Some(
         usage
@@ -965,6 +968,30 @@ fn shell_success_lines(value: &Value) -> Vec<ChatLine> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn auxiliary_calls_do_not_replace_the_coding_context_gauge() {
+        let mut event = RuntimeEvent::new(
+            everruns_contracts::typed_id::SessionId::new(),
+            Default::default(),
+            everruns_core::LlmGenerationData::success(
+                vec![],
+                vec![],
+                None,
+                vec![],
+                "model".into(),
+                None,
+                Some(everruns_core::TokenUsage::new(900, 100)),
+                None,
+                None,
+            ),
+        );
+        event.metadata =
+            Some(serde_json::json!({"completion_operation_id":uuid::Uuid::now_v7().to_string()}));
+        assert_eq!(context_tokens_for_event(&event), None);
+        event.metadata = None;
+        assert_eq!(context_tokens_for_event(&event), Some(900));
+    }
 
     /// "blocked by pre_tool_use hook" is engine wording for every pre-tool
     /// block; for yolop's own argument validation it reads as a user hook

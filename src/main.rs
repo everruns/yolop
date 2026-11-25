@@ -10,6 +10,7 @@ mod control;
 mod crash_report;
 mod drivers;
 mod editor;
+mod event_usage;
 mod exec;
 mod extensions;
 mod models;

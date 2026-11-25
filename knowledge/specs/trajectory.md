@@ -28,7 +28,10 @@ session lifecycle there.
 (user input → user step, each reason/act iteration → one agent step with
 reasoning, tool calls, and tool results keyed by `source_call_id`, token usage
 into per-step and final metrics). Export is best-effort and never fails the
-run.
+run. Auxiliary session completions contribute reported usage and cost to final
+metrics without adding conversation steps. Main generations continue to use their
+conversation metrics, so paired generation events are not counted twice. Older
+sessions without auxiliary observations cannot recover their omitted charges.
 
 The Terminal-Bench study retains each Harbor job directory by default, including
 the ATIF trajectory and Yolop session event log. `TB_KEEP_JOBS=0` opts out when
