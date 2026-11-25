@@ -3084,6 +3084,24 @@ fn classify_tool(data: &Value) -> ToolKind {
     ToolKind::Other
 }
 
+// Match the typed export/gauge predicate without serializing full coding prompts.
+fn is_auxiliary_generation(event: &Value) -> bool {
+    let Some(data) = event.get("data") else {
+        return false;
+    };
+    let empty_array = |value: &Value| value.as_array().is_some_and(Vec::is_empty);
+    event
+        .pointer("/metadata/completion_operation_id")
+        .and_then(Value::as_str)
+        .is_some_and(|id| uuid::Uuid::parse_str(id).is_ok())
+        && data.get("messages").is_some_and(empty_array)
+        && data.get("tools").is_none_or(empty_array)
+        && data.get("output").is_some_and(Value::is_object)
+        && data.pointer("/output/text").is_none_or(Value::is_null)
+        && data.pointer("/output/tool_calls").is_none_or(empty_array)
+        && data.get("request_body").is_none_or(Value::is_null)
+}
+
 fn parse_events(jsonl: &str) -> Mined {
     let mut m = Mined::default();
     let mut saw_conversation_call = false;
@@ -3254,12 +3272,7 @@ fn parse_events(jsonl: &str) -> Mined {
                     }
                 }
             }
-            "llm.generation"
-                if ev
-                    .pointer("/metadata/completion_operation_id")
-                    .and_then(Value::as_str)
-                    .is_some_and(|id| !id.is_empty()) =>
-            {
+            "llm.generation" if is_auxiliary_generation(&ev) => {
                 // Main generations are already counted through their conversation
                 // event. Tool-less calls have no message and add only usage.
                 m.llm_calls += 1;
@@ -4536,7 +4549,7 @@ mod tests {
         let mined = parse_events(
             r#"{"type":"llm.generation","data":{"metadata":{"usage":{"input_tokens":100,"output_tokens":20}}}}
 {"type":"output.message.completed","data":{"message":{"role":"agent","content":[{"type":"text","text":"done"}]},"usage":{"input_tokens":100,"output_tokens":20,"actual_cost_usd":0.001}}}
-{"type":"llm.generation","metadata":{"completion_operation_id":"01900000-0000-7000-8000-000000000001"},"data":{"metadata":{"usage":{"input_tokens":900,"output_tokens":100,"actual_cost_usd":0.01}}}}
+{"type":"llm.generation","metadata":{"completion_operation_id":"01900000-0000-7000-8000-000000000001"},"data":{"messages":[],"output":{"tool_calls":[]},"metadata":{"usage":{"input_tokens":900,"output_tokens":100,"actual_cost_usd":0.01}}}}
 "#,
         );
         assert_eq!(mined.llm_calls, 2);
@@ -4545,6 +4558,31 @@ mod tests {
         assert!((mined.cost_usd - 0.011).abs() < 1e-10);
         assert_eq!(mined.first_request_input_tokens, 100);
         assert_eq!(mined.final_response, "done");
+    }
+
+    #[test]
+    fn parse_events_rejects_malformed_or_payload_bearing_auxiliary_markers() {
+        let valid = json!({"type":"llm.generation",
+            "metadata":{"completion_operation_id":"01900000-0000-7000-8000-000000000001"},
+            "data":{"messages":[],"output":{"tool_calls":[]},
+                "metadata":{"usage":{"input_tokens":900,"output_tokens":100}}}});
+        assert_eq!(parse_events(&valid.to_string()).input_tokens, 900);
+        for (pointer, value) in [
+            ("/metadata/completion_operation_id", json!("invalid")),
+            ("/data/messages", json!([{"role":"user","content":[]}])),
+            ("/data/tools", json!([{"name":"tool"}])),
+            ("/data/output/text", json!("answer")),
+            ("/data/output/tool_calls", json!([{"name":"tool"}])),
+            ("/data/request_body", json!({"private":"payload"})),
+        ] {
+            let mut invalid = valid.clone();
+            // Insert optional fields before replacing through a JSON pointer.
+            let (parent, field) = pointer.rsplit_once('/').unwrap();
+            invalid.pointer_mut(parent).unwrap()[field] = value;
+            let mined = parse_events(&invalid.to_string());
+            assert_eq!(mined.input_tokens, 0, "{pointer}");
+            assert_eq!(mined.llm_calls, 0, "{pointer}");
+        }
     }
 
     #[test]

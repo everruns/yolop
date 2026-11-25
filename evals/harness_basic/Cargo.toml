@@ -15,3 +15,4 @@ rusqlite = { version = "0.43", features = ["bundled"] }
 serde_json = "1.0"
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "time", "io-util"] }
+uuid = { version = "1", default-features = false }
